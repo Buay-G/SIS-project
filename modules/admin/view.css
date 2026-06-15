@@ -1,0 +1,92 @@
+body {
+    /* Sets the background image */
+    background: url('/assets/images/background.jpg') no-repeat center center fixed;
+    background-size: cover;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 0;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+h2 {
+    color: white;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+    text-align: center; /* This centers your header */
+}
+
+/* Glassmorphism Container */
+table {
+    width: 90%;
+    border-collapse: collapse;
+    background: rgba(255, 255, 255, 0.2);
+    /* Adding will-change helps the browser prepare for animations/updates */
+    will-change: transform; 
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border-radius: 15px;
+    box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    overflow: hidden;
+}
+
+th, td {
+    padding: 15px;
+    text-align: left;
+    color: white;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+th {
+    background-color: rgba(0, 0, 0, 0.3);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+tr:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+#searchInput {
+    display: block;
+    width: 300px;         /* Smaller width */
+    margin: 20px auto;    /* Centers it horizontally */
+    padding: 10px 20px;
+    border-radius: 25px;  /* Pill shape */
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    background: rgba(255, 255, 255, 0.15);
+    color: white;
+    font-size: 14px;
+    text-align: center;
+    transition: all 0.3s ease;
+}
+
+#searchInput:focus {
+    width: 400px;         /* Expands slightly when clicking */
+    background: rgba(255, 255, 255, 0.25);
+    outline: none;
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
+}
+
+#searchInput::placeholder {
+    color: rgba(255, 255, 255, 0.6);
+}
+/* This class hides elements efficiently */
+.hidden-row {
+    display: none !important;
+}
+#exportBtn {
+    padding: 10px 20px;
+    border-radius: 25px;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    background: rgba(255, 255, 255, 0.2);
+    color: white;
+    cursor: pointer;
+    font-size: 14px;
+    margin: 10px;
+    transition: background 0.3s;
+}
+
+#exportBtn:hover {
+    background: rgba(255, 255, 255, 0.4);
+}

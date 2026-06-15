@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Student Portal | Newland High School</title>
+    <link rel="stylesheet" href="portal.css">
+</head>
+<body>
+
+<div class="glass-container">
+    <div id="searchView">
+        <img src="/assets/images/Logo.png" alt="Test" class="logo">
+        <h1>Newland High School</h1>
+        <p class="subtitle">Search for your name to view your account & LMS credentials</p>
+        
+        <form id="searchForm" onsubmit="return false;">
+            <input type="text" id="studentSearch" placeholder="Type your full name..." oninput="search()">
+        </form>
+        
+        <div id="searchResults"></div>
+    </div> 
+    <div id="detailView" style="display: none;">
+        <button class="back-btn" onclick="showSearch()">&larr; Back to Search</button>
+        <div class="card">
+            <div class="label">School</div>
+            <div id="detSchool" class="value" style="font-size: 14px; color: #555;"></div>
+            <div class="label">Student ID</div>
+            <div id="detID" class="value" style="color: var(--primary);"></div>
+            <div class="label">Full Name</div>
+            <div id="detName" class="value"></div>
+            <div class="label">Class</div>
+            <div id="detClass" class="value"></div>
+            <div class="label">LMS Username</div>
+            <div id="detUser" class="value"></div>
+            <div class="pass-container">
+                <div class="label" style="color:#d32f2f">Your Security Password</div>
+                <span id="detPass" class="pass-value"></span>
+            </div>
+            <div class="label">Official Email</div>
+            <div id="detEmail" class="value" style="font-size: 14px; color: #666;"></div>
+            <div class="label">Assigned Computer</div>
+            <div id="detPC" class="value" style="font-weight: 800; color: var(--success);"></div>
+        </div>
+    </div>
+    <footer>&copy; 2026 Newland High School IT Department</footer>
+</div>
+<script src="portal.js"></script>
+</body>
+</html>
