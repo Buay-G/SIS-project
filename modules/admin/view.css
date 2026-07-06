@@ -1,92 +1,172 @@
+/* 1. Global Setup with Background Blur */
 body {
-    /* Sets the background image */
+    margin: 0;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    height: 100vh;
     background: url('/assets/images/background.jpg') no-repeat center center fixed;
     background-size: cover;
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    margin: 0;
+    display: flex;
+}
+
+/* Blur effect for the background */
+body::before {
+    content: "";
+    position: fixed;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background: inherit;
+    filter: blur(3px);
+    z-index: -1;
+}
+
+.dashboard-container {
+    display: flex;
+    width: 100%;
+}
+
+/* 2. Sidebar styling */
+#sidebar {
+    width: 280px;
+    background: rgba(44, 62, 80, 0.95);
+    color: white;
     padding: 20px;
+    height: 100vh;
+    box-shadow: 2px 0 10px rgba(0,0,0,0.2);
+}
+
+.nav-group { margin-bottom: 15px; }
+
+.dropdown-btn {
+    width: 100%;
+    padding: 12px;
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    text-align: left;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.dropdown-content { display: none; padding-left: 15px; }
+.dropdown-content.show { display: block; }
+.dropdown-content button {
+    display: block;
+    width: 100%;
+    padding: 8px;
+    background: transparent;
+    border: none;
+    color: #bdc3c7;
+    text-align: left;
+    cursor: pointer;
+}
+.dropdown-content button:hover { color: #1abc9c; }
+
+/* 3. Main Content Card Styling */
+#content {
+    flex: 1;
+    padding: 40px;
+    overflow-y: auto;
+}
+
+/* 1. Limit the height of the card to enable internal scrolling */
+.dashboard-card {
     display: flex;
     flex-direction: column;
-    align-items: center;
+    max-height: 85vh; /* Or adjust to your preferred height */
+    overflow: hidden; /* Important: keeps content inside */
 }
 
-h2 {
-    color: white;
-    text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
-    text-align: center; /* This centers your header */
-}
-
-/* Glassmorphism Container */
-table {
-    width: 90%;
+/* 2. Configure the table to take up the space */
+#student-table {
+    width: 100%;
     border-collapse: collapse;
-    background: rgba(255, 255, 255, 0.2);
-    /* Adding will-change helps the browser prepare for animations/updates */
-    will-change: transform; 
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    border-radius: 15px;
-    box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    overflow: hidden;
+    table-layout: fixed; /* Ensures column alignment */
 }
 
-th, td {
+/* 3. The Sticky Header: This stays at the top */
+thead th {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: #f8f9fa; /* Ensure a solid color so text doesn't bleed through */
     padding: 15px;
-    text-align: left;
-    color: white;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-th {
-    background-color: rgba(0, 0, 0, 0.3);
     text-transform: uppercase;
-    letter-spacing: 1px;
+    font-size: 0.85rem;
+    color: #666;
+    border-bottom: 2px solid #dee2e6;
 }
 
-tr:hover {
-    background-color: rgba(255, 255, 255, 0.1);
-}
-#searchInput {
+/* 4. The Scrollable Body: This is what actually moves */
+tbody {
     display: block;
-    width: 300px;         /* Smaller width */
-    margin: 20px auto;    /* Centers it horizontally */
-    padding: 10px 20px;
-    border-radius: 25px;  /* Pill shape */
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    background: rgba(255, 255, 255, 0.15);
-    color: white;
-    font-size: 14px;
-    text-align: center;
-    transition: all 0.3s ease;
+    max-height: 65vh; /* Adjust this to fit your dashboard height */
+    overflow-y: auto;
+    width: 100%;
 }
 
-#searchInput:focus {
-    width: 400px;         /* Expands slightly when clicking */
-    background: rgba(255, 255, 255, 0.25);
-    outline: none;
-    box-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
+/* 5. Match header and body column widths */
+thead, tbody tr {
+    display: table;
+    width: 100%;
+    table-layout: fixed;
+}
+/* Add subtle borders between rows */
+tbody tr {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+    transition: background 0.3s ease;
 }
 
-#searchInput::placeholder {
-    color: rgba(255, 255, 255, 0.6);
+/* Ensure the cells have a consistent look */
+td {
+    padding: 12px 15px; /* Adjust padding for spacing */
+    border-bottom: 1px solid rgba(255, 255, 255, 0.2); /* White, semi-transparent border */
+    color: #efe2e2;
 }
-/* This class hides elements efficiently */
-.hidden-row {
-    display: none !important;
+
+/* Optional: Ensure the last row doesn't have an extra border if not needed */
+tbody tr:last-child td {
+    border-bottom: none;
 }
-#exportBtn {
-    padding: 10px 20px;
+
+/* Controls Styling */
+#searchInput {
+    padding: 12px 20px;
+    width: 60%;
+    border: 1px solid #ddd;
     border-radius: 25px;
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    background: rgba(255, 255, 255, 0.2);
+    outline: none;
+}
+
+#exportBtn {
+    padding: 12px 25px;
+    background: #27ae60;
     color: white;
+    border: none;
+    border-radius: 25px;
     cursor: pointer;
-    font-size: 14px;
-    margin: 10px;
+    font-weight: bold;
     transition: background 0.3s;
 }
-
-#exportBtn:hover {
-    background: rgba(255, 255, 255, 0.4);
+/* 1. Force the table to use fixed widths */
+#student-table {
+    width: 100%;
+    table-layout: fixed; /* This is the most important part for alignment */
+    border-collapse: collapse;
 }
+
+/* 2. Define the exact width for each column */
+#student-table th:nth-child(1), #student-table td:nth-child(1) { width: 15%; } /* ID */
+#student-table th:nth-child(2), #student-table td:nth-child(2) { width: 35%; } /* Full Name */
+#student-table th:nth-child(3), #student-table td:nth-child(3) { width: 15%; } /* Class */
+#student-table th:nth-child(4), #student-table td:nth-child(4) { width: 20%; } /* Stream */
+#student-table th:nth-child(5), #student-table td:nth-child(5) { width: 15%; } /* Section */
+
+/* 3. Ensure the text inside aligns neatly */
+th, td {
+    padding: 15px;
+    text-align: left; /* Or 'center' if you prefer */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+#exportBtn:hover { background: #219150; }

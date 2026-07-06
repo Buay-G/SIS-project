@@ -2,106 +2,89 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Registration Dashboard</title>
+    <title>SIS Admin Dashboard</title>
     <link rel="stylesheet" href="view.css">
 </head>
 <body>
 
-    <h2>Registered Students Dashboard</h2>
-    <input type="text" id="searchInput" placeholder="Search by ID or Name..." onkeyup="filterStudents()">
-    <button id="exportBtn" onclick="exportToCSV()">Export to Excel</button>
-    
-    <table>
-        <thead>
-            <tr>
-                <th>ID</th>
-                <th>Name</th>
-                <th>Fayda Number</th>
-                <th>Phone Number</th>
-                <th>Class</th>
-                <th>Stream</th>
-                <th>Section</th>
-            </tr>
-        </thead>
-        <tbody id="student-table-body">
-            </tbody>
-    </table>
-
-    <script>
-    // 1. Fetch and render the students
-    fetch('/dashboard-data')
-        .then(response => response.json())
-        .then(data => {
-            const tbody = document.getElementById('student-table-body');
-            tbody.innerHTML = ""; 
+    <div class="dashboard-container">
+        <nav id="sidebar">
+            <div class="logo-container">
+                <img src="/assets/images/Logo.png" alt="School Logo" style="width: 100px; display: block; margin: 0 auto 10px;">
+                <h3 style="text-align: center; color: white;">Newland High School</h3>
+            </div>
             
-            data.forEach(student => {
-                const fullName = `${student.first_name} ${student.middle_name || ''} ${student.last_name}`;
-                
-                // Create the row element properly
-                const row = document.createElement('tr');
-                
-                // Set the search attribute for high performance
-                const searchString = `${student.student_id} ${fullName} ${student.fayda_number || ''} ${student.phone_number || ''}`.toLowerCase();
-                row.setAttribute('data-search', searchString);
-                
-                // Populate the row
-                row.innerHTML = `
-                    <td>${student.student_id}</td>
-                    <td>${fullName}</td>
-                    <td>${student.fayda_number || 'N/A'}</td>
-                    <td>${student.phone_number || 'N/A'}</td>
-                    <td>${student.class_level}</td>
-                    <td>${student.stream}</td>
-                    <td>${student.section}</td>
-                `;
-                
-                tbody.appendChild(row);
-            });
-        })
-        .catch(error => console.error('Error loading data:', error));
+            <div class="nav-group">
+                <button class="menu-link" style="width: 100%; padding: 12px; background: #1abc9c; color: white; border: none; cursor: pointer; border-radius: 8px; margin-bottom: 20px;" 
+                        onclick="renderTable(null, null, null)">All Students</button>
+            </div>
 
-    // 2. Debounced Search Function
-    let timeout = null;
-    function filterStudents() {
-        clearTimeout(timeout);
-        timeout = setTimeout(() => {
-            const input = document.getElementById("searchInput").value.toLowerCase();
-            const rows = document.getElementById("student-table-body").getElementsByTagName("tr");
-            
-            for (let row of rows) {
-                // Get the pre-stored search string
-                const searchData = row.getAttribute('data-search') || "";
-                // Toggle the CSS class
-                row.classList.toggle('hidden-row', !searchData.includes(input));
-            }
-        }, 150);
-    }
-    function exportToCSV() {
-    const table = document.querySelector("table");
-    let csv = [];
-    const rows = table.querySelectorAll("tr");
+            <div class="nav-group">
+                <button class="dropdown-btn" onclick="toggleDropdown('g9-menu')">Grade 9 ▼</button>
+                <div id="g9-menu" class="dropdown-content">
+                    <button onclick="renderTable(null, 9, 'A')">Section A</button>
+                    <button onclick="renderTable(null, 9, 'B')">Section B</button>
+                    <button onclick="renderTable(null, 9, 'C')">Section C</button>
+                    <button onclick="renderTable(null, 9, 'D')">Section D</button>
+                </div>
+            </div>
 
-    for (let row of rows) {
-        const cols = row.querySelectorAll("td, th");
-        let csvRow = [];
-        for (let col of cols) {
-            // Remove commas to prevent CSV formatting issues
-            csvRow.push('"' + col.innerText.replace(/"/g, '""') + '"');
-        }
-        csv.push(csvRow.join(","));
-    }
+            <div class="nav-group">
+                <button class="dropdown-btn" onclick="toggleDropdown('g10-menu')">Grade 10 ▼</button>
+                <div id="g10-menu" class="dropdown-content">
+                    <button onclick="renderTable(null, 10, 'A')">Section A</button>
+                    <button onclick="renderTable(null, 10, 'B')">Section B</button>
+                    <button onclick="renderTable(null, 10, 'C')">Section C</button>
+                    <button onclick="renderTable(null, 10, 'D')">Section D</button>
+                </div>
+            </div>
 
-    const csvFile = new Blob([csv.join("\n")], { type: "text/csv" });
-    const downloadLink = document.createElement("a");
-    downloadLink.download = "Registered_Students.csv";
-    downloadLink.href = window.URL.createObjectURL(csvFile);
-    downloadLink.style.display = "none";
-    document.body.appendChild(downloadLink);
-    downloadLink.click();
-    document.body.removeChild(downloadLink);
-}
-</script>
+            <div class="nav-group">
+                <button class="dropdown-btn" onclick="toggleDropdown('nat-menu')">Natural Science ▼</button>
+                <div id="nat-menu" class="dropdown-content">
+                    <button onclick="renderTable('Natural Science', 11, 'A')">Grade 11 - A</button>
+                    <button onclick="renderTable('Natural Science', 11, 'B')">Grade 11 - B</button>
+                    <button onclick="renderTable('Natural Science', 12, 'A')">Grade 12 - A</button>
+                    <button onclick="renderTable('Natural Science', 12, 'B')">Grade 12 - B</button>
+                </div>
+            </div>
 
+            <div class="nav-group">
+                <button class="dropdown-btn" onclick="toggleDropdown('soc-menu')">Social Science ▼</button>
+                <div id="soc-menu" class="dropdown-content">
+                    <button onclick="renderTable('Social Science', 11, 'A')">Grade 11 - A</button>
+                    <button onclick="renderTable('Social Science', 11, 'B')">Grade 11 - B</button>
+                    <button onclick="renderTable('Social Science', 12, 'A')">Grade 12 - A</button>
+                    <button onclick="renderTable('Social Science', 12, 'B')">Grade 12 - B</button>
+                </div>
+            </div>
+        </nav>
+
+        <main id="content">
+            <div class="dashboard-card">
+                <div class="toolbar" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <input type="text" id="searchInput" placeholder="Search students..." onkeyup="filterStudents()" style="padding: 10px; width: 70%; border-radius: 20px; border: 1px solid #ccc;">
+                    <button id="exportBtn" onclick="exportTableToCSV('students_export.csv')" style="padding: 10px 20px; background: #27ae60; color: white; border: none; border-radius: 20px; cursor: pointer;">Export to Excel</button>
+                </div>
+
+                <table id="student-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Full Name</th>
+                            <th>Class</th>
+                            <th>Stream</th>
+                            <th>Section</th>
+                        </tr>
+                    </thead>
+                    <tbody id="student-table-body">
+                        </tbody>
+                </table>
+            </div>
+        </main>
+    </div>
+
+    <script src="js/api.js"></script>
+    <script src="js/logic.js"></script>
 </body>
 </html>

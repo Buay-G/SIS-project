@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="registrar.css">
+    <title>Registrar Portal | Newland High School</title>
+    <script src="/assets/js/guard.js"></script>
+</head>
+<body>
+    <div class="dashboard-container">
+        <nav id="sidebar">
+            <img src="/assets/images/Logo.png" alt="School Logo" style="width: 100px; display: block; margin: 0 auto 10px;">
+            <h3 style="text-align: center; color: white; margin: 5px 0;">Newland High School</h3>
+            <h4 style="text-align: center; color: #bdc3c7; margin-bottom: 20px;">Registrar Panel</h4>
+            
+            <button onclick="switchTab('new-entry')">New Entry Registration</button>
+            <button onclick="switchTab('update-info')">Information Update</button>
+            <button onclick="switchTab('promotion')">Promotion/Stream</button>
+        </nav>
+
+        <main id="content">
+            <div id="new-entry" class="tab-content active">
+                <h1>New Student Registration</h1>
+                <form id="registration-form">
+                    <div class="form-grid">
+                        <input type="text" id="reg_fayda" placeholder="Fayda Number" required minlength="16" maxlength="16">
+                        <input type="text" id="reg_phone" placeholder="Phone Number" required minlength="10" maxlength="10">
+                        <input type="text" id="reg_first" placeholder="First Name" required>
+                    </div>
+                    <div class="form-grid">
+                        <input type="text" id="reg_middle" placeholder="Middle Name" required>
+                        <input type="text" id="reg_last" placeholder="Last Name" required>
+                        <select id="reg_grade" onchange="updateStreamOptions()" required>
+                            <option value="">Select Grade</option>
+                            <option value="9">Grade 9</option>
+                            <option value="10">Grade 10</option>
+                            <option value="11">Grade 11</option>
+                            <option value="12">Grade 12</option>
+                        </select>
+                    </div>
+                    <div class="form-grid">
+                        <select id="reg_sex" required>
+                            <option value="">Select Sex</option>
+                            <option value="Male">Male</option>
+                            <option value="Female">Female</option>
+                        </select>
+                        <select id="reg_stream" required>
+                            <option value="">Select Stream</option>
+                        </select>
+                    </div>
+                    <button type="button" onclick="submitRegistration()">Register Student</button>
+                </form>
+            </div>
+
+            <div id="update-info" class="tab-content">
+                <h1>Information Update</h1>
+                <div class="search-box">
+                    <input type="text" id="search-id" placeholder="Enter Student ID...">
+                    <button onclick="fetchStudent()">Search</button>
+                </div>
+                <form id="update-form">
+                    <input type="hidden" id="upd_id">
+                    <div class="form-grid">
+                        <input type="text" id="upd_first" placeholder="First Name" required>
+                        <input type="text" id="upd_middle" placeholder="Middle Name" required>
+                        <input type="text" id="upd_last" placeholder="Last Name" required>
+                        <input type="text" id="upd_class" placeholder="Class Level (9-12)" required>
+                        <input type="text" id="upd_section" placeholder="Section" required>
+                        <input type="text" id="upd_stream" placeholder="Stream" required>
+                    </div>
+                    <div class="form-grid">
+                        <input type="text" id="upd_phone" placeholder="Phone Number" minlength="10" maxlength="10">
+                        <input type="text" id="upd_fayda" placeholder="Fayda Number" minlength="16" maxlength="16">
+                        <select id="upd_sex" required>
+                            <option value="">Select Sex</option>
+                            <option value="Male">Male</option>
+                            <option value="Female">Female</option>
+                        </select>
+                    </div>
+                    <button type="button" onclick="submitUpdate()">Save Changes</button>
+                </form>
+            </div>
+
+            <div id="promotion" class="tab-content">
+                <h1>Student Promotion</h1>
+                <div class="search-box">
+                    <input type="text" id="promo-id" placeholder="Enter Student ID to Promote...">
+                    <button onclick="fetchForPromotion()">Search</button>
+                </div>
+                
+                <div id="promo-form" style="display:none;">
+                    <h3>Student Profile</h3>
+                    <p><strong>Name:</strong> <span id="student-name-display"></span></p>
+                    <p><strong>Current Grade:</strong> <span id="current-grade"></span></p>
+                    
+                    <label>New Grade:</label>
+                    <select id="new-grade" required></select>
+                    
+                    <div id="stream-select-container" style="display:none;">
+                        <label id="stream-label">Select Stream:</label>
+                        <select id="stream-select"></select>
+                    </div>
+                    
+                    <button type="button" onclick="submitPromotion()">Promote Student</button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div id="success-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(255,255,255,0.9); z-index:1000; text-align:center; padding-top:100px;">
+        <div style="font-size: 80px; color: #3498db; margin-bottom: 20px;">&#9313;</div>
+        <h2>Success!</h2>
+        <p>The record has been updated successfully.</p>
+        <button onclick="closeSuccess()" style="padding: 10px 25px; background: #3498db; color: white; border: none; border-radius: 5px; cursor: pointer; margin-top: 20px;">Return</button>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

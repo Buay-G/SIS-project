@@ -1,0 +1,117 @@
+/* Basic page reset and centering */
+body {
+    margin: 0;
+    padding: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    background-color: #f4f7f6; /* Soft light gray background */
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* The login card */
+.login-container {
+    background-color: #ffffff;
+    padding: 40px;
+    border-radius: 10px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+    width: 100%;
+    max-width: 350px;
+    text-align: center;
+}
+
+.login-container h2 {
+    color: #2c3e50;
+    margin-bottom: 25px;
+    font-size: 1.5rem;
+}
+
+/* Input styling */
+input {
+    width: 100%;
+    padding: 12px;
+    margin: 10px 0;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    box-sizing: border-box; /* Ensures padding doesn't affect width */
+    font-size: 16px;
+}
+
+/* Button styling */
+button {
+    width: 100%;
+    padding: 12px;
+    background-color: #3498db;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    font-size: 16px;
+    cursor: pointer;
+    margin-top: 10px;
+    transition: background-color 0.3s;
+}
+
+button:hover {
+    background-color: #2980b9;
+}
+
+/* Message text */
+#message {
+    margin-top: 20px;
+    font-size: 14px;
+    color: #e74c3c; /* Red color for error messages */
+}
+/* Logo Styling */
+.logo {
+    max-width: 100px; /* Adjust size as needed */
+    height: auto;
+    margin-bottom: 15px; /* Adds space between logo and title */
+    display: block;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+/* Optional: Refine the container padding if it feels too cramped */
+.login-container {
+    background-color: #ffffff;
+    padding: 30px 40px; /* Reduced top/bottom padding to make room for logo */
+    border-radius: 15px; /* Slightly more rounded for a modern look */
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1); /* Softer, larger shadow */
+    width: 100%;
+    max-width: 350px;
+    text-align: center;
+}
+
+/* Improve input spacing */
+#loginForm input {
+    width: 100%;
+    padding: 14px;
+    margin: 12px 0;
+    border: 1px solid #ced4da;
+    border-radius: 8px; /* Rounded corners for inputs */
+    font-size: 15px;
+}
+/* Footer Styling */
+.footer {
+    position: fixed; /* Keeps it at the bottom of the screen */
+    bottom: 20px;
+    width: 100%;
+    text-align: center;
+    color: #7f8c8d;
+    font-size: 0.85rem;
+}
+
+.footer-links {
+    margin-top: 5px;
+}
+
+.footer-links a {
+    color: #3498db;
+    text-decoration: none;
+    margin: 0 10px;
+}
+
+.footer-links a:hover {
+    text-decoration: underline;
+}
