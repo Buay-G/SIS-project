@@ -128,6 +128,52 @@ function setText(id, val) {
     if (el) el.textContent = val || '—';
 }
 
+// ---- ACCOUNT SECURITY ----
+window.updatePassword = async () => {
+    const currentPass = document.getElementById('curr-pass').value;
+    const newPass = document.getElementById('new-pass').value;
+    const confirmPass = document.getElementById('confirm-pass').value;
+    const msg = document.getElementById('password-message');
+
+    const showMsg = (text, isError) => {
+        if (!msg) return;
+        msg.textContent = text;
+        msg.style.color = isError ? '#dc2626' : '#16a34a';
+    };
+
+    if (!currentPass || !newPass || !confirmPass) {
+        showMsg('Please fill in all three fields.', true);
+        return;
+    }
+    if (newPass !== confirmPass) {
+        showMsg('New password and confirmation do not match.', true);
+        return;
+    }
+    if (newPass.length < 4) {
+        showMsg('New password must be at least 4 characters.', true);
+        return;
+    }
+
+    try {
+        const res = await apiFetch('/api/student/update-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ currentPass, newPass })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            showMsg('Password updated successfully.', false);
+            document.getElementById('curr-pass').value = '';
+            document.getElementById('new-pass').value = '';
+            document.getElementById('confirm-pass').value = '';
+        } else {
+            showMsg(data.error || 'Could not update password.', true);
+        }
+    } catch (err) {
+        showMsg('Could not connect to server.', true);
+    }
+};
+
 // ---- MARKS ----
 let allMarks = [];
 
@@ -246,7 +292,10 @@ async function loadNotifications() {
     const output = document.getElementById('notifications-output');
     try {
         const res = await apiFetch('/api/student/my-notifications');
-        if (!res.ok) return;
+        if (!res.ok) {
+            if (output) output.innerHTML = '<p class="muted">Could not load notifications.</p>';
+            return;
+        }
         // The API returns { unread_count, items }, not a flat array.
         const data = await res.json();
         notifData = data.items || [];
@@ -255,6 +304,7 @@ async function loadNotifications() {
         updateDashboardNotifs(notifData);
     } catch (err) {
         console.error('Notifications error:', err);
+        if (output) output.innerHTML = '<p class="muted">Could not load notifications.</p>';
     }
 }
 

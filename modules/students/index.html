@@ -128,6 +128,18 @@
                         <p><strong>Email:</strong> <span id="p-email">—</span></p>
                         <p><strong>Assigned PC:</strong> <span id="p-pc">—</span></p>
                     </div>
+                    <div class="widget">
+                        <h3>Account Security</h3>
+                        <p class="muted" style="margin-bottom:12px;">If this is your first time logging in, change your password from the default.</p>
+                        <label for="curr-pass" class="sr-only">Current password</label>
+                        <input type="password" id="curr-pass" class="form-input" placeholder="Current Password">
+                        <label for="new-pass" class="sr-only">New password</label>
+                        <input type="password" id="new-pass" class="form-input" placeholder="New Password">
+                        <label for="confirm-pass" class="sr-only">Confirm new password</label>
+                        <input type="password" id="confirm-pass" class="form-input" placeholder="Confirm New Password">
+                        <button type="button" class="btn-primary" style="margin-top:10px;" onclick="updatePassword()">Update Password</button>
+                        <div id="password-message" style="margin-top:8px; font-size:0.85rem;"></div>
+                    </div>
                 </div>
             </section>
         </main>
