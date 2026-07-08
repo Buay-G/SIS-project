@@ -247,8 +247,10 @@ async function loadNotifications() {
     try {
         const res = await apiFetch('/api/student/my-notifications');
         if (!res.ok) return;
-        notifData = await res.json();
-        updateNotifBadge(notifData);
+        // The API returns { unread_count, items }, not a flat array.
+        const data = await res.json();
+        notifData = data.items || [];
+        updateNotifBadge(data.unread_count);
         if (output) renderNotifications(notifData, output);
         updateDashboardNotifs(notifData);
     } catch (err) {
@@ -256,39 +258,39 @@ async function loadNotifications() {
     }
 }
 
-function updateNotifBadge(notifs) {
+function updateNotifBadge(unreadCount) {
     const badge = document.getElementById('notif-nav-badge');
-    const unread = notifs.filter(n => !n.read_at).length;
     if (badge) {
-        badge.textContent = unread > 9 ? '9+' : unread;
-        badge.style.display = unread > 0 ? 'inline-flex' : 'none';
+        badge.textContent = unreadCount > 9 ? '9+' : unreadCount;
+        badge.style.display = unreadCount > 0 ? 'inline-flex' : 'none';
     }
 }
 
 function renderNotifications(notifs, container) {
     if (!notifs.length) { container.innerHTML = '<p class="muted">No notifications yet.</p>'; return; }
     container.innerHTML = notifs.map(n => `
-        <div class="notif-card ${n.read_at ? '' : 'notif-unread'}" onclick="markRead(${n.notif_id}, this)">
+        <div class="notif-card ${n.is_read ? '' : 'notif-unread'}" onclick="markRead(${n.notification_id}, this)">
             <div class="notif-card-header">
                 <strong>${n.assessment_type.replace(/_/g, ' ')}</strong>
-                ${n.read_at ? '' : '<span class="notif-dot" aria-label="Unread"></span>'}
+                ${n.is_read ? '' : '<span class="notif-dot" aria-label="Unread"></span>'}
             </div>
             <p class="notif-body">${n.message}</p>
-            <p class="notif-meta muted">From: ${n.sent_by_name || 'Your teacher'} &middot; ${new Date(n.sent_at).toLocaleDateString()}</p>
+            <p class="notif-meta muted">${new Date(n.sent_at).toLocaleDateString()}</p>
         </div>`).join('');
 }
 
-window.markRead = async (notif_id, el) => {
+window.markRead = async (notification_id, el) => {
     el.classList.remove('notif-unread');
     el.querySelector('.notif-dot')?.remove();
     await apiFetch('/api/student/mark-notification-read', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ notif_id })
+        body: JSON.stringify({ notification_id })
     }).catch(() => {});
-    const idx = notifData.findIndex(n => n.notif_id === notif_id);
-    if (idx !== -1) notifData[idx].read_at = new Date().toISOString();
-    updateNotifBadge(notifData);
+    const idx = notifData.findIndex(n => n.notification_id === notification_id);
+    if (idx !== -1) notifData[idx].is_read = 1;
+    const stillUnread = notifData.filter(n => !n.is_read).length;
+    updateNotifBadge(stillUnread);
 };
 
 // ---- DASHBOARD ----
@@ -318,7 +320,7 @@ function updateDashboardNotifs(notifs) {
     const recent = notifs.slice(0, 3);
     if (!recent.length) { el.innerHTML = '<p class="muted">No notifications.</p>'; return; }
     el.innerHTML = recent.map(n => `
-        <div class="notif-card ${n.read_at ? '' : 'notif-unread'}" style="margin-bottom:8px;">
+        <div class="notif-card ${n.is_read ? '' : 'notif-unread'}" style="margin-bottom:8px;">
             <strong style="font-size:0.85rem;">${n.assessment_type.replace(/_/g, ' ')}</strong>
             <p class="muted" style="font-size:0.82rem; margin-top:2px;">${n.message.substring(0, 80)}${n.message.length > 80 ? '…' : ''}</p>
         </div>`).join('');

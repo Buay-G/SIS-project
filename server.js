@@ -29,7 +29,7 @@ app.use(cookieParser());
 
 // Static Files
 app.use(express.static(path.join(__dirname, 'public')));
-app.use('/student', express.static(path.join(__dirname, 'modules')));
+app.use('/students', express.static(path.join(__dirname, 'modules/students')));
 app.use('/teachers', express.static(path.join(__dirname, 'modules/teachers')));
 app.use('/portal', express.static(path.join(__dirname, 'modules/portal')));
 app.use('/registrar', express.static(path.join(__dirname, 'modules/registrar')));
@@ -2188,90 +2188,6 @@ app.post('/api/contact/thread/:thread_id/mark-read', requireAuth, async (req, re
     }
 });
 
-// --- Student Portal Routes ---
-// All scoped to the logged-in student's own data via req.user.user_id.
-// Students cannot query other students' data.
-
-app.get('/api/student/me', requireAuth, requireRole('students'), async (req, res) => {
-    try {
-        const [rows] = await pool.query(
-            `SELECT student_id, first_name, middle_name, last_name, sex,
-                    class_level, section, stream, school_name, email_address,
-                    lms_username, assigned_computer, status, fayda_number
-             FROM students WHERE student_id = ? AND school_id = ?`,
-            [req.user.user_id, req.user.school_id]
-        );
-        if (!rows.length) return res.status(404).json({ error: "Student not found" });
-        res.json(rows[0]);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.get('/api/student/my-marks', requireAuth, requireRole('students'), async (req, res) => {
-    try {
-        const [marks] = await pool.query(
-            `SELECT s.subject_name, s.stream, m.type, m.score, m.term
-             FROM marks m
-             JOIN subjects s ON s.subject_id = m.subject_id AND s.school_id = m.school_id
-             WHERE m.student_id = ? AND m.school_id = ?
-             ORDER BY m.term, s.subject_name, m.type`,
-            [req.user.user_id, req.user.school_id]
-        );
-        res.json(marks);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.get('/api/student/my-textbooks', requireAuth, requireRole('students'), async (req, res) => {
-    try {
-        const school_year = new Date().getFullYear().toString();
-        const [books] = await pool.query(
-            `SELECT s.subject_name, td.status, td.issued_at, td.returned_at, td.lost_at
-             FROM textbook_distributions td
-             JOIN subjects s ON s.subject_id = td.subject_id AND s.school_id = td.school_id
-             WHERE td.student_id = ? AND td.school_id = ? AND td.school_year = ?
-             ORDER BY s.subject_name`,
-            [req.user.user_id, req.user.school_id, school_year]
-        );
-        res.json(books);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.get('/api/student/my-notifications', requireAuth, requireRole('students'), async (req, res) => {
-    try {
-        const [notifs] = await pool.query(
-            `SELECT sn.notif_id, sn.assessment_type, sn.message,
-                    sn.sent_at, sn.read_at, t.full_name as sent_by_name
-             FROM student_notifications sn
-             LEFT JOIN teachers t ON t.teacher_id = sn.sent_by AND t.school_id = sn.school_id
-             WHERE sn.student_id = ? AND sn.school_id = ?
-             ORDER BY sn.sent_at DESC`,
-            [req.user.user_id, req.user.school_id]
-        );
-        res.json(notifs);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.post('/api/student/mark-notification-read', requireAuth, requireRole('students'), async (req, res) => {
-    const { notif_id } = req.body;
-    try {
-        await pool.query(
-            `UPDATE student_notifications SET read_at = NOW()
-             WHERE notif_id = ? AND student_id = ? AND school_id = ?`,
-            [notif_id, req.user.user_id, req.user.school_id]
-        );
-        res.json({ ok: true });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
 // --- Authentication Endpoint ---
 app.post('/api/login', async (req, res) => {
     const { id, password } = req.body;
@@ -2433,6 +2349,131 @@ app.get('/api/teacher/my-students', requireAuth, async (req, res) => {
         res.status(500).json({ error: "Could not fetch assigned students" });
     }
 });
+// --- Student self-service routes ---
+// Every route here is scoped by req.user.user_id (read off the verified
+// JWT), never by a URL param — this is what actually prevents one student
+// from viewing another student's marks/textbooks/notifications by just
+// changing an ID in the request. requireRole('students') is defense in
+// depth on top of that scoping, not a substitute for it.
+
+app.get('/api/student/me', requireAuth, requireRole('students'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT student_id, first_name, middle_name, last_name, class_level, section, stream, sex,
+                    status, school_name, lms_username, email_address, assigned_computer
+             FROM students WHERE student_id = ? AND school_id = ?`,
+            [req.user.user_id, req.user.school_id]
+        );
+        if (rows.length === 0) return res.status(404).json({ error: "Student record not found" });
+        res.json(rows[0]);
+    } catch (err) {
+        console.error("/api/student/me error:", err);
+        res.status(500).json({ error: "Could not load your profile" });
+    }
+});
+
+app.get('/api/student/my-marks', requireAuth, requireRole('students'), async (req, res) => {
+    try {
+        const [marks] = await pool.query(
+            `SELECT s.subject_name, m.score, m.type, m.term
+             FROM marks m
+             JOIN subjects s ON m.subject_id = s.subject_id AND s.school_id = m.school_id
+             WHERE m.student_id = ? AND m.school_id = ?
+             ORDER BY m.term, s.subject_name, m.type`,
+            [req.user.user_id, req.user.school_id]
+        );
+        res.json(marks);
+    } catch (err) {
+        console.error("/api/student/my-marks error:", err);
+        res.status(500).json({ error: "Could not fetch your marks" });
+    }
+});
+
+app.get('/api/student/my-textbooks', requireAuth, requireRole('students'), async (req, res) => {
+    try {
+        const [studentRows] = await pool.query(
+            'SELECT stream FROM students WHERE student_id = ? AND school_id = ?',
+            [req.user.user_id, req.user.school_id]
+        );
+        if (studentRows.length === 0) return res.status(404).json({ error: "Student record not found" });
+        const { stream } = studentRows[0];
+        const school_year = getSchoolYear();
+
+        const [subjects] = await pool.query(
+            'SELECT subject_id, subject_name FROM subjects WHERE stream = ? AND school_id = ? ORDER BY subject_name',
+            [stream, req.user.school_id]
+        );
+        const [distributions] = await pool.query(
+            `SELECT subject_id, status, issued_at, returned_at, lost_at FROM textbook_distributions
+             WHERE student_id = ? AND school_year = ? AND school_id = ?`,
+            [req.user.user_id, school_year, req.user.school_id]
+        );
+
+        const distroMap = {};
+        distributions.forEach(d => { distroMap[d.subject_id] = d; });
+
+        const books = subjects.map(subj => {
+            const record = distroMap[subj.subject_id];
+            return {
+                subject_id: subj.subject_id,
+                subject_name: subj.subject_name,
+                issued: !!record,
+                status: record ? record.status : null,
+                issued_at: record ? record.issued_at : null,
+                returned: !!(record && record.status === 'returned'),
+                returned_at: record ? record.returned_at : null,
+                lost: !!(record && record.status === 'lost'),
+                lost_at: record ? record.lost_at : null
+            };
+        });
+
+        res.json({ school_year, books });
+    } catch (err) {
+        console.error("/api/student/my-textbooks error:", err);
+        res.status(500).json({ error: "Could not fetch your textbook status" });
+    }
+});
+
+app.get('/api/student/my-notifications', requireAuth, requireRole('students'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT notification_id, assessment_type, message, section, class_level, stream, sent_at, is_read
+             FROM student_notifications
+             WHERE student_id = ? AND school_id = ?
+             ORDER BY sent_at DESC`,
+            [req.user.user_id, req.user.school_id]
+        );
+        res.json({
+            unread_count: rows.filter(r => !r.is_read).length,
+            items: rows
+        });
+    } catch (err) {
+        console.error("/api/student/my-notifications error:", err);
+        res.status(500).json({ error: "Could not load your notifications" });
+    }
+});
+
+app.post('/api/student/mark-notification-read', requireAuth, requireRole('students'), async (req, res) => {
+    const { notification_id } = req.body;
+    if (!notification_id) {
+        return res.status(400).json({ error: "notification_id is required" });
+    }
+    try {
+        const [result] = await pool.query(
+            `UPDATE student_notifications SET is_read = 1
+             WHERE notification_id = ? AND student_id = ? AND school_id = ?`,
+            [notification_id, req.user.user_id, req.user.school_id]
+        );
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: "Notification not found" });
+        }
+        res.json({ message: "Marked as read" });
+    } catch (err) {
+        console.error("/api/student/mark-notification-read error:", err);
+        res.status(500).json({ error: "Could not update notification" });
+    }
+});
+
 app.get('/api/teacher/my-subjects', requireAuth, async (req, res) => {
     const { stream } = req.query;
     try {

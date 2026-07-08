@@ -5,7 +5,7 @@
         if (res.ok) {
             const data = await res.json();
             const map = {
-                students:        '/student/',
+                students:        '/students/',
                 teachers:        '/teachers/',
                 admin_users:     '/admin/',
                 registrar_users: '/registrar/'
@@ -37,7 +37,7 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
             message.textContent = 'Login successful! Redirecting…';
 
             const redirectMap = {
-                students:        '/student/',
+                students:        '/students/',
                 teachers:        '/teachers/',
                 admin_users:     '/admin/',
                 registrar_users: '/registrar/'
