@@ -1,52 +1,60 @@
-document.getElementById('loginForm').addEventListener('submit', async (e) => {
-    e.preventDefault(); // Stop the form from refreshing the page
+// If already authenticated, redirect straight to the right portal
+(async () => {
+    try {
+        const res = await fetch('/api/me', { credentials: 'include' });
+        if (res.ok) {
+            const data = await res.json();
+            const map = {
+                students:        '/student/',
+                teachers:        '/teachers/',
+                admin_users:     '/admin/',
+                registrar_users: '/registrar/'
+            };
+            if (map[data.role]) window.location.href = map[data.role];
+        }
+    } catch {}
+})();
 
-    const userId = document.getElementById('userId').value;
+document.getElementById('loginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const userId  = document.getElementById('userId').value;
     const password = document.getElementById('password').value;
-    const message = document.getElementById('message');
+    const message  = document.getElementById('message');
 
     try {
-        const response = await fetch('http://localhost:3001/api/login', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include', // required so the httpOnly auth cookie the server sets is actually stored by the browser
-                body: JSON.stringify({ id: userId, password: password })
-            });
+        const response = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ id: userId, password: password })
+        });
 
         const data = await response.json();
 
         if (response.ok) {
-            // The real session lives in the httpOnly cookie the server just
-            // set — it's invisible to this JS by design and that's correct.
-            // We no longer store user_id/role in localStorage: every page
-            // now asks the server "who am I?" via /api/me using the cookie,
-            // rather than trusting whatever a script wrote into localStorage
-            // (which a malicious script could also forge).
+            message.style.color = 'green';
+            message.textContent = 'Login successful! Redirecting…';
 
-            message.style.color = "green";
-            message.textContent = "Login successful! Redirecting...";
-
-            // Redirect based on the role returned by the server
-            // Ensure these folder names match your structure
             const redirectMap = {
-                'students': '/student/', // Pointing to the folder
-                'teachers': '/teachers/', // Changed from /teachers/teacher.html to /teachers/
-                'admin_users': '/admin/',
-                'registrar_users': '/registrar/'
+                students:        '/student/',
+                teachers:        '/teachers/',
+                admin_users:     '/admin/',
+                registrar_users: '/registrar/'
             };
 
-            window.location.href = redirectMap[data.role];
+            window.location.href = redirectMap[data.role] || '/';
         } else {
-            message.style.color = "red";
-            message.textContent = data.error || "Login failed.";
+            message.style.color = 'red';
+            message.textContent = data.error || 'Login failed. Please check your ID and password.';
         }
-    } catch (err) {
-        message.textContent = "Server error, please try again.";
+    } catch {
+        message.style.color = 'red';
+        message.textContent = 'Could not connect to the server. Please try again.';
     }
 });
+
 document.addEventListener('DOMContentLoaded', () => {
     const yearSpan = document.getElementById('currentYear');
-    if (yearSpan) {
-        yearSpan.textContent = new Date().getFullYear();
-    }
+    if (yearSpan) yearSpan.textContent = new Date().getFullYear();
 });
