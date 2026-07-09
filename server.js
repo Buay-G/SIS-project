@@ -8,6 +8,7 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
+import crypto from 'crypto';
 
 dotenv.config();
 
@@ -57,6 +58,35 @@ if (!process.env.JWT_SECRET) {
 // Never readable by frontend JS — closes off the XSS-reads-localStorage
 // attack class that the previous localStorage-based approach was exposed to.
 const JWT_SECRET = process.env.JWT_SECRET || 'insecure-dev-fallback-do-not-use-in-production';
+
+// --- QR attendance token signing ---
+// The QR code on a student's ID card encodes "<student_id>.<signature>"
+// rather than the bare student_id, so nobody can produce a valid QR for a
+// student by just typing their ID into a generic QR generator — only this
+// server (which holds JWT_SECRET) can produce a signature that verifies.
+function signQrPayload(id) {
+    const sig = crypto.createHmac('sha256', JWT_SECRET).update(id).digest('hex').slice(0, 16);
+    return `${id}.${sig}`;
+}
+function verifyQrPayload(payload) {
+    if (typeof payload !== 'string' || !payload.includes('.')) return null;
+    const [id, sig] = payload.split('.');
+    const expected = crypto.createHmac('sha256', JWT_SECRET).update(id).digest('hex').slice(0, 16);
+    // Constant-time comparison to avoid timing side-channels on the signature check.
+    const sigBuf = Buffer.from(sig || '', 'utf8');
+    const expBuf = Buffer.from(expected, 'utf8');
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) return null;
+    return id;
+}
+
+// Monday-Friday only — adjust here if your school week differs.
+function isSchoolDay(date) {
+    const day = date.getDay();
+    return day !== 0 && day !== 6;
+}
+function toDateOnly(d) {
+    return d.toISOString().slice(0, 10); // YYYY-MM-DD
+}
 const JWT_EXPIRES_IN = '30m'; // short-lived on purpose — see refresh notes below
 
 function issueAuthToken(res, { user_id, role, school_id }) {
@@ -347,13 +377,19 @@ function handleUploadError(uploadMiddleware) {
 app.get('/api/student/me', requireAuth, requireRole('students'), async (req, res) => {
     try {
         const [rows] = await pool.query(
-            `SELECT student_id, first_name, middle_name, last_name, class_level, section, stream, sex,
-                    status, school_name, lms_username, email_address, assigned_computer
-             FROM students WHERE student_id = ? AND school_id = ?`,
+            `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.class_level, st.section, st.stream, st.sex,
+                    st.status, st.school_name, st.lms_username, st.email_address, st.assigned_computer,
+                    st.phone_number, st.created_at,
+                    sc.zone, sc.woreda, sc.region, sc.moe_school_code
+             FROM students st
+             LEFT JOIN schools sc ON sc.id = st.school_id
+             WHERE st.student_id = ? AND st.school_id = ?`,
             [req.user.user_id, req.user.school_id]
         );
         if (rows.length === 0) return res.status(404).json({ error: "Student record not found" });
-        res.json(rows[0]);
+        const profile = rows[0];
+        profile.qr_payload = signQrPayload(profile.student_id);
+        res.json(profile);
     } catch (err) {
         console.error("/api/student/me error:", err);
         res.status(500).json({ error: "Could not load your profile" });
@@ -425,7 +461,7 @@ app.get('/api/student/my-textbooks', requireAuth, requireRole('students'), async
 app.get('/api/student/my-notifications', requireAuth, requireRole('students'), async (req, res) => {
     try {
         const [rows] = await pool.query(
-            `SELECT notification_id, assessment_type, message, section, class_level, stream, sent_at, is_read
+            `SELECT notif_id, assessment_type, message, section, class_level, stream, sent_at, is_read, read_at
              FROM student_notifications
              WHERE student_id = ? AND school_id = ?
              ORDER BY sent_at DESC`,
@@ -442,15 +478,15 @@ app.get('/api/student/my-notifications', requireAuth, requireRole('students'), a
 });
 
 app.post('/api/student/mark-notification-read', requireAuth, requireRole('students'), async (req, res) => {
-    const { notification_id } = req.body;
-    if (!notification_id) {
-        return res.status(400).json({ error: "notification_id is required" });
+    const { notif_id } = req.body;
+    if (!notif_id) {
+        return res.status(400).json({ error: "notif_id is required" });
     }
     try {
         const [result] = await pool.query(
-            `UPDATE student_notifications SET is_read = 1
-             WHERE notification_id = ? AND student_id = ? AND school_id = ?`,
-            [notification_id, req.user.user_id, req.user.school_id]
+            `UPDATE student_notifications SET is_read = 1, read_at = NOW()
+             WHERE notif_id = ? AND student_id = ? AND school_id = ?`,
+            [notif_id, req.user.user_id, req.user.school_id]
         );
         if (result.affectedRows === 0) {
             return res.status(404).json({ error: "Notification not found" });
@@ -459,6 +495,281 @@ app.post('/api/student/mark-notification-read', requireAuth, requireRole('studen
     } catch (err) {
         console.error("/api/student/mark-notification-read error:", err);
         res.status(500).json({ error: "Could not update notification" });
+    }
+});
+
+// --- Attendance ---
+
+// Scanned by a logged-in Principal/Admin VP/Academic VP/Registrar account,
+// or a homeroom teacher (for their own section only) — using a device
+// camera or the Honeywell scanner. Deliberately NOT a public URL a student
+// could hit from home (defeats proving physical presence), and NOT open
+// to non-homeroom teachers, per school policy.
+//
+// NOTE: admin_users currently has no title/role distinction visible to
+// this middleware (JWT only carries user_id/role/school_id) — so today
+// this allows ANY admin_users account, not specifically Principal/Admin
+// VP/Academic VP. If your admin_users table has a title column to
+// distinguish those from other admin accounts, tell me and I'll wire it
+// into the JWT and add a proper check here.
+app.post('/api/attendance/checkin', requireAuth, requireRole('teachers', 'admin_users', 'registrar_users'), async (req, res) => {
+    const { qr_data } = req.body;
+    if (!qr_data) return res.status(400).json({ error: "qr_data is required" });
+
+    const student_id = verifyQrPayload(qr_data);
+    if (!student_id) {
+        return res.status(400).json({ error: "Invalid or tampered QR code" });
+    }
+
+    try {
+        // Teachers may only take attendance if they're a homeroom teacher,
+        // and only for their own section's students.
+        let homeroomSection = null;
+        if (req.user.role === 'teachers') {
+            homeroomSection = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+            if (!homeroomSection) {
+                return res.status(403).json({ error: "Only homeroom teachers can take attendance." });
+            }
+        }
+
+        const [studentRows] = await pool.query(
+            'SELECT student_id, first_name, last_name, section, school_id FROM students WHERE student_id = ? AND school_id = ?',
+            [student_id, req.user.school_id]
+        );
+        if (studentRows.length === 0) {
+            return res.status(404).json({ error: "Student not found at your school" });
+        }
+        const student = studentRows[0];
+
+        if (homeroomSection && student.section !== homeroomSection) {
+            return res.status(403).json({ error: "This student isn't in your homeroom section." });
+        }
+
+        const today = toDateOnly(new Date());
+
+        const [existing] = await pool.query(
+            'SELECT attendance_id FROM student_attendance WHERE student_id = ? AND attendance_date = ?',
+            [student_id, today]
+        );
+        if (existing.length > 0) {
+            return res.json({
+                message: `${student.first_name} ${student.last_name} was already checked in today`,
+                already_checked_in: true,
+                student_name: `${student.first_name} ${student.last_name}`
+            });
+        }
+
+        await pool.query(
+            `INSERT INTO student_attendance (student_id, school_id, attendance_date, status, marked_by)
+             VALUES (?, ?, ?, 'present', ?)`,
+            [student_id, req.user.school_id, today, req.user.user_id]
+        );
+
+        res.json({
+            message: `Checked in: ${student.first_name} ${student.last_name}`,
+            already_checked_in: false,
+            student_name: `${student.first_name} ${student.last_name}`
+        });
+    } catch (err) {
+        console.error("/api/attendance/checkin error:", err);
+        res.status(500).json({ error: "Check-in failed" });
+    }
+});
+
+// Admin manually marks a teacher present/absent — teachers don't have a
+// QR-bearing ID card yet, so there's no scan-based flow for them yet.
+app.post('/api/admin/mark-teacher-attendance', requireAuth, requireRole('admin_users'), async (req, res) => {
+    const { teacher_id, status } = req.body;
+    if (!teacher_id || !['present', 'absent'].includes(status)) {
+        return res.status(400).json({ error: "teacher_id and a valid status ('present' or 'absent') are required" });
+    }
+    try {
+        const today = toDateOnly(new Date());
+        await pool.query(
+            `INSERT INTO teacher_attendance (teacher_id, school_id, attendance_date, status, marked_by)
+             VALUES (?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE status = VALUES(status), marked_by = VALUES(marked_by), marked_at = NOW()`,
+            [teacher_id, req.user.school_id, today, status, req.user.user_id]
+        );
+        res.json({ message: "Attendance recorded" });
+    } catch (err) {
+        console.error("/api/admin/mark-teacher-attendance error:", err);
+        res.status(500).json({ error: "Could not record attendance" });
+    }
+});
+
+// Shared streak-walking logic: counts consecutive school days (Mon-Fri)
+// backward from today that have a 'present' row, stopping at the first
+// weekday gap or explicit 'absent'. Weekends are skipped, not counted.
+function computeStreak(presentDatesSet, maxLookbackDays = 120) {
+    let streak = 0;
+    const cursor = new Date();
+    for (let i = 0; i < maxLookbackDays; i++) {
+        if (isSchoolDay(cursor)) {
+            const key = toDateOnly(cursor);
+            if (presentDatesSet.has(key)) {
+                streak++;
+            } else {
+                // Don't penalize today before school's over / not yet marked —
+                // only break the streak on a school day that isn't today.
+                if (key !== toDateOnly(new Date())) break;
+            }
+        }
+        cursor.setDate(cursor.getDate() - 1);
+    }
+    return streak;
+}
+
+app.get('/api/student/my-attendance-streak', requireAuth, requireRole('students'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT attendance_date FROM student_attendance
+             WHERE student_id = ? AND school_id = ? AND status = 'present'
+             ORDER BY attendance_date DESC LIMIT 120`,
+            [req.user.user_id, req.user.school_id]
+        );
+        const presentDates = new Set(rows.map(r => toDateOnly(new Date(r.attendance_date))));
+        res.json({ streak: computeStreak(presentDates), present_today: presentDates.has(toDateOnly(new Date())) });
+    } catch (err) {
+        console.error("/api/student/my-attendance-streak error:", err);
+        res.status(500).json({ error: "Could not load attendance streak" });
+    }
+});
+
+app.get('/api/teacher/my-attendance-streak', requireAuth, requireRole('teachers'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT attendance_date FROM teacher_attendance
+             WHERE teacher_id = ? AND school_id = ? AND status = 'present'
+             ORDER BY attendance_date DESC LIMIT 120`,
+            [req.user.user_id, req.user.school_id]
+        );
+        const presentDates = new Set(rows.map(r => toDateOnly(new Date(r.attendance_date))));
+        res.json({ streak: computeStreak(presentDates), present_today: presentDates.has(toDateOnly(new Date())) });
+    } catch (err) {
+        console.error("/api/teacher/my-attendance-streak error:", err);
+        res.status(500).json({ error: "Could not load attendance streak" });
+    }
+});
+
+// Manual fallback for when neither the camera nor the Honeywell scanner is
+// available — teacher types the student ID directly. No QR signature to
+// verify here (there's no physical card being read), so this relies on
+// the same trust model as calling roll from a paper list: an authenticated
+// staff member vouching for a specific student's presence.
+app.post('/api/attendance/manual-checkin', requireAuth, requireRole('teachers', 'admin_users', 'registrar_users'), async (req, res) => {
+    const { student_id } = req.body;
+    if (!student_id) return res.status(400).json({ error: "student_id is required" });
+
+    try {
+        let homeroomSection = null;
+        if (req.user.role === 'teachers') {
+            homeroomSection = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+            if (!homeroomSection) {
+                return res.status(403).json({ error: "Only homeroom teachers can take attendance." });
+            }
+        }
+
+        const [studentRows] = await pool.query(
+            'SELECT student_id, first_name, last_name, section FROM students WHERE student_id = ? AND school_id = ?',
+            [student_id, req.user.school_id]
+        );
+        if (studentRows.length === 0) {
+            return res.status(404).json({ error: "No student with that ID at your school" });
+        }
+        const student = studentRows[0];
+
+        if (homeroomSection && student.section !== homeroomSection) {
+            return res.status(403).json({ error: "This student isn't in your homeroom section." });
+        }
+
+        const today = toDateOnly(new Date());
+
+        const [existing] = await pool.query(
+            'SELECT attendance_id FROM student_attendance WHERE student_id = ? AND attendance_date = ?',
+            [student_id, today]
+        );
+        if (existing.length > 0) {
+            return res.json({
+                message: `${student.first_name} ${student.last_name} was already checked in today`,
+                already_checked_in: true,
+                student_name: `${student.first_name} ${student.last_name}`
+            });
+        }
+
+        await pool.query(
+            `INSERT INTO student_attendance (student_id, school_id, attendance_date, status, marked_by)
+             VALUES (?, ?, ?, 'present', ?)`,
+            [student_id, req.user.school_id, today, req.user.user_id]
+        );
+
+        res.json({
+            message: `Checked in: ${student.first_name} ${student.last_name}`,
+            already_checked_in: false,
+            student_name: `${student.first_name} ${student.last_name}`
+        });
+    } catch (err) {
+        console.error("/api/attendance/manual-checkin error:", err);
+        res.status(500).json({ error: "Check-in failed" });
+    }
+});
+
+// --- Certificate ---
+// Built on student_enrollment_history (what class/section/stream/term the
+// student was actually in each year) plus the existing push pipeline:
+// a term counts as "synced" only if pushed_marks_reports has a row for
+// that exact class_level/section/stream/term — meaning homeroom already
+// confirmed every subject was pushed and forwarded to Academic VP. The
+// certificate as a whole is only "ready" once every term in the student's
+// history is synced this way.
+app.get('/api/student/my-certificate', requireAuth, requireRole('students'), async (req, res) => {
+    try {
+        const [historyRows] = await pool.query(
+            `SELECT class_level, section, stream, term FROM student_enrollment_history
+             WHERE student_id = ? AND school_id = ?
+             ORDER BY class_level, term`,
+            [req.user.user_id, req.user.school_id]
+        );
+
+        if (historyRows.length === 0) {
+            return res.json({ ready: false, terms: [], message: "No pushed marks history yet." });
+        }
+
+        const terms = await Promise.all(historyRows.map(async (h) => {
+            const [syncRows] = await pool.query(
+                `SELECT pushed_at FROM pushed_marks_reports
+                 WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ? AND term = ?`,
+                [req.user.school_id, h.class_level, h.section, h.stream, h.term]
+            );
+            const synced = syncRows.length > 0;
+
+            const [scoreRows] = await pool.query(
+                `SELECT s.subject_name, prs.total_score
+                 FROM pushed_report_scores prs
+                 JOIN pushed_reports pr ON pr.push_id = prs.push_id AND pr.school_id = prs.school_id
+                 JOIN subjects s ON s.subject_id = pr.subject_id AND s.school_id = pr.school_id
+                 WHERE prs.student_id = ? AND pr.school_id = ? AND pr.class_level = ?
+                   AND pr.section = ? AND pr.stream = ? AND pr.term = ?`,
+                [req.user.user_id, req.user.school_id, h.class_level, h.section, h.stream, h.term]
+            );
+
+            return {
+                class_level: h.class_level,
+                section: h.section,
+                stream: h.stream,
+                term: h.term,
+                synced,
+                synced_at: synced ? syncRows[0].pushed_at : null,
+                subjects: scoreRows,
+                term_total: scoreRows.reduce((s, r) => s + Number(r.total_score), 0)
+            };
+        }));
+
+        const ready = terms.every(t => t.synced);
+        res.json({ ready, terms });
+    } catch (err) {
+        console.error("/api/student/my-certificate error:", err);
+        res.status(500).json({ error: "Could not load certificate data" });
     }
 });
 
@@ -1205,6 +1516,21 @@ app.post('/api/teacher/push-report', requireAuth, async (req, res) => {
         await pool.query(
             'INSERT INTO pushed_report_scores (push_id, student_id, total_score, school_id) VALUES ?',
             [scoreRows]
+        );
+
+        // Snapshot each of these students' class/section/stream for this
+        // term — this is the one place in the codebase that already knows
+        // it at push time, and it's what the Certificate feature needs to
+        // check historical terms correctly once a student is promoted.
+        // Keyed on (student_id, class_level, term) rather than just
+        // (student_id, term) — "Semester 1" is reused every year, so
+        // class_level is what actually distinguishes Grade 9 from Grade 10.
+        const historyRows = totals.map(t => [t.student_id, req.user.school_id, class_level, section, stream, term]);
+        await pool.query(
+            `INSERT INTO student_enrollment_history (student_id, school_id, class_level, section, stream, term)
+             VALUES ?
+             ON DUPLICATE KEY UPDATE section = VALUES(section), stream = VALUES(stream)`,
+            [historyRows]
         );
 
         res.json({
