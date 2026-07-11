@@ -59,6 +59,8 @@
 
         <div id="sidebar-overlay" class="sidebar-overlay"></div>
 
+        <div id="toast-container" aria-live="polite"></div>
+
         <main class="main-content" aria-live="polite">
             <header class="top-bar">
                 <div class="topbar-left">
@@ -176,8 +178,10 @@
                         <h3 data-i18n="profile_id_photo_heading">ID Card Photo</h3>
                         <p class="muted" style="margin-bottom:10px;" data-i18n="profile_id_photo_desc">Must be portrait, at least 300×360px, roughly a 5:6 width:height ratio — like a passport photo. This is the photo that appears on your ID card, separate from your profile photo above.</p>
                         <div class="id-photo-preview" id="id-photo-preview" data-i18n="profile_no_photo">No photo uploaded yet</div>
+                        <p class="muted" style="margin:6px 0 0; font-size:0.8rem;" data-i18n="profile_id_photo_request_note">Changing your ID photo requires approval from your homeroom teacher before it becomes official.</p>
+                        <div id="id-photo-request-status" class="request-status-box" style="display:none;"></div>
                         <div class="photo-upload-row">
-                            <label for="id-photo-input" class="btn-cancel photo-upload-label" data-i18n="profile_upload_id_photo">Upload ID Photo</label>
+                            <label for="id-photo-input" class="btn-cancel photo-upload-label" data-i18n="profile_request_id_photo">Request ID Photo Change</label>
                             <input type="file" id="id-photo-input" accept="image/*" style="display:none;" onchange="uploadIDPhoto(this)">
                         </div>
                         <div id="id-photo-message" class="password-message"></div>
@@ -220,6 +224,11 @@
             <section id="page-certificate" class="page-content" style="display:none;">
                 <h2 data-i18n="certificate_heading">My Certificate</h2>
                 <div id="certificate-output"><p class="muted" data-i18n="loading">Loading…</p></div>
+                <div id="certificate-request-status" class="request-status-box" style="display:none;"></div>
+                <div style="display:flex; gap:10px; margin-top:16px; flex-wrap:wrap;">
+                    <button type="button" id="certificate-request-btn" class="btn-cancel" style="width:auto; display:none;" onclick="requestCertificate()" data-i18n="certificate_request">Request</button>
+                    <button type="button" id="certificate-download-btn" class="btn-primary" style="width:auto; display:none;" onclick="window.print()" data-i18n="certificate_print_download">Download</button>
+                </div>
             </section>
         </main>
     </div>

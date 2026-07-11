@@ -3,7 +3,6 @@ import mysql from 'mysql2';
 import cors from 'cors'; 
 import path from 'path';
 import fs from 'fs';
-import sharp from 'sharp';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
 import bcrypt from 'bcrypt';
@@ -12,6 +11,7 @@ import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import sizeOf from 'image-size';
+import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, ImageRun, BorderStyle } from 'docx';
 
 dotenv.config();
 
@@ -336,7 +336,7 @@ const ALLOWED_UPLOAD_MIME_TYPES = [
 
 const upload = multer({
     storage,
-    limits: { fileSize: 2 * 1024 * 1024 }, // 2MB limit
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB — 2MB was rejecting most real phone photos
     fileFilter: (req, file, cb) => {
         const ext = path.extname(file.originalname).toLowerCase();
         const isImage = file.mimetype.startsWith('image/');
@@ -350,14 +350,17 @@ const upload = multer({
     }
 });
 
-// Multer's fileFilter errors surface as a generic Express error unless
-// each upload route's handler is wrapped to catch them — this small
-// wrapper turns "Unsupported file type" into a clean 400 instead of a
-// raw 500 / unhandled error.
+// Multer's fileFilter/size-limit errors surface as a generic Express
+// error unless each upload route's handler is wrapped to catch them —
+// this small wrapper turns them into a clean 400 with a useful message
+// instead of a raw 500 / unhandled error / Multer's cryptic defaults.
 function handleUploadError(uploadMiddleware) {
     return (req, res, next) => {
         uploadMiddleware(req, res, (err) => {
             if (err) {
+                if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+                    return res.status(400).json({ error: "File is too large. Please use a file under 10MB." });
+                }
                 return res.status(400).json({ error: err.message || "Upload failed" });
             }
             next();
@@ -396,6 +399,104 @@ app.get('/api/student/me', requireAuth, requireRole('students'), async (req, res
     } catch (err) {
         console.error("/api/student/me error:", err);
         res.status(500).json({ error: "Could not load your profile" });
+    }
+});
+
+// Generates a Word (.docx) version of the ID card on demand — not stored
+// anywhere, built fresh from current data every request. Simpler layout
+// than the printed/PDF card (structured text + photo, not a pixel-perfect
+// graphic), but genuinely editable in Word if a school wants to tweak
+// wording for a specific student. Same 1-year validity rule as the
+// on-screen card (students move up a grade every year).
+const DOCX_NO_BORDER = {
+    top:    { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+    bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+    left:   { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+    right:  { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+};
+function docxFieldRow(labelBi, value) {
+    return new TableRow({
+        children: [
+            new TableCell({
+                width: { size: 40, type: WidthType.PERCENTAGE },
+                borders: DOCX_NO_BORDER,
+                children: [new Paragraph({ children: [new TextRun({ text: labelBi, bold: true, size: 18, color: "666666" })] })]
+            }),
+            new TableCell({
+                width: { size: 60, type: WidthType.PERCENTAGE },
+                borders: DOCX_NO_BORDER,
+                children: [new Paragraph({ children: [new TextRun({ text: value || '—', size: 22 })] })]
+            })
+        ]
+    });
+}
+
+app.get('/api/student/id-card.docx', requireAuth, requireRole('students'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.class_level, st.section, st.stream,
+                    st.school_name, st.phone_number, st.created_at, st.id_photo_url,
+                    sc.moe_school_code
+             FROM students st
+             LEFT JOIN schools sc ON sc.id = st.school_id
+             WHERE st.student_id = ? AND st.school_id = ?`,
+            [req.user.user_id, req.user.school_id]
+        );
+        if (rows.length === 0) return res.status(404).json({ error: "Student record not found" });
+        const s = rows[0];
+
+        const full = [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' ');
+        const issued = s.created_at ? new Date(s.created_at) : new Date();
+        const expires = new Date(issued);
+        expires.setFullYear(expires.getFullYear() + 1);
+        const fmt = d => d.toLocaleDateString('en-GB', { year: 'numeric', month: 'short', day: 'numeric' });
+
+        const fieldRows = [
+            docxFieldRow('የተማሪ መታወቂያ | Student ID', s.student_id),
+            docxFieldRow('ክፍል | Class', `Grade ${s.class_level} - ${s.section}`),
+            docxFieldRow('ትምህርት ዘርፍ | Stream', s.stream),
+            docxFieldRow('ስልክ ቁጥር | Contact', s.phone_number),
+        ];
+        if (s.moe_school_code) fieldRows.push(docxFieldRow('የትምህርት ቤት ኮድ | School Code', s.moe_school_code));
+
+        const children = [
+            new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: (s.school_name || 'School').toUpperCase(), bold: true, size: 32, color: "1e3a8a" })] }),
+            new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: 'የተማሪ መታወቂያ ካርድ | Student Identity Card', size: 18, color: "666666" })] }),
+            new Paragraph({ text: "" }),
+        ];
+
+        // Photo is optional — read straight from the uploads dir the same
+        // path /uploads/* is served from. Missing/unreadable file just
+        // means no photo in the doc, not a failed download.
+        if (s.id_photo_url) {
+            try {
+                const photoPath = path.join(__dirname, 'uploads', path.basename(s.id_photo_url));
+                const photoBuf = fs.readFileSync(photoPath);
+                children.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new ImageRun({ data: photoBuf, transformation: { width: 100, height: 120 } })] }));
+                children.push(new Paragraph({ text: "" }));
+            } catch (photoErr) {
+                console.error("id-card.docx: could not read photo file", photoErr);
+            }
+        }
+
+        children.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: full, bold: true, size: 28, color: "1e3a8a" })] }));
+        children.push(new Paragraph({ text: "" }));
+        children.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: fieldRows }));
+        children.push(new Paragraph({ text: "" }));
+        children.push(new Paragraph({ children: [new TextRun({ text: `የተሰጠበት | Issued: ${fmt(issued)}`, size: 18 })] }));
+        children.push(new Paragraph({ children: [new TextRun({ text: `እስከ | Valid until: ${fmt(expires)}`, size: 18, bold: true })] }));
+        children.push(new Paragraph({ text: "" }));
+        children.push(new Paragraph({ children: [new TextRun({ text: 'ርዕሰ መምህር | Principal: _______________________', size: 18 })] }));
+
+        const doc = new Document({ sections: [{ children }] });
+        const buffer = await Packer.toBuffer(doc);
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+        res.setHeader('Content-Disposition', `attachment; filename="ID-Card-${s.student_id}.docx"`);
+        res.send(buffer);
+    } catch (err) {
+        console.error("/api/student/id-card.docx error:", err);
+        res.status(500).json({ error: "Could not generate ID card document" });
     }
 });
 
@@ -536,7 +637,7 @@ app.post('/api/attendance/checkin', requireAuth, requireRole('teachers', 'admin_
         }
 
         const [studentRows] = await pool.query(
-            'SELECT student_id, first_name, last_name, section, school_id FROM students WHERE student_id = ? AND school_id = ?',
+            'SELECT student_id, first_name, last_name, class_level, section, stream, school_id FROM students WHERE student_id = ? AND school_id = ?',
             [student_id, req.user.school_id]
         );
         if (studentRows.length === 0) {
@@ -544,7 +645,11 @@ app.post('/api/attendance/checkin', requireAuth, requireRole('teachers', 'admin_
         }
         const student = studentRows[0];
 
-        if (homeroomSection && student.section !== homeroomSection) {
+        if (homeroomSection && (
+            student.class_level !== homeroomSection.class_level ||
+            student.section !== homeroomSection.section ||
+            student.stream !== homeroomSection.stream
+        )) {
             return res.status(403).json({ error: "This student isn't in your homeroom section." });
         }
 
@@ -674,7 +779,7 @@ app.post('/api/attendance/manual-checkin', requireAuth, requireRole('teachers', 
         }
 
         const [studentRows] = await pool.query(
-            'SELECT student_id, first_name, last_name, section FROM students WHERE student_id = ? AND school_id = ?',
+            'SELECT student_id, first_name, last_name, class_level, section, stream FROM students WHERE student_id = ? AND school_id = ?',
             [student_id, req.user.school_id]
         );
         if (studentRows.length === 0) {
@@ -682,7 +787,11 @@ app.post('/api/attendance/manual-checkin', requireAuth, requireRole('teachers', 
         }
         const student = studentRows[0];
 
-        if (homeroomSection && student.section !== homeroomSection) {
+        if (homeroomSection && (
+            student.class_level !== homeroomSection.class_level ||
+            student.section !== homeroomSection.section ||
+            student.stream !== homeroomSection.stream
+        )) {
             return res.status(403).json({ error: "This student isn't in your homeroom section." });
         }
 
@@ -779,11 +888,15 @@ app.get('/api/student/my-certificate', requireAuth, requireRole('students'), asy
 // --- Student photo uploads ---
 // Two different photos, two different rules:
 //   - profile photo: whatever the student wants, just needs to be an image
-//   - ID photo: just needs to be portrait-oriented (taller than wide) and
-//     above a minimum resolution. We used to also require an almost-exact
-//     5:6 ratio, but that rejected most normal photos — the ID card
-//     already crops to fit its photo box with CSS object-fit:cover, so an
-//     exact ratio match was never actually necessary, just annoying.
+//   - ID photo: just needs to be a real image above a minimum resolution.
+//     We used to also require portrait orientation (taller than wide),
+//     but that turned out unreliable: many phone photos store landscape
+//     pixel dimensions with an EXIF rotation tag that makes them DISPLAY
+//     as portrait everywhere else, while image-size reports the raw
+//     pre-rotation dimensions — so genuinely portrait photos kept getting
+//     rejected. The ID card already crops any photo to fit its photo box
+//     with CSS object-fit:cover, so this check was never load-bearing;
+//     dropping it instead of chasing EXIF-orientation edge cases.
 const ID_PHOTO_MIN_WIDTH = 300;
 const ID_PHOTO_MIN_HEIGHT = 360;
 
@@ -810,35 +923,144 @@ app.post('/api/student/upload-id-photo', requireAuth, requireRole('students'), h
     try {
         if (!req.file) return res.status(400).json({ error: "No file uploaded" });
         if (!req.file.mimetype.startsWith('image/')) {
-            return res.status(400).json({ error: "ID photo must be an image file." });
+            fs.unlink(req.file.path, () => {});
+            return res.status(400).json({ error: "ID photo must be an image file (JPEG, PNG, GIF, or WEBP)." });
         }
 
-        // --- Sharp Processing ---
-        const resizedPath = `uploads/resized-${req.file.filename}`;
-        await sharp(req.file.path)
-            .resize(300, 360, { fit: 'cover', position: 'center' })
-            .toFile(resizedPath);
+        let dimensions;
+        try {
+            dimensions = sizeOf(req.file.path);
+        } catch (dimErr) {
+            fs.unlink(req.file.path, () => {});
+            return res.status(400).json({ error: "Could not read image dimensions — file may be corrupted." });
+        }
 
-        // Remove the original temporary file
-        fs.unlink(req.file.path, () => {});
+        // Smaller side must clear the minimum, whichever axis it's on —
+        // sidesteps EXIF-orientation issues entirely, since we're not
+        // asserting which axis is "supposed" to be longer.
+        const { width, height } = dimensions;
+        const shortSide = Math.min(width, height);
+        const longSide = Math.max(width, height);
+        if (shortSide < ID_PHOTO_MIN_WIDTH || longSide < ID_PHOTO_MIN_HEIGHT) {
+            fs.unlink(req.file.path, () => {});
+            return res.status(400).json({
+                error: `ID photo is too small (yours was ${width}×${height}px). Please use a clearer, higher-resolution photo.`
+            });
+        }
 
-        // --- Database Update ---
-        // We use the new resized path
-        const filePath = `/uploads/resized-${req.file.filename}`;
-        
-        await pool.query(
-            'UPDATE students SET id_photo_url = ? WHERE student_id = ? AND school_id = ?',
-            [filePath, req.user.user_id, req.user.school_id]
+        const filePath = `/uploads/${req.file.filename}`;
+
+        // Students no longer set id_photo_url directly — this creates a
+        // pending request instead, which only becomes the official photo
+        // once a homeroom teacher approves it. If a pending request from
+        // this student already exists, replace it (and clean up its old
+        // file) rather than piling up duplicates.
+        const [existingPending] = await pool.query(
+            `SELECT request_id, requested_photo_url FROM id_photo_change_requests
+             WHERE student_id = ? AND school_id = ? AND status = 'pending'`,
+            [req.user.user_id, req.user.school_id]
         );
 
-        res.json({ id_photo_url: filePath });
+        if (existingPending.length > 0) {
+            const oldPath = path.join(__dirname, 'uploads', path.basename(existingPending[0].requested_photo_url));
+            fs.unlink(oldPath, () => {}); // best-effort cleanup, don't fail the request over it
+            await pool.query(
+                'UPDATE id_photo_change_requests SET requested_photo_url = ?, requested_at = NOW() WHERE request_id = ?',
+                [filePath, existingPending[0].request_id]
+            );
+        } else {
+            await pool.query(
+                `INSERT INTO id_photo_change_requests (student_id, school_id, requested_photo_url, status)
+                 VALUES (?, ?, ?, 'pending')`,
+                [req.user.user_id, req.user.school_id, filePath]
+            );
+        }
+
+        res.json({ status: 'pending', requested_photo_url: filePath });
     } catch (err) {
         console.error("/api/student/upload-id-photo error:", err);
-        // Clean up file if an error occurred
-        if (req.file && fs.existsSync(req.file.path)) {
-            fs.unlink(req.file.path, () => {});
+        res.status(500).json({ error: "Could not submit your request" });
+    }
+});
+
+app.get('/api/student/id-photo-request-status', requireAuth, requireRole('students'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT request_id, requested_photo_url, status, rejection_reason, requested_at, reviewed_at
+             FROM id_photo_change_requests
+             WHERE student_id = ? AND school_id = ?
+             ORDER BY requested_at DESC LIMIT 1`,
+            [req.user.user_id, req.user.school_id]
+        );
+        res.json(rows.length > 0 ? rows[0] : { status: 'none' });
+    } catch (err) {
+        console.error("/api/student/id-photo-request-status error:", err);
+        res.status(500).json({ error: "Could not load request status" });
+    }
+});
+
+// --- Certificate requests ---
+// A student can't just download their certificate once the underlying
+// data is ready — they submit a request, and download only unlocks once
+// a homeroom teacher approves it. The server re-checks "ready" itself
+// rather than trusting the client, same as the existing readiness logic.
+app.post('/api/student/request-certificate', requireAuth, requireRole('students'), async (req, res) => {
+    try {
+        const [historyRows] = await pool.query(
+            `SELECT class_level, section, stream, term FROM student_enrollment_history
+             WHERE student_id = ? AND school_id = ?`,
+            [req.user.user_id, req.user.school_id]
+        );
+        if (historyRows.length === 0) {
+            return res.status(400).json({ error: "No marks history yet — nothing to request a certificate for." });
         }
-        res.status(500).json({ error: "Upload failed" });
+        const syncChecks = await Promise.all(historyRows.map(async (h) => {
+            const [syncRows] = await pool.query(
+                `SELECT 1 FROM pushed_marks_reports
+                 WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ? AND term = ?`,
+                [req.user.school_id, h.class_level, h.section, h.stream, h.term]
+            );
+            return syncRows.length > 0;
+        }));
+        if (!syncChecks.every(Boolean)) {
+            return res.status(400).json({ error: "Not every term has been synced by your homeroom teacher yet — you can request a certificate once they all are." });
+        }
+
+        const [existing] = await pool.query(
+            `SELECT request_id, status FROM certificate_requests
+             WHERE student_id = ? AND school_id = ? ORDER BY requested_at DESC LIMIT 1`,
+            [req.user.user_id, req.user.school_id]
+        );
+        // Already pending or approved — don't create a duplicate, just
+        // report back the existing state.
+        if (existing.length > 0 && existing[0].status !== 'rejected') {
+            return res.json({ status: existing[0].status, request_id: existing[0].request_id });
+        }
+
+        const [result] = await pool.query(
+            `INSERT INTO certificate_requests (student_id, school_id, status) VALUES (?, ?, 'pending')`,
+            [req.user.user_id, req.user.school_id]
+        );
+        res.json({ status: 'pending', request_id: result.insertId });
+    } catch (err) {
+        console.error("/api/student/request-certificate error:", err);
+        res.status(500).json({ error: "Could not submit your request" });
+    }
+});
+
+app.get('/api/student/certificate-request-status', requireAuth, requireRole('students'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT request_id, status, rejection_reason, requested_at, reviewed_at
+             FROM certificate_requests
+             WHERE student_id = ? AND school_id = ?
+             ORDER BY requested_at DESC LIMIT 1`,
+            [req.user.user_id, req.user.school_id]
+        );
+        res.json(rows.length > 0 ? rows[0] : { status: 'none' });
+    } catch (err) {
+        console.error("/api/student/certificate-request-status error:", err);
+        res.status(500).json({ error: "Could not load request status" });
     }
 });
 
@@ -1009,6 +1231,11 @@ app.get('/api/school/stats', requireAuth, async (req, res) => {
 });
 
 app.get('/api/student/:id', requireAuth, async (req, res) => {
+    // A logged-in student could otherwise pass any classmate's ID here and
+    // get their full record (SELECT *) back — only their own is allowed.
+    if (req.user.role === 'students' && String(req.params.id) !== String(req.user.user_id)) {
+        return res.status(403).json({ error: "You can only view your own record." });
+    }
     try {
         const [results] = await pool.query(
             'SELECT * FROM students WHERE student_id = ? AND school_id = ?',
@@ -1221,6 +1448,9 @@ app.get('/api/search-student', requireAuth, async (req, res) => {
 });
 
 app.get('/api/student-progress/:id', requireAuth, async (req, res) => {
+    if (req.user.role === 'students' && String(req.params.id) !== String(req.user.user_id)) {
+        return res.status(403).json({ error: "You can only view your own progress." });
+    }
     try {
         // Only join subjects that belong to THIS student's stream AND school —
         // matching on stream name alone (without school_id) would otherwise
@@ -1254,6 +1484,10 @@ app.get('/api/student-progress/:id', requireAuth, async (req, res) => {
 });
 
 app.get('/api/students', requireAuth, async (req, res) => {
+    // Full-roster endpoint — never appropriate for a student caller.
+    if (req.user.role === 'students') {
+        return res.status(403).json({ error: "You don't have permission to do this." });
+    }
     try {
         const [rows] = await pool.query('SELECT * FROM students WHERE school_id = ?', [req.user.school_id]);
         res.json(rows);
@@ -1325,6 +1559,9 @@ app.get('/api/teacher/subjects', requireAuth, async (req, res) => {
 });
 
 app.get('/api/student-marks/:student_id', requireAuth, async (req, res) => {
+    if (req.user.role === 'students' && String(req.params.student_id) !== String(req.user.user_id)) {
+        return res.status(403).json({ error: "You can only view your own marks." });
+    }
     try {
         const [marks] = await pool.query(
             `SELECT s.subject_name, m.score, m.type, m.term
@@ -2047,6 +2284,245 @@ app.post('/api/homeroom/reset-student-password', requireAuth, async (req, res) =
     } catch (err) {
         console.error("reset-student-password error:", err);
         res.status(500).json({ error: "Could not reset password" });
+    }
+});
+
+// --- Homeroom: upload a student's official photo directly ---
+// For when a student can't get a usable photo of their own (or asks their
+// homeroom teacher to just handle it) — the teacher uploads one photo,
+// which becomes students.id_photo_url directly (no approval step, since
+// the teacher is the one performing the action). This is the single photo
+// used for BOTH the student's ID card and their certificate — there's no
+// separate "certificate photo" field, id_photo_url is it.
+app.post('/api/homeroom/upload-student-photo', requireAuth, handleUploadError(upload.single('photo')), async (req, res) => {
+    const { student_id } = req.body;
+    try {
+        if (!student_id) {
+            if (req.file) fs.unlink(req.file.path, () => {});
+            return res.status(400).json({ error: "student_id is required" });
+        }
+        if (!req.file) return res.status(400).json({ error: "No photo uploaded" });
+        if (!req.file.mimetype.startsWith('image/')) {
+            fs.unlink(req.file.path, () => {});
+            return res.status(400).json({ error: "Photo must be an image file (JPEG, PNG, GIF, or WEBP)." });
+        }
+
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) {
+            fs.unlink(req.file.path, () => {});
+            return res.status(403).json({ error: "You are not a homeroom teacher." });
+        }
+
+        let dimensions;
+        try {
+            dimensions = sizeOf(req.file.path);
+        } catch (dimErr) {
+            fs.unlink(req.file.path, () => {});
+            return res.status(400).json({ error: "Could not read image dimensions — file may be corrupted." });
+        }
+        const { width, height } = dimensions;
+        const shortSide = Math.min(width, height);
+        const longSide = Math.max(width, height);
+        if (shortSide < ID_PHOTO_MIN_WIDTH || longSide < ID_PHOTO_MIN_HEIGHT) {
+            fs.unlink(req.file.path, () => {});
+            return res.status(400).json({
+                error: `Photo is too small (was ${width}×${height}px). Please use a clearer, higher-resolution photo.`
+            });
+        }
+
+        const [studentRows] = await pool.query(
+            'SELECT student_id, first_name, last_name, id_photo_url FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream = ? AND school_id = ?',
+            [student_id, homeroom.class_level, homeroom.section, homeroom.stream, req.user.school_id]
+        );
+        if (studentRows.length === 0) {
+            fs.unlink(req.file.path, () => {});
+            return res.status(403).json({ error: "This student is not in your homeroom section." });
+        }
+        const student = studentRows[0];
+        const filePath = `/uploads/${req.file.filename}`;
+
+        await pool.query(
+            'UPDATE students SET id_photo_url = ? WHERE student_id = ? AND school_id = ?',
+            [filePath, student_id, req.user.school_id]
+        );
+
+        // Clean up the old photo file, if there was one, now that it's
+        // been replaced.
+        if (student.id_photo_url) {
+            const oldPath = path.join(__dirname, 'uploads', path.basename(student.id_photo_url));
+            fs.unlink(oldPath, () => {});
+        }
+
+        // Any pending self-submitted request from this student is now
+        // moot — resolve it so it doesn't sit in the queue forever.
+        await pool.query(
+            `UPDATE id_photo_change_requests
+             SET status = 'approved', reviewed_by = ?, reviewed_at = NOW(), requested_photo_url = ?
+             WHERE student_id = ? AND school_id = ? AND status = 'pending'`,
+            [req.user.user_id, filePath, student_id, req.user.school_id]
+        );
+
+        res.json({
+            message: `Photo uploaded for ${student.first_name} ${student.last_name}. It's now their official photo for both their ID card and certificate.`,
+            id_photo_url: filePath
+        });
+    } catch (err) {
+        console.error("/api/homeroom/upload-student-photo error:", err);
+        res.status(500).json({ error: "Could not upload this photo" });
+    }
+});
+
+// --- Homeroom: ID photo change requests ---
+// Students submit a request (with the new photo already uploaded) rather
+// than setting their own id_photo_url directly. Approving here is what
+// actually writes it to students.id_photo_url; rejecting just records a
+// reason and leaves the student's official photo untouched.
+app.get('/api/homeroom/id-photo-requests', requireAuth, async (req, res) => {
+    try {
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) return res.status(403).json({ error: "You are not a homeroom teacher." });
+
+        const [rows] = await pool.query(
+            `SELECT r.request_id, r.student_id, r.requested_photo_url, r.status, r.requested_at,
+                    st.first_name, st.last_name, st.id_photo_url AS current_photo_url
+             FROM id_photo_change_requests r
+             JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
+             WHERE r.school_id = ? AND r.status = 'pending'
+               AND st.class_level = ? AND st.section = ? AND st.stream = ?
+             ORDER BY r.requested_at ASC`,
+            [req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/homeroom/id-photo-requests error:", err);
+        res.status(500).json({ error: "Could not load requests" });
+    }
+});
+
+app.post('/api/homeroom/id-photo-requests/:id/approve', requireAuth, async (req, res) => {
+    try {
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) return res.status(403).json({ error: "You are not a homeroom teacher." });
+
+        const [rows] = await pool.query(
+            `SELECT r.request_id, r.student_id, r.requested_photo_url
+             FROM id_photo_change_requests r
+             JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
+             WHERE r.request_id = ? AND r.school_id = ? AND r.status = 'pending'
+               AND st.class_level = ? AND st.section = ? AND st.stream = ?`,
+            [req.params.id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
+        );
+        if (rows.length === 0) {
+            return res.status(404).json({ error: "Request not found, already reviewed, or not in your homeroom section." });
+        }
+        const request = rows[0];
+
+        await pool.query(
+            'UPDATE students SET id_photo_url = ? WHERE student_id = ? AND school_id = ?',
+            [request.requested_photo_url, request.student_id, req.user.school_id]
+        );
+        await pool.query(
+            `UPDATE id_photo_change_requests SET status = 'approved', reviewed_by = ?, reviewed_at = NOW() WHERE request_id = ?`,
+            [req.user.user_id, request.request_id]
+        );
+        res.json({ message: "Approved. This is now the student's official ID photo." });
+    } catch (err) {
+        console.error("/api/homeroom/id-photo-requests/:id/approve error:", err);
+        res.status(500).json({ error: "Could not approve this request" });
+    }
+});
+
+app.post('/api/homeroom/id-photo-requests/:id/reject', requireAuth, async (req, res) => {
+    const { reason } = req.body;
+    try {
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) return res.status(403).json({ error: "You are not a homeroom teacher." });
+
+        const [result] = await pool.query(
+            `UPDATE id_photo_change_requests r
+             JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
+             SET r.status = 'rejected', r.reviewed_by = ?, r.reviewed_at = NOW(), r.rejection_reason = ?
+             WHERE r.request_id = ? AND r.school_id = ? AND r.status = 'pending'
+               AND st.class_level = ? AND st.section = ? AND st.stream = ?`,
+            [req.user.user_id, reason || null, req.params.id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
+        );
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: "Request not found, already reviewed, or not in your homeroom section." });
+        }
+        res.json({ message: "Request rejected." });
+    } catch (err) {
+        console.error("/api/homeroom/id-photo-requests/:id/reject error:", err);
+        res.status(500).json({ error: "Could not reject this request" });
+    }
+});
+
+// --- Homeroom: certificate requests ---
+app.get('/api/homeroom/certificate-requests', requireAuth, async (req, res) => {
+    try {
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) return res.status(403).json({ error: "You are not a homeroom teacher." });
+
+        const [rows] = await pool.query(
+            `SELECT r.request_id, r.student_id, r.requested_at,
+                    st.first_name, st.last_name
+             FROM certificate_requests r
+             JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
+             WHERE r.school_id = ? AND r.status = 'pending'
+               AND st.class_level = ? AND st.section = ? AND st.stream = ?
+             ORDER BY r.requested_at ASC`,
+            [req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/homeroom/certificate-requests error:", err);
+        res.status(500).json({ error: "Could not load requests" });
+    }
+});
+
+app.post('/api/homeroom/certificate-requests/:id/approve', requireAuth, async (req, res) => {
+    try {
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) return res.status(403).json({ error: "You are not a homeroom teacher." });
+
+        const [result] = await pool.query(
+            `UPDATE certificate_requests r
+             JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
+             SET r.status = 'approved', r.reviewed_by = ?, r.reviewed_at = NOW()
+             WHERE r.request_id = ? AND r.school_id = ? AND r.status = 'pending'
+               AND st.class_level = ? AND st.section = ? AND st.stream = ?`,
+            [req.user.user_id, req.params.id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
+        );
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: "Request not found, already reviewed, or not in your homeroom section." });
+        }
+        res.json({ message: "Approved. The student can now download their certificate." });
+    } catch (err) {
+        console.error("/api/homeroom/certificate-requests/:id/approve error:", err);
+        res.status(500).json({ error: "Could not approve this request" });
+    }
+});
+
+app.post('/api/homeroom/certificate-requests/:id/reject', requireAuth, async (req, res) => {
+    const { reason } = req.body;
+    try {
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) return res.status(403).json({ error: "You are not a homeroom teacher." });
+
+        const [result] = await pool.query(
+            `UPDATE certificate_requests r
+             JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
+             SET r.status = 'rejected', r.reviewed_by = ?, r.reviewed_at = NOW(), r.rejection_reason = ?
+             WHERE r.request_id = ? AND r.school_id = ? AND r.status = 'pending'
+               AND st.class_level = ? AND st.section = ? AND st.stream = ?`,
+            [req.user.user_id, reason || null, req.params.id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
+        );
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: "Request not found, already reviewed, or not in your homeroom section." });
+        }
+        res.json({ message: "Request rejected." });
+    } catch (err) {
+        console.error("/api/homeroom/certificate-requests/:id/reject error:", err);
+        res.status(500).json({ error: "Could not reject this request" });
     }
 });
 

@@ -568,6 +568,75 @@ tr:hover td { background: #f8fafc; }
     min-height: 1.2em;
 }
 
+/* ---- REQUEST STATUS BOX (ID photo change / certificate requests) ---- */
+.request-status-box {
+    margin: 10px 0;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    border: 1px solid transparent;
+}
+.request-status-pending {
+    background: #fffbeb;
+    border-color: #fde68a;
+    color: #92400e;
+}
+.request-status-approved {
+    background: #f0fdf4;
+    border-color: #bbf7d0;
+    color: #166534;
+}
+.request-status-rejected {
+    background: #fef2f2;
+    border-color: #fecaca;
+    color: #991b1b;
+}
+
+/* ---- TOAST NOTIFICATIONS ---- */
+#toast-container {
+    position: fixed;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    pointer-events: none;
+}
+.toast {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #1e293b;
+    color: white;
+    padding: 12px 20px;
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+    font-size: 0.88rem;
+    font-weight: 500;
+    max-width: min(90vw, 420px);
+    animation: toast-in 0.25s ease-out;
+    pointer-events: auto;
+}
+.toast.toast-leaving { animation: toast-out 0.2s ease-in forwards; }
+.toast-icon { font-size: 1.1rem; flex-shrink: 0; }
+.toast-success { background: #166534; }
+.toast-error { background: #991b1b; }
+@keyframes toast-in {
+    from { opacity: 0; transform: translateY(-12px) scale(0.96); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes toast-out {
+    from { opacity: 1; transform: translateY(0) scale(1); }
+    to   { opacity: 0; transform: translateY(-12px) scale(0.96); }
+}
+@media (max-width: 480px) {
+    #toast-container { top: 10px; left: 12px; right: 12px; transform: none; }
+    .toast { max-width: none; }
+}
+
 /* ---- PRIMARY BUTTON (used by Update Password / Help modal Send) ---- */
 .btn-primary {
     background: var(--primary);

@@ -21,6 +21,12 @@ let CURRENT_SCHOOL_NAME = null;
 // i18n.js's own applyTranslations().
 window.onSisLangChange = () => {
     if (teacherIdCardData) renderTeacherIdCard(teacherIdCardData);
+    if (lastPerformanceCompletion) renderPerformanceCompletion(lastPerformanceCompletion);
+    if (lastDashboardTextbookData) renderDashboardTextbookSummary(lastDashboardTextbookData);
+    if (conductData && conductData.length > 0) {
+        populateConductSectionFilter(conductData);
+        renderConductList(conductData);
+    }
 };
 
 async function checkAuthAndInit() {
@@ -86,6 +92,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 let performanceChartInstance = null;
+let lastPerformanceCompletion = null;
 
 async function loadDashboardPerformance() {
     try {
@@ -93,6 +100,7 @@ async function loadDashboardPerformance() {
         if (!res.ok) throw new Error("Server error");
         const data = await res.json();
         renderPerformanceChart(data);
+        lastPerformanceCompletion = data.completion;
         renderPerformanceCompletion(data.completion);
     } catch (err) {
         console.error("Performance load error:", err);
@@ -150,15 +158,19 @@ function renderPerformanceCompletion(completion) {
     const el = document.getElementById('performance-completion');
     if (!el || !completion) return;
 
+    const note = typeof t === 'function'
+        ? t('perf_required_assessments').replace('{completed}', completion.completed).replace('{total}', completion.total)
+        : `${completion.completed} of ${completion.total} required assessments at 50%+ entered`;
+
     el.innerHTML = `
         <div class="performance-completion-row">
-            <span>Grading completion (this term)</span>
+            <span>${typeof t === 'function' ? t('perf_grading_completion') : 'Grading completion (this term)'}</span>
             <strong>${completion.percent}%</strong>
         </div>
         <div class="performance-completion-bar">
             <div class="performance-completion-fill" style="width:${completion.percent}%;"></div>
         </div>
-        <p class="performance-completion-note">${completion.completed} of ${completion.total} required assessments at 50%+ entered</p>
+        <p class="performance-completion-note">${note}</p>
     `;
 }
 
@@ -180,19 +192,21 @@ async function loadDashboardTextbookSummary() {
             return;
         }
 
+        lastDashboardTextbookData = data;
         renderDashboardTextbookSummary(data);
     } catch (err) {
         console.error("Dashboard textbook summary load error:", err);
         container.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not connect to server.</p>';
     }
 }
+let lastDashboardTextbookData = null;
 
 function renderDashboardTextbookSummary(data) {
     const container = document.getElementById('dashboard-textbook-summary');
     if (!container) return;
 
     if (data.total_slots === 0) {
-        container.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">No students or subjects set up yet for your section.</p>';
+        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('textbook_no_setup') : 'No students or subjects set up yet for your section.'}</p>`;
         return;
     }
 
@@ -229,8 +243,17 @@ function renderDashboardTextbookSummary(data) {
 
     const dotHtml = dots.map(status => `<span class="textbook-dot textbook-dot-${status}"></span>`).join('');
     const cappedNote = data.total_slots > MAX_DOTS
-        ? `<p style="font-size:0.75rem; color:#64748b; margin-top:4px;">Showing a proportional sample — ${data.total_slots} total slots.</p>`
+        ? `<p style="font-size:0.75rem; color:#64748b; margin-top:4px;">${(typeof t === 'function' ? t('textbook_sample_note') : 'Showing a proportional sample — {total} total slots.').replace('{total}', data.total_slots)}</p>`
         : '';
+
+    const resolvedNote = typeof t === 'function'
+        ? t('textbook_slots_resolved')
+            .replace('{resolved}', data.returned_count + data.lost_count)
+            .replace('{total}', data.total_slots)
+            .replace('{percent}', data.percent_resolved)
+            .replace('{out}', data.outstanding_count)
+            .replace('{lost}', data.lost_count)
+        : `${data.returned_count + data.lost_count} of ${data.total_slots} book slots resolved (${data.percent_resolved}%) — ${data.outstanding_count} still out, ${data.lost_count} lost.`;
 
     container.innerHTML = `
         <div class="textbook-dot-grid" title="${data.outstanding_count} still out, ${data.returned_count} returned, ${data.lost_count} lost">
@@ -238,13 +261,12 @@ function renderDashboardTextbookSummary(data) {
         </div>
         ${cappedNote}
         <div class="textbook-dot-legend">
-            <span><span class="textbook-dot textbook-dot-outstanding"></span> Issued (out)</span>
-            <span><span class="textbook-dot textbook-dot-returned"></span> Returned</span>
-            <span><span class="textbook-dot textbook-dot-lost"></span> Lost</span>
+            <span><span class="textbook-dot textbook-dot-outstanding"></span> ${typeof t === 'function' ? t('textbook_issued_out') : 'Issued (out)'}</span>
+            <span><span class="textbook-dot textbook-dot-returned"></span> ${typeof t === 'function' ? t('textbook_returned') : 'Returned'}</span>
+            <span><span class="textbook-dot textbook-dot-lost"></span> ${typeof t === 'function' ? t('textbook_lost') : 'Lost'}</span>
         </div>
         <p class="performance-completion-note" style="margin-top:10px;">
-            ${data.returned_count + data.lost_count} of ${data.total_slots} book slots resolved (${data.percent_resolved}%) —
-            ${data.outstanding_count} still out, ${data.lost_count} lost.
+            ${resolvedNote}
         </p>
     `;
 }
@@ -276,17 +298,30 @@ function populateConductSectionFilter(data) {
     if (!select) return;
 
     const seen = new Set();
-    const options = ['<option value="">All my sections</option>'];
+    const allLabel = typeof t === 'function' ? t('widget_all_my_sections') : 'All my sections';
+    const options = [`<option value="">${allLabel}</option>`];
 
     data.forEach(entry => {
         const key = `${entry.class_level}|${entry.section}|${entry.stream}`;
         if (seen.has(key)) return;
         seen.add(key);
-        const label = `Grade ${entry.class_level} - ${entry.section} (${entry.stream})`;
+        const label = formatGradeSectionStream(entry.class_level, entry.section, entry.stream);
         options.push(`<option value="${key}">${label}</option>`);
     });
 
     select.innerHTML = options.join('');
+}
+
+// Shared "Grade {level} - {section} ({stream})" label, used across the
+// conduct widget, push-status list, and the section filter dropdown.
+function formatGradeSectionStream(level, section, stream) {
+    if (typeof t === 'function') {
+        return t('grade_section_stream')
+            .replace('{level}', level)
+            .replace('{section}', section)
+            .replace('{stream}', stream);
+    }
+    return `Grade ${level} - ${section} (${stream})`;
 }
 
 function setupConductFilter() {
@@ -305,7 +340,15 @@ function setupConductFilter() {
     });
 }
 
-const ASSESSMENT_TYPE_LABELS = {
+const ASSESSMENT_TYPE_I18N_KEYS = {
+    individual_assignment_1: 'assessment_individual_assignment_1',
+    individual_assignment_2: 'assessment_individual_assignment_2',
+    group_assignment: 'assessment_group_assignment',
+    quiz: 'assessment_quiz',
+    midterm: 'assessment_midterm',
+    final: 'assessment_final'
+};
+const ASSESSMENT_TYPE_LABELS_FALLBACK = {
     individual_assignment_1: 'Ind. Assignment 1',
     individual_assignment_2: 'Ind. Assignment 2',
     group_assignment: 'Group Assignment',
@@ -313,6 +356,11 @@ const ASSESSMENT_TYPE_LABELS = {
     midterm: 'Midterm',
     final: 'Final'
 };
+function assessmentTypeLabel(type) {
+    const key = ASSESSMENT_TYPE_I18N_KEYS[type];
+    if (key && typeof t === 'function') return t(key);
+    return ASSESSMENT_TYPE_LABELS_FALLBACK[type] || type;
+}
 
 // Renders one card per (subject, section) assignment, each with 6
 // read-only ticks. Ticks are entirely derived from the API response —
@@ -329,7 +377,7 @@ function renderConductList(data) {
     const renderTicks = (checklist) => checklist.map(item => {
         const tickClass = item.conducted ? 'conduct-tick conduct-tick-done' : 'conduct-tick';
         const symbol = item.conducted ? '&#10003;' : '';
-        const label = ASSESSMENT_TYPE_LABELS[item.type] || item.type;
+        const label = assessmentTypeLabel(item.type);
         return `
             <div class="conduct-item" title="${item.marked}/${item.total} students (${item.percent}%)">
                 <span class="${tickClass}">${symbol}</span>
@@ -349,7 +397,7 @@ function renderConductList(data) {
             <div class="conduct-card">
                 <div class="conduct-card-header">
                     <strong>${entry.subject_name}</strong>
-                    <span class="conduct-card-section">Grade ${entry.class_level} - ${entry.section} (${entry.stream})</span>
+                    <span class="conduct-card-section">${formatGradeSectionStream(entry.class_level, entry.section, entry.stream)}</span>
                 </div>
                 ${termRows}
             </div>`;
@@ -393,7 +441,7 @@ function renderPushList(data) {
             <div class="conduct-card">
                 <div class="conduct-card-header">
                     <strong>${entry.subject_name}</strong>
-                    <span class="conduct-card-section">Grade ${entry.class_level} - ${entry.section} (${entry.stream}) — ${entry.term}</span>
+                    <span class="conduct-card-section">${formatGradeSectionStream(entry.class_level, entry.section, entry.stream)} — ${entry.term}</span>
                 </div>
                 <div style="margin-top:8px;">${statusHtml}</div>
             </div>`;
@@ -1622,15 +1670,22 @@ function renderTeacherIdCard(data) {
     wrap.style.display = 'flex';
     if (actions) actions.style.display = 'flex';
 
+    // The ID card itself is always bilingual (English + Amharic together)
+    // regardless of the site-wide language switch — it's a printable
+    // credential, not a page that should change depending on which tab
+    // was last clicked.
+    const zoneLabel = data.zone ? `${data.zone.toUpperCase()} ZONE` : 'ZONE —';
+    setText('idcard-zone-front', zoneLabel);
+    setText('idcard-zone-back', zoneLabel);
     setText('idcard-school-name-front', data.school_name || '—');
     setText('idcard-school-name-back', data.school_name || '—');
     setText('idcard-name', data.full_name || '—');
     setText('idcard-teacher-id', data.teacher_id || '—');
-    setText('idcard-department', data.department || (typeof t === 'function' ? t('idcard_department_default') : 'General'));
+    setText('idcard-subject', data.subject || 'General / አጠቃላይ');
     setText('idcard-valid-until', data.valid_until || '—');
     setText('idcard-phone', data.contact_number || '—');
     setText('idcard-email', data.email || '—');
-    setText('idcard-address', data.school_address || (typeof t === 'function' ? t('idcard_address_not_set') : 'Address not set for this school'));
+    setText('idcard-address', data.school_address || 'Not set / አልተመዘገበም');
 
     const photo = document.getElementById('idcard-photo');
     const placeholder = document.getElementById('idcard-photo-placeholder');

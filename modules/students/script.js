@@ -195,13 +195,50 @@ async function loadProfile() {
         setText('p-lms',     data.lms_username);
         setText('p-email',   data.email_address);
         setText('p-pc',      data.assigned_computer);
+
+        loadIDPhotoRequestStatus();
     } catch (err) {
         console.error('Profile load error:', err);
     }
 }
 
+// ---- ID PHOTO CHANGE REQUEST STATUS ----
+// Shared by the Profile page's request box and re-run after a switch of
+// language, so the pending/approved/rejected banner always reflects the
+// latest request even without a full page reload.
+async function loadIDPhotoRequestStatus() {
+    const box = document.getElementById('id-photo-request-status');
+    if (!box) return;
+    try {
+        const res = await apiFetch('/api/student/id-photo-request-status');
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        renderRequestStatusBox(box, data, {
+            pending: t('profile_id_photo_pending'),
+            approved: t('profile_id_photo_approved'),
+            rejected: t('profile_id_photo_rejected', { reason: data.rejection_reason || '—' })
+        });
+    } catch (err) {
+        console.error('ID photo request status error:', err);
+        box.style.display = 'none';
+    }
+}
+
+// Shared renderer for both the ID-photo and certificate request status
+// boxes — same three states (pending/approved/rejected), same styling,
+// just different copy per call site.
+function renderRequestStatusBox(box, data, messages) {
+    if (!data || !data.status || data.status === 'none') {
+        box.style.display = 'none';
+        return;
+    }
+    box.style.display = 'block';
+    box.className = `request-status-box request-status-${data.status}`;
+    box.textContent = messages[data.status] || '';
+}
+
 // ---- PHOTO UPLOADS ----
-async function uploadPhoto(inputEl, endpoint, messageElId, successFieldName) {
+async function uploadPhoto(inputEl, endpoint, messageElId) {
     const file = inputEl.files[0];
     const msgEl = document.getElementById(messageElId);
     if (!file) return;
@@ -233,7 +270,43 @@ async function uploadPhoto(inputEl, endpoint, messageElId, successFieldName) {
 }
 
 window.uploadProfilePhoto = (inputEl) => uploadPhoto(inputEl, '/api/student/upload-profile-photo', 'profile-photo-message');
-window.uploadIDPhoto = (inputEl) => uploadPhoto(inputEl, '/api/student/upload-id-photo', 'id-photo-message');
+
+// ID photo is request-based, not a direct upload — the file still goes
+// to the same endpoint (it needs somewhere to live either way), but the
+// server files it as a pending request rather than setting it as the
+// official photo. Doesn't touch the actual id-photo-preview image, since
+// nothing official changed yet — just shows the pending banner.
+window.uploadIDPhoto = async (inputEl) => {
+    const file = inputEl.files[0];
+    const msgEl = document.getElementById('id-photo-message');
+    if (!file) return;
+
+    const showMsg = (text, isError) => {
+        if (!msgEl) return;
+        msgEl.textContent = text;
+        msgEl.style.color = isError ? '#dc2626' : '#16a34a';
+    };
+
+    const formData = new FormData();
+    formData.append('photo', file);
+
+    showMsg(t('profile_uploading'), false);
+    try {
+        const res = await apiFetch('/api/student/upload-id-photo', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (res.ok) {
+            showMsg('', false);
+            showToast(t('profile_id_photo_request_submitted'), 'success');
+            await loadIDPhotoRequestStatus();
+        } else {
+            showMsg(data.error || t('profile_upload_failed'), true);
+        }
+    } catch (err) {
+        showMsg(t('could_not_connect'), true);
+    } finally {
+        inputEl.value = '';
+    }
+};
 
 // ---- CERTIFICATE ----
 async function loadCertificate() {
@@ -245,11 +318,75 @@ async function loadCertificate() {
         if (!res.ok) throw new Error();
         const data = await res.json();
         renderCertificate(data, output);
+        await loadCertificateRequestStatus(data.ready);
     } catch (err) {
         console.error('Certificate load error:', err);
         output.innerHTML = `<p class="muted">${t('certificate_could_not_load')}</p>`;
     }
 }
+
+async function loadCertificateRequestStatus(ready) {
+    const box = document.getElementById('certificate-request-status');
+    const requestBtn = document.getElementById('certificate-request-btn');
+    const downloadBtn = document.getElementById('certificate-download-btn');
+    if (!box || !requestBtn || !downloadBtn) return;
+
+    requestBtn.style.display = 'none';
+    downloadBtn.style.display = 'none';
+
+    try {
+        const res = await apiFetch('/api/student/certificate-request-status');
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+
+        renderRequestStatusBox(box, data, {
+            pending: t('certificate_request_pending'),
+            approved: t('certificate_request_approved'),
+            rejected: t('certificate_request_rejected', { reason: data.rejection_reason || '—' })
+        });
+
+        if (data.status === 'approved') {
+            downloadBtn.style.display = 'inline-block';
+        } else if (data.status === 'pending') {
+            // nothing to click — waiting on homeroom teacher, box above
+            // already says so
+        } else if (ready) {
+            // no request yet (or a previous one was rejected) and the
+            // underlying term data is fully synced — student can request
+            requestBtn.style.display = 'inline-block';
+        } else if (data.status === 'none') {
+            // Neither button applies yet, and there's no status box to
+            // explain why (that only shows for pending/approved/rejected)
+            // — show a plain note instead of leaving an unexplained gap
+            // that looks like the buttons are just missing/broken.
+            box.style.display = 'block';
+            box.className = 'request-status-box request-status-pending';
+            box.textContent = t('certificate_not_yet_requestable');
+        }
+    } catch (err) {
+        console.error('Certificate request status error:', err);
+        box.style.display = 'none';
+    }
+}
+
+window.requestCertificate = async () => {
+    const requestBtn = document.getElementById('certificate-request-btn');
+    if (requestBtn) requestBtn.disabled = true;
+    try {
+        const res = await apiFetch('/api/student/request-certificate', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) {
+            showToast(data.error || t('certificate_request_failed'), 'error');
+            return;
+        }
+        showToast(t('certificate_request_pending'), 'success');
+        await loadCertificateRequestStatus(true);
+    } catch (err) {
+        showToast(t('certificate_request_failed'), 'error');
+    } finally {
+        if (requestBtn) requestBtn.disabled = false;
+    }
+};
 
 function renderCertificate(data, container) {
     if (!data.terms || !data.terms.length) {
@@ -273,16 +410,31 @@ function renderCertificate(data, container) {
             <p style="margin-top:8px; font-weight:700;">${t('certificate_term_total', { pct: term.term_total.toFixed(1) })}</p>
         </div>`).join('');
 
-    const downloadSection = data.ready
-        ? `<button type="button" class="btn-cancel" style="width:auto;" onclick="window.print()">${t('certificate_print_download')}</button>`
-        : `<p class="muted">${t('certificate_not_ready', { count: data.terms.filter(term => !term.synced).length })}</p>`;
+    const notReadyNote = data.ready ? '' : `<p class="muted">${t('certificate_not_ready', { count: data.terms.filter(term => !term.synced).length })}</p>`;
 
-    container.innerHTML = termCards + downloadSection;
+    container.innerHTML = termCards + notReadyNote;
 }
 
 function setText(id, val) {
     const el = document.getElementById(id);
     if (el) el.textContent = val || '—';
+}
+
+// ---- TOAST NOTIFICATIONS ----
+// For one-off "this just happened" feedback (request sent, etc.) —
+// distinct from the persistent status boxes, which stay visible to show
+// ongoing pending/approved/rejected state.
+function showToast(message, type = 'success', duration = 3500) {
+    const container = document.getElementById('toast-container');
+    if (!container) return;
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.innerHTML = `<span class="toast-icon">${type === 'error' ? '⚠️' : '✅'}</span><span>${message}</span>`;
+    container.appendChild(toast);
+    setTimeout(() => {
+        toast.classList.add('toast-leaving');
+        setTimeout(() => toast.remove(), 220);
+    }, duration);
 }
 
 // ---- ID CARD ----
