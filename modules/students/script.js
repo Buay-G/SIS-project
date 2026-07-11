@@ -15,9 +15,12 @@ async function checkAuth() {
         CURRENT_STUDENT_ID = data.user_id;
         const titleEl = document.getElementById('page-title-text');
         const logoEl  = document.getElementById('nav-school-name');
-        if (data.school_name) {
-            if (titleEl) titleEl.textContent = data.school_name;
-            if (logoEl)  logoEl.textContent  = data.school_name;
+        const displayName = data.school_name
+            ? (data.moe_school_code ? `${data.school_name} · MOE ${data.moe_school_code}` : data.school_name)
+            : null;
+        if (displayName) {
+            if (titleEl) titleEl.textContent = displayName;
+            if (logoEl)  logoEl.textContent  = displayName;
         }
         return true;
     } catch {
@@ -38,15 +41,50 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.querySelector('a[data-page="textbooks"]').addEventListener('click', loadTextbooks);
     document.querySelector('a[data-page="idcard"]').addEventListener('click', loadIDCard);
     document.querySelector('a[data-page="certificate"]').addEventListener('click', loadCertificate);
+    // School Hub is now a standalone external page (hub.html) — no in-app
+    // click handler needed; the nav link is a plain target="_blank" href.
+});
 
-    const signOut = document.querySelector('a[href="/login.html"]');
-    if (signOut) {
-        signOut.addEventListener('click', async (e) => {
-            e.preventDefault();
-            await apiFetch('/api/logout', { method: 'POST' });
-            window.location.href = '/login.html';
-        });
-    }
+window.signOutNow = async () => {
+    await apiFetch('/api/logout', { method: 'POST' });
+    window.location.href = '/login.html';
+};
+
+// i18n.js's setLang() calls this after switching languages and re-running
+// applyTranslations() on static text — this re-renders everything that
+// was built as HTML strings with t() baked in (marks, textbooks, ID
+// card, certificate, notifications), since a data-i18n attribute alone
+// can't re-translate those.
+window.onSisLangChange = () => {
+    loadProfile();
+    loadNotifications();
+    loadDashboard();
+    loadMarks();
+    loadTextbooks();
+    loadIDCard();
+    loadCertificate();
+};
+
+// ---- ACCOUNT DROPDOWN (Profile Settings / Sign Out) ----
+window.toggleAccountMenu = () => {
+    const menu = document.getElementById('account-menu');
+    const btn = document.querySelector('.account-btn');
+    if (!menu) return;
+    const isOpen = menu.style.display === 'block';
+    menu.style.display = isOpen ? 'none' : 'block';
+    if (btn) btn.setAttribute('aria-expanded', String(!isOpen));
+    closeNotificationPanel(); // only one dropdown open at a time
+};
+
+window.closeAccountMenu = () => {
+    const menu = document.getElementById('account-menu');
+    const btn = document.querySelector('.account-btn');
+    if (menu) menu.style.display = 'none';
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+};
+
+document.addEventListener('click', (e) => {
+    if (!e.target.closest('.account-wrapper')) closeAccountMenu();
 });
 
 // ---- NAVIGATION ----
@@ -123,14 +161,34 @@ async function loadProfile() {
 
         const greetEl  = document.getElementById('nav-greeting');
         const initEl   = document.getElementById('profile-initials');
-        if (greetEl)   greetEl.textContent = `Hi, ${data.first_name}!`;
-        if (initEl)    initEl.textContent  = initials;
+        const avatarEl = document.getElementById('nav-avatar');
+        if (greetEl)   greetEl.textContent = t('greeting', { name: data.first_name });
+
+        // Profile photo, if set, replaces the initials placeholder in both
+        // the header avatar and the Profile page's Identity card.
+        if (initEl) {
+            initEl.innerHTML = data.profile_photo_url
+                ? `<img src="${data.profile_photo_url}" alt="Profile photo">`
+                : initials;
+        }
+        if (avatarEl) {
+            avatarEl.innerHTML = data.profile_photo_url
+                ? `<img src="${data.profile_photo_url}" alt="">`
+                : initials;
+        }
+
+        const idPhotoPreview = document.getElementById('id-photo-preview');
+        if (idPhotoPreview) {
+            idPhotoPreview.innerHTML = data.id_photo_url
+                ? `<img src="${data.id_photo_url}" alt="ID photo">`
+                : t('profile_no_photo');
+        }
 
         setText('p-name',    full);
         setText('p-id',      data.student_id);
         setText('p-sex',     data.sex);
         setText('p-status',  data.status);
-        setText('p-grade',   `Grade ${data.class_level}`);
+        setText('p-grade',   t('profile_grade_value', { level: data.class_level }));
         setText('p-section', data.section);
         setText('p-stream',  data.stream);
         setText('p-school',  data.school_name);
@@ -142,11 +200,46 @@ async function loadProfile() {
     }
 }
 
+// ---- PHOTO UPLOADS ----
+async function uploadPhoto(inputEl, endpoint, messageElId, successFieldName) {
+    const file = inputEl.files[0];
+    const msgEl = document.getElementById(messageElId);
+    if (!file) return;
+
+    const showMsg = (text, isError) => {
+        if (!msgEl) return;
+        msgEl.textContent = text;
+        msgEl.style.color = isError ? '#dc2626' : '#16a34a';
+    };
+
+    const formData = new FormData();
+    formData.append('photo', file);
+
+    showMsg(t('profile_uploading'), false);
+    try {
+        const res = await apiFetch(endpoint, { method: 'POST', body: formData });
+        const data = await res.json();
+        if (res.ok) {
+            showMsg(t('profile_photo_uploaded'), false);
+            await loadProfile(); // refresh previews with the new URL
+        } else {
+            showMsg(data.error || t('profile_upload_failed'), true);
+        }
+    } catch (err) {
+        showMsg(t('could_not_connect'), true);
+    } finally {
+        inputEl.value = ''; // allow re-selecting the same file later
+    }
+}
+
+window.uploadProfilePhoto = (inputEl) => uploadPhoto(inputEl, '/api/student/upload-profile-photo', 'profile-photo-message');
+window.uploadIDPhoto = (inputEl) => uploadPhoto(inputEl, '/api/student/upload-id-photo', 'id-photo-message');
+
 // ---- CERTIFICATE ----
 async function loadCertificate() {
     const output = document.getElementById('certificate-output');
     if (!output) return;
-    output.innerHTML = '<p class="muted">Loading…</p>';
+    output.innerHTML = `<p class="muted">${t('loading')}</p>`;
     try {
         const res = await apiFetch('/api/student/my-certificate');
         if (!res.ok) throw new Error();
@@ -154,35 +247,35 @@ async function loadCertificate() {
         renderCertificate(data, output);
     } catch (err) {
         console.error('Certificate load error:', err);
-        output.innerHTML = '<p class="muted">Could not load certificate data.</p>';
+        output.innerHTML = `<p class="muted">${t('certificate_could_not_load')}</p>`;
     }
 }
 
 function renderCertificate(data, container) {
     if (!data.terms || !data.terms.length) {
-        container.innerHTML = `<p class="muted">${data.message || 'No pushed marks history yet — check back once your teachers have submitted grades.'}</p>`;
+        container.innerHTML = `<p class="muted">${data.message || t('certificate_none')}</p>`;
         return;
     }
 
-    const termCards = data.terms.map(t => `
+    const termCards = data.terms.map(term => `
         <div class="widget" style="margin-bottom:14px;">
-            <h3>Grade ${t.class_level} — ${t.term} <span class="muted" style="font-weight:400; font-size:0.8rem;">(${t.section}, ${t.stream})</span></h3>
-            ${t.synced
-                ? `<span class="badge badge-returned">Synced</span>`
-                : `<span class="badge badge-issued">Pending sync</span>`}
+            <h3>${t('profile_grade_value', { level: term.class_level })} — ${term.term} <span class="muted" style="font-weight:400; font-size:0.8rem;">(${term.section}, ${term.stream})</span></h3>
+            ${term.synced
+                ? `<span class="badge badge-returned">${t('certificate_synced')}</span>`
+                : `<span class="badge badge-issued">${t('certificate_pending_sync')}</span>`}
             <div class="marks-rows" style="margin-top:10px;">
-                ${t.subjects.map(s => `
+                ${term.subjects.map(s => `
                     <div class="marks-row">
                         <span class="marks-type">${s.subject_name}</span>
                         <span class="marks-score ${scoreClass(s.total_score)}">${Number(s.total_score).toFixed(1)}%</span>
                     </div>`).join('')}
             </div>
-            <p style="margin-top:8px; font-weight:700;">Term total: ${t.term_total.toFixed(1)}%</p>
+            <p style="margin-top:8px; font-weight:700;">${t('certificate_term_total', { pct: term.term_total.toFixed(1) })}</p>
         </div>`).join('');
 
     const downloadSection = data.ready
-        ? `<button type="button" class="btn-cancel" style="width:auto;" onclick="window.print()">Print / Download Certificate</button>`
-        : `<p class="muted">Your certificate isn't downloadable yet — every term needs to be fully pushed by your subject teachers and synced by your homeroom teacher to Academic VP first. ${data.terms.filter(t => !t.synced).length} term(s) still pending.</p>`;
+        ? `<button type="button" class="btn-cancel" style="width:auto;" onclick="window.print()">${t('certificate_print_download')}</button>`
+        : `<p class="muted">${t('certificate_not_ready', { count: data.terms.filter(term => !term.synced).length })}</p>`;
 
     container.innerHTML = termCards + downloadSection;
 }
@@ -198,7 +291,7 @@ let profileDataCache = null;
 async function loadIDCard() {
     const output = document.getElementById('idcard-output');
     if (!output) return;
-    output.innerHTML = '<p class="muted">Loading…</p>';
+    output.innerHTML = `<p class="muted">${t('loading')}</p>`;
     try {
         // Reuse the same /api/student/me data the Profile page uses,
         // rather than a second round-trip, if we already have it cached.
@@ -206,7 +299,7 @@ async function loadIDCard() {
         renderIDCard(data, output);
     } catch (err) {
         console.error('ID card load error:', err);
-        output.innerHTML = '<p class="muted">Could not load your ID card.</p>';
+        output.innerHTML = `<p class="muted">${t('idcard_could_not_load')}</p>`;
     }
 }
 
@@ -216,15 +309,23 @@ function renderIDCard(data, container) {
 
     const issued = data.created_at ? new Date(data.created_at) : new Date();
     const expires = new Date(issued);
-    expires.setFullYear(expires.getFullYear() + 2);
+    // Valid 1 school year, not 2 — students move up a grade/section every
+    // year, so last year's card is out of date info (class, stream, etc.)
+    // even before the plastic wears out. A new one gets printed each year
+    // with that year's details.
+    expires.setFullYear(expires.getFullYear() + 1);
     const isExpired = expires < new Date();
-    const fmt = d => d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    // The ID card itself always shows both languages side by side on every
+    // field (like a national ID card), regardless of the site-wide EN/አማ
+    // toggle elsewhere — it's a document, not just UI chrome, so it
+    // doesn't make sense for it to switch away from Amharic entirely.
+    const fmt = d => d.toLocaleDateString('en-GB', { year: 'numeric', month: 'short', day: 'numeric' });
 
     // Ethiopian administrative address: woreda, zone, region — there's no
     // street-address field in this schema, so this is what "school address"
     // means here.
     const addressParts = [data.woreda, data.zone, data.region].filter(Boolean);
-    const address = addressParts.length ? addressParts.join(', ') : 'Address not set for this school';
+    const address = addressParts.length ? addressParts.join(', ') : t('idcard_address_not_set');
 
     container.innerHTML = `
         <div class="id-card-flip-wrap">
@@ -233,42 +334,46 @@ function renderIDCard(data, container) {
                     <img src="/assets/images/Logo.png" alt="School logo" class="id-card-logo" onerror="this.style.display='none'">
                     <div class="id-card-header-text">
                         <div class="id-card-school-name">${data.school_name || 'School'}</div>
-                        <div class="id-card-subtitle">Student Identity Card</div>
+                        <div class="id-card-subtitle">የተማሪ መታወቂያ ካርድ | Student Identity Card</div>
                     </div>
+                    <img src="/assets/images/gflag.jpg" alt="Gambella region flag" class="id-card-logo" onerror="this.style.display='none'">
                 </div>
                 <div class="id-card-body">
-                    <div class="id-card-photo">${initials || '?'}</div>
+                    <div class="id-card-photo-col">
+                        <div class="id-card-photo">${data.id_photo_url ? `<img src="${data.id_photo_url}" alt="ID photo">` : (initials || '?')}</div>
+                        <div class="id-card-photo-label">ተማሪ | Student</div>
+                    </div>
                     <div class="id-card-fields">
                         <div class="id-card-name">${full}</div>
-                        <div><span class="id-label">Student ID</span><span>${data.student_id}</span></div>
-                        <div><span class="id-label">Class</span><span>Grade ${data.class_level} - ${data.section}</span></div>
-                        <div><span class="id-label">Stream</span><span>${data.stream || '—'}</span></div>
-                        <div><span class="id-label">Contact</span><span>${data.phone_number || '—'}</span></div>
-                        ${data.moe_school_code ? `<div><span class="id-label">School Code</span><span>${data.moe_school_code}</span></div>` : ''}
+                        <div><span class="id-label">የተማሪ መታወቂያ | Student ID</span><span>${data.student_id}</span></div>
+                        <div><span class="id-label">ክፍል | Class</span><span>${t('profile_grade_value', { level: data.class_level })} - ${data.section}</span></div>
+                        <div><span class="id-label">ትምህርት ዘርፍ | Stream</span><span>${data.stream || '—'}</span></div>
+                        <div><span class="id-label">ስልክ ቁጥር | Contact</span><span>${data.phone_number || '—'}</span></div>
+                        ${data.moe_school_code ? `<div><span class="id-label">የትምህርት ቤት ኮድ | School Code</span><span>${data.moe_school_code}</span></div>` : ''}
                     </div>
                 </div>
                 <div class="id-card-footer">
                     <div class="id-card-signature">
                         <img src="/assets/images/principal-signature.png" alt="Principal's signature" onerror="this.style.display='none'">
-                        <div class="id-card-signature-line">Principal</div>
+                        <div class="id-card-signature-line">ርዕሰ መምህር | Principal</div>
                     </div>
                     <div class="id-card-validity">
-                        <span>Issued: ${fmt(issued)}</span>
-                        <strong class="${isExpired ? 'id-card-expired' : ''}">Valid until: ${fmt(expires)}</strong>
+                        <span>የተሰጠበት | Issued: ${fmt(issued)}</span>
+                        <strong class="${isExpired ? 'id-card-expired' : ''}">እስከ | Valid until: ${fmt(expires)}</strong>
                     </div>
                 </div>
             </div>
             <div class="id-card id-card-back" style="display:none;">
                 <div class="id-card-back-body">
-                    <h4>Terms &amp; Conditions</h4>
+                    <h4>${t('idcard_terms_heading')}</h4>
                     <ul class="id-card-terms">
-                        <li>This card is the property of ${data.school_name || 'the school'} and must be carried at all times on school premises.</li>
-                        <li>This card is non-transferable. Report loss or theft to the school office immediately.</li>
-                        <li>Misuse of this card may result in disciplinary action.</li>
-                        <li>This card is valid only through the expiry date shown on the front.</li>
+                        <li>${t('idcard_term_property', { school: data.school_name || 'the school' })}</li>
+                        <li>${t('idcard_term_nontransferable')}</li>
+                        <li>${t('idcard_term_misuse')}</li>
+                        <li>${t('idcard_term_validity')}</li>
                     </ul>
                     <div class="id-card-back-footer">
-                        <p class="id-card-return-note">If found, please return to the school address below.</p>
+                        <p class="id-card-return-note">${t('idcard_return_note')}</p>
                         <div id="idcard-qr" class="id-card-qr"></div>
                     </div>
                 </div>
@@ -315,15 +420,15 @@ window.updatePassword = async () => {
     };
 
     if (!currentPass || !newPass || !confirmPass) {
-        showMsg('Please fill in all three fields.', true);
+        showMsg(t('profile_fill_all_fields'), true);
         return;
     }
     if (newPass !== confirmPass) {
-        showMsg('New password and confirmation do not match.', true);
+        showMsg(t('profile_passwords_no_match'), true);
         return;
     }
     if (newPass.length < 4) {
-        showMsg('New password must be at least 4 characters.', true);
+        showMsg(t('profile_password_too_short'), true);
         return;
     }
 
@@ -335,15 +440,15 @@ window.updatePassword = async () => {
         });
         const data = await res.json();
         if (res.ok) {
-            showMsg('Password updated successfully.', false);
+            showMsg(t('profile_password_updated'), false);
             document.getElementById('curr-pass').value = '';
             document.getElementById('new-pass').value = '';
             document.getElementById('confirm-pass').value = '';
         } else {
-            showMsg(data.error || 'Could not update password.', true);
+            showMsg(data.error || t('profile_could_not_update_password'), true);
         }
     } catch (err) {
-        showMsg('Could not connect to server.', true);
+        showMsg(t('could_not_connect'), true);
     }
 };
 
@@ -353,7 +458,7 @@ let allMarks = [];
 async function loadMarks() {
     const output = document.getElementById('marks-output');
     if (!output) return;
-    output.innerHTML = '<p class="muted">Loading…</p>';
+    output.innerHTML = `<p class="muted">${t('loading')}</p>`;
     try {
         const res = await apiFetch('/api/student/my-marks');
         if (!res.ok) throw new Error();
@@ -361,7 +466,7 @@ async function loadMarks() {
         populateTermFilter(allMarks);
         renderMarks(allMarks);
     } catch {
-        output.innerHTML = '<p class="muted">Could not load marks.</p>';
+        output.innerHTML = `<p class="muted">${t('marks_could_not_load')}</p>`;
     }
 }
 
@@ -369,17 +474,29 @@ function populateTermFilter(marks) {
     const sel = document.getElementById('marks-term-filter');
     if (!sel) return;
     const terms = [...new Set(marks.map(m => m.term).filter(Boolean))].sort();
-    sel.innerHTML = '<option value="">All Terms</option>' +
-        terms.map(t => `<option value="${t}">${t}</option>`).join('');
+    sel.innerHTML = `<option value="">${t('marks_all_terms')}</option>` +
+        terms.map(term => `<option value="${term}">${term}</option>`).join('');
     sel.onchange = () => {
         const filtered = sel.value ? allMarks.filter(m => m.term === sel.value) : allMarks;
         renderMarks(filtered);
     };
 }
 
+// Assessment type labels are looked up via the shared t() dictionary
+// (keys like assessment_quiz), so ASSESSMENT_TYPE_LABELS below is now
+// just the source list of known types, not the English text itself.
 const ASSESSMENT_TYPE_LABELS = { individual_assignment_1: 'Assignment 1', individual_assignment_2: 'Assignment 2',
     group_assignment: 'Group Assignment', quiz: 'Quiz', midterm: 'Midterm', final: 'Final' };
 const ALL_ASSESSMENT_TYPES = Object.keys(ASSESSMENT_TYPE_LABELS);
+
+// Falls back to a readable un-translated label (rather than a raw
+// dictionary key) for any assessment/notification type this dictionary
+// doesn't know about yet.
+function assessmentLabel(type) {
+    const key = 'assessment_' + type;
+    const translated = t(key);
+    return translated === key ? type.replace(/_/g, ' ') : translated;
+}
 
 // Groups raw mark rows into subject -> term -> total/completeness, since a
 // subject's total must never mix marks from two different terms, and an
@@ -409,7 +526,7 @@ function computeSubjectTermTotals(marks) {
 function renderMarks(marks) {
     const output = document.getElementById('marks-output');
     if (!output) return;
-    if (!marks.length) { output.innerHTML = '<p class="muted">No marks recorded yet.</p>'; return; }
+    if (!marks.length) { output.innerHTML = `<p class="muted">${t('marks_none')}</p>`; return; }
 
     const grouped = computeSubjectTermTotals(marks);
     const bySubject = {};
@@ -423,8 +540,8 @@ function renderMarks(marks) {
             <div class="marks-subject-header"><strong>${subject}</strong></div>
             ${terms.map(g => {
                 const totalLabel = g.isComplete
-                    ? `Final: ${g.total.toFixed(1)}%`
-                    : `Total so far: ${g.total.toFixed(1)}% (${g.presentTypes.size}/${ALL_ASSESSMENT_TYPES.length} assessments)`;
+                    ? t('marks_final', { pct: g.total.toFixed(1) })
+                    : t('marks_total_so_far', { pct: g.total.toFixed(1), have: g.presentTypes.size, total: ALL_ASSESSMENT_TYPES.length });
                 return `
                 <div class="marks-term-group">
                     <div class="marks-term-header">
@@ -434,7 +551,7 @@ function renderMarks(marks) {
                     <div class="marks-rows">
                         ${g.rows.map(r => `
                             <div class="marks-row">
-                                <span class="marks-type">${ASSESSMENT_TYPE_LABELS[r.type] || r.type}</span>
+                                <span class="marks-type">${assessmentLabel(r.type)}</span>
                                 <span class="marks-score ${scoreClass(r.score)}">${r.score}%</span>
                             </div>`).join('')}
                     </div>
@@ -453,28 +570,28 @@ function scoreClass(score) {
 async function loadTextbooks() {
     const output = document.getElementById('textbooks-output');
     if (!output) return;
-    output.innerHTML = '<p class="muted">Loading…</p>';
+    output.innerHTML = `<p class="muted">${t('loading')}</p>`;
     try {
         const res = await apiFetch('/api/student/my-textbooks');
         if (!res.ok) throw new Error();
         const books = await res.json();
         renderTextbooks(books, output);
     } catch {
-        output.innerHTML = '<p class="muted">Could not load textbook status.</p>';
+        output.innerHTML = `<p class="muted">${t('textbooks_could_not_load')}</p>`;
     }
 }
 
 function renderTextbooks(books, container) {
-    if (!books.length) { container.innerHTML = '<p class="muted">No textbooks issued this school year.</p>'; return; }
+    if (!books.length) { container.innerHTML = `<p class="muted">${t('textbooks_none')}</p>`; return; }
     const statusBadge = {
-        issued:   '<span class="badge badge-issued">Issued</span>',
-        returned: '<span class="badge badge-returned">Returned</span>',
-        lost:     '<span class="badge badge-lost">Lost</span>'
+        issued:   `<span class="badge badge-issued">${t('badge_issued')}</span>`,
+        returned: `<span class="badge badge-returned">${t('badge_returned')}</span>`,
+        lost:     `<span class="badge badge-lost">${t('badge_lost')}</span>`
     };
     container.innerHTML = `
         <div class="table-container">
             <table>
-                <thead><tr><th>Subject</th><th>Status</th><th>Issued</th><th>Resolved</th></tr></thead>
+                <thead><tr><th>${t('textbooks_subject')}</th><th>${t('textbooks_status')}</th><th>${t('textbooks_issued_col')}</th><th>${t('textbooks_resolved_col')}</th></tr></thead>
                 <tbody>
                     ${books.map(b => `<tr>
                         <td>${b.subject_name}</td>
@@ -496,7 +613,7 @@ async function loadNotifications() {
     try {
         const res = await apiFetch('/api/student/my-notifications');
         if (!res.ok) {
-            if (output) output.innerHTML = '<p class="muted">Could not load notifications.</p>';
+            if (output) output.innerHTML = `<p class="muted">${t('notifications_could_not_load')}</p>`;
             return;
         }
         // The API returns { unread_count, items }, not a flat array.
@@ -507,7 +624,7 @@ async function loadNotifications() {
         updateDashboardNotifs(notifData);
     } catch (err) {
         console.error('Notifications error:', err);
-        if (output) output.innerHTML = '<p class="muted">Could not load notifications.</p>';
+        if (output) output.innerHTML = `<p class="muted">${t('notifications_could_not_load')}</p>`;
     }
 }
 
@@ -526,11 +643,11 @@ function updateNotifBadge(unreadCount) {
 }
 
 function renderNotifications(notifs, container) {
-    if (!notifs.length) { container.innerHTML = '<p class="muted">No notifications yet.</p>'; return; }
+    if (!notifs.length) { container.innerHTML = `<p class="muted">${t('notifications_none')}</p>`; return; }
     container.innerHTML = notifs.map(n => `
         <div class="notif-card ${n.is_read ? '' : 'notif-unread'}" onclick="markRead(${n.notif_id}, this)">
             <div class="notif-card-header">
-                <strong>${n.assessment_type.replace(/_/g, ' ')}</strong>
+                <strong>${assessmentLabel(n.assessment_type)}</strong>
                 ${n.is_read ? '' : '<span class="notif-dot" aria-label="Unread"></span>'}
             </div>
             <p class="notif-body">${n.message}</p>
@@ -545,12 +662,12 @@ function renderNotificationPanel() {
     const list = document.getElementById('notification-panel-list');
     if (!list) return;
     if (!notifData.length) {
-        list.innerHTML = '<p class="notif-empty">No new notifications</p>';
+        list.innerHTML = `<p class="notif-empty">${t('topbar_no_new_notifications')}</p>`;
         return;
     }
     list.innerHTML = notifData.slice(0, 5).map(n => `
         <div class="notif-item" onclick="markRead(${n.notif_id}, this); navigateTo('notifications')">
-            <strong>${n.assessment_type.replace(/_/g, ' ')}</strong><br>
+            <strong>${assessmentLabel(n.assessment_type)}</strong><br>
             ${n.message.substring(0, 60)}${n.message.length > 60 ? '…' : ''}
         </div>`).join('');
 }
@@ -562,6 +679,7 @@ window.toggleNotificationPanel = () => {
     const isOpen = panel.style.display === 'block';
     panel.style.display = isOpen ? 'none' : 'block';
     if (btn) btn.setAttribute('aria-expanded', String(!isOpen));
+    closeAccountMenu();
 };
 
 function closeNotificationPanel() {
@@ -575,7 +693,7 @@ document.addEventListener('click', (e) => {
     if (!e.target.closest('.notification-wrapper')) closeNotificationPanel();
 });
 document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeNotificationPanel();
+    if (e.key === 'Escape') { closeNotificationPanel(); closeAccountMenu(); }
 });
 
 // ---- HELP MODAL ----
@@ -598,7 +716,7 @@ window.submitHelpRequest = () => {
     const subject = document.getElementById('help-subject').value.trim();
     const body = document.getElementById('help-body').value.trim();
     if (!subject || !body) {
-        alert('Please fill in both the subject and message.');
+        alert(t('help_fill_both'));
         return;
     }
     const studentLine = CURRENT_STUDENT_ID ? `Student ID: ${CURRENT_STUDENT_ID}\n\n` : '';
@@ -641,20 +759,20 @@ async function loadAttendanceStreak() {
         el.innerHTML = `
             <div class="summary-stat">
                 <span class="summary-num">${data.streak}</span>
-                <span class="muted">Day streak${data.streak > 0 ? ' ' + dots : ''}</span>
+                <span class="muted">${t('dashboard_day_streak')}${data.streak > 0 ? ' ' + dots : ''}</span>
             </div>
             <p class="muted" style="margin-top:6px; font-size:0.8rem;">
-                ${data.present_today ? 'Checked in today ✅' : 'Not checked in yet today'}
+                ${data.present_today ? t('dashboard_checked_in_today') : t('dashboard_not_checked_in')}
             </p>`;
     } catch {
-        el.innerHTML = '<p class="muted">Could not load attendance.</p>';
+        el.innerHTML = `<p class="muted">${t('dashboard_could_not_load_attendance')}</p>`;
     }
 }
 
 function updateDashboardSummary() {
     const el = document.getElementById('dashboard-summary');
     if (!el || !allMarks.length) {
-        if (el) el.innerHTML = '<p class="muted">No marks recorded yet.</p>';
+        if (el) el.innerHTML = `<p class="muted">${t('dashboard_no_marks')}</p>`;
         return;
     }
     const grouped = computeSubjectTermTotals(allMarks);
@@ -662,23 +780,23 @@ function updateDashboardSummary() {
     const subjects = new Set(allMarks.map(m => m.subject_name)).size;
 
     const avgBlock = completed.length
-        ? `<div class="summary-stat"><span class="summary-num">${(completed.reduce((s, g) => s + g.total, 0) / completed.length).toFixed(1)}%</span><span class="muted">Average (completed subjects)</span></div>`
-        : `<div class="summary-stat"><span class="summary-num">—</span><span class="muted">No subject fully graded yet</span></div>`;
+        ? `<div class="summary-stat"><span class="summary-num">${(completed.reduce((s, g) => s + g.total, 0) / completed.length).toFixed(1)}%</span><span class="muted">${t('dashboard_average')}</span></div>`
+        : `<div class="summary-stat"><span class="summary-num">—</span><span class="muted">${t('dashboard_no_subject_graded')}</span></div>`;
 
     el.innerHTML = `
         ${avgBlock}
-        <div class="summary-stat"><span class="summary-num">${allMarks.length}</span><span class="muted">Assessments recorded</span></div>
-        <div class="summary-stat"><span class="summary-num">${subjects}</span><span class="muted">Subjects</span></div>`;
+        <div class="summary-stat"><span class="summary-num">${allMarks.length}</span><span class="muted">${t('dashboard_assessments_recorded')}</span></div>
+        <div class="summary-stat"><span class="summary-num">${subjects}</span><span class="muted">${t('dashboard_subjects')}</span></div>`;
 }
 
 function updateDashboardNotifs(notifs) {
     const el = document.getElementById('dashboard-notifs');
     if (!el) return;
     const recent = notifs.slice(0, 3);
-    if (!recent.length) { el.innerHTML = '<p class="muted">No notifications.</p>'; return; }
+    if (!recent.length) { el.innerHTML = `<p class="muted">${t('dashboard_no_notifications')}</p>`; return; }
     el.innerHTML = recent.map(n => `
         <div class="notif-card ${n.is_read ? '' : 'notif-unread'}" style="margin-bottom:8px;">
-            <strong style="font-size:0.85rem;">${n.assessment_type.replace(/_/g, ' ')}</strong>
+            <strong style="font-size:0.85rem;">${assessmentLabel(n.assessment_type)}</strong>
             <p class="muted" style="font-size:0.82rem; margin-top:2px;">${n.message.substring(0, 80)}${n.message.length > 80 ? '…' : ''}</p>
         </div>`).join('');
 }

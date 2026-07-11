@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>School Hub</title>
+    <link rel="stylesheet" href="/assets/css/hub.css">
+    <script src="/assets/js/i18n.js"></script>
+</head>
+<body>
+
+    <header class="hub-hero">
+        <div class="hub-hero-top">
+            <button class="hub-back-btn" onclick="goBack()" data-i18n="hub_back_to_portal">← Back to Portal</button>
+            <div class="lang-switch lang-switch-hero" role="group" aria-label="Language / ቋንቋ">
+                <button type="button" class="lang-switch-btn" data-lang="en" onclick="setLang('en')">EN</button>
+                <button type="button" class="lang-switch-btn" data-lang="am" onclick="setLang('am')">አማ</button>
+            </div>
+        </div>
+        <h1 id="hub-school-name">Loading…</h1>
+        <p class="hub-tagline" data-i18n="hub_tagline">News, photos, and community updates</p>
+        <div class="hub-stats" id="hub-stats"></div>
+    </header>
+
+    <main class="hub-main">
+        <section class="hub-section">
+            <div class="hub-section-header">
+                <h2 data-i18n="hub_news_heading">News &amp; Announcements</h2>
+                <select id="hub-announcements-lang" class="hub-lang-filter" aria-label="Filter announcements by language">
+                    <option value="" data-i18n="hub_all_languages">All languages</option>
+                    <option value="english" data-i18n="hub_lang_english">English</option>
+                    <option value="amharic" data-i18n="hub_lang_amharic">Amharic</option>
+                    <option value="nuer" data-i18n="hub_lang_nuer">Nuer</option>
+                    <option value="anuak" data-i18n="hub_lang_anuak">Anuak</option>
+                </select>
+            </div>
+            <div id="hub-announcements" class="hub-list"><p class="hub-muted" data-i18n="loading">Loading…</p></div>
+        </section>
+
+        <section class="hub-section">
+            <div class="hub-section-header">
+                <h2 data-i18n="hub_gallery_heading">School Gallery</h2>
+                <select id="hub-gallery-lang" class="hub-lang-filter" aria-label="Filter gallery posts by language">
+                    <option value="" data-i18n="hub_all_languages">All languages</option>
+                    <option value="english" data-i18n="hub_lang_english">English</option>
+                    <option value="amharic" data-i18n="hub_lang_amharic">Amharic</option>
+                    <option value="nuer" data-i18n="hub_lang_nuer">Nuer</option>
+                    <option value="anuak" data-i18n="hub_lang_anuak">Anuak</option>
+                </select>
+            </div>
+            <div id="hub-gallery" class="hub-gallery-grid"><p class="hub-muted" data-i18n="loading">Loading…</p></div>
+        </section>
+    </main>
+
+    <footer class="hub-footer">
+        <p data-i18n="hub_footer">Posted by school administration. Visible only to signed-in students, teachers, and staff of this school — no one from another school can see this.</p>
+    </footer>
+
+    <script src="hub.js"></script>
+</body>
+</html>

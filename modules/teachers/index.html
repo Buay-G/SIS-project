@@ -7,47 +7,56 @@
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
     <script src="/assets/js/guard.js"></script>
+    <script src="/assets/js/i18n.js"></script>
 </head>
 <body>
 
     <div class="dashboard-container">
         <nav class="sidebar" id="sidebar" aria-label="Main navigation">
-            <h2 class="logo">Teachers Portal <span id="nav-school-name">—</span></h2>
+            <h2 class="logo"><span data-i18n="teacher_portal_title">Teachers Portal</span> <span id="nav-school-name">—</span></h2>
             <ul class="nav-menu">
                 <li><a href="#" class="nav-link active" data-page="dashboard">
                     <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-                    Dashboard
+                    <span data-i18n="nav_dashboard">Dashboard</span>
                 </a></li>
                 <li><a href="#" class="nav-link" data-page="upload">
                     <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                    Upload Marks
+                    <span data-i18n="nav_upload_marks">Upload Marks</span>
                 </a></li>
                 <li><a href="#" class="nav-link" data-page="students">
                     <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                    View Students
+                    <span data-i18n="nav_view_students">View Students</span>
+                </a></li>
+                <li><a href="#" class="nav-link" data-page="idcard">
+                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><circle cx="8" cy="11" r="2.2"/><path d="M5 17c0-1.8 1.5-3 3-3s3 1.2 3 3"/><line x1="14" y1="9" x2="19" y2="9"/><line x1="14" y1="13" x2="19" y2="13"/></svg>
+                    <span data-i18n="nav_idcard">My ID</span>
                 </a></li>
                 <li><a href="#" class="nav-link" data-page="textbooks" id="nav-textbooks" style="display:none;">
                     <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-                    Textbooks
+                    <span data-i18n="nav_textbooks">Textbooks</span>
                 </a></li>
                 <li><a href="#" class="nav-link" data-page="reports">
                     <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-                    Reports
+                    <span data-i18n="nav_reports">Reports</span>
                 </a></li>
                 <li><a href="#" class="nav-link" data-page="contact">
                     <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                    Contact
+                    <span data-i18n="nav_contact">Contact</span>
                 </a></li>
                 <li id="nav-registrar-item" style="display:none;">
                     <a href="/registrar/index.html" class="nav-link nav-external" id="nav-registrar">
                         <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>
-                        Registrar
+                        <span data-i18n="nav_registrar">Registrar</span>
                     </a>
                 </li>
                 <li class="nav-divider"></li>
+                <li><a href="hub.html" class="nav-link nav-external">
+                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5 12 3l9 6.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"/></svg>
+                    <span data-i18n="nav_hub">School Hub</span>
+                </a></li>
                 <li><a href="/" class="nav-link nav-external">
                     <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
-                    Back to School Website
+                    <span data-i18n="nav_back_to_site">Back to School Website</span>
                 </a></li>
             </ul>
         </nav>
@@ -65,6 +74,10 @@
                 </div>
 
                 <div class="user-actions">
+                    <div class="lang-switch-group" role="tablist" aria-label="Language / ቋንቋ">
+                        <button type="button" class="lang-switch-btn" data-lang="en" role="tab" aria-selected="true" onclick="setLang('en')">EN</button>
+                        <button type="button" class="lang-switch-btn" data-lang="am" role="tab" aria-selected="false" onclick="setLang('am')">አማ</button>
+                    </div>
                     <div class="notification-wrapper">
                         <button class="notification-btn" aria-label="Notifications" onclick="toggleNotificationPanel()" aria-haspopup="true" aria-expanded="false" aria-controls="notification-panel">
                             🔔<span id="notif-badge" class="notif-badge" style="display:none;"></span>
@@ -247,6 +260,80 @@
                 </div>
             </section>
 
+            <section id="page-idcard" class="page-content" style="display:none;">
+                <h2 data-i18n="idcard_heading">My ID Card</h2>
+                <p style="font-size:0.85rem; color:#64748b; margin-bottom:20px;" data-i18n="idcard_desc">Present this alongside a physical copy if required by school policy.</p>
+
+                <div id="idcard-error" style="display:none; color:#b91c1c; font-size:0.9rem; margin-bottom:16px;"></div>
+
+                <div class="idcard-wrap" id="idcard-wrap" style="display:none;">
+                    <div class="idcard-scene">
+                        <div class="idcard-flipper" id="idcard-flipper">
+                            <div class="idcard-face idcard-front">
+                                <div class="idcard-front-top">
+                                    <div class="idcard-front-top-content">
+                                        <div class="idcard-logo-badge" aria-hidden="true">
+                                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3d1f3d" stroke-width="2"><path d="M12 2l2.4 4.9L20 8l-4 3.9L17 18l-5-2.6L7 18l1-6.1L4 8l5.6-1.1z"/></svg>
+                                        </div>
+                                        <div class="idcard-brand-text">
+                                            <div data-i18n="idcard_teachers_zone">Teachers Zone</div>
+                                            <div class="idcard-brand-school" id="idcard-school-name-front">—</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="idcard-photo-ring">
+                                    <img id="idcard-photo" src="" alt="" style="display:none;" onerror="this.style.display='none'; document.getElementById('idcard-photo-placeholder').style.display='flex';">
+                                    <div id="idcard-photo-placeholder" class="idcard-photo-placeholder" aria-hidden="true">
+                                        <svg width="46" height="46" viewBox="0 0 24 24" fill="#8a6d8a"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7"/></svg>
+                                    </div>
+                                </div>
+                                <div class="idcard-front-bottom">
+                                    <div class="idcard-name" id="idcard-name">—</div>
+                                    <div class="idcard-role" data-i18n="idcard_role_teacher">School Teacher</div>
+                                    <div class="idcard-detail-rows">
+                                        <div class="idcard-detail-row"><span class="idcard-detail-label" data-i18n="idcard_teacher_id">Teacher ID</span><span id="idcard-teacher-id">—</span></div>
+                                        <div class="idcard-detail-row"><span class="idcard-detail-label" data-i18n="idcard_department">Department</span><span id="idcard-department">—</span></div>
+                                        <div class="idcard-detail-row"><span class="idcard-detail-label" data-i18n="idcard_validity_label">Validity</span><span id="idcard-valid-until">—</span></div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="idcard-face idcard-back">
+                                <div class="idcard-back-header">
+                                    <div class="idcard-back-header-content">
+                                        <div class="idcard-logo-badge" aria-hidden="true">
+                                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#f0b429" stroke-width="2"><path d="M12 2l2.4 4.9L20 8l-4 3.9L17 18l-5-2.6L7 18l1-6.1L4 8l5.6-1.1z"/></svg>
+                                        </div>
+                                        <div class="idcard-brand-text idcard-brand-text-dark">
+                                            <div data-i18n="idcard_teachers_zone">Teachers Zone</div>
+                                            <div class="idcard-brand-school" id="idcard-school-name-back">—</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="idcard-back-body">
+                                    <div class="idcard-contact-title" data-i18n="idcard_contact_info_heading">Contact Information</div>
+                                    <div class="idcard-contact-row"><span class="idcard-contact-label" data-i18n="idcard_phone">Phone</span><span id="idcard-phone">—</span></div>
+                                    <div class="idcard-contact-row"><span class="idcard-contact-label" data-i18n="idcard_email">Email</span><span id="idcard-email">—</span></div>
+                                    <div class="idcard-contact-row"><span class="idcard-contact-label" data-i18n="idcard_school_address">School Address</span><span id="idcard-address">—</span></div>
+
+                                    <div class="idcard-signature">
+                                        <div class="idcard-signature-line"></div>
+                                        <div class="idcard-signature-label" data-i18n="idcard_principal">Principal's Signature</div>
+                                    </div>
+
+                                    <div class="idcard-barcode" id="idcard-barcode" aria-hidden="true"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="idcard-actions" id="idcard-actions" style="display:none;">
+                    <button type="button" class="btn-primary" style="width:auto; padding:10px 22px;" onclick="flipIdCard()" data-i18n="idcard_flip">Flip Card</button>
+                    <button type="button" class="btn-primary" style="width:auto; padding:10px 22px;" onclick="printIdCard()" data-i18n="idcard_print">Print ID Card</button>
+                </div>
+            </section>
+
             <div id="page-profile" class="page-content" style="display:none;">
                 <h2>Profile Settings</h2>
                 
@@ -426,6 +513,19 @@
                                 Sends your section's compiled marks once every subject teacher has pushed their report for the current term.
                             </p>
                             <div id="marks-push-status"></div>
+                        </div>
+
+                        <div style="margin-top:20px; padding-top:20px; border-top:1px solid #e2e8f0;">
+                            <h4 style="margin-bottom:6px;" data-i18n="homeroom_reset_heading">Reset Student Password</h4>
+                            <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;" data-i18n="homeroom_reset_desc">
+                                If a student in your homeroom section forgets their password, reset it here. They can log in with the default password below, then should change it right away from their own Profile page.
+                            </p>
+                            <div class="search-group" style="margin-bottom:10px;">
+                                <label for="homeroom-reset-student-id" class="sr-only" data-i18n="homeroom_reset_placeholder">Student ID</label>
+                                <input type="text" id="homeroom-reset-student-id" data-i18n-placeholder="homeroom_reset_placeholder" placeholder="Student ID" class="form-input">
+                                <button type="button" class="btn-primary" onclick="resetHomeroomStudentPassword()" data-i18n="homeroom_reset_button">Reset Password</button>
+                            </div>
+                            <div id="homeroom-reset-status" style="font-size:0.85rem;"></div>
                         </div>
                     </div>
                 </div>

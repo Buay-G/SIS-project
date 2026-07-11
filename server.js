@@ -2,6 +2,8 @@ import express from 'express';
 import mysql from 'mysql2';
 import cors from 'cors'; 
 import path from 'path';
+import fs from 'fs';
+import sharp from 'sharp';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
 import bcrypt from 'bcrypt';
@@ -9,6 +11,7 @@ import jwt from 'jsonwebtoken';
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
+import sizeOf from 'image-size';
 
 dotenv.config();
 
@@ -379,8 +382,8 @@ app.get('/api/student/me', requireAuth, requireRole('students'), async (req, res
         const [rows] = await pool.query(
             `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.class_level, st.section, st.stream, st.sex,
                     st.status, st.school_name, st.lms_username, st.email_address, st.assigned_computer,
-                    st.phone_number, st.created_at,
-                    sc.zone, sc.woreda, sc.region, sc.moe_school_code
+                    st.phone_number, st.created_at, st.profile_photo_url, st.id_photo_url,
+                    sc.zone, sc.woreda, sc.region, sc.moe_school_code, sc.school_prefix
              FROM students st
              LEFT JOIN schools sc ON sc.id = st.school_id
              WHERE st.student_id = ? AND st.school_id = ?`,
@@ -770,6 +773,238 @@ app.get('/api/student/my-certificate', requireAuth, requireRole('students'), asy
     } catch (err) {
         console.error("/api/student/my-certificate error:", err);
         res.status(500).json({ error: "Could not load certificate data" });
+    }
+});
+
+// --- Student photo uploads ---
+// Two different photos, two different rules:
+//   - profile photo: whatever the student wants, just needs to be an image
+//   - ID photo: just needs to be portrait-oriented (taller than wide) and
+//     above a minimum resolution. We used to also require an almost-exact
+//     5:6 ratio, but that rejected most normal photos — the ID card
+//     already crops to fit its photo box with CSS object-fit:cover, so an
+//     exact ratio match was never actually necessary, just annoying.
+const ID_PHOTO_MIN_WIDTH = 300;
+const ID_PHOTO_MIN_HEIGHT = 360;
+
+app.post('/api/student/upload-profile-photo', requireAuth, requireRole('students'), handleUploadError(upload.single('photo')), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+        if (!req.file.mimetype.startsWith('image/')) {
+            return res.status(400).json({ error: "Profile photo must be an image file (JPEG, PNG, GIF, or WEBP)." });
+        }
+
+        const filePath = `/uploads/${req.file.filename}`;
+        await pool.query(
+            'UPDATE students SET profile_photo_url = ? WHERE student_id = ? AND school_id = ?',
+            [filePath, req.user.user_id, req.user.school_id]
+        );
+        res.json({ profile_photo_url: filePath });
+    } catch (err) {
+        console.error("/api/student/upload-profile-photo error:", err);
+        res.status(500).json({ error: "Upload failed" });
+    }
+});
+
+app.post('/api/student/upload-id-photo', requireAuth, requireRole('students'), handleUploadError(upload.single('photo')), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+        if (!req.file.mimetype.startsWith('image/')) {
+            return res.status(400).json({ error: "ID photo must be an image file." });
+        }
+
+        // --- Sharp Processing ---
+        const resizedPath = `uploads/resized-${req.file.filename}`;
+        await sharp(req.file.path)
+            .resize(300, 360, { fit: 'cover', position: 'center' })
+            .toFile(resizedPath);
+
+        // Remove the original temporary file
+        fs.unlink(req.file.path, () => {});
+
+        // --- Database Update ---
+        // We use the new resized path
+        const filePath = `/uploads/resized-${req.file.filename}`;
+        
+        await pool.query(
+            'UPDATE students SET id_photo_url = ? WHERE student_id = ? AND school_id = ?',
+            [filePath, req.user.user_id, req.user.school_id]
+        );
+
+        res.json({ id_photo_url: filePath });
+    } catch (err) {
+        console.error("/api/student/upload-id-photo error:", err);
+        // Clean up file if an error occurred
+        if (req.file && fs.existsSync(req.file.path)) {
+            fs.unlink(req.file.path, () => {});
+        }
+        res.status(500).json({ error: "Upload failed" });
+    }
+});
+
+// --- News & Announcements ---
+// Read access is open to every authenticated role at the school (students,
+// teachers, admin, registrar) — this is meant to be a shared community
+// hub, but it still requires login. Multi-tenant: scoped strictly to
+// req.user.school_id from the verified session, never a URL parameter,
+// so a logged-in student can only ever see their own school's news, and
+// nobody can view any school's announcements without an account there.
+// Posting is restricted to admin_users only.
+//
+// NOTE: same limitation as attendance — admin_users has no title/role
+// column visible to this middleware yet, so today ANY admin_users account
+// can post, not specifically the Principal. Tell me if/when there's a
+// title column to check and I'll tighten this to Principal-only.
+//
+// Every post (announcement or gallery item) is tagged with the language
+// it was written in, since this school's community reads a mix of
+// English, Amharic, Nuer, and Anuak. Validated against a fixed list
+// server-side rather than trusting whatever string the client sends.
+const ALLOWED_LANGUAGES = ['english', 'amharic', 'nuer', 'anuak'];
+function normalizeLanguage(input) {
+    const lang = (input || '').toString().trim().toLowerCase();
+    return ALLOWED_LANGUAGES.includes(lang) ? lang : 'english';
+}
+
+app.get('/api/announcements', requireAuth, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT announcement_id, title, body, language, posted_at
+             FROM school_announcements
+             WHERE school_id = ?
+             ORDER BY posted_at DESC`,
+            [req.user.school_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/announcements error:", err);
+        res.status(500).json({ error: "Could not load announcements" });
+    }
+});
+
+app.post('/api/announcements', requireAuth, requireRole('admin_users'), async (req, res) => {
+    const { title, body, language } = req.body;
+    if (!title || !body) {
+        return res.status(400).json({ error: "Both a title and body are required" });
+    }
+    const lang = normalizeLanguage(language);
+    try {
+        const [result] = await pool.query(
+            `INSERT INTO school_announcements (school_id, title, body, language, posted_by)
+             VALUES (?, ?, ?, ?, ?)`,
+            [req.user.school_id, title, body, lang, req.user.user_id]
+        );
+        res.json({ message: "Announcement posted", announcement_id: result.insertId, language: lang });
+    } catch (err) {
+        console.error("POST /api/announcements error:", err);
+        res.status(500).json({ error: "Could not post announcement" });
+    }
+});
+
+app.delete('/api/announcements/:id', requireAuth, requireRole('admin_users'), async (req, res) => {
+    try {
+        const [result] = await pool.query(
+            'DELETE FROM school_announcements WHERE announcement_id = ? AND school_id = ?',
+            [req.params.id, req.user.school_id]
+        );
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: "Announcement not found" });
+        }
+        res.json({ message: "Announcement deleted" });
+    } catch (err) {
+        console.error("DELETE /api/announcements error:", err);
+        res.status(500).json({ error: "Could not delete announcement" });
+    }
+});
+
+// --- School Gallery ---
+// Part of "School Hub" alongside News & Announcements — functions as a
+// general community feed now, not strictly photo-only: a post needs
+// EITHER body text OR a photo (or both), so admin can share a quick
+// text update without being forced to attach an image. Same access
+// model as announcements: any authenticated role can view, only
+// admin_users can post/delete. Reuses the same `upload` multer instance
+// already used for profile/ID/avatar photos — the photo field is
+// optional here, unlike those routes.
+app.get('/api/gallery', requireAuth, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT photo_id, image_url, body, language, posted_at
+             FROM school_gallery
+             WHERE school_id = ?
+             ORDER BY posted_at DESC`,
+            [req.user.school_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/gallery error:", err);
+        res.status(500).json({ error: "Could not load gallery" });
+    }
+});
+
+app.post('/api/gallery', requireAuth, requireRole('admin_users'), handleUploadError(upload.single('photo')), async (req, res) => {
+    try {
+        const { body, language } = req.body;
+        const hasText = body && body.trim().length > 0;
+
+        if (!req.file && !hasText) {
+            return res.status(400).json({ error: "Post needs either text or a photo." });
+        }
+        if (req.file && !req.file.mimetype.startsWith('image/')) {
+            return res.status(400).json({ error: "Photo must be an image file (JPEG, PNG, GIF, or WEBP)." });
+        }
+
+        const lang = normalizeLanguage(language);
+        const filePath = req.file ? `/uploads/${req.file.filename}` : null;
+        const [result] = await pool.query(
+            `INSERT INTO school_gallery (school_id, image_url, body, language, posted_by)
+             VALUES (?, ?, ?, ?, ?)`,
+            [req.user.school_id, filePath, hasText ? body.trim() : null, lang, req.user.user_id]
+        );
+        res.json({ photo_id: result.insertId, image_url: filePath, body: hasText ? body.trim() : null, language: lang });
+    } catch (err) {
+        console.error("POST /api/gallery error:", err);
+        res.status(500).json({ error: "Could not post" });
+    }
+});
+
+app.delete('/api/gallery/:id', requireAuth, requireRole('admin_users'), async (req, res) => {
+    try {
+        const [result] = await pool.query(
+            'DELETE FROM school_gallery WHERE photo_id = ? AND school_id = ?',
+            [req.params.id, req.user.school_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Photo not found" });
+        res.json({ message: "Photo deleted" });
+    } catch (err) {
+        console.error("DELETE /api/gallery error:", err);
+        res.status(500).json({ error: "Could not delete photo" });
+    }
+});
+
+// --- School Hub stats ---
+// Deliberately separate from /api/student-stats: that endpoint narrows to
+// a teacher's own assigned classes when called by a teacher, which is
+// right for a class roster page but wrong for a school-wide landing page.
+// This one is always the whole school, regardless of who's asking —
+// scoped by req.user.school_id, same as everything else here.
+app.get('/api/school/stats', requireAuth, async (req, res) => {
+    try {
+        const [[studentRow]] = await pool.query(
+            'SELECT COUNT(*) as total FROM students WHERE school_id = ?',
+            [req.user.school_id]
+        );
+        const [[teacherRow]] = await pool.query(
+            'SELECT COUNT(*) as total FROM teachers WHERE school_id = ?',
+            [req.user.school_id]
+        );
+        res.json({
+            student_count: studentRow.total || 0,
+            teacher_count: teacherRow.total || 0
+        });
+    } catch (err) {
+        console.error("/api/school/stats error:", err);
+        res.status(500).json({ error: "Could not load school stats" });
     }
 });
 
@@ -1299,7 +1534,7 @@ app.get('/api/teacher/eligible-subjects', requireAuth, async (req, res) => {
 app.get('/api/teacher/full-profile', requireAuth, async (req, res) => {
     try {
         const [rows] = await pool.query(
-            `SELECT t.full_name, t.teacher_id, t.contact_number, t.email, t.additional_role,
+            `SELECT t.full_name, t.teacher_id, t.contact_number, t.email, t.additional_role, t.avatar_url,
                     ta.stream, s.subject_name
              FROM teachers t
              LEFT JOIN teacher_assignments ta ON t.teacher_id = ta.teacher_id AND t.school_id = ta.school_id
@@ -1314,10 +1549,60 @@ app.get('/api/teacher/full-profile', requireAuth, async (req, res) => {
             contact_number: rows[0].contact_number,
             email: rows[0].email,
             additional_role: rows[0].additional_role || null,
+            avatar_url: rows[0].avatar_url || null,
             streams: [...new Set(rows.map(r => r.stream).filter(Boolean))],
             subjects: [...new Set(rows.map(r => r.subject_name).filter(Boolean))]
         });
     } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Data for the "My ID" page — the teacher's own printable ID card.
+// Combines identity/photo, department (homeroom/subject stream), and the
+// school's address fields so the card can be rendered without the client
+// having to stitch together /api/teacher/full-profile + a separate school
+// lookup.
+app.get('/api/teacher/id-card', requireAuth, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT t.full_name, t.teacher_id, t.contact_number, t.email, t.avatar_url, t.additional_role,
+                    ta.stream, s.subject_name,
+                    sc.school_name, sc.zone, sc.woreda, sc.region, sc.moe_school_code
+             FROM teachers t
+             LEFT JOIN teacher_assignments ta ON t.teacher_id = ta.teacher_id AND t.school_id = ta.school_id
+             LEFT JOIN subjects s ON ta.subject_id = s.subject_id AND ta.school_id = s.school_id
+             LEFT JOIN schools sc ON sc.id = t.school_id
+             WHERE t.teacher_id = ? AND t.school_id = ?`,
+            [req.user.user_id, req.user.school_id]
+        );
+        if (rows.length === 0) return res.status(404).json({ error: "Teacher not found" });
+
+        const row0 = rows[0];
+        const streams = [...new Set(rows.map(r => r.stream).filter(Boolean))];
+        const subjects = [...new Set(rows.map(r => r.subject_name).filter(Boolean))];
+        const schoolAddress = [row0.zone, row0.woreda, row0.region].filter(Boolean).join(', ') || null;
+
+        // No academic-year concept exists yet (see getSchoolYear() below) —
+        // cards are shown valid through the end of the current calendar
+        // year, same convention as the rest of the app.
+        const validYear = new Date().getFullYear();
+
+        res.json({
+            full_name: row0.full_name,
+            teacher_id: row0.teacher_id,
+            contact_number: row0.contact_number,
+            email: row0.email,
+            avatar_url: row0.avatar_url || null,
+            department: streams.length > 0 ? streams.join(', ') : (row0.additional_role || null),
+            subjects,
+            school_name: row0.school_name,
+            school_address: schoolAddress,
+            moe_school_code: row0.moe_school_code,
+            valid_until: `12/31/${validYear}`
+        });
+    } catch (err) {
+        console.error("/api/teacher/id-card error:", err);
+        res.status(500).json({ error: "Could not load ID card data" });
+    }
 });
 
 // "My Performance" widget data: average student score per subject for
@@ -1719,6 +2004,51 @@ async function getHomeroomSectionOrNull(teacher_id, school_id) {
         stream: teacherRows[0].homeroom_stream
     };
 }
+
+// Homeroom teacher resets a forgotten student password back to the school
+// default (1234). Scoped the same way as the textbook routes above — the
+// caller must actually be a homeroom teacher, and the student must belong
+// to that teacher's own section, class level, and stream. The student is
+// expected to log in with the default and change it themselves afterward
+// via /api/student/update-password.
+const DEFAULT_STUDENT_PASSWORD = '1234';
+app.post('/api/homeroom/reset-student-password', requireAuth, async (req, res) => {
+    const { student_id } = req.body;
+    if (!student_id) {
+        return res.status(400).json({ error: "student_id is required" });
+    }
+
+    try {
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) {
+            return res.status(403).json({ error: "You are not a homeroom teacher." });
+        }
+
+        const [studentRows] = await pool.query(
+            'SELECT student_id, first_name, last_name FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream = ? AND school_id = ?',
+            [student_id, homeroom.class_level, homeroom.section, homeroom.stream, req.user.school_id]
+        );
+        if (studentRows.length === 0) {
+            return res.status(403).json({ error: "This student is not in your homeroom section." });
+        }
+
+        const hashed = await bcrypt.hash(DEFAULT_STUDENT_PASSWORD, 10);
+        await pool.query(
+            'UPDATE students SET security_password = ? WHERE student_id = ? AND school_id = ?',
+            [hashed, student_id, req.user.school_id]
+        );
+
+        const student = studentRows[0];
+        res.json({
+            message: `Password reset for ${student.first_name} ${student.last_name}. They can log in with the default password and should change it from their Profile page.`,
+            student_id: student.student_id,
+            default_password: DEFAULT_STUDENT_PASSWORD
+        });
+    } catch (err) {
+        console.error("reset-student-password error:", err);
+        res.status(500).json({ error: "Could not reset password" });
+    }
+});
 
 // Homeroom teacher's grid: every student in their section x every subject
 // in that section's stream, with issued/returned/lost status per cell.
@@ -2757,9 +3087,16 @@ app.post('/api/login', async (req, res) => {
 app.get('/api/me', requireAuth, async (req, res) => {
     try {
         let school_name = null;
+        let moe_school_code = null;
         if (req.user.school_id) {
-            const [schoolRows] = await pool.query('SELECT school_name FROM schools WHERE id = ?', [req.user.school_id]);
-            if (schoolRows.length > 0) school_name = schoolRows[0].school_name;
+            const [schoolRows] = await pool.query(
+                'SELECT school_name, moe_school_code FROM schools WHERE id = ?',
+                [req.user.school_id]
+            );
+            if (schoolRows.length > 0) {
+                school_name = schoolRows[0].school_name;
+                moe_school_code = schoolRows[0].moe_school_code;
+            }
         }
 
         let additional_role = null;
@@ -2776,6 +3113,7 @@ app.get('/api/me', requireAuth, async (req, res) => {
             role: req.user.role,
             school_id: req.user.school_id,
             school_name,
+            moe_school_code,
             additional_role
         });
     } catch (err) {

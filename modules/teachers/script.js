@@ -15,6 +15,14 @@ let CURRENT_TEACHER_ID = null;
 let CURRENT_SCHOOL_ID = null;
 let CURRENT_SCHOOL_NAME = null;
 
+// i18n.js calls this after every language switch so JS-rendered content
+// (built with t() at fetch time, not data-i18n attributes) gets redrawn
+// in the new language too — data-i18n elements are already handled by
+// i18n.js's own applyTranslations().
+window.onSisLangChange = () => {
+    if (teacherIdCardData) renderTeacherIdCard(teacherIdCardData);
+};
+
 async function checkAuthAndInit() {
     try {
         const res = await apiFetch(`${API_BASE}/api/me`);
@@ -564,6 +572,44 @@ window.exportSectionReportCSV = () => {
     a.download = `section_report_${homeroomInfo.section}.csv`;
     a.click();
     URL.revokeObjectURL(url);
+};
+
+// HOMEROOM: reset a forgotten student password back to the school
+// default (1234). Server re-verifies the student is actually in this
+// teacher's homeroom section before touching anything.
+window.resetHomeroomStudentPassword = async () => {
+    const input = document.getElementById('homeroom-reset-student-id');
+    const status = document.getElementById('homeroom-reset-status');
+    const studentId = input ? input.value.trim() : '';
+
+    if (!studentId) {
+        showAlertModal(typeof t === 'function' ? t('homeroom_reset_enter_id') : "Please enter a student ID.");
+        return;
+    }
+
+    const confirmMsg = typeof t === 'function' ? t('homeroom_reset_confirm') : "Reset this student's password to the default (1234)? They should change it after logging back in.";
+    const confirmTitle = typeof t === 'function' ? t('homeroom_reset_confirm_title') : "Reset password?";
+    const confirmed = await showConfirmModal(confirmMsg, confirmTitle);
+    if (!confirmed) return;
+
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/reset-student-password`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ student_id: studentId })
+        });
+        const data = await res.json();
+
+        if (res.ok) {
+            if (status) status.innerHTML = `<span style="color:#166534;">${typeof t === 'function' ? t('homeroom_reset_success') : 'Password reset. The student can now log in with the default password 1234 and should change it from their Profile page.'}</span>`;
+            if (input) input.value = '';
+        } else {
+            if (status) status.innerHTML = `<span style="color:#b91c1c;">${data.error || (typeof t === 'function' ? t('homeroom_reset_failed') : 'Could not reset this student\'s password.')}</span>`;
+        }
+    } catch (err) {
+        console.error("Reset student password error:", err);
+        if (status) status.innerHTML = `<span style="color:#b91c1c;">Could not connect to server.</span>`;
+    }
 };
 
 // TEXTBOOK DISTRIBUTION (homeroom teachers only)
@@ -1256,6 +1302,7 @@ function setupNavigation() {
                 targetPage.style.display = 'block';
                 if (target === 'textbooks') loadTextbooksGrid();
                 if (target === 'contact') { loadContactThreads(); loadMysections(); }
+                if (target === 'idcard') loadTeacherIdCard();
             } else {
                 console.warn(`No page found for data-page="${target}". Did you forget to add <section id="page-${target}">?`);
             }
@@ -1532,7 +1579,109 @@ function setValue(id, value) {
     if (el) el.value = value;
 }
 
-// PROFILE — save changes, password, avatar
+// TEACHER ID CARD ("My ID" page) — fetched once per page visit and
+// re-rendered (not re-fetched) on language switch, since only the
+// static labels change, not the underlying data.
+let teacherIdCardData = null;
+
+async function loadTeacherIdCard() {
+    const errorEl = document.getElementById('idcard-error');
+    const wrap = document.getElementById('idcard-wrap');
+    const actions = document.getElementById('idcard-actions');
+    if (!wrap) return;
+
+    if (teacherIdCardData) {
+        renderTeacherIdCard(teacherIdCardData);
+        return;
+    }
+
+    try {
+        const res = await apiFetch(`${API_BASE}/api/teacher/id-card`);
+        if (!res.ok) throw new Error("Could not load ID card");
+        const data = await res.json();
+        teacherIdCardData = data;
+        renderTeacherIdCard(data);
+    } catch (err) {
+        console.error("ID card load error:", err);
+        if (errorEl) {
+            errorEl.textContent = typeof t === 'function' ? t('idcard_could_not_load') : "Could not load your ID card.";
+            errorEl.style.display = 'block';
+        }
+        if (wrap) wrap.style.display = 'none';
+        if (actions) actions.style.display = 'none';
+    }
+}
+
+function renderTeacherIdCard(data) {
+    const wrap = document.getElementById('idcard-wrap');
+    const actions = document.getElementById('idcard-actions');
+    const errorEl = document.getElementById('idcard-error');
+    if (!wrap) return;
+
+    if (errorEl) errorEl.style.display = 'none';
+    wrap.style.display = 'flex';
+    if (actions) actions.style.display = 'flex';
+
+    setText('idcard-school-name-front', data.school_name || '—');
+    setText('idcard-school-name-back', data.school_name || '—');
+    setText('idcard-name', data.full_name || '—');
+    setText('idcard-teacher-id', data.teacher_id || '—');
+    setText('idcard-department', data.department || (typeof t === 'function' ? t('idcard_department_default') : 'General'));
+    setText('idcard-valid-until', data.valid_until || '—');
+    setText('idcard-phone', data.contact_number || '—');
+    setText('idcard-email', data.email || '—');
+    setText('idcard-address', data.school_address || (typeof t === 'function' ? t('idcard_address_not_set') : 'Address not set for this school'));
+
+    const photo = document.getElementById('idcard-photo');
+    const placeholder = document.getElementById('idcard-photo-placeholder');
+    if (data.avatar_url && photo) {
+        photo.src = data.avatar_url;
+        photo.alt = data.full_name ? `Photo of ${data.full_name}` : 'Teacher photo';
+        photo.style.display = 'block';
+        if (placeholder) placeholder.style.display = 'none';
+    } else {
+        if (photo) photo.style.display = 'none';
+        if (placeholder) placeholder.style.display = 'flex';
+    }
+
+    renderIdCardBarcode(data.teacher_id || '');
+}
+
+// Purely decorative barcode — a deterministic bar pattern derived from the
+// teacher ID, matching the visual on the reference card. Not meant to be
+// scannable; there's no real barcode symbology or check-digit behind it.
+function renderIdCardBarcode(seed) {
+    const container = document.getElementById('idcard-barcode');
+    if (!container) return;
+    container.innerHTML = '';
+
+    let hash = 0;
+    const str = String(seed) || 'TEACHER';
+    for (let i = 0; i < str.length; i++) hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+
+    const barCount = 40;
+    for (let i = 0; i < barCount; i++) {
+        hash = (hash * 1103515245 + 12345) >>> 0;
+        const height = 14 + (hash % 24); // 14px–38px
+        hash = (hash * 1103515245 + 12345) >>> 0;
+        const width = 1 + (hash % 3); // 1px–3px
+        const bar = document.createElement('span');
+        bar.style.height = `${height}px`;
+        bar.style.width = `${width}px`;
+        container.appendChild(bar);
+    }
+}
+
+window.flipIdCard = () => {
+    const flipper = document.getElementById('idcard-flipper');
+    if (flipper) flipper.classList.toggle('idcard-flipped');
+};
+
+window.printIdCard = () => {
+    window.print();
+};
+
+
 window.toggleContactEdit = (forceOpen) => {
     const panel = document.getElementById('profile-contact-edit');
     const input = document.getElementById('profile-contact');
