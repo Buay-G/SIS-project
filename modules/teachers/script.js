@@ -491,6 +491,9 @@ async function loadHomeroomInfo() {
         const textbooksNav = document.getElementById('nav-textbooks');
         if (textbooksNav) textbooksNav.style.display = homeroomInfo.is_homeroom ? 'block' : 'none';
 
+        const actionCenterNav = document.getElementById('nav-actioncenter');
+        if (actionCenterNav) actionCenterNav.style.display = homeroomInfo.is_homeroom ? 'block' : 'none';
+
         const dashboardTextbookWidget = document.getElementById('dashboard-textbook-widget');
         if (dashboardTextbookWidget) dashboardTextbookWidget.style.display = homeroomInfo.is_homeroom ? 'block' : 'none';
 
@@ -503,7 +506,8 @@ async function loadHomeroomInfo() {
 
             await Promise.all([
                 loadDashboardTextbookSummary(),
-                loadMarksPushStatus()
+                loadMarksPushStatus(),
+                loadActionCenterRequests()
             ]);
         }
     } catch (err) {
@@ -657,6 +661,228 @@ window.resetHomeroomStudentPassword = async () => {
     } catch (err) {
         console.error("Reset student password error:", err);
         if (status) status.innerHTML = `<span style="color:#b91c1c;">Could not connect to server.</span>`;
+    }
+};
+
+// ACTION CENTER (homeroom teachers only): photo/certificate approvals,
+// direct photo upload, badge count. Requests are fetched lazily when the
+// tab is opened (see setupNavigation's `target === 'actioncenter'` hook)
+// and again after any approve/reject so the list and badge stay in sync.
+function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[ch]));
+}
+
+function updateActionCenterBadge(count) {
+    const badge = document.getElementById('action-center-badge');
+    if (!badge) return;
+    if (count > 0) {
+        badge.textContent = String(count);
+        badge.style.display = 'inline-block';
+    } else {
+        badge.style.display = 'none';
+    }
+}
+
+function renderPhotoRequests(requests) {
+    const list = document.getElementById('photo-requests-list');
+    if (!list) return;
+
+    if (!Array.isArray(requests) || requests.length === 0) {
+        list.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">No pending photo requests.</p>';
+        return;
+    }
+
+    list.innerHTML = requests.map(r => `
+        <div class="request-card">
+            <div class="request-photo-thumbs">
+                <figure>
+                    ${r.current_photo_url
+                        ? `<img class="request-photo-thumb" src="${escapeHtml(r.current_photo_url)}" alt="Current photo">`
+                        : `<div class="request-photo-thumb"></div>`}
+                    <figcaption>Current</figcaption>
+                </figure>
+                <figure>
+                    <img class="request-photo-thumb" src="${escapeHtml(r.requested_photo_url)}" alt="Requested photo">
+                    <figcaption>Requested</figcaption>
+                </figure>
+            </div>
+            <div class="request-info">
+                <strong>${escapeHtml(r.first_name)} ${escapeHtml(r.last_name)}</strong>
+                <span>${escapeHtml(r.student_id)} — requested ${new Date(r.requested_at).toLocaleDateString()}</span>
+            </div>
+            <div class="request-actions">
+                <button type="button" class="request-approve-btn" onclick="approvePhotoRequest(${r.request_id})">Approve</button>
+                <button type="button" class="request-reject-btn" onclick="rejectPhotoRequest(${r.request_id})">Reject</button>
+            </div>
+        </div>`).join('');
+}
+
+function renderCertificateRequests(requests) {
+    const list = document.getElementById('certificate-requests-list');
+    if (!list) return;
+
+    if (!Array.isArray(requests) || requests.length === 0) {
+        list.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">No pending certificate requests.</p>';
+        return;
+    }
+
+    list.innerHTML = requests.map(r => `
+        <div class="request-card">
+            <div class="request-info">
+                <strong>${escapeHtml(r.first_name)} ${escapeHtml(r.last_name)}</strong>
+                <span>${escapeHtml(r.student_id)} — requested ${new Date(r.requested_at).toLocaleDateString()}</span>
+            </div>
+            <div class="request-actions">
+                <button type="button" class="request-approve-btn" onclick="approveCertificateRequest(${r.request_id})">Approve</button>
+                <button type="button" class="request-reject-btn" onclick="rejectCertificateRequest(${r.request_id})">Reject</button>
+            </div>
+        </div>`).join('');
+}
+
+// Loads both request lists in parallel, renders them, and refreshes the
+// sidebar badge from their combined pending count.
+async function loadActionCenterRequests() {
+    const photoList = document.getElementById('photo-requests-list');
+    const certList = document.getElementById('certificate-requests-list');
+    if (photoList) photoList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Loading…</p>';
+    if (certList) certList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Loading…</p>';
+
+    try {
+        const [photoRes, certRes] = await Promise.all([
+            apiFetch(`${API_BASE}/api/homeroom/id-photo-requests`),
+            apiFetch(`${API_BASE}/api/homeroom/certificate-requests`)
+        ]);
+        const photoRequests = photoRes.ok ? await photoRes.json() : [];
+        const certRequests = certRes.ok ? await certRes.json() : [];
+
+        renderPhotoRequests(photoRequests);
+        renderCertificateRequests(certRequests);
+        updateActionCenterBadge(photoRequests.length + certRequests.length);
+    } catch (err) {
+        console.error("loadActionCenterRequests error:", err);
+        if (photoList) photoList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not load requests.</p>';
+        if (certList) certList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not load requests.</p>';
+    }
+}
+
+window.approvePhotoRequest = async (requestId) => {
+    const confirmed = await showConfirmModal("Approve this photo? It will become the student's official ID photo.", "Approve photo?");
+    if (!confirmed) return;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/id-photo-requests/${requestId}/approve`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) { showAlertModal(data.error || "Could not approve this request."); return; }
+        showSuccessModal(data.message);
+        await loadActionCenterRequests();
+    } catch (err) {
+        console.error("approvePhotoRequest error:", err);
+        showAlertModal("Could not connect to server.");
+    }
+};
+
+window.rejectPhotoRequest = async (requestId) => {
+    const reason = await showPromptModal(
+        "Reject this photo request? You can add an optional reason below — it'll be shown to the student.",
+        "Reject photo?",
+        "Reason (optional)"
+    );
+    if (reason === null) return; // cancelled
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/id-photo-requests/${requestId}/reject`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: reason || undefined })
+        });
+        const data = await res.json();
+        if (!res.ok) { showAlertModal(data.error || "Could not reject this request."); return; }
+        showSuccessModal(data.message);
+        await loadActionCenterRequests();
+    } catch (err) {
+        console.error("rejectPhotoRequest error:", err);
+        showAlertModal("Could not connect to server.");
+    }
+};
+
+window.approveCertificateRequest = async (requestId) => {
+    const confirmed = await showConfirmModal("Approve this certificate request? The student will be able to download their certificate.", "Approve certificate?");
+    if (!confirmed) return;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/certificate-requests/${requestId}/approve`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) { showAlertModal(data.error || "Could not approve this request."); return; }
+        showSuccessModal(data.message);
+        await loadActionCenterRequests();
+    } catch (err) {
+        console.error("approveCertificateRequest error:", err);
+        showAlertModal("Could not connect to server.");
+    }
+};
+
+window.rejectCertificateRequest = async (requestId) => {
+    const reason = await showPromptModal(
+        "Reject this certificate request? You can add an optional reason below — it'll be shown to the student.",
+        "Reject certificate?",
+        "Reason (optional)"
+    );
+    if (reason === null) return; // cancelled
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/certificate-requests/${requestId}/reject`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: reason || undefined })
+        });
+        const data = await res.json();
+        if (!res.ok) { showAlertModal(data.error || "Could not reject this request."); return; }
+        showSuccessModal(data.message);
+        await loadActionCenterRequests();
+    } catch (err) {
+        console.error("rejectCertificateRequest error:", err);
+        showAlertModal("Could not connect to server.");
+    }
+};
+
+// Direct photo upload — no approval step needed, becomes official
+// immediately (see /api/homeroom/upload-student-photo on the server).
+window.uploadStudentPhoto = async () => {
+    const idInput = document.getElementById('upload-photo-student-id');
+    const fileInput = document.getElementById('upload-photo-file');
+    const status = document.getElementById('upload-photo-status');
+
+    const studentId = idInput ? idInput.value.trim() : '';
+    const file = fileInput && fileInput.files ? fileInput.files[0] : null;
+
+    if (!studentId) { showAlertModal("Please enter a Student ID"); return; }
+    if (!file) { showAlertModal("Please choose a photo to upload"); return; }
+
+    const formData = new FormData();
+    formData.append('student_id', studentId);
+    formData.append('photo', file);
+
+    if (status) status.innerHTML = '<span style="color:#64748b;">Uploading…</span>';
+
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/upload-student-photo`, {
+            method: 'POST',
+            body: formData
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            if (status) status.innerHTML = `<span style="color:#b91c1c;">${escapeHtml(data.error || "Could not upload this photo.")}</span>`;
+            return;
+        }
+
+        if (status) status.innerHTML = `<span style="color:#166534;">${escapeHtml(data.message)}</span>`;
+        if (idInput) idInput.value = '';
+        if (fileInput) fileInput.value = '';
+        // A pending self-submitted request from this student, if any, is
+        // auto-resolved server-side — refresh so it drops off the list.
+        await loadActionCenterRequests();
+    } catch (err) {
+        console.error("uploadStudentPhoto error:", err);
+        if (status) status.innerHTML = '<span style="color:#b91c1c;">Could not connect to server.</span>';
     }
 };
 
@@ -1135,7 +1361,11 @@ async function loadMysections() {
 
 window.sendStudentNotification = async () => {
     const sectionVal = document.getElementById('notif-student-section').value;
-    const assessment_type = document.getElementById('notif-assessment-type').value;
+    const assessmentTypeSelect = document.getElementById('notif-assessment-type');
+    const assessment_type = assessmentTypeSelect.value;
+    // Use the human-readable option label ("Individual Assignment 1") in
+    // user-facing text, not the raw underscored value sent to the API.
+    const assessmentTypeText = assessmentTypeSelect.options[assessmentTypeSelect.selectedIndex]?.text || assessment_type;
     const message = document.getElementById('notif-student-message').value.trim();
     const preview = document.getElementById('notif-student-preview');
 
@@ -1146,7 +1376,7 @@ window.sendStudentNotification = async () => {
 
     const [class_level, section, stream] = sectionVal.split('|');
     const confirmed = await showConfirmModal(
-        `Send a "${assessment_type}" reminder to all students in Grade ${class_level} - ${section} who haven't completed it yet?`,
+        `Send a "${assessmentTypeText}" reminder to all students in Grade ${class_level} - ${section} who haven't completed it yet?`,
         "Notify Students"
     );
     if (!confirmed) return;
@@ -1351,6 +1581,8 @@ function setupNavigation() {
                 if (target === 'textbooks') loadTextbooksGrid();
                 if (target === 'contact') { loadContactThreads(); loadMysections(); }
                 if (target === 'idcard') loadTeacherIdCard();
+                if (target === 'actioncenter') loadActionCenterRequests();
+                if (target === 'upload') loadGradeSheetSections();
             } else {
                 console.warn(`No page found for data-page="${target}". Did you forget to add <section id="page-${target}">?`);
             }
@@ -2091,6 +2323,46 @@ function showConfirmModal(message, title = "Are you sure?") {
     });
 }
 
+// Styled replacement for window.prompt() — resolves with the typed text
+// (possibly empty string) on Confirm, or null on Cancel/escape, matching
+// window.prompt()'s own null-on-cancel convention so call sites don't
+// need to change how they check the result.
+function showPromptModal(message, title = "Add a note", placeholder = '') {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('prompt-modal');
+        const titleEl = document.getElementById('prompt-modal-title');
+        const msgEl = document.getElementById('prompt-modal-message');
+        const input = document.getElementById('prompt-modal-input');
+        const okBtn = document.getElementById('prompt-modal-ok');
+        const cancelBtn = document.getElementById('prompt-modal-cancel');
+        if (!modal || !input || !okBtn || !cancelBtn) {
+            // Fallback if the modal markup is ever missing.
+            resolve(window.prompt(message));
+            return;
+        }
+
+        titleEl.textContent = title;
+        msgEl.textContent = message;
+        input.value = '';
+        input.placeholder = placeholder;
+        trapFocusOpen(modal, input);
+
+        const cleanup = (result) => {
+            trapFocusClose(modal);
+            okBtn.removeEventListener('click', onOk);
+            cancelBtn.removeEventListener('click', onCancel);
+            modal.removeEventListener('modal-escape', onCancel);
+            resolve(result);
+        };
+        const onOk = () => cleanup(input.value);
+        const onCancel = () => cleanup(null);
+
+        okBtn.addEventListener('click', onOk);
+        cancelBtn.addEventListener('click', onCancel);
+        modal.addEventListener('modal-escape', onCancel);
+    });
+}
+
 // MARK ENTRY — search, submit, bulk upload
 window.searchStudent = async () => {
     const id = document.getElementById('search-id').value;
@@ -2177,9 +2449,9 @@ window.submitIndividualMark = async () => {
     }
 };
 
-window.updateFileName = (input) => {
+window.updateFileName = (input, targetId = 'file-name') => {
     const fileName = input.files[0] ? input.files[0].name : "No file chosen";
-    const el = document.getElementById('file-name');
+    const el = document.getElementById(targetId);
     if (el) el.innerText = fileName;
 };
 
@@ -2405,3 +2677,195 @@ async function loadAuthorizedSubjects(stream) {
         console.error("Error loading eligible subjects:", err);
     }
 }
+
+// SECTION GRADE SHEET — bulk marks entry table (Upload Marks page).
+// Lets a teacher pick one of their sections + a subject, then enter
+// scores for every assessment type for every student in that section at
+// once, instead of one student/subject/type at a time.
+const GRADESHEET_ASSESSMENT_TYPES = ['individual_assignment_1', 'individual_assignment_2', 'group_assignment', 'quiz', 'midterm', 'final'];
+let gradeSheetSections = [];   // [{class_level, section, stream}]
+let gradeSheetStudents = [];   // students currently loaded for the selected section
+
+// Populates the section dropdown from the teacher's own assignments —
+// same source as My Sections elsewhere, so it naturally covers a teacher
+// who teaches multiple classes/sections.
+async function loadGradeSheetSections() {
+    const select = document.getElementById('gradesheet-section');
+    if (!select) return;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/teacher/my-sections`);
+        gradeSheetSections = res.ok ? await res.json() : [];
+
+        select.innerHTML = '<option value="">Select section…</option>' +
+            gradeSheetSections.map((s, i) =>
+                `<option value="${i}">${escapeHtml(formatGradeSectionStream(s.class_level, s.section, s.stream))}</option>`
+            ).join('');
+    } catch (err) {
+        console.error("loadGradeSheetSections error:", err);
+    }
+}
+
+window.onGradeSheetSectionChange = async () => {
+    const select = document.getElementById('gradesheet-section');
+    const subjectSelect = document.getElementById('gradesheet-subject');
+    const container = document.getElementById('gradesheet-container');
+    const actions = document.getElementById('gradesheet-actions');
+
+    subjectSelect.innerHTML = '<option value="">Select subject…</option>';
+    container.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Select a section and subject above to begin.</p>';
+    actions.style.display = 'none';
+
+    const idx = select.value;
+    if (idx === '') return;
+    const { stream } = gradeSheetSections[idx];
+
+    try {
+        const res = await apiFetch(`${API_BASE}/api/teacher/eligible-subjects?teacher_id=${CURRENT_TEACHER_ID}&stream=${encodeURIComponent(stream)}`);
+        const subjects = res.ok ? await res.json() : [];
+        subjectSelect.innerHTML = '<option value="">Select subject…</option>' +
+            subjects.map(s => `<option value="${s.subject_id}">${escapeHtml(s.subject_name)}</option>`).join('');
+    } catch (err) {
+        console.error("Error loading subjects for grade sheet:", err);
+    }
+};
+
+window.onGradeSheetSubjectChange = async () => {
+    const sectionSelect = document.getElementById('gradesheet-section');
+    const subjectSelect = document.getElementById('gradesheet-subject');
+    const container = document.getElementById('gradesheet-container');
+    const actions = document.getElementById('gradesheet-actions');
+
+    const idx = sectionSelect.value;
+    const subjectId = subjectSelect.value;
+    if (idx === '' || !subjectId) {
+        actions.style.display = 'none';
+        return;
+    }
+
+    const { class_level, section, stream } = gradeSheetSections[idx];
+    container.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Loading students…</p>';
+
+    try {
+        const res = await apiFetch(`${API_BASE}/api/teacher/my-students?class_level=${encodeURIComponent(class_level)}&section=${encodeURIComponent(section)}&stream=${encodeURIComponent(stream)}`);
+        gradeSheetStudents = res.ok ? await res.json() : [];
+        renderGradeSheetTable(gradeSheetStudents);
+        actions.style.display = gradeSheetStudents.length ? 'flex' : 'none';
+        const status = document.getElementById('gradesheet-status');
+        if (status) status.textContent = '';
+    } catch (err) {
+        console.error("Error loading students for grade sheet:", err);
+        container.innerHTML = '<p style="color:#b91c1c; font-size:0.85rem;">Could not load students for this section.</p>';
+    }
+};
+
+function renderGradeSheetTable(students) {
+    const container = document.getElementById('gradesheet-container');
+    if (!container) return;
+
+    if (!students.length) {
+        container.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">No students found in this section.</p>';
+        return;
+    }
+
+    const headerCells = GRADESHEET_ASSESSMENT_TYPES.map(type => `<th>${escapeHtml(assessmentTypeLabel(type))}</th>`).join('');
+
+    const rows = students.map(s => {
+        const fullName = [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' ');
+        const cells = GRADESHEET_ASSESSMENT_TYPES.map(type => `
+            <td>
+                <label for="gs-${s.student_id}-${type}" class="sr-only">${escapeHtml(assessmentTypeLabel(type))} score for ${escapeHtml(fullName)}</label>
+                <input type="number" min="0" max="100" class="gradesheet-input"
+                       id="gs-${s.student_id}-${type}"
+                       data-student-id="${s.student_id}"
+                       data-type="${type}"
+                       oninput="this.classList.add('gradesheet-input-dirty'); this.classList.remove('gradesheet-input-saved','gradesheet-input-error');">
+            </td>`).join('');
+        return `
+            <tr data-search-text="${escapeHtml((fullName + ' ' + s.student_id).toLowerCase())}">
+                <td><strong>${escapeHtml(s.student_id)}</strong><br><span style="color:#64748b;">${escapeHtml(fullName)}</span></td>
+                ${cells}
+            </tr>`;
+    }).join('');
+
+    container.innerHTML = `
+        <div class="gradesheet-table-wrap">
+            <table class="gradesheet-table">
+                <thead><tr><th>Student</th>${headerCells}</tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>`;
+}
+
+window.applyGradeSheetSearch = () => {
+    const term = (document.getElementById('gradesheet-search')?.value || '').trim().toLowerCase();
+    document.querySelectorAll('#gradesheet-container tbody tr').forEach(row => {
+        const text = row.getAttribute('data-search-text') || '';
+        row.style.display = !term || text.includes(term) ? '' : 'none';
+    });
+};
+
+// Saves every cell that has a value typed into it (marked "dirty" by the
+// oninput handler above) — untouched cells are left alone entirely, so
+// re-saving the same sheet twice doesn't create duplicate mark rows for
+// cells nobody actually changed.
+window.saveGradeSheet = async () => {
+    const subjectId = document.getElementById('gradesheet-subject')?.value;
+    const status = document.getElementById('gradesheet-status');
+    if (!subjectId) { showAlertModal("Please select a subject first."); return; }
+
+    const dirtyInputs = Array.from(document.querySelectorAll('#gradesheet-container .gradesheet-input-dirty'))
+        .filter(input => input.value !== '');
+
+    if (dirtyInputs.length === 0) {
+        showAlertModal("No new scores entered to save.");
+        return;
+    }
+
+    if (status) status.textContent = `Saving ${dirtyInputs.length} score(s)…`;
+
+    const results = await Promise.allSettled(dirtyInputs.map(async (input) => {
+        const student_id = input.dataset.studentId;
+        const type = input.dataset.type;
+        const score = parseInt(input.value, 10);
+
+        if (isNaN(score) || score < 0 || score > 100) {
+            throw new Error('Score must be between 0 and 100');
+        }
+
+        const res = await apiFetch(`${API_BASE}/api/add-mark`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ student_id, subject_id: subjectId, type, score })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Failed to save');
+        return input;
+    }));
+
+    let successCount = 0;
+    let firstError = null;
+    results.forEach((result, i) => {
+        const input = dirtyInputs[i];
+        if (result.status === 'fulfilled') {
+            successCount++;
+            input.classList.remove('gradesheet-input-dirty', 'gradesheet-input-error');
+            input.classList.add('gradesheet-input-saved');
+        } else {
+            input.classList.add('gradesheet-input-error');
+            input.classList.remove('gradesheet-input-dirty');
+            if (!firstError) firstError = result.reason?.message || 'Failed to save';
+        }
+    });
+
+    const failCount = dirtyInputs.length - successCount;
+    if (status) {
+        status.textContent = failCount === 0
+            ? `Saved ${successCount} score(s).`
+            : `Saved ${successCount} score(s), ${failCount} failed.`;
+    }
+    if (failCount > 0) {
+        showAlertModal(`${failCount} score(s) could not be saved. ${firstError ? 'First error: ' + firstError : ''} Cells with a red border were not saved — fix and try again.`);
+    } else {
+        showSuccessModal(`Saved ${successCount} score(s) successfully!`);
+    }
+};

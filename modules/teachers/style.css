@@ -198,6 +198,25 @@ td { padding: 15px; border-bottom: 1px solid #e2e8f0; }
 /* Badges */
 .badge { padding: 5px 10px; border-radius: 20px; font-size: 0.85rem; }
 .badge-success { background: #dcfce7; color: #166534; }
+
+/* Section Grade Sheet (bulk marks entry table) */
+.gradesheet-table-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid #e2e8f0; }
+.gradesheet-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.gradesheet-table th, .gradesheet-table td { padding: 8px 10px; border-bottom: 1px solid #e2e8f0; white-space: nowrap; }
+.gradesheet-table th { background: #1a2a47; color: white; text-align: left; position: sticky; top: 0; }
+.gradesheet-table td:first-child, .gradesheet-table th:first-child { position: sticky; left: 0; background: #f8fafc; z-index: 1; }
+.gradesheet-table th:first-child { background: #1a2a47; z-index: 2; }
+.gradesheet-input {
+    width: 56px;
+    padding: 6px 4px;
+    text-align: center;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    font-size: 0.85rem;
+}
+.gradesheet-input.gradesheet-input-dirty { border-color: #3b5998; background: #eef2ff; }
+.gradesheet-input.gradesheet-input-saved { border-color: #16a34a; background: #f0fdf4; }
+.gradesheet-input.gradesheet-input-error { border-color: #dc2626; background: #fef2f2; }
 .badge-female { background: #fce7f3; color: #9d174d; }
 .btn-icon { background: none; border: none; cursor: pointer; font-size: 1.2rem; }
 .file-btn {

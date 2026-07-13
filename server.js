@@ -11,6 +11,8 @@ import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import sizeOf from 'image-size';
+import heicConvert from 'heic-convert';
+import puppeteer from 'puppeteer';
 import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, ImageRun, BorderStyle } from 'docx';
 
 dotenv.config();
@@ -92,8 +94,8 @@ function toDateOnly(d) {
 }
 const JWT_EXPIRES_IN = '30m'; // short-lived on purpose — see refresh notes below
 
-function issueAuthToken(res, { user_id, role, school_id }) {
-    const token = jwt.sign({ user_id, role, school_id }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+function issueAuthToken(res, { user_id, role, school_id, title }) {
+    const token = jwt.sign({ user_id, role, school_id, title: title || null }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     res.cookie('auth_token', token, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production', // requires HTTPS in production
@@ -128,6 +130,23 @@ function requireRole(...allowedRoles) {
         }
         next();
     };
+}
+
+// Requires not just an admin_users account, but specifically the one
+// whose admin_users.title = 'Principal'. This assumes admin_users has a
+// `title` column — ADD IT if it doesn't exist yet:
+//   ALTER TABLE admin_users ADD COLUMN title VARCHAR(50) NULL;
+// then set the actual principal's row: title = 'Principal'. Without that
+// column populated, every admin_users login will fail this check (title
+// comes back null from the token, matching no one) — safer to fail
+// closed than to silently let any admin account act as Principal, which
+// is exactly the gap this replaces (see MANAGEMENT_ROLES below and the
+// admin_users notes on /api/attendance/checkin and /api/announcements).
+function requirePrincipal(req, res, next) {
+    if (!req.user || req.user.role !== 'admin_users' || req.user.title !== 'Principal') {
+        return res.status(403).json({ error: "This action is restricted to the Principal's account." });
+    }
+    next();
 }
 
 // In-memory store for teacher notification/security preferences.
@@ -366,6 +385,49 @@ function handleUploadError(uploadMiddleware) {
             next();
         });
     };
+}
+
+// HEIC/HEIF files are ISO-BMFF containers: bytes 4-8 spell "ftyp", and
+// bytes 8-12 carry a brand like "heic"/"heix"/"mif1"/"heim"/"heis"/
+// "hevc"/"hevx". We check the actual bytes rather than the filename
+// extension, since some phones/share sheets omit the extension or get
+// it wrong — our multer filename sanitizer just carries through
+// whatever (if anything) it was given.
+function isLikelyHeic(buffer) {
+    if (buffer.length < 12) return false;
+    if (buffer.toString('ascii', 4, 8) !== 'ftyp') return false;
+    const brand = buffer.toString('ascii', 8, 12);
+    return ['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'mif1', 'msf1'].includes(brand);
+}
+
+// HEIC is the default photo format on iPhones (unless "Most Compatible"
+// is chosen in Camera settings), but neither `image-size` nor browsers
+// (`<img>` tags) can reliably read/render it. Rather than reject these
+// uploads outright, convert them to JPEG on disk and hand back an
+// updated file descriptor pointing at the new file. Returns null (and
+// leaves the original file untouched) if the file isn't HEIC, or if
+// conversion fails for some other reason — callers fall back to their
+// normal "unsupported/corrupted file" handling in that case.
+async function convertHeicIfNeeded(file) {
+    let buffer;
+    try {
+        buffer = fs.readFileSync(file.path);
+    } catch {
+        return null;
+    }
+    if (!isLikelyHeic(buffer)) return null;
+
+    try {
+        const outputBuffer = await heicConvert({ buffer, format: 'JPEG', quality: 0.92 });
+        const newFilename = file.filename.replace(/\.[^./]*$/, '') + '.jpg';
+        const newPath = path.join(path.dirname(file.path), newFilename);
+        fs.writeFileSync(newPath, outputBuffer);
+        fs.unlink(file.path, () => {}); // remove the original HEIC now that we have the JPEG
+        return { ...file, filename: newFilename, path: newPath, mimetype: 'image/jpeg' };
+    } catch (err) {
+        console.error('HEIC conversion failed:', err);
+        return null;
+    }
 }
 
 // --- Student self-service routes ---
@@ -826,7 +888,315 @@ app.post('/api/attendance/manual-checkin', requireAuth, requireRole('teachers', 
     }
 });
 
+// --- Certificate PDF generation ---
+const CERTIFICATE_TEMPLATE_PATH = path.join(__dirname, 'templates', 'certificate.html');
+
+// Approximate Ethiopian calendar year for display (e.g. "2017 E.C."),
+// derived from a Gregorian date. Ethiopian New Year falls around Sept
+// 11 (Sept 12 the year before an Ethiopian leap year) — this uses Sept
+// 11 as a fixed cutoff, which is correct the large majority of years
+// but can be a day off right at the boundary. Good enough for a label
+// on a printed document; not used for any real date math elsewhere.
+function approximateEthiopianYear(gregorianDate) {
+    const d = new Date(gregorianDate);
+    const newYearCutoff = new Date(d.getFullYear(), 8, 11); // Sept 11
+    return d >= newYearCutoff ? d.getFullYear() - 7 : d.getFullYear() - 8;
+}
+
+// Certificate photo intentionally reuses the same id_photo_url as the ID
+// card (per your call) — embedded as a base64 data URI so Puppeteer
+// doesn't need network/file access mid-render, same reasoning as why
+// id-card.docx embeds the photo bytes directly rather than a URL.
+function buildPhotoHtml(photoUrl) {
+    if (!photoUrl) return '<div class="photo">Student<br>Photo</div>';
+    try {
+        const photoPath = path.join(__dirname, 'uploads', path.basename(photoUrl));
+        const buf = fs.readFileSync(photoPath);
+        const ext = path.extname(photoPath).slice(1).toLowerCase();
+        const mime = { png: 'image/png', gif: 'image/gif', webp: 'image/webp' }[ext] || 'image/jpeg';
+        return `<img class="photo" style="object-fit:cover;" src="data:${mime};base64,${buf.toString('base64')}" alt="Student photo">`;
+    } catch (err) {
+        console.error('certificate photo read failed:', err);
+        return '<div class="photo">Student<br>Photo</div>';
+    }
+}
+
+function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Fills the server-side certificate template (templates/certificate.html,
+// never served directly — see the route below) with one student's real
+// data via plain token replacement. The template's own <script> still
+// does all the per-subject math (totals, averages, ratings) exactly as
+// designed; this only injects the raw numbers and bio/school text.
+function renderCertificateHtml(data) {
+    let html = fs.readFileSync(CERTIFICATE_TEMPLATE_PATH, 'utf8');
+
+    const tokens = {
+        __REGION_AMH__: data.region_amh || '',
+        __REGION__: escapeHtml(data.region || '—'),
+        __SCHOOL_NAME_AMH__: data.school_name_amh || '',
+        __SCHOOL_NAME__: escapeHtml(data.school_name || 'School'),
+        __PHOTO_HTML__: data.photo_html,
+        __STUDENT_ID__: escapeHtml(data.student_id),
+        __STUDENT_NAME__: escapeHtml(data.student_name),
+        __SEX__: escapeHtml(data.sex || '—'),
+        __GRADE__: escapeHtml(data.grade),
+        __SECTION__: escapeHtml(data.section),
+        __STREAM__: escapeHtml(data.stream || '—'),
+        __ACADEMIC_YEAR__: escapeHtml(data.academic_year || '—'),
+        __ZONE__: escapeHtml(data.zone || '—'),
+        __WOREDA__: escapeHtml(data.woreda || '—'),
+        __TOWN__: escapeHtml(data.town || '—'),
+        __HOMEROOM_TEACHER_NAME__: escapeHtml(data.homeroom_teacher_name || '—')
+    };
+    for (const [token, value] of Object.entries(tokens)) {
+        html = html.split(token).join(value);
+    }
+
+    // Subjects/rank/absences travel as one JSON blob rather than flat
+    // tokens — JSON.stringify handles its own escaping; the extra
+    // </script>-breaking guard covers a subject name containing "</script>".
+    const dataJson = JSON.stringify({
+        subjects: data.subjects,
+        conduct: data.conduct,
+        absent_days_s1: data.absent_days_s1,
+        absent_days_s2: data.absent_days_s2,
+        rank: data.rank,
+        class_size: data.class_size,
+        verify_url: data.verify_url
+    }).replace(/</g, '\\u003c');
+    html = html.replace('__CERT_DATA_JSON__', dataJson);
+
+    return html;
+}
+
+// A single shared headless Chromium instance, launched lazily on first
+// use and reused across requests — launching a fresh browser per
+// request would make every certificate download several seconds slower
+// for no benefit. --no-sandbox is commonly required when running as
+// root in a container; drop it if your host runs Chromium as a
+// non-root user with proper OS sandboxing available.
+let _browserPromise = null;
+function getBrowser() {
+    if (!_browserPromise) {
+        _browserPromise = puppeteer.launch({ headless: 'new', args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+    }
+    return _browserPromise;
+}
+
 // --- Certificate ---
+// Rounds to 2 decimals without floating-point artifacts (e.g. 85 instead
+// of 84.99999999999999).
+function round2(n) {
+    return Math.round(n * 100) / 100;
+}
+
+// Each subject's Semester 1/2 total is already a 0-100 percentage (the 6
+// assessment types are pre-weighted to sum to 100), so a plain mean of
+// the two is a valid year-end percentage — e.g. 90 and 80 becomes 85.
+// Returns null if either semester is missing; a "year average" isn't
+// meaningful with only half the year's data.
+function yearAverage(s1, s2) {
+    if (s1 == null || s2 == null) return null;
+    return round2((Number(s1) + Number(s2)) / 2);
+}
+
+// Mean of a list of subject-level percentages (a term's subject totals,
+// or a set of subjects' year averages) — used for a student's OVERALL
+// average across all their subjects, as opposed to one subject's score.
+// Ignores nulls (e.g. a subject missing its year average because only
+// one semester exists) rather than treating them as zero.
+function overallAverage(values) {
+    const present = values.filter(v => v != null).map(Number);
+    if (present.length === 0) return null;
+    return round2(present.reduce((a, b) => a + b, 0) / present.length);
+}
+
+// Standard "competition ranking": ties share the same rank, and the next
+// distinct score skips ahead accordingly (1, 2, 2, 4 — not 1, 2, 2, 3).
+// Entries with a null score are excluded entirely — not ranked, not
+// counted toward class_size — rather than being placed last, since a
+// null here means that student's data isn't complete/comparable.
+// Returns a Map from student_id -> { rank, class_size }.
+function rankStudents(entries) {
+    const ranked = entries.filter(e => e.score != null).sort((a, b) => b.score - a.score);
+    const class_size = ranked.length;
+    const result = new Map();
+    let rank = 0;
+    let seen = 0;
+    let lastScore = null;
+    ranked.forEach(e => {
+        seen++;
+        if (e.score !== lastScore) {
+            rank = seen;
+            lastScore = e.score;
+        }
+        result.set(String(e.student_id), { rank, class_size });
+    });
+    return result;
+}
+
+// Every student's overall average for one term, within one class_level +
+// section + stream — the same pool of students a subject teacher pushed
+// scores for. This is the comparison group rank is computed against, so
+// it deliberately mirrors /api/homeroom/section-report's query rather
+// than e.g. "everyone currently enrolled" (which could include students
+// who joined after the push, or exclude ones who've since left).
+async function getSectionTermAverages(school_id, class_level, section, stream, term) {
+    const [scoreRows] = await pool.query(
+        `SELECT prs.student_id, prs.total_score
+         FROM pushed_report_scores prs
+         JOIN pushed_reports pr ON pr.push_id = prs.push_id AND pr.school_id = prs.school_id
+         WHERE pr.school_id = ? AND pr.class_level = ? AND pr.section = ? AND pr.stream = ? AND pr.term = ?`,
+        [school_id, class_level, section, stream, term]
+    );
+    const byStudent = {};
+    scoreRows.forEach(r => {
+        if (!byStudent[r.student_id]) byStudent[r.student_id] = [];
+        byStudent[r.student_id].push(Number(r.total_score));
+    });
+    return Object.keys(byStudent).map(student_id => ({
+        student_id,
+        score: overallAverage(byStudent[student_id])
+    }));
+}
+
+// Every student's year average within one class_level + section + stream
+// — pairs each student's two semester averages the same way a single
+// student's year_average is computed (yearAverage/overallAverage above),
+// so an individual's rank and the class's rank list can never disagree
+// on how the underlying number was calculated.
+async function getSectionYearAverages(school_id, class_level, section, stream) {
+    const [s1rows, s2rows] = await Promise.all([
+        getSectionTermAverages(school_id, class_level, section, stream, 'Semester 1'),
+        getSectionTermAverages(school_id, class_level, section, stream, 'Semester 2')
+    ]);
+    const s1map = new Map(s1rows.map(r => [String(r.student_id), r.score]));
+    const s2map = new Map(s2rows.map(r => [String(r.student_id), r.score]));
+    const studentIds = new Set([...s1map.keys(), ...s2map.keys()]);
+    return [...studentIds].map(student_id => ({
+        student_id,
+        score: yearAverage(s1map.get(student_id), s2map.get(student_id))
+    }));
+}
+
+// Every student's year average across the ENTIRE school, compared as one
+// pool regardless of grade — the comparison group for the school-wide
+// "top student" recognition award, as opposed to rankStudents()/
+// getSectionYearAverages() above, which only ever compare within one
+// section. Note this deliberately compares Grade 9 against Grade 12 on
+// the same scale, which your call was to do explicitly — worth knowing
+// since different grades take different subjects/difficulty. A separate,
+// lighter-weight query rather than looping getCertificateTerms() per
+// student, which would do several unnecessary extra queries per student
+// (rank, absences) that this feature doesn't need.
+//
+// For a student who has multiple completed (both-semesters-synced) class
+// levels on file (i.e. they were promoted after a prior full year), only
+// their MOST RECENT class level counts — that's their current standing,
+// not a past one.
+async function getSchoolYearLeaderboard(school_id) {
+    const [scoreRows] = await pool.query(
+        `SELECT prs.student_id, pr.class_level, pr.section, pr.stream, pr.term, prs.total_score
+         FROM pushed_report_scores prs
+         JOIN pushed_reports pr ON pr.push_id = prs.push_id AND pr.school_id = prs.school_id
+         WHERE pr.school_id = ?`,
+        [school_id]
+    );
+    const [syncRows] = await pool.query(
+        `SELECT class_level, section, stream, term FROM pushed_marks_reports WHERE school_id = ?`,
+        [school_id]
+    );
+    const syncedSet = new Set(syncRows.map(r => `${r.class_level}|${r.section}|${r.stream}|${r.term}`));
+
+    // student_id -> class_level -> { section, stream, s1: [scores], s2: [scores] }
+    const byStudent = {};
+    scoreRows.forEach(r => {
+        if (!byStudent[r.student_id]) byStudent[r.student_id] = {};
+        if (!byStudent[r.student_id][r.class_level]) {
+            byStudent[r.student_id][r.class_level] = { section: r.section, stream: r.stream, s1: [], s2: [] };
+        }
+        const bucket = byStudent[r.student_id][r.class_level];
+        if (r.term === 'Semester 1') bucket.s1.push(Number(r.total_score));
+        else if (r.term === 'Semester 2') bucket.s2.push(Number(r.total_score));
+    });
+
+    const leaderboard = [];
+    for (const student_id of Object.keys(byStudent)) {
+        let best = null;
+        for (const [class_level, entry] of Object.entries(byStudent[student_id])) {
+            const { section, stream, s1, s2 } = entry;
+            const s1Synced = syncedSet.has(`${class_level}|${section}|${stream}|Semester 1`);
+            const s2Synced = syncedSet.has(`${class_level}|${section}|${stream}|Semester 2`);
+            if (!s1Synced || !s2Synced) continue; // year rank only — same rule as everywhere else
+
+            const yearAvg = yearAverage(overallAverage(s1), overallAverage(s2));
+            if (yearAvg == null) continue;
+            if (!best || Number(class_level) > Number(best.class_level)) {
+                best = { class_level, section, stream, year_average: yearAvg };
+            }
+        }
+        if (best) leaderboard.push({ student_id, ...best });
+    }
+
+    leaderboard.sort((a, b) => b.year_average - a.year_average);
+    return leaderboard;
+}
+
+// Days absent within a term, inferred from attendance check-ins — the
+// same signal the Dashboard's attendance streak already uses (a
+// student_attendance row only ever gets written as 'present'; absence is
+// never recorded directly, just implied by a missing school-day row).
+// There's no explicit "term start/end date" anywhere in the schema, so
+// the term's boundary is approximated as: the day after the PREVIOUS
+// term was synced (or the student's account creation date, for a first
+// Semester 1) through the day THIS term was synced. This is an
+// approximation — if marks sync lags the actual last day of classes,
+// the count will run a little short — but it's the only boundary signal
+// available without adding a real academic-calendar table.
+async function countAbsentDays(student_id, school_id, class_level, section, stream, term, syncedAt) {
+    let startDate = null;
+
+    if (term === 'Semester 2') {
+        const [prevSync] = await pool.query(
+            `SELECT pushed_at FROM pushed_marks_reports
+             WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ? AND term = 'Semester 1'`,
+            [school_id, class_level, section, stream]
+        );
+        if (prevSync.length > 0) {
+            startDate = new Date(prevSync[0].pushed_at);
+            startDate.setDate(startDate.getDate() + 1); // day AFTER Semester 1 synced
+        }
+    }
+    if (!startDate) {
+        const [studentRows] = await pool.query(
+            'SELECT created_at FROM students WHERE student_id = ? AND school_id = ?',
+            [student_id, school_id]
+        );
+        startDate = studentRows.length > 0 ? new Date(studentRows[0].created_at) : new Date(syncedAt);
+    }
+    const endDate = new Date(syncedAt);
+    if (startDate > endDate) return 0;
+
+    const [presentRows] = await pool.query(
+        `SELECT attendance_date FROM student_attendance
+         WHERE student_id = ? AND school_id = ? AND status = 'present'
+           AND attendance_date >= ? AND attendance_date <= ?`,
+        [student_id, school_id, toDateOnly(startDate), toDateOnly(endDate)]
+    );
+    const presentSet = new Set(presentRows.map(r => toDateOnly(new Date(r.attendance_date))));
+
+    let absentDays = 0;
+    const cursor = new Date(startDate);
+    while (cursor <= endDate) {
+        if (isSchoolDay(cursor) && !presentSet.has(toDateOnly(cursor))) absentDays++;
+        cursor.setDate(cursor.getDate() + 1);
+    }
+    return absentDays;
+}
+
 // Built on student_enrollment_history (what class/section/stream/term the
 // student was actually in each year) plus the existing push pipeline:
 // a term counts as "synced" only if pushed_marks_reports has a row for
@@ -834,54 +1204,409 @@ app.post('/api/attendance/manual-checkin', requireAuth, requireRole('teachers', 
 // confirmed every subject was pushed and forwarded to Academic VP. The
 // certificate as a whole is only "ready" once every term in the student's
 // history is synced this way.
-app.get('/api/student/my-certificate', requireAuth, requireRole('students'), async (req, res) => {
-    try {
-        const [historyRows] = await pool.query(
-            `SELECT class_level, section, stream, term FROM student_enrollment_history
-             WHERE student_id = ? AND school_id = ?
-             ORDER BY class_level, term`,
-            [req.user.user_id, req.user.school_id]
+// Shared: builds each term's sync status (plus score breakdown) from
+// enrollment history + the push pipeline. Used by both /my-certificate
+// (which needs the score breakdown to display) and /request-certificate
+// (which only needs the ready/synced verdict) — keeping the query logic
+// in one place means the two can't drift out of sync on what "ready"
+// means, which is exactly what caused an earlier bug here.
+async function getCertificateTerms(student_id, school_id) {
+    const [historyRows] = await pool.query(
+        `SELECT class_level, section, stream, term FROM student_enrollment_history
+         WHERE student_id = ? AND school_id = ?
+         ORDER BY class_level, term`,
+        [student_id, school_id]
+    );
+
+    return Promise.all(historyRows.map(async (h) => {
+        const [syncRows] = await pool.query(
+            `SELECT pushed_at FROM pushed_marks_reports
+             WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ? AND term = ?`,
+            [school_id, h.class_level, h.section, h.stream, h.term]
+        );
+        const synced = syncRows.length > 0;
+
+        const [scoreRows] = await pool.query(
+            `SELECT s.subject_name, prs.total_score
+             FROM pushed_report_scores prs
+             JOIN pushed_reports pr ON pr.push_id = prs.push_id AND pr.school_id = prs.school_id
+             JOIN subjects s ON s.subject_id = pr.subject_id AND s.school_id = pr.school_id
+             WHERE prs.student_id = ? AND pr.school_id = ? AND pr.class_level = ?
+               AND pr.section = ? AND pr.stream = ? AND pr.term = ?`,
+            [student_id, school_id, h.class_level, h.section, h.stream, h.term]
         );
 
-        if (historyRows.length === 0) {
+        // Rank only gets computed once this term is actually synced — an
+        // unsynced term could still have partial/incomplete pushes for
+        // other students in the section, which would make any comparison
+        // meaningless (and misleading if printed on a certificate).
+        let rank = null, class_size = null;
+        if (synced) {
+            const sectionAverages = await getSectionTermAverages(school_id, h.class_level, h.section, h.stream, h.term);
+            const ranks = rankStudents(sectionAverages);
+            const mine = ranks.get(String(student_id));
+            if (mine) { rank = mine.rank; class_size = mine.class_size; }
+        }
+
+        const days_absent = synced
+            ? await countAbsentDays(student_id, school_id, h.class_level, h.section, h.stream, h.term, syncRows[0].pushed_at)
+            : null;
+
+        return {
+            class_level: h.class_level,
+            section: h.section,
+            stream: h.stream,
+            term: h.term,
+            synced,
+            synced_at: synced ? syncRows[0].pushed_at : null,
+            subjects: scoreRows,
+            term_total: scoreRows.reduce((s, r) => s + Number(r.total_score), 0),
+            term_average: overallAverage(scoreRows.map(r => r.total_score)),
+            rank,
+            class_size,
+            days_absent
+        };
+    }));
+}
+
+// Once BOTH semesters of a class level are synced, pair up each subject's
+// two semester totals into a year average, plus an overall year average
+// across all of that class level's subjects, plus this student's year
+// RANK within their section (see getSectionYearAverages). A class level
+// with only one semester synced doesn't get an entry at all — per your
+// call, year/rank figures wait for the full year, though each semester's
+// own average and rank (term_average/rank above) are already visible as
+// soon as that semester syncs.
+async function buildYearSummaries(student_id, school_id, terms) {
+    const classLevels = [...new Set(terms.map(t => t.class_level))];
+    const summaries = await Promise.all(classLevels.map(async (class_level) => {
+        const s1 = terms.find(t => t.class_level === class_level && t.term === 'Semester 1');
+        const s2 = terms.find(t => t.class_level === class_level && t.term === 'Semester 2');
+        if (!s1?.synced || !s2?.synced) return null;
+
+        const subjectNames = [...new Set([...s1.subjects, ...s2.subjects].map(s => s.subject_name))].sort();
+        const subjects = subjectNames.map(name => {
+            const s1v = s1.subjects.find(s => s.subject_name === name)?.total_score ?? null;
+            const s2v = s2.subjects.find(s => s.subject_name === name)?.total_score ?? null;
+            return {
+                subject_name: name,
+                semester_1: s1v != null ? Number(s1v) : null,
+                semester_2: s2v != null ? Number(s2v) : null,
+                year_average: yearAverage(s1v, s2v)
+            };
+        });
+
+        // s1 and s2 should normally share the same section/stream (a
+        // student doesn't usually change section mid-year within one
+        // class level) — s2's is used since it's the more recent of the two.
+        const sectionAverages = await getSectionYearAverages(school_id, class_level, s2.section, s2.stream);
+        const ranks = rankStudents(sectionAverages);
+        const mine = ranks.get(String(student_id));
+
+        return {
+            class_level,
+            subjects,
+            year_average: overallAverage(subjects.map(s => s.year_average)),
+            rank: mine ? mine.rank : null,
+            class_size: mine ? mine.class_size : null,
+            days_absent: (s1.days_absent ?? 0) + (s2.days_absent ?? 0)
+        };
+    }));
+    return summaries.filter(Boolean);
+}
+
+// A class level only counts as done once EVERY term in TERMS (both
+// Semester 1 and Semester 2) is represented in history and synced —
+// not just whichever terms happen to have been pushed so far. Without
+// this, a class level with only Semester 1 pushed would pass a plain
+// ".every(synced)" check on its one existing row, making the
+// certificate "ready" right after Semester 1 closes instead of waiting
+// for Semester 2 as intended.
+function isCertificateReady(termRows) {
+    if (termRows.length === 0) return false;
+    const classLevels = [...new Set(termRows.map(t => t.class_level))];
+    return classLevels.every(level =>
+        TERMS.every(term => termRows.some(t => t.class_level === level && t.term === term && t.synced))
+    );
+}
+
+app.get('/api/student/my-certificate', requireAuth, requireRole('students'), async (req, res) => {
+    try {
+        const terms = await getCertificateTerms(req.user.user_id, req.user.school_id);
+
+        if (terms.length === 0) {
             return res.json({ ready: false, terms: [], message: "No pushed marks history yet." });
         }
 
-        const terms = await Promise.all(historyRows.map(async (h) => {
-            const [syncRows] = await pool.query(
-                `SELECT pushed_at FROM pushed_marks_reports
-                 WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ? AND term = ?`,
-                [req.user.school_id, h.class_level, h.section, h.stream, h.term]
-            );
-            const synced = syncRows.length > 0;
-
-            const [scoreRows] = await pool.query(
-                `SELECT s.subject_name, prs.total_score
-                 FROM pushed_report_scores prs
-                 JOIN pushed_reports pr ON pr.push_id = prs.push_id AND pr.school_id = prs.school_id
-                 JOIN subjects s ON s.subject_id = pr.subject_id AND s.school_id = pr.school_id
-                 WHERE prs.student_id = ? AND pr.school_id = ? AND pr.class_level = ?
-                   AND pr.section = ? AND pr.stream = ? AND pr.term = ?`,
-                [req.user.user_id, req.user.school_id, h.class_level, h.section, h.stream, h.term]
-            );
-
-            return {
-                class_level: h.class_level,
-                section: h.section,
-                stream: h.stream,
-                term: h.term,
-                synced,
-                synced_at: synced ? syncRows[0].pushed_at : null,
-                subjects: scoreRows,
-                term_total: scoreRows.reduce((s, r) => s + Number(r.total_score), 0)
-            };
-        }));
-
-        const ready = terms.every(t => t.synced);
-        res.json({ ready, terms });
+        const ready = isCertificateReady(terms);
+        const year_summary = await buildYearSummaries(req.user.user_id, req.user.school_id, terms);
+        res.json({ ready, terms, year_summary });
     } catch (err) {
         console.error("/api/student/my-certificate error:", err);
         res.status(500).json({ error: "Could not load certificate data" });
+    }
+});
+
+// Official (synced) averages for the student's own Dashboard / My Marks
+// pages. Same underlying data as the certificate, but without the
+// certificate's full "every term ready" gate — a single synced
+// semester's average is meaningful to show on its own, well before the
+// whole certificate (or the whole year) is ready.
+app.get('/api/student/my-average', requireAuth, requireRole('students'), async (req, res) => {
+    try {
+        const terms = await getCertificateTerms(req.user.user_id, req.user.school_id);
+        const year_summary = await buildYearSummaries(req.user.user_id, req.user.school_id, terms);
+        res.json({ terms, year_summary });
+    } catch (err) {
+        console.error("/api/student/my-average error:", err);
+        res.status(500).json({ error: "Could not load your averages" });
+    }
+});
+
+// The actual downloadable certificate — gated behind BOTH readiness
+// (every term synced) AND an approved certificate_requests row (homeroom
+// sign-off). Readiness alone means the data exists; approval is the
+// actual human decision to release it. Uses the most recently completed
+// class level (last entry in year_summary) as the one to print.
+app.get('/api/student/certificate.pdf', requireAuth, requireRole('students'), async (req, res) => {
+    try {
+        const terms = await getCertificateTerms(req.user.user_id, req.user.school_id);
+        if (!isCertificateReady(terms)) {
+            return res.status(400).json({ error: "Your certificate isn't ready yet — every term needs to be synced by your homeroom teacher first." });
+        }
+
+        const [approvedRows] = await pool.query(
+            `SELECT request_id FROM certificate_requests WHERE student_id = ? AND school_id = ? AND status = 'approved'`,
+            [req.user.user_id, req.user.school_id]
+        );
+        if (approvedRows.length === 0) {
+            return res.status(400).json({ error: "Your certificate request hasn't been approved by your homeroom teacher yet." });
+        }
+
+        const year_summary = await buildYearSummaries(req.user.user_id, req.user.school_id, terms);
+        if (year_summary.length === 0) {
+            return res.status(400).json({ error: "No completed academic year found." });
+        }
+        const latest = year_summary[year_summary.length - 1];
+        const s1 = terms.find(t => t.class_level === latest.class_level && t.term === 'Semester 1');
+        const s2 = terms.find(t => t.class_level === latest.class_level && t.term === 'Semester 2');
+
+        const [studentRows] = await pool.query(
+            `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.sex, st.id_photo_url,
+                    sc.school_name, sc.zone, sc.woreda, sc.region
+             FROM students st
+             LEFT JOIN schools sc ON sc.id = st.school_id
+             WHERE st.student_id = ? AND st.school_id = ?`,
+            [req.user.user_id, req.user.school_id]
+        );
+        if (studentRows.length === 0) return res.status(404).json({ error: "Student record not found" });
+        const s = studentRows[0];
+
+        const [homeroomRows] = await pool.query(
+            `SELECT first_name, middle_name, last_name FROM teachers
+             WHERE school_id = ? AND homeroom_class_level = ? AND homeroom_section = ? AND homeroom_stream = ?`,
+            [req.user.school_id, latest.class_level, s2.section, s2.stream]
+        );
+        const homeroomTeacherName = homeroomRows.length > 0
+            ? [homeroomRows[0].first_name, homeroomRows[0].middle_name, homeroomRows[0].last_name].filter(Boolean).join(' ')
+            : '';
+
+        const html = renderCertificateHtml({
+            school_name: s.school_name,
+            region: s.region,
+            zone: s.zone,
+            woreda: s.woreda,
+            town: s.woreda, // no separate "town" field on file — closest available match
+            photo_html: buildPhotoHtml(s.id_photo_url),
+            student_id: s.student_id,
+            student_name: [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' '),
+            sex: s.sex,
+            grade: latest.class_level,
+            section: s2.section,
+            stream: s2.stream,
+            academic_year: s2.synced_at ? `${approximateEthiopianYear(s2.synced_at)} E.C.` : null,
+            homeroom_teacher_name: homeroomTeacherName,
+            subjects: latest.subjects.map(sub => ({ en: sub.subject_name, amh: null, s1: sub.semester_1, s2: sub.semester_2 })),
+            conduct: null, // no conduct-tracking feature yet — left blank on purpose, not fabricated
+            absent_days_s1: s1 ? s1.days_absent : null,
+            absent_days_s2: s2 ? s2.days_absent : null,
+            rank: latest.rank,
+            class_size: latest.class_size,
+            verify_url: `${req.protocol}://${req.get('host')}/verify/${s.student_id}`
+        });
+
+        const browser = await getBrowser();
+        const page = await browser.newPage();
+        try {
+            await page.setContent(html, { waitUntil: 'networkidle0' });
+            const pdfBuffer = await page.pdf({ printBackground: true, preferCSSPageSize: true });
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `attachment; filename="Certificate-${s.student_id}.pdf"`);
+            res.send(pdfBuffer);
+        } finally {
+            await page.close();
+        }
+    } catch (err) {
+        console.error("/api/student/certificate.pdf error:", err);
+        res.status(500).json({ error: "Could not generate certificate" });
+    }
+});
+
+// Public verification page for the certificate's QR code — confirms a
+// certificate is genuine without exposing any grades. Deliberately
+// unauthenticated (that's the point: anyone holding the physical
+// certificate can scan and check it), but only ever returns pass/fail
+// plus name/school — never marks, rank, or attendance.
+app.get('/verify/:student_id', async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, sc.school_name,
+                    (SELECT COUNT(*) FROM certificate_requests
+                     WHERE student_id = st.student_id AND school_id = st.school_id AND status = 'approved') AS approved_count
+             FROM students st
+             LEFT JOIN schools sc ON sc.id = st.school_id
+             WHERE st.student_id = ?`,
+            [req.params.student_id]
+        );
+        if (rows.length === 0 || rows[0].approved_count === 0) {
+            return res.status(404).send(
+                '<!doctype html><html><body style="font-family:sans-serif;text-align:center;padding:60px;">' +
+                '<h2>Not found</h2><p>No approved certificate matches this code.</p></body></html>'
+            );
+        }
+        const s = rows[0];
+        const fullName = escapeHtml([s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' '));
+        res.send(
+            '<!doctype html><html><body style="font-family:sans-serif;text-align:center;padding:60px;">' +
+            '<h2>&#10003; Certificate Verified</h2>' +
+            `<p>This certificate was issued by <strong>${escapeHtml(s.school_name || 'the school')}</strong> to <strong>${fullName}</strong> (ID ${escapeHtml(s.student_id)}).</p>` +
+            '</body></html>'
+        );
+    } catch (err) {
+        console.error("/verify error:", err);
+        res.status(500).send('Could not verify certificate');
+    }
+});
+
+// --- School-wide Recognition Award ---
+// Requires a new table — run this migration if it doesn't exist yet:
+//   CREATE TABLE recognition_awards (
+//     award_id INT AUTO_INCREMENT PRIMARY KEY,
+//     student_id VARCHAR(50) NOT NULL,
+//     school_id INT NOT NULL,
+//     class_level VARCHAR(20) NOT NULL,
+//     year_average DECIMAL(5,2) NOT NULL,
+//     awarded_by VARCHAR(50) NOT NULL,   -- admin_id of the Principal
+//     awarded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     UNIQUE KEY one_award_per_student_per_level (student_id, school_id, class_level)
+//   );
+// Also requires admin_users.title = 'Principal' on the actual principal's
+// account — see requirePrincipal() above.
+
+// Principal reviews who's currently at the top of the whole school
+// (across every grade) before deciding whether to award recognition.
+// Deliberately shows the top few, not just #1 — a genuine tie for first
+// means more than one student may deserve it, and it's the Principal's
+// call which (or how many) to actually award.
+app.get('/api/principal/school-leaderboard', requireAuth, requirePrincipal, async (req, res) => {
+    try {
+        const leaderboard = await getSchoolYearLeaderboard(req.user.school_id);
+        if (leaderboard.length === 0) {
+            return res.json({ class_size: 0, leaders: [], ranked: [] });
+        }
+
+        // "Average Rank" — rank is based on each student's overall YEAR
+        // AVERAGE across their own subjects, not e.g. a raw total (which
+        // would unfairly favor a student who happens to take more
+        // subjects than another). Same competition-ranking rules as
+        // every other leaderboard in this app: ties share a rank, and
+        // the next distinct score skips ahead accordingly.
+        const ranks = rankStudents(leaderboard.map(l => ({ student_id: l.student_id, score: l.year_average })));
+        const class_size = [...ranks.values()][0]?.class_size ?? 0;
+
+        const [studentRows] = await pool.query(
+            `SELECT student_id, first_name, middle_name, last_name FROM students
+             WHERE school_id = ? AND student_id IN (?)`,
+            [req.user.school_id, leaderboard.map(l => l.student_id)]
+        );
+        const namesById = new Map(studentRows.map(s => [String(s.student_id), [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' ')]));
+
+        const [alreadyAwarded] = await pool.query(
+            `SELECT student_id FROM recognition_awards WHERE school_id = ? AND student_id IN (?)`,
+            [req.user.school_id, leaderboard.map(l => l.student_id)]
+        );
+        const awardedSet = new Set(alreadyAwarded.map(r => String(r.student_id)));
+
+        const ranked = leaderboard.map(l => ({
+            ...l,
+            full_name: namesById.get(String(l.student_id)) || null,
+            rank: ranks.get(String(l.student_id))?.rank ?? null,
+            already_awarded: awardedSet.has(String(l.student_id))
+        }));
+
+        // Rank 1 by construction — kept as its own field since a genuine
+        // tie means more than one student shares it, and that's who's
+        // actually eligible for the award below, not just "whoever sorted first."
+        const leaders = ranked.filter(l => l.rank === 1);
+
+        res.json({ class_size, leaders, ranked });
+    } catch (err) {
+        console.error("school-leaderboard error:", err);
+        res.status(500).json({ error: "Could not load the school leaderboard" });
+    }
+});
+
+// The actual award — one action, by the Principal, that both confirms
+// and issues it (there's no separate "request" step here the way there
+// is for a student's own certificate, since the school computes the
+// leader itself; the Principal's role is to sign off on releasing it).
+// Only allowed for a student currently ranked #1 (Average Rank, ties
+// included) — not open discretion to award anyone, so a Principal can't
+// accidentally (or deliberately) recognize someone who isn't really leading.
+app.post('/api/principal/recognition-awards', requireAuth, requirePrincipal, async (req, res) => {
+    const { student_id } = req.body;
+    if (!student_id) return res.status(400).json({ error: "student_id is required" });
+
+    try {
+        const leaderboard = await getSchoolYearLeaderboard(req.user.school_id);
+        if (leaderboard.length === 0) {
+            return res.status(400).json({ error: "No student has a completed, synced year yet." });
+        }
+        const ranks = rankStudents(leaderboard.map(l => ({ student_id: l.student_id, score: l.year_average })));
+        const mine = ranks.get(String(student_id));
+        if (!mine || mine.rank !== 1) {
+            return res.status(400).json({ error: "This student isn't currently ranked #1 school-wide (Average Rank)." });
+        }
+        const entry = leaderboard.find(l => String(l.student_id) === String(student_id));
+
+        await pool.query(
+            `INSERT INTO recognition_awards (student_id, school_id, class_level, year_average, awarded_by)
+             VALUES (?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE year_average = VALUES(year_average), awarded_by = VALUES(awarded_by), awarded_at = CURRENT_TIMESTAMP`,
+            [entry.student_id, req.user.school_id, entry.class_level, entry.year_average, req.user.user_id]
+        );
+
+        res.json({ message: "Recognition award issued.", student_id: entry.student_id, class_level: entry.class_level, year_average: entry.year_average });
+    } catch (err) {
+        console.error("recognition-award issue error:", err);
+        res.status(500).json({ error: "Could not issue the recognition award" });
+    }
+});
+
+// A student's own view of whether they've received this — analogous to
+// /api/student/my-certificate, but for the recognition award instead.
+app.get('/api/student/my-recognition-award', requireAuth, requireRole('students'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT class_level, year_average, awarded_at FROM recognition_awards
+             WHERE student_id = ? AND school_id = ?
+             ORDER BY awarded_at DESC LIMIT 1`,
+            [req.user.user_id, req.user.school_id]
+        );
+        res.json(rows.length > 0 ? { awarded: true, ...rows[0] } : { awarded: false });
+    } catch (err) {
+        console.error("my-recognition-award error:", err);
+        res.status(500).json({ error: "Could not load recognition award status" });
     }
 });
 
@@ -907,6 +1632,9 @@ app.post('/api/student/upload-profile-photo', requireAuth, requireRole('students
             return res.status(400).json({ error: "Profile photo must be an image file (JPEG, PNG, GIF, or WEBP)." });
         }
 
+        const converted = await convertHeicIfNeeded(req.file);
+        if (converted) req.file = converted;
+
         const filePath = `/uploads/${req.file.filename}`;
         await pool.query(
             'UPDATE students SET profile_photo_url = ? WHERE student_id = ? AND school_id = ?',
@@ -927,12 +1655,15 @@ app.post('/api/student/upload-id-photo', requireAuth, requireRole('students'), h
             return res.status(400).json({ error: "ID photo must be an image file (JPEG, PNG, GIF, or WEBP)." });
         }
 
+        const converted = await convertHeicIfNeeded(req.file);
+        if (converted) req.file = converted;
+
         let dimensions;
         try {
             dimensions = sizeOf(req.file.path);
         } catch (dimErr) {
             fs.unlink(req.file.path, () => {});
-            return res.status(400).json({ error: "Could not read image dimensions — file may be corrupted." });
+            return res.status(400).json({ error: "Could not read image dimensions — file may be corrupted, or in a format we don't support. Please use a JPEG or PNG photo." });
         }
 
         // Smaller side must clear the minimum, whichever axis it's on —
@@ -1006,23 +1737,11 @@ app.get('/api/student/id-photo-request-status', requireAuth, requireRole('studen
 // rather than trusting the client, same as the existing readiness logic.
 app.post('/api/student/request-certificate', requireAuth, requireRole('students'), async (req, res) => {
     try {
-        const [historyRows] = await pool.query(
-            `SELECT class_level, section, stream, term FROM student_enrollment_history
-             WHERE student_id = ? AND school_id = ?`,
-            [req.user.user_id, req.user.school_id]
-        );
-        if (historyRows.length === 0) {
+        const terms = await getCertificateTerms(req.user.user_id, req.user.school_id);
+        if (terms.length === 0) {
             return res.status(400).json({ error: "No marks history yet — nothing to request a certificate for." });
         }
-        const syncChecks = await Promise.all(historyRows.map(async (h) => {
-            const [syncRows] = await pool.query(
-                `SELECT 1 FROM pushed_marks_reports
-                 WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ? AND term = ?`,
-                [req.user.school_id, h.class_level, h.section, h.stream, h.term]
-            );
-            return syncRows.length > 0;
-        }));
-        if (!syncChecks.every(Boolean)) {
+        if (!isCertificateReady(terms)) {
             return res.status(400).json({ error: "Not every term has been synced by your homeroom teacher yet — you can request a certificate once they all are." });
         }
 
@@ -1174,6 +1893,10 @@ app.post('/api/gallery', requireAuth, requireRole('admin_users'), handleUploadEr
         }
         if (req.file && !req.file.mimetype.startsWith('image/')) {
             return res.status(400).json({ error: "Photo must be an image file (JPEG, PNG, GIF, or WEBP)." });
+        }
+        if (req.file) {
+            const converted = await convertHeicIfNeeded(req.file);
+            if (converted) req.file = converted;
         }
 
         const lang = normalizeLanguage(language);
@@ -1662,6 +2385,9 @@ app.post('/api/teacher/update-avatar', requireAuth, handleUploadError(upload.sin
             return res.status(400).json({ error: "Avatar must be an image file (JPEG, PNG, GIF, or WEBP)." });
         }
 
+        const converted = await convertHeicIfNeeded(req.file);
+        if (converted) req.file = converted;
+
         const filePath = `/uploads/${req.file.filename}`;
 
         await pool.query(
@@ -2090,40 +2816,112 @@ app.get('/api/teacher/homeroom-info', requireAuth, async (req, res) => {
     }
 });
 
-// Single-student full report card: one row per subject that has been
-// pushed (for any term), showing Semester 1 total, Semester 2 total, and
-// the year average of the two. Subjects not yet pushed for a given term
-// simply don't have that term's column filled in.
-app.get('/api/homeroom/student-report/:student_id', requireAuth, async (req, res) => {
+// Single-student full report card, grouped by class level. Each class
+// level lists every subject pushed for it (Semester 1 total, Semester 2
+// total, year average), plus the student's OVERALL average per semester
+// and for the year. Grouping by class_level (rather than flattening by
+// subject name alone) matters because a subject name can repeat across
+// grades — e.g. "Math" in both Grade 9 and Grade 10 — and pairing
+// Semester 1/2 across two different years would silently produce a
+// meaningless "year average". A class level only gets semester/year
+// averages once that semester has actually been synced by homeroom (not
+// just partially pushed) — see semester_1_synced / semester_2_synced.
+app.get('/api/homeroom/student-report/:student_id', requireAuth, requireRole('teachers'), async (req, res) => {
     try {
+        // Only the student's CURRENT homeroom teacher can pull their full
+        // report — without this check, any authenticated teacher could
+        // view any student's grades just by knowing their student_id.
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) {
+            return res.status(403).json({ error: "You are not a homeroom teacher." });
+        }
+        const [studentRows] = await pool.query(
+            `SELECT student_id FROM students
+             WHERE student_id = ? AND school_id = ? AND class_level = ? AND section = ? AND stream = ?`,
+            [req.params.student_id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
+        );
+        if (studentRows.length === 0) {
+            return res.status(403).json({ error: "This student is not in your homeroom section." });
+        }
+
         const [rows] = await pool.query(
-            `SELECT s.subject_name, pr.term, prs.total_score
+            `SELECT s.subject_name, pr.class_level, pr.section, pr.stream, pr.term, prs.total_score
              FROM pushed_report_scores prs
              JOIN pushed_reports pr ON pr.push_id = prs.push_id AND pr.school_id = prs.school_id
              JOIN subjects s ON s.subject_id = pr.subject_id AND s.school_id = pr.school_id
              WHERE prs.student_id = ? AND prs.school_id = ?
-             ORDER BY s.subject_name, pr.term`,
+             ORDER BY pr.class_level, s.subject_name, pr.term`,
             [req.params.student_id, req.user.school_id]
         );
 
-        // Reshape into { subject_name: { 'Semester 1': x, 'Semester 2': y } }
-        const bySubject = {};
+        const byClassLevel = {};
         rows.forEach(row => {
-            if (!bySubject[row.subject_name]) bySubject[row.subject_name] = {};
-            bySubject[row.subject_name][row.term] = Number(row.total_score);
+            if (!byClassLevel[row.class_level]) {
+                byClassLevel[row.class_level] = { section: row.section, stream: row.stream, subjects: {} };
+            }
+            const bucket = byClassLevel[row.class_level].subjects;
+            if (!bucket[row.subject_name]) bucket[row.subject_name] = {};
+            bucket[row.subject_name][row.term] = Number(row.total_score);
         });
 
-        const report = Object.keys(bySubject).sort().map(subject_name => {
-            const s1 = bySubject[subject_name]['Semester 1'];
-            const s2 = bySubject[subject_name]['Semester 2'];
-            const bothPresent = s1 != null && s2 != null;
+        const report = await Promise.all(Object.keys(byClassLevel).sort().map(async (class_level) => {
+            const { section, stream, subjects: subjectMap } = byClassLevel[class_level];
+
+            const subjects = Object.keys(subjectMap).sort().map(subject_name => {
+                const s1 = subjectMap[subject_name]['Semester 1'] ?? null;
+                const s2 = subjectMap[subject_name]['Semester 2'] ?? null;
+                return {
+                    subject_name,
+                    semester_1: s1,
+                    semester_2: s2,
+                    year_average: yearAverage(s1, s2)
+                };
+            });
+
+            const [syncRows] = await pool.query(
+                `SELECT term FROM pushed_marks_reports
+                 WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ? AND term IN (?, ?)`,
+                [req.user.school_id, class_level, section, stream, ...TERMS]
+            );
+            const syncedTerms = new Set(syncRows.map(r => r.term));
+            const semester_1_synced = syncedTerms.has('Semester 1');
+            const semester_2_synced = syncedTerms.has('Semester 2');
+
+            // Rank against the rest of this student's section — only once
+            // that term (or, for year rank, both terms) is actually synced.
+            const [s1Ranked, s2Ranked, yearRanked] = await Promise.all([
+                semester_1_synced
+                    ? rankStudents(await getSectionTermAverages(req.user.school_id, class_level, section, stream, 'Semester 1'))
+                    : new Map(),
+                semester_2_synced
+                    ? rankStudents(await getSectionTermAverages(req.user.school_id, class_level, section, stream, 'Semester 2'))
+                    : new Map(),
+                (semester_1_synced && semester_2_synced)
+                    ? rankStudents(await getSectionYearAverages(req.user.school_id, class_level, section, stream))
+                    : new Map()
+            ]);
+            const mine1 = s1Ranked.get(String(req.params.student_id));
+            const mine2 = s2Ranked.get(String(req.params.student_id));
+            const mineYear = yearRanked.get(String(req.params.student_id));
+
             return {
-                subject_name,
-                semester_1: s1 != null ? s1 : null,
-                semester_2: s2 != null ? s2 : null,
-                year_average: bothPresent ? Math.round(((s1 + s2) / 2) * 100) / 100 : null
+                class_level,
+                section,
+                stream,
+                subjects,
+                semester_1_synced,
+                semester_2_synced,
+                semester_1_average: overallAverage(subjects.map(s => s.semester_1)),
+                semester_2_average: overallAverage(subjects.map(s => s.semester_2)),
+                year_average: overallAverage(subjects.map(s => s.year_average)),
+                semester_1_rank: mine1?.rank ?? null,
+                semester_1_class_size: mine1?.class_size ?? null,
+                semester_2_rank: mine2?.rank ?? null,
+                semester_2_class_size: mine2?.class_size ?? null,
+                year_rank: mineYear?.rank ?? null,
+                year_class_size: mineYear?.class_size ?? null
             };
-        });
+        }));
 
         res.json(report);
     } catch (err) {
@@ -2135,10 +2933,15 @@ app.get('/api/homeroom/student-report/:student_id', requireAuth, async (req, res
 // Whole-section table for principal reporting / CSV export: rows = every
 // student in the homeroom teacher's section, columns = every subject that
 // has EVER been pushed for that section (across both terms), each split
-// into S1 / S2 / Year Avg. Subjects not yet pushed are simply absent —
+// into S1 / S2 / Year Avg, plus each student's own overall average per
+// semester and for the year. Subjects not yet pushed are simply absent —
 // per your earlier answer, only pushed subjects appear, nothing blank-padded
 // for subjects that were never pushed at all. (A subject pushed for only
-// one term DOES show, with the other term's cell empty.)
+// one term DOES show, with the other term's cell empty.) semester_1_synced
+// / semester_2_synced reflect whether homeroom has actually forwarded that
+// semester to Academic VP yet (100% of subjects pushed) — the per-subject
+// and overall numbers are still shown either way, so you can review before
+// syncing, but the flags let the UI mark unsynced figures as provisional.
 app.get('/api/homeroom/section-report', requireAuth, async (req, res) => {
     const { class_level, section, stream } = req.query;
     if (!class_level || !section || !stream) {
@@ -2176,6 +2979,13 @@ app.get('/api/homeroom/section-report', requireAuth, async (req, res) => {
             [class_level, section, stream, req.user.school_id]
         );
 
+        const [syncRows] = await pool.query(
+            `SELECT term FROM pushed_marks_reports
+             WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ? AND term IN (?, ?)`,
+            [req.user.school_id, class_level, section, stream, ...TERMS]
+        );
+        const syncedTerms = new Set(syncRows.map(r => r.term));
+
         // Collect the distinct set of subjects that have EVER been pushed
         // for this section, so every student row has the same columns.
         const subjectNames = [...new Set(scoreRows.map(r => r.subject_name))].sort();
@@ -2194,23 +3004,60 @@ app.get('/api/homeroom/section-report', requireAuth, async (req, res) => {
             const subjects = {};
             subjectNames.forEach(name => {
                 const entry = (scoresByStudent[student.student_id] || {})[name] || {};
-                const s1 = entry['Semester 1'];
-                const s2 = entry['Semester 2'];
-                const bothPresent = s1 != null && s2 != null;
+                const s1 = entry['Semester 1'] ?? null;
+                const s2 = entry['Semester 2'] ?? null;
                 subjects[name] = {
-                    semester_1: s1 != null ? s1 : null,
-                    semester_2: s2 != null ? s2 : null,
-                    year_average: bothPresent ? Math.round(((s1 + s2) / 2) * 100) / 100 : null
+                    semester_1: s1,
+                    semester_2: s2,
+                    year_average: yearAverage(s1, s2)
                 };
             });
+            const subjectValues = Object.values(subjects);
             return {
                 student_id: student.student_id,
                 full_name: [student.first_name, student.middle_name, student.last_name].filter(Boolean).join(' '),
-                subjects
+                subjects,
+                semester_1_average: overallAverage(subjectValues.map(s => s.semester_1)),
+                semester_2_average: overallAverage(subjectValues.map(s => s.semester_2)),
+                year_average: overallAverage(subjectValues.map(s => s.year_average))
             };
         });
 
-        res.json({ subject_columns: subjectNames, students: report });
+        // Rank is computed from these same averages — no extra query
+        // needed, since this endpoint already has every student in the
+        // section in memory. Only computed for terms that are actually
+        // synced (see semester_1_synced/semester_2_synced above) — an
+        // unsynced term's averages could still be based on partial pushes.
+        const s1Ranks = syncedTerms.has('Semester 1')
+            ? rankStudents(report.map(r => ({ student_id: r.student_id, score: r.semester_1_average })))
+            : new Map();
+        const s2Ranks = syncedTerms.has('Semester 2')
+            ? rankStudents(report.map(r => ({ student_id: r.student_id, score: r.semester_2_average })))
+            : new Map();
+        const yearRanks = (syncedTerms.has('Semester 1') && syncedTerms.has('Semester 2'))
+            ? rankStudents(report.map(r => ({ student_id: r.student_id, score: r.year_average })))
+            : new Map();
+
+        report.forEach(r => {
+            const id = String(r.student_id);
+            r.semester_1_rank = s1Ranks.get(id)?.rank ?? null;
+            r.semester_2_rank = s2Ranks.get(id)?.rank ?? null;
+            r.year_rank = yearRanks.get(id)?.rank ?? null;
+        });
+
+        res.json({
+            subject_columns: subjectNames,
+            semester_1_synced: syncedTerms.has('Semester 1'),
+            semester_2_synced: syncedTerms.has('Semester 2'),
+            // Each figure is scoped to however many students actually had
+            // comparable (non-null) scores for that specific term/year —
+            // usually the same as the section's full roster once synced,
+            // but not guaranteed (e.g. a student who joined mid-year).
+            semester_1_class_size: s1Ranks.size ? [...s1Ranks.values()][0].class_size : null,
+            semester_2_class_size: s2Ranks.size ? [...s2Ranks.values()][0].class_size : null,
+            year_class_size: yearRanks.size ? [...yearRanks.values()][0].class_size : null,
+            students: report
+        });
     } catch (err) {
         console.error("section-report error:", err);
         res.status(500).json({ error: "Could not load section report" });
@@ -2313,12 +3160,15 @@ app.post('/api/homeroom/upload-student-photo', requireAuth, handleUploadError(up
             return res.status(403).json({ error: "You are not a homeroom teacher." });
         }
 
+        const converted = await convertHeicIfNeeded(req.file);
+        if (converted) req.file = converted;
+
         let dimensions;
         try {
             dimensions = sizeOf(req.file.path);
         } catch (dimErr) {
             fs.unlink(req.file.path, () => {});
-            return res.status(400).json({ error: "Could not read image dimensions — file may be corrupted." });
+            return res.status(400).json({ error: "Could not read image dimensions — file may be corrupted, or in a format we don't support. Please use a JPEG or PNG photo." });
         }
         const { width, height } = dimensions;
         const shortSide = Math.min(width, height);
@@ -3368,6 +4218,24 @@ app.get('/api/teacher/conduct-status', requireAuth, async (req, res) => {
     }
 });
 
+// Human-readable labels for assessment_type, kept in sync with the
+// <option> labels in the "Notify Students" dropdown on the frontend.
+// Falls back to a title-cased, underscore-stripped version of the raw
+// value so an unmapped type still reads reasonably instead of showing
+// the raw db value verbatim.
+const ASSESSMENT_TYPE_LABELS = {
+    individual_assignment_1: 'Individual Assignment 1',
+    individual_assignment_2: 'Individual Assignment 2',
+    group_assignment: 'Group Assignment',
+    quiz: 'Quiz',
+    midterm: 'Midterm',
+    final: 'Final Exam'
+};
+function assessmentTypeLabel(type) {
+    if (ASSESSMENT_TYPE_LABELS[type]) return ASSESSMENT_TYPE_LABELS[type];
+    return String(type).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
 // Send a notification to students in a section who haven't submitted a
 app.post('/api/teacher/notify-students', requireAuth, async (req, res) => {
     const { class_level, section, stream, assessment_type, message } = req.body;
@@ -3416,7 +4284,7 @@ app.post('/api/teacher/notify-students', requireAuth, async (req, res) => {
         );
 
         res.json({
-            message: `Notification sent to ${students.length} student(s) who haven't completed ${assessment_type}.`,
+            message: `Notification sent to ${students.length} student(s) who haven't completed ${assessmentTypeLabel(assessment_type)}.`,
             notified: students.length,
             students: students.map(s => `${s.first_name} ${s.last_name}`)
         });
@@ -3539,7 +4407,12 @@ app.post('/api/login', async (req, res) => {
             if (schoolRows.length > 0) school_name = schoolRows[0].school_name;
         }
 
-        issueAuthToken(res, { user_id: id, role: userRole, school_id: user.school_id || null });
+        issueAuthToken(res, {
+            user_id: id,
+            role: userRole,
+            school_id: user.school_id || null,
+            title: userRole === 'admin_users' ? (user.title || null) : null
+        });
 
         // The token itself is httpOnly and never exposed to JS — this JSON
         // body is just for the frontend to know who's logged in and update

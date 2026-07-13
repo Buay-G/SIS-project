@@ -218,6 +218,35 @@
                         </form>
                     </div>
                 </div>
+
+                <div class="widget" style="margin-top:24px;">
+                    <h3>Section Grade Sheet</h3>
+                    <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;">Enter marks for a whole section at once — pick a section and subject below, then fill in scores directly in the table. Only cells you change get saved.</p>
+
+                    <div class="search-group" style="flex-wrap:wrap; margin-bottom:14px;">
+                        <label for="gradesheet-section" class="sr-only">Section</label>
+                        <select id="gradesheet-section" class="form-input" style="max-width:240px;" onchange="onGradeSheetSectionChange()">
+                            <option value="">Select section…</option>
+                        </select>
+
+                        <label for="gradesheet-subject" class="sr-only">Subject</label>
+                        <select id="gradesheet-subject" class="form-input" style="max-width:200px;" onchange="onGradeSheetSubjectChange()">
+                            <option value="">Select subject…</option>
+                        </select>
+
+                        <label for="gradesheet-search" class="sr-only">Search students in this section</label>
+                        <input type="text" id="gradesheet-search" class="form-input" placeholder="Search by name or ID…" style="max-width:200px;" oninput="applyGradeSheetSearch()">
+                    </div>
+
+                    <div id="gradesheet-container">
+                        <p style="color:#64748b; font-size:0.85rem;">Select a section and subject above to begin.</p>
+                    </div>
+
+                    <div id="gradesheet-actions" style="display:none; margin-top:14px; align-items:center; gap:12px;">
+                        <button type="button" class="btn-primary" style="width:auto; padding:10px 22px;" onclick="saveGradeSheet()">Save All Marks</button>
+                        <span id="gradesheet-status" style="font-size:0.85rem;"></span>
+                    </div>
+                </div>
             </section>
             <section id="page-students" class="page-content" style="display:none;">
                 <h3>Student Candidates</h3>
@@ -339,41 +368,46 @@
                 <h2 data-i18n="nav_action_center">Action Center</h2>
                 <p style="font-size:0.85rem; color:#64748b; margin-bottom:20px;" data-i18n="action_center_desc">Things your homeroom students need from you: photo/certificate approvals, direct photo uploads, and password resets.</p>
 
-                <div class="widget" style="margin-bottom:20px;">
-                    <h3 data-i18n="action_center_photo_requests">Photo Requests</h3>
-                    <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;" data-i18n="action_center_photo_requests_desc">Students who submitted a new photo for their ID card — review and approve or reject.</p>
-                    <div id="photo-requests-list"><p style="color:#64748b; font-size:0.85rem;">Loading…</p></div>
-                </div>
-
-                <div class="widget" style="margin-bottom:20px;">
-                    <h3 data-i18n="action_center_certificate_requests">Certificate Requests</h3>
-                    <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;" data-i18n="action_center_certificate_requests_desc">Students asking for their certificate to be unlocked for download.</p>
-                    <div id="certificate-requests-list"><p style="color:#64748b; font-size:0.85rem;">Loading…</p></div>
-                </div>
-
-                <div class="widget" style="margin-bottom:20px;">
-                    <h3 data-i18n="action_center_upload_photo">Upload Photo for a Student</h3>
-                    <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;" data-i18n="action_center_upload_photo_desc">If a student can't get a usable photo themselves, upload one directly here. It becomes their official photo for both their ID card and certificate — no approval step needed.</p>
-                    <div class="search-group" style="margin-bottom:10px; flex-wrap:wrap;">
-                        <label for="upload-photo-student-id" class="sr-only" data-i18n="homeroom_reset_placeholder">Student ID</label>
-                        <input type="text" id="upload-photo-student-id" data-i18n-placeholder="homeroom_reset_placeholder" placeholder="Student ID" class="form-input" style="max-width:160px;">
-                        <input type="file" id="upload-photo-file" accept="image/*" class="form-input" style="max-width:220px;">
-                        <button type="button" class="btn-primary" onclick="uploadStudentPhoto()" data-i18n="action_center_upload_button">Upload Photo</button>
+                <div class="dashboard-grid">
+                    <div class="widget">
+                        <h3 data-i18n="action_center_photo_requests">Photo Requests</h3>
+                        <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;" data-i18n="action_center_photo_requests_desc">Students who submitted a new photo for their ID card — review and approve or reject.</p>
+                        <div id="photo-requests-list"><p style="color:#64748b; font-size:0.85rem;">Loading…</p></div>
                     </div>
-                    <div id="upload-photo-status" style="font-size:0.85rem;"></div>
-                </div>
 
-                <div class="widget">
-                    <h3 data-i18n="homeroom_reset_heading">Reset Student Password</h3>
-                    <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;" data-i18n="homeroom_reset_desc">
-                        If a student in your homeroom section forgets their password, reset it here. They can log in with the default password below, then should change it right away from their own Profile page.
-                    </p>
-                    <div class="search-group" style="margin-bottom:10px;">
-                        <label for="homeroom-reset-student-id" class="sr-only" data-i18n="homeroom_reset_placeholder">Student ID</label>
-                        <input type="text" id="homeroom-reset-student-id" data-i18n-placeholder="homeroom_reset_placeholder" placeholder="Student ID" class="form-input">
-                        <button type="button" class="btn-primary" onclick="resetHomeroomStudentPassword()" data-i18n="homeroom_reset_button">Reset Password</button>
+                    <div class="widget">
+                        <h3 data-i18n="action_center_certificate_requests">Certificate Requests</h3>
+                        <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;" data-i18n="action_center_certificate_requests_desc">Students asking for their certificate to be unlocked for download.</p>
+                        <div id="certificate-requests-list"><p style="color:#64748b; font-size:0.85rem;">Loading…</p></div>
                     </div>
-                    <div id="homeroom-reset-status" style="font-size:0.85rem;"></div>
+
+                    <div class="widget">
+                        <h3 data-i18n="action_center_upload_photo">Upload Photo for a Student</h3>
+                        <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;" data-i18n="action_center_upload_photo_desc">If a student can't get a usable photo themselves, upload one directly here. It becomes their official photo for both their ID card and certificate — no approval step needed.</p>
+                        <div class="search-group" style="margin-bottom:10px; flex-wrap:wrap; align-items:center;">
+                            <label for="upload-photo-student-id" class="sr-only" data-i18n="homeroom_reset_placeholder">Student ID</label>
+                            <input type="text" id="upload-photo-student-id" data-i18n-placeholder="homeroom_reset_placeholder" placeholder="Student ID" class="form-input" style="max-width:160px;">
+                            <label for="upload-photo-file" class="sr-only">Student photo file</label>
+                            <button type="button" class="file-btn" onclick="document.getElementById('upload-photo-file').click()">Choose Photo</button>
+                            <span id="upload-photo-file-name" style="margin-left:4px; font-size:0.85rem; color:#64748b;">No file chosen</span>
+                            <input type="file" id="upload-photo-file" accept="image/*" style="display:none;" onchange="updateFileName(this, 'upload-photo-file-name')">
+                            <button type="button" class="btn-primary" style="width:auto; padding:10px 22px;" onclick="uploadStudentPhoto()" data-i18n="action_center_upload_button">Upload Photo</button>
+                        </div>
+                        <div id="upload-photo-status" style="font-size:0.85rem;"></div>
+                    </div>
+
+                    <div class="widget">
+                        <h3 data-i18n="homeroom_reset_heading">Reset Student Password</h3>
+                        <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;" data-i18n="homeroom_reset_desc">
+                            If a student in your homeroom section forgets their password, reset it here. They can log in with the default password below, then should change it right away from their own Profile page.
+                        </p>
+                        <div class="search-group" style="margin-bottom:10px;">
+                            <label for="homeroom-reset-student-id" class="sr-only" data-i18n="homeroom_reset_placeholder">Student ID</label>
+                            <input type="text" id="homeroom-reset-student-id" data-i18n-placeholder="homeroom_reset_placeholder" placeholder="Student ID" class="form-input">
+                            <button type="button" class="btn-primary" onclick="resetHomeroomStudentPassword()" data-i18n="homeroom_reset_button">Reset Password</button>
+                        </div>
+                        <div id="homeroom-reset-status" style="font-size:0.85rem;"></div>
+                    </div>
                 </div>
             </section>
 
@@ -604,6 +638,19 @@
             </div>
         </div>
     </div>
+    <div id="prompt-modal" class="confirm-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="prompt-modal-title" aria-describedby="prompt-modal-message" style="display:none;">
+        <div class="confirm-modal-box">
+            <h3 id="prompt-modal-title">Add a note</h3>
+            <p id="prompt-modal-message"></p>
+            <label for="prompt-modal-input" class="sr-only">Response</label>
+            <textarea id="prompt-modal-input" class="form-input" rows="3" style="margin-bottom:4px;"></textarea>
+            <div class="confirm-modal-actions">
+                <button id="prompt-modal-cancel" class="btn-confirm-cancel">Cancel</button>
+                <button id="prompt-modal-ok" class="btn-confirm-ok">Confirm</button>
+            </div>
+        </div>
+    </div>
+
     <script src="script.js"></script>
 </body>
 </html>

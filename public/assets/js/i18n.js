@@ -31,6 +31,7 @@ const SIS_TRANSLATIONS = {
         nav_upload_marks: 'Upload Marks',
         nav_view_students: 'View Students',
         nav_reports: 'Reports',
+        nav_action_center: 'Action Center',
         nav_contact: 'Contact',
         nav_registrar: 'Registrar',
         nav_back_to_site: 'Back to School Website',
@@ -65,6 +66,25 @@ const SIS_TRANSLATIONS = {
         dashboard_day_streak: 'Day streak',
         dashboard_checked_in_today: 'Checked in today ✅',
         dashboard_not_checked_in: 'Not checked in yet today',
+
+        // Teacher Dashboard widgets (performance, conduct, textbook summary)
+        widget_my_performance: 'My Performance',
+        widget_conduct_heading: 'Assessment & Exam Conduct',
+        widget_conduct_desc: 'Which assessments have been conducted for each of your assigned section/subjects, by term.',
+        widget_filter_by_section: 'Filter by section',
+        widget_all_my_sections: 'All my sections',
+        widget_textbook_distribution: 'Textbook Distribution',
+        widget_textbook_issued_to: "How many textbooks you've issued to",
+        widget_textbook_this_year: 'this school year.',
+        grade_section_stream: 'Grade {level} - {section} ({stream})',
+        perf_grading_completion: 'Grading completion (this term)',
+        perf_required_assessments: '{completed} of {total} required assessments at 50%+ entered',
+        textbook_no_setup: 'No students or subjects set up yet for your section.',
+        textbook_sample_note: 'Showing a proportional sample — {total} total slots.',
+        textbook_slots_resolved: '{resolved} of {total} book slots resolved ({percent}%) — {out} still out, {lost} lost.',
+        textbook_issued_out: 'Issued (out)',
+        textbook_returned: 'Returned',
+        textbook_lost: 'Lost',
 
         // Marks
         marks_heading: 'My Marks',
@@ -116,6 +136,12 @@ const SIS_TRANSLATIONS = {
         profile_id_photo_desc: 'Must be portrait, at least 300×360px, roughly a 5:6 width:height ratio — like a passport photo. This is the photo that appears on your ID card, separate from your profile photo above.',
         profile_upload_id_photo: 'Upload ID Photo',
         profile_no_photo: 'No photo uploaded yet',
+        profile_request_id_photo: 'Request ID Photo Change',
+        profile_id_photo_request_note: 'Changing your ID photo requires approval from your homeroom teacher before it becomes official.',
+        profile_id_photo_request_submitted: 'Your new photo was submitted and is awaiting approval.',
+        profile_id_photo_pending: 'Pending approval from your homeroom teacher.',
+        profile_id_photo_approved: 'Approved — this is now your official ID photo.',
+        profile_id_photo_rejected: 'Rejected by your homeroom teacher: {reason}',
         profile_account_heading: 'Account',
         profile_lms_username: 'LMS Username:',
         profile_email: 'Email:',
@@ -171,6 +197,12 @@ const SIS_TRANSLATIONS = {
         certificate_print_download: 'Print / Download Certificate',
         certificate_none: 'No pushed marks history yet — check back once your teachers have submitted grades.',
         certificate_could_not_load: 'Could not load certificate data.',
+        certificate_request: 'Request',
+        certificate_not_yet_requestable: 'Your certificate cannot be requested yet — check back once your term data is fully synced.',
+        certificate_request_pending: 'Pending approval from your homeroom teacher.',
+        certificate_request_approved: 'Approved — you can now download your certificate.',
+        certificate_request_rejected: 'Rejected by your homeroom teacher: {reason}',
+        certificate_request_failed: 'Could not submit your request. Please try again.',
 
         // Help modal
         help_heading: 'Help & Support',
@@ -253,6 +285,16 @@ const SIS_TRANSLATIONS = {
         homeroom_reset_enter_id: 'Please enter a student ID.',
         homeroom_reset_failed: 'Could not reset this student\'s password.',
         homeroom_reset_not_in_section: 'This student is not in your homeroom section.',
+
+        // Action Center
+        action_center_desc: "Things your homeroom students need from you: photo/certificate approvals, direct photo uploads, and password resets.",
+        action_center_photo_requests: 'Photo Requests',
+        action_center_photo_requests_desc: 'Students who submitted a new photo for their ID card — review and approve or reject.',
+        action_center_certificate_requests: 'Certificate Requests',
+        action_center_certificate_requests_desc: 'Students asking for their certificate to be unlocked for download.',
+        action_center_upload_photo: 'Upload Photo for a Student',
+        action_center_upload_photo_desc: "If a student can't get a usable photo themselves, upload one directly here. It becomes their official photo for both their ID card and certificate — no approval step needed.",
+        action_center_upload_button: 'Upload Photo',
     },
 
     am: {
@@ -271,6 +313,7 @@ const SIS_TRANSLATIONS = {
         nav_upload_marks: 'ውጤት ስቀል',
         nav_view_students: 'ተማሪዎችን ይመልከቱ',
         nav_reports: 'ሪፖርቶች',
+        nav_action_center: 'የተግባር ማዕከል',
         nav_contact: 'ያግኙን',
         nav_registrar: 'መዝጋቢ',
         nav_back_to_site: 'ወደ ትምህርት ቤት ድረ-ገጽ ተመለስ',
@@ -305,6 +348,25 @@ const SIS_TRANSLATIONS = {
         dashboard_day_streak: 'ተከታታይ ቀናት',
         dashboard_checked_in_today: 'ዛሬ ገብተዋል ✅',
         dashboard_not_checked_in: 'ዛሬ ገና አልገቡም',
+
+        // Teacher Dashboard widgets (performance, conduct, textbook summary)
+        widget_my_performance: 'የኔ አፈጻጸም',
+        widget_conduct_heading: 'የምዘና እና የፈተና አካሄድ',
+        widget_conduct_desc: 'ለተመደቡልዎት እያንዳንዱ ክፍል/ትምህርት የትኞቹ ምዘናዎች በእያንዳንዱ ወቅት እንደተካሄዱ።',
+        widget_filter_by_section: 'በክፍል አጣራ',
+        widget_all_my_sections: 'ሁሉም የኔ ክፍሎች',
+        widget_textbook_distribution: 'የመማሪያ መጻሕፍት ስርጭት',
+        widget_textbook_issued_to: 'ለ',
+        widget_textbook_this_year: 'ለዚህ የትምህርት ዓመት ምን ያህል መጻሕፍት እንደሰጡ።',
+        grade_section_stream: 'ክፍል {level} - {section} ({stream})',
+        perf_grading_completion: 'የውጤት አሰጣጥ ሂደት (በዚህ ወቅት)',
+        perf_required_assessments: '{completed} ከ{total} አስፈላጊ ምዘናዎች በ50%+ ገብተዋል',
+        textbook_no_setup: 'ለክፍልዎ ገና ተማሪዎች ወይም ትምህርቶች አልተዘጋጁም።',
+        textbook_sample_note: 'ተመጣጣኝ ናሙና እያሳየ ነው — {total} ጠቅላላ ክፍተቶች።',
+        textbook_slots_resolved: '{resolved} ከ{total} የመጽሐፍ ክፍተቶች ተፈትተዋል ({percent}%) — {out} አሁንም ወጪ፣ {lost} ጠፍቷል።',
+        textbook_issued_out: 'ወጪ (ተሰጥቷል)',
+        textbook_returned: 'ተመልሷል',
+        textbook_lost: 'ጠፍቷል',
 
         // Marks
         marks_heading: 'የኔ ውጤቶች',
@@ -356,6 +418,12 @@ const SIS_TRANSLATIONS = {
         profile_id_photo_desc: 'ፎቶው ቀጥ ያለ (ፖርትሬት)፣ ቢያንስ 300×360 ፒክሰል፣ በግምት 5:6 ስፋት:ቁመት መጠን ያለው — እንደ ፓስፖርት ፎቶ መሆን አለበት። ይህ ከላይ ካለው የመገለጫ ፎቶዎ ተለይቶ በመታወቂያ ካርድዎ ላይ የሚታየው ፎቶ ነው።',
         profile_upload_id_photo: 'የመታወቂያ ፎቶ ስቀል',
         profile_no_photo: 'እስካሁን ፎቶ አልተሰቀለም',
+        profile_request_id_photo: 'የመታወቂያ ፎቶ ለውጥ ጠይቅ',
+        profile_id_photo_request_note: 'የመታወቂያ ፎቶዎን መቀየር ኦፊሴላዊ ከመሆኑ በፊት ከክፍል መምህርዎ ማጽደቅ ይፈልጋል።',
+        profile_id_photo_request_submitted: 'አዲሱ ፎቶዎ ገብቷል እና ማጽደቅ በመጠባበቅ ላይ ነው።',
+        profile_id_photo_pending: 'ከክፍል መምህርዎ ማጽደቅ በመጠባበቅ ላይ።',
+        profile_id_photo_approved: 'ጸድቋል — ይህ አሁን ኦፊሴላዊ የመታወቂያ ፎቶዎ ነው።',
+        profile_id_photo_rejected: 'በክፍል መምህርዎ ውድቅ ተደርጓል: {reason}',
         profile_account_heading: 'መለያ',
         profile_lms_username: 'የኤልኤምኤስ የተጠቃሚ ስም:',
         profile_email: 'ኢሜይል:',
@@ -411,6 +479,12 @@ const SIS_TRANSLATIONS = {
         certificate_print_download: 'ምስክር ወረቀት አትም / አውርድ',
         certificate_none: 'እስካሁን የተላለፈ ውጤት ታሪክ የለም — መምህራንዎ ውጤት እስኪያስገቡ ድረስ እባክዎ ቆይተው ይመልከቱ።',
         certificate_could_not_load: 'የምስክር ወረቀት መረጃ መጫን አልተቻለም።',
+        certificate_request: 'ጠይቅ',
+        certificate_not_yet_requestable: 'ምስክር ወረቀትዎ ገና ሊጠየቅ አይችልም — የወቅት መረጃዎ ሙሉ በሙሉ ከተመሳሰለ በኋላ እንደገና ይመልከቱ።',
+        certificate_request_pending: 'ከክፍል መምህርዎ ማጽደቅ በመጠባበቅ ላይ።',
+        certificate_request_approved: 'ጸድቋል — አሁን ምስክር ወረቀትዎን ማውረድ ይችላሉ።',
+        certificate_request_rejected: 'በክፍል መምህርዎ ውድቅ ተደርጓል: {reason}',
+        certificate_request_failed: 'ጥያቄዎን ማስገባት አልተቻለም። እባክዎ እንደገና ይሞክሩ።',
 
         // Help modal
         help_heading: 'እርዳታ እና ድጋፍ',
@@ -493,6 +567,16 @@ const SIS_TRANSLATIONS = {
         homeroom_reset_enter_id: 'እባክዎ የተማሪ መታወቂያ ያስገቡ።',
         homeroom_reset_failed: 'የዚህን ተማሪ የይለፍ ቃል ዳግም ማስጀመር አልተቻለም።',
         homeroom_reset_not_in_section: 'ይህ ተማሪ በእርስዎ የክፍል ክፍል ውስጥ አይደለም።',
+
+        // Action Center
+        action_center_desc: 'የክፍልዎ ተማሪዎች ከእርስዎ የሚፈልጉት ነገሮች: የፎቶ/ምስክር ወረቀት ማጽደቅ፣ በቀጥታ የፎቶ ስቀላ፣ እና የይለፍ ቃል ዳግም ማስጀመር።',
+        action_center_photo_requests: 'የፎቶ ጥያቄዎች',
+        action_center_photo_requests_desc: 'ለመታወቂያ ካርዳቸው አዲስ ፎቶ ያስገቡ ተማሪዎች — ይገምግሙ እና ያጽድቁ ወይም ውድቅ ያድርጉ።',
+        action_center_certificate_requests: 'የምስክር ወረቀት ጥያቄዎች',
+        action_center_certificate_requests_desc: 'ምስክር ወረቀታቸው ለማውረድ እንዲከፈትላቸው የሚጠይቁ ተማሪዎች።',
+        action_center_upload_photo: 'ለተማሪ ፎቶ ስቀል',
+        action_center_upload_photo_desc: 'ተማሪ ራሱ ተስማሚ ፎቶ ማግኘት ካልቻለ፣ እዚህ በቀጥታ ይስቀሉለት። ይህ ፎቶ ለመታወቂያ ካርዱም ሆነ ለምስክር ወረቀቱ ኦፊሴላዊ ፎቶ ይሆናል — ምንም ማጽደቅ አያስፈልገውም።',
+        action_center_upload_button: 'ፎቶ ስቀል',
     }
 };
 
