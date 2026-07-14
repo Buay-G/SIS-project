@@ -350,7 +350,8 @@ const storage = multer.diskStorage({
 // and let each route still validate it actually got what it needed.
 const ALLOWED_UPLOAD_MIME_TYPES = [
     'image/jpeg', 'image/png', 'image/gif', 'image/webp',
-    'text/csv', 'application/vnd.ms-excel' // some browsers send CSV as this
+    'text/csv', 'application/vnd.ms-excel', // some browsers send CSV as this
+    'application/pdf' // absence-request attachments (e.g. a scanned doctor's note)
 ];
 
 const upload = multer({
@@ -360,11 +361,12 @@ const upload = multer({
         const ext = path.extname(file.originalname).toLowerCase();
         const isImage = file.mimetype.startsWith('image/');
         const isCsv = ext === '.csv' || ALLOWED_UPLOAD_MIME_TYPES.includes(file.mimetype);
+        const isPdf = ext === '.pdf' || file.mimetype === 'application/pdf';
 
-        if (isImage || isCsv) {
+        if (isImage || isCsv || isPdf) {
             cb(null, true);
         } else {
-            cb(new Error('Unsupported file type. Only images (avatar) or .csv (marks) are allowed.'));
+            cb(new Error('Unsupported file type. Only images (avatar/attachment), .csv (marks), or .pdf (absence attachment) are allowed.'));
         }
     }
 });
@@ -1188,10 +1190,31 @@ async function countAbsentDays(student_id, school_id, class_level, section, stre
     );
     const presentSet = new Set(presentRows.map(r => toDateOnly(new Date(r.attendance_date))));
 
+    // Approved absence requests (homeroom-reviewed leave/permission, e.g.
+    // illness or a hospital visit) excuse those specific days — they
+    // still show as "not present" in student_attendance, but shouldn't
+    // count against the student the way an unexplained absence does.
+    const [excusedRows] = await pool.query(
+        `SELECT date_from, date_to FROM absence_requests
+         WHERE student_id = ? AND school_id = ? AND status = 'approved'
+           AND date_to >= ? AND date_from <= ?`,
+        [student_id, school_id, toDateOnly(startDate), toDateOnly(endDate)]
+    );
+    const excusedSet = new Set();
+    excusedRows.forEach(r => {
+        const cur = new Date(r.date_from);
+        const end = new Date(r.date_to);
+        while (cur <= end) {
+            excusedSet.add(toDateOnly(cur));
+            cur.setDate(cur.getDate() + 1);
+        }
+    });
+
     let absentDays = 0;
     const cursor = new Date(startDate);
     while (cursor <= endDate) {
-        if (isSchoolDay(cursor) && !presentSet.has(toDateOnly(cursor))) absentDays++;
+        const day = toDateOnly(cursor);
+        if (isSchoolDay(cursor) && !presentSet.has(day) && !excusedSet.has(day)) absentDays++;
         cursor.setDate(cursor.getDate() + 1);
     }
     return absentDays;
@@ -1780,6 +1803,82 @@ app.get('/api/student/certificate-request-status', requireAuth, requireRole('stu
     } catch (err) {
         console.error("/api/student/certificate-request-status error:", err);
         res.status(500).json({ error: "Could not load request status" });
+    }
+});
+
+// --- Absence / permission requests ---
+// Requires a new table — run this migration if it doesn't exist yet:
+//   CREATE TABLE absence_requests (
+//     request_id INT AUTO_INCREMENT PRIMARY KEY,
+//     student_id VARCHAR(50) NOT NULL,
+//     school_id INT NOT NULL,
+//     date_from DATE NOT NULL,
+//     date_to DATE NOT NULL,
+//     reason TEXT NOT NULL,
+//     attachment_url VARCHAR(255) NULL,
+//     status ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
+//     rejection_reason VARCHAR(255) NULL,
+//     reviewed_by VARCHAR(50) NULL,
+//     reviewed_at DATETIME NULL,
+//     requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     INDEX idx_student (student_id, school_id)
+//   );
+//
+// A student can submit this either BEFORE an absence (planned leave, e.g.
+// a scheduled hospital visit) or AFTER one (explaining an absence that
+// already happened, e.g. malaria) — date_from/date_to just describe which
+// day(s) it covers, with no constraint on being in the past or future.
+// Approval is a homeroom-teacher call, same shape as the ID-photo and
+// certificate request flows. Once approved, those days are excluded from
+// the "absent days" count used on the certificate — see
+// countAbsentDays()'s excusedSet, defined earlier in this file.
+app.post('/api/student/absence-requests', requireAuth, requireRole('students'), handleUploadError(upload.single('attachment')), async (req, res) => {
+    const { date_from, date_to, reason } = req.body;
+    if (!date_from || !date_to || !reason?.trim()) {
+        if (req.file) fs.unlink(req.file.path, () => {});
+        return res.status(400).json({ error: "date_from, date_to, and reason are all required." });
+    }
+    if (new Date(date_to) < new Date(date_from)) {
+        if (req.file) fs.unlink(req.file.path, () => {});
+        return res.status(400).json({ error: "date_to can't be before date_from." });
+    }
+    if (req.file && !req.file.mimetype.startsWith('image/') && req.file.mimetype !== 'application/pdf') {
+        fs.unlink(req.file.path, () => {});
+        return res.status(400).json({ error: "Attachment must be an image or a PDF." });
+    }
+
+    try {
+        if (req.file) {
+            const converted = await convertHeicIfNeeded(req.file);
+            if (converted) req.file = converted;
+        }
+        const attachmentPath = req.file ? `/uploads/${req.file.filename}` : null;
+
+        const [result] = await pool.query(
+            `INSERT INTO absence_requests (student_id, school_id, date_from, date_to, reason, attachment_url, status)
+             VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
+            [req.user.user_id, req.user.school_id, date_from, date_to, reason.trim(), attachmentPath]
+        );
+        res.json({ message: "Absence request submitted.", request_id: result.insertId, status: 'pending' });
+    } catch (err) {
+        console.error("/api/student/absence-requests POST error:", err);
+        res.status(500).json({ error: "Could not submit your absence request" });
+    }
+});
+
+app.get('/api/student/absence-requests', requireAuth, requireRole('students'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT request_id, date_from, date_to, reason, attachment_url, status, rejection_reason, requested_at, reviewed_at
+             FROM absence_requests
+             WHERE student_id = ? AND school_id = ?
+             ORDER BY requested_at DESC`,
+            [req.user.user_id, req.user.school_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/student/absence-requests GET error:", err);
+        res.status(500).json({ error: "Could not load your absence requests" });
     }
 });
 
@@ -3302,6 +3401,76 @@ app.post('/api/homeroom/id-photo-requests/:id/reject', requireAuth, async (req, 
         res.json({ message: "Request rejected." });
     } catch (err) {
         console.error("/api/homeroom/id-photo-requests/:id/reject error:", err);
+        res.status(500).json({ error: "Could not reject this request" });
+    }
+});
+
+// --- Homeroom: absence / permission requests ---
+app.get('/api/homeroom/absence-requests', requireAuth, async (req, res) => {
+    try {
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) return res.status(403).json({ error: "You are not a homeroom teacher." });
+
+        const [rows] = await pool.query(
+            `SELECT r.request_id, r.student_id, r.date_from, r.date_to, r.reason, r.attachment_url,
+                    r.status, r.requested_at, st.first_name, st.last_name
+             FROM absence_requests r
+             JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
+             WHERE r.school_id = ? AND r.status = 'pending'
+               AND st.class_level = ? AND st.section = ? AND st.stream = ?
+             ORDER BY r.requested_at ASC`,
+            [req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/homeroom/absence-requests error:", err);
+        res.status(500).json({ error: "Could not load absence requests" });
+    }
+});
+
+app.post('/api/homeroom/absence-requests/:id/approve', requireAuth, async (req, res) => {
+    try {
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) return res.status(403).json({ error: "You are not a homeroom teacher." });
+
+        const [result] = await pool.query(
+            `UPDATE absence_requests r
+             JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
+             SET r.status = 'approved', r.reviewed_by = ?, r.reviewed_at = NOW()
+             WHERE r.request_id = ? AND r.school_id = ? AND r.status = 'pending'
+               AND st.class_level = ? AND st.section = ? AND st.stream = ?`,
+            [req.user.user_id, req.params.id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
+        );
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: "Request not found, already reviewed, or not in your homeroom section." });
+        }
+        res.json({ message: "Approved. These days won't count as unexcused absences." });
+    } catch (err) {
+        console.error("/api/homeroom/absence-requests/:id/approve error:", err);
+        res.status(500).json({ error: "Could not approve this request" });
+    }
+});
+
+app.post('/api/homeroom/absence-requests/:id/reject', requireAuth, async (req, res) => {
+    const { reason } = req.body;
+    try {
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) return res.status(403).json({ error: "You are not a homeroom teacher." });
+
+        const [result] = await pool.query(
+            `UPDATE absence_requests r
+             JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
+             SET r.status = 'rejected', r.reviewed_by = ?, r.reviewed_at = NOW(), r.rejection_reason = ?
+             WHERE r.request_id = ? AND r.school_id = ? AND r.status = 'pending'
+               AND st.class_level = ? AND st.section = ? AND st.stream = ?`,
+            [req.user.user_id, reason || null, req.params.id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
+        );
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: "Request not found, already reviewed, or not in your homeroom section." });
+        }
+        res.json({ message: "Request rejected." });
+    } catch (err) {
+        console.error("/api/homeroom/absence-requests/:id/reject error:", err);
         res.status(500).json({ error: "Could not reject this request" });
     }
 });

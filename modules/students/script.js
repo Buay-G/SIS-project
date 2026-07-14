@@ -6,6 +6,16 @@ async function apiFetch(url, opts = {}) {
     return fetch(url, { credentials: 'include', ...opts });
 }
 
+// Free-text fields that come from another role's input (e.g. a teacher's
+// notification message) are never trusted as HTML — always escaped before
+// going into innerHTML, so neither a malicious payload nor an innocent
+// "<" in ordinary text (e.g. "score < 50") can break rendering or execute.
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str ?? '';
+    return div.innerHTML;
+}
+
 async function checkAuth() {
     try {
         const res = await apiFetch('/api/me');
@@ -41,6 +51,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.querySelector('a[data-page="textbooks"]').addEventListener('click', loadTextbooks);
     document.querySelector('a[data-page="idcard"]').addEventListener('click', loadIDCard);
     document.querySelector('a[data-page="certificate"]').addEventListener('click', loadCertificate);
+    document.querySelector('a[data-page="absence"]').addEventListener('click', loadAbsenceHistory);
     // School Hub is now a standalone external page (hub.html) — no in-app
     // click handler needed; the nav link is a plain target="_blank" href.
 });
@@ -63,6 +74,7 @@ window.onSisLangChange = () => {
     loadTextbooks();
     loadIDCard();
     loadCertificate();
+    loadAbsenceHistory();
 };
 
 // ---- ACCOUNT DROPDOWN (Profile Settings / Sign Out) ----
@@ -386,6 +398,14 @@ window.requestCertificate = async () => {
     } finally {
         if (requestBtn) requestBtn.disabled = false;
     }
+};
+
+// Navigates to the actual generated PDF (server sets Content-Disposition:
+// attachment, so this triggers a real download) rather than printing
+// whatever happens to be in the on-screen preview, which is just the
+// term-summary widget, not the official certificate layout.
+window.downloadCertificate = () => {
+    window.location.href = '/api/student/certificate.pdf';
 };
 
 function renderCertificate(data, container) {
@@ -726,8 +746,8 @@ async function loadTextbooks() {
     try {
         const res = await apiFetch('/api/student/my-textbooks');
         if (!res.ok) throw new Error();
-        const books = await res.json();
-        renderTextbooks(books, output);
+        const data = await res.json();
+        renderTextbooks(data.books, output);
     } catch {
         output.innerHTML = `<p class="muted">${t('textbooks_could_not_load')}</p>`;
     }
@@ -755,6 +775,98 @@ function renderTextbooks(books, container) {
                 </tbody>
             </table>
         </div>`;
+}
+
+// ---- ABSENCE / PERMISSION REQUESTS ----
+let absenceAttachmentFile = null;
+
+window.onAbsenceAttachmentChange = (inputEl) => {
+    absenceAttachmentFile = inputEl.files[0] || null;
+    const nameEl = document.getElementById('absence-attachment-filename');
+    if (nameEl) nameEl.textContent = absenceAttachmentFile ? absenceAttachmentFile.name : '';
+};
+
+window.submitAbsenceRequest = async () => {
+    const dateFrom = document.getElementById('absence-date-from').value;
+    const dateTo = document.getElementById('absence-date-to').value;
+    const reason = document.getElementById('absence-reason').value.trim();
+    const msgEl = document.getElementById('absence-submit-message');
+
+    const showMsg = (text, isError) => {
+        if (!msgEl) return;
+        msgEl.textContent = text;
+        msgEl.style.color = isError ? '#dc2626' : '#16a34a';
+    };
+
+    if (!dateFrom || !dateTo || !reason) {
+        showMsg(t('absence_fill_required'), true);
+        return;
+    }
+    if (dateTo < dateFrom) {
+        showMsg(t('absence_date_order_error'), true);
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('date_from', dateFrom);
+    formData.append('date_to', dateTo);
+    formData.append('reason', reason);
+    if (absenceAttachmentFile) formData.append('attachment', absenceAttachmentFile);
+
+    showMsg(t('absence_submitting'), false);
+    try {
+        const res = await apiFetch('/api/student/absence-requests', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (res.ok) {
+            showMsg('', false);
+            showToast(t('absence_submitted'), 'success');
+            document.getElementById('absence-date-from').value = '';
+            document.getElementById('absence-date-to').value = '';
+            document.getElementById('absence-reason').value = '';
+            document.getElementById('absence-attachment-input').value = '';
+            document.getElementById('absence-attachment-filename').textContent = '';
+            absenceAttachmentFile = null;
+            await loadAbsenceHistory();
+        } else {
+            showMsg(data.error || t('absence_submit_failed'), true);
+        }
+    } catch (err) {
+        showMsg(t('could_not_connect'), true);
+    }
+};
+
+async function loadAbsenceHistory() {
+    const output = document.getElementById('absence-history-output');
+    if (!output) return;
+    output.innerHTML = `<p class="muted">${t('loading')}</p>`;
+    try {
+        const res = await apiFetch('/api/student/absence-requests');
+        if (!res.ok) throw new Error();
+        const requests = await res.json();
+        renderAbsenceHistory(requests, output);
+    } catch {
+        output.innerHTML = `<p class="muted">${t('absence_could_not_load')}</p>`;
+    }
+}
+
+function renderAbsenceHistory(requests, container) {
+    if (!requests.length) { container.innerHTML = `<p class="muted">${t('absence_none')}</p>`; return; }
+    const statusBadge = {
+        pending:  `<span class="badge badge-issued">${t('badge_pending')}</span>`,
+        approved: `<span class="badge badge-returned">${t('badge_approved')}</span>`,
+        rejected: `<span class="badge badge-lost">${t('badge_rejected')}</span>`
+    };
+    const fmt = d => new Date(d).toLocaleDateString();
+    container.innerHTML = requests.map(r => `
+        <div class="widget" style="margin-bottom:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;">
+                <strong>${fmt(r.date_from)}${r.date_from !== r.date_to ? ' – ' + fmt(r.date_to) : ''}</strong>
+                ${statusBadge[r.status] || r.status}
+            </div>
+            <p style="margin-top:8px;">${escapeHtml(r.reason)}</p>
+            ${r.attachment_url ? `<p class="muted" style="font-size:0.82rem; margin-top:4px;"><a href="${r.attachment_url}" target="_blank" rel="noopener">${t('absence_view_attachment')}</a></p>` : ''}
+            ${r.status === 'rejected' && r.rejection_reason ? `<p class="request-status-box request-status-rejected" style="margin-top:8px;">${escapeHtml(r.rejection_reason)}</p>` : ''}
+        </div>`).join('');
 }
 
 // ---- NOTIFICATIONS ----
@@ -802,7 +914,7 @@ function renderNotifications(notifs, container) {
                 <strong>${assessmentLabel(n.assessment_type)}</strong>
                 ${n.is_read ? '' : '<span class="notif-dot" aria-label="Unread"></span>'}
             </div>
-            <p class="notif-body">${n.message}</p>
+            <p class="notif-body">${escapeHtml(n.message)}</p>
             <p class="notif-meta muted">${new Date(n.sent_at).toLocaleDateString()}</p>
         </div>`).join('');
 }
@@ -820,7 +932,7 @@ function renderNotificationPanel() {
     list.innerHTML = notifData.slice(0, 5).map(n => `
         <div class="notif-item" onclick="markRead(${n.notif_id}, this); navigateTo('notifications')">
             <strong>${assessmentLabel(n.assessment_type)}</strong><br>
-            ${n.message.substring(0, 60)}${n.message.length > 60 ? '…' : ''}
+            ${escapeHtml(n.message.substring(0, 60))}${n.message.length > 60 ? '…' : ''}
         </div>`).join('');
 }
 
@@ -949,7 +1061,7 @@ function updateDashboardNotifs(notifs) {
     el.innerHTML = recent.map(n => `
         <div class="notif-card ${n.is_read ? '' : 'notif-unread'}" style="margin-bottom:8px;">
             <strong style="font-size:0.85rem;">${assessmentLabel(n.assessment_type)}</strong>
-            <p class="muted" style="font-size:0.82rem; margin-top:2px;">${n.message.substring(0, 80)}${n.message.length > 80 ? '…' : ''}</p>
+            <p class="muted" style="font-size:0.82rem; margin-top:2px;">${escapeHtml(n.message.substring(0, 80))}${n.message.length > 80 ? '…' : ''}</p>
         </div>`).join('');
 }
 
