@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="style.css">
     <script src="/assets/js/guard.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
     <script src="/assets/js/i18n.js"></script>
 </head>
 <body>
@@ -26,6 +27,10 @@
                 <li><a href="#" class="nav-link" data-page="textbooks">
                     <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
                     <span data-i18n="nav_textbooks">Textbooks</span>
+                </a></li>
+                <li id="nav-class-monitor" style="display:none;"><a href="#" class="nav-link" data-page="class-monitor">
+                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                    <span data-i18n="nav_class_monitor">Class Attendance</span>
                 </a></li>
                 <li><a href="#" class="nav-link" data-page="absence">
                     <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="M9 16l2 2 4-4"/></svg>
@@ -50,13 +55,9 @@
                      and admin alike. It reuses this same login session/cookie, so the
                      backend still scopes everything to req.user.school_id — a student
                      or teacher from another school can't see this school's posts. -->
-                <li><a href="#" class="nav-link" data-page="idcard">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2"/><circle cx="8" cy="11" r="2"/><line x1="14" y1="9" x2="18" y2="9"/><line x1="14" y1="13" x2="18" y2="13"/></svg>
-                    <span data-i18n="nav_idcard">My ID</span>
-                </a></li>
-                <li><a href="#" class="nav-link" data-page="certificate">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="6"/><path d="M8.5 13.5 7 22l5-3 5 3-1.5-8.5"/></svg>
-                    <span data-i18n="nav_certificate">My Certificate</span>
+                <li><a href="#" class="nav-link" data-page="documents">
+                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+                    <span data-i18n="nav_documents">My Documents</span>
                 </a></li>
             </ul>
         </nav>
@@ -109,6 +110,10 @@
             <!-- DASHBOARD -->
             <section id="page-dashboard" class="page-content">
                 <h2 data-i18n="dashboard_heading">Dashboard</h2>
+
+                <div id="recognition-award-banner" class="widget" style="display:none; margin-bottom:20px; background:linear-gradient(135deg,#fef3c7,#fde68a); border:1px solid #f59e0b;">
+                    <div id="recognition-award-text"></div>
+                </div>
                 <div class="dashboard-grid" id="dashboard-cards">
                     <div class="widget">
                         <h3 data-i18n="dashboard_quick_summary">Quick Summary</h3>
@@ -126,6 +131,10 @@
                         <h3 data-i18n="dashboard_attendance_streak">Attendance Streak</h3>
                         <div id="dashboard-attendance"><p class="muted" data-i18n="loading">Loading…</p></div>
                     </div>
+                    <div class="widget">
+                        <h3 data-i18n="dashboard_todays_classes">Today's Classes</h3>
+                        <div id="dashboard-timetable"><p class="muted" data-i18n="loading">Loading…</p></div>
+                    </div>
                 </div>
             </section>
 
@@ -139,6 +148,25 @@
                     </select>
                 </div>
                 <div id="marks-output"><p class="muted" data-i18n="loading">Loading…</p></div>
+
+                <div id="mark-appeal-form-container" class="widget" style="display:none; margin-top:20px;">
+                    <h3 data-i18n="appeal_form_heading">Appeal a Mark</h3>
+                    <p id="mark-appeal-context" class="muted" style="margin-bottom:12px;"></p>
+                    <label for="appeal-claimed-score" class="sr-only">What you believe the score should be</label>
+                    <input type="number" id="appeal-claimed-score" class="form-input" min="0" max="100" step="0.1" style="margin-bottom:12px; max-width:160px;" placeholder="e.g. 50" data-i18n-placeholder="appeal_claimed_score_placeholder">
+                    <label for="appeal-reason" class="sr-only">Reason</label>
+                    <textarea id="appeal-reason" class="form-input" rows="3" style="margin-bottom:12px;" placeholder="Why do you believe this score is incorrect?" data-i18n-placeholder="appeal_reason_placeholder"></textarea>
+                    <div style="display:flex; gap:10px;">
+                        <button type="button" class="btn-primary" style="width:auto;" onclick="submitMarkAppeal()" data-i18n="appeal_submit">Submit Appeal</button>
+                        <button type="button" class="btn-cancel" style="width:auto;" onclick="closeMarkAppealForm()" data-i18n="appeal_cancel">Cancel</button>
+                    </div>
+                    <div id="mark-appeal-submit-message" class="password-message"></div>
+                </div>
+
+                <div id="mark-appeal-history-section" style="margin-top:24px;">
+                    <h3 style="margin-bottom:10px;" data-i18n="appeal_history_heading">Your Appeals</h3>
+                    <div id="mark-appeal-history-output"></div>
+                </div>
             </section>
 
             <!-- TEXTBOOKS -->
@@ -152,6 +180,37 @@
             <section id="page-notifications" class="page-content" style="display:none;">
                 <h2 data-i18n="notifications_heading">Notifications</h2>
                 <div id="notifications-output"><p class="muted" data-i18n="loading">Loading…</p></div>
+            </section>
+
+            <!-- CLASS MONITOR: today's class attendance -->
+            <section id="page-class-monitor" class="page-content" style="display:none;">
+                <h2 data-i18n="monitor_heading">Class Attendance</h2>
+                <p class="muted" style="margin-bottom:20px;" data-i18n="monitor_desc">As Class Monitor, you can see who's present today and check in classmates who arrive without their ID card scanned yet.</p>
+
+                <div class="widget" style="margin-bottom:20px;">
+                    <button type="button" id="monitor-scan-toggle-btn" class="btn-primary" style="width:auto;" onclick="toggleMonitorScanner()" data-i18n="monitor_scan_qr">Scan QR Code</button>
+                    <div id="monitor-scanner-panel" style="display:none; margin-top:14px;">
+                        <video id="monitor-scanner-video" playsinline style="width:100%; max-width:360px; border-radius:8px; background:#000;"></video>
+                        <canvas id="monitor-scanner-canvas" style="display:none;"></canvas>
+                        <p id="monitor-scanner-status" class="muted" style="margin-top:8px;" data-i18n="monitor_scan_point_camera">Point the camera at a student's ID card QR code.</p>
+                    </div>
+                </div>
+
+                <div class="widget monitor-sticky-checkin" style="margin-bottom:20px;">
+                    <label for="monitor-manual-id" class="sr-only">Student ID</label>
+                    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                        <input type="text" id="monitor-manual-id" class="form-input" style="flex:1; min-width:160px;" placeholder="Student ID" data-i18n-placeholder="monitor_student_id_placeholder" oninput="filterMonitorRoster()">
+                        <button type="button" class="btn-primary" style="width:auto;" onclick="monitorManualCheckin()" data-i18n="monitor_check_in">Check In</button>
+                    </div>
+                    <div id="monitor-checkin-message" class="password-message"></div>
+                </div>
+
+                <h3 style="margin-bottom:10px;" data-i18n="monitor_periods_heading">Today's Periods</h3>
+                <p class="muted" style="margin-bottom:12px;" data-i18n="monitor_periods_desc">Mark whether the teacher for each period actually came to class.</p>
+                <div id="monitor-periods-output" style="margin-bottom:24px;"><p class="muted" data-i18n="loading">Loading…</p></div>
+
+                <h3 style="margin-bottom:10px;" data-i18n="monitor_roster_heading">Today's Attendance</h3>
+                <div id="monitor-roster-output"><p class="muted" data-i18n="loading">Loading…</p></div>
             </section>
 
             <!-- ABSENCE / PERMISSION REQUESTS -->
@@ -245,25 +304,31 @@
                 </div>
             </section>
 
-            <!-- ID CARD -->
-            <section id="page-idcard" class="page-content" style="display:none;">
-                <h2 data-i18n="idcard_heading">My ID Card</h2>
-                <p class="muted" style="margin-bottom:20px;" data-i18n="idcard_desc">Present this alongside a physical copy if required by school policy.</p>
-                <div id="idcard-output"><p class="muted" data-i18n="loading">Loading…</p></div>
-                <div style="display:flex; gap:10px; margin-top:16px;">
-                    <button type="button" class="btn-cancel" style="width:auto;" onclick="flipIDCard()" data-i18n="idcard_flip">Flip Card</button>
-                    <button type="button" class="btn-cancel" style="width:auto;" onclick="window.print()" data-i18n="idcard_print">Print ID Card</button>
-                </div>
-            </section>
+            <!-- MY DOCUMENTS: ID Card + Certificate, tabbed -->
+            <section id="page-documents" class="page-content" style="display:none;">
+                <h2 data-i18n="documents_heading">My Documents</h2>
 
-            <!-- CERTIFICATE -->
-            <section id="page-certificate" class="page-content" style="display:none;">
-                <h2 data-i18n="certificate_heading">My Certificate</h2>
-                <div id="certificate-output"><p class="muted" data-i18n="loading">Loading…</p></div>
-                <div id="certificate-request-status" class="request-status-box" style="display:none;"></div>
-                <div style="display:flex; gap:10px; margin-top:16px; flex-wrap:wrap;">
-                    <button type="button" id="certificate-request-btn" class="btn-cancel" style="width:auto; display:none;" onclick="requestCertificate()" data-i18n="certificate_request">Request</button>
-                    <button type="button" id="certificate-download-btn" class="btn-primary" style="width:auto; display:none;" onclick="downloadCertificate()" data-i18n="certificate_print_download">Download</button>
+                <div class="filter-row" style="gap:10px; margin-bottom:20px;">
+                    <button type="button" id="doc-tab-btn-idcard" class="btn-primary" style="width:auto;" onclick="switchDocumentTab('idcard')" data-i18n="nav_idcard">My ID</button>
+                    <button type="button" id="doc-tab-btn-certificate" class="btn-cancel" style="width:auto;" onclick="switchDocumentTab('certificate')" data-i18n="nav_certificate">My Certificate</button>
+                </div>
+
+                <div id="doc-tab-idcard">
+                    <p class="muted" style="margin-bottom:20px;" data-i18n="idcard_desc">Present this alongside a physical copy if required by school policy.</p>
+                    <div id="idcard-output"><p class="muted" data-i18n="loading">Loading…</p></div>
+                    <div style="display:flex; gap:10px; margin-top:16px;">
+                        <button type="button" class="btn-cancel" style="width:auto;" onclick="flipIDCard()" data-i18n="idcard_flip">Flip Card</button>
+                        <button type="button" class="btn-cancel" style="width:auto;" onclick="window.print()" data-i18n="idcard_print">Print ID Card</button>
+                    </div>
+                </div>
+
+                <div id="doc-tab-certificate" style="display:none;">
+                    <div id="certificate-output"><p class="muted" data-i18n="loading">Loading…</p></div>
+                    <div id="certificate-request-status" class="request-status-box" style="display:none;"></div>
+                    <div style="display:flex; gap:10px; margin-top:16px; flex-wrap:wrap;">
+                        <button type="button" id="certificate-request-btn" class="btn-cancel" style="width:auto; display:none;" onclick="requestCertificate()" data-i18n="certificate_request">Request</button>
+                        <button type="button" id="certificate-download-btn" class="btn-primary" style="width:auto; display:none;" onclick="downloadCertificate()" data-i18n="certificate_print_download">Download</button>
+                    </div>
                 </div>
             </section>
         </main>

@@ -6,6 +6,7 @@
     <title>Teacher Portal | Newland High</title>
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
     <script src="/assets/js/guard.js"></script>
     <script src="/assets/js/i18n.js"></script>
 </head>
@@ -30,6 +31,10 @@
                 <li><a href="#" class="nav-link" data-page="idcard">
                     <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><circle cx="8" cy="11" r="2.2"/><path d="M5 17c0-1.8 1.5-3 3-3s3 1.2 3 3"/><line x1="14" y1="9" x2="19" y2="9"/><line x1="14" y1="13" x2="19" y2="13"/></svg>
                     <span data-i18n="nav_idcard">My ID</span>
+                </a></li>
+                <li><a href="#" class="nav-link" data-page="myclass" id="nav-myclass" style="display:none;">
+                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><circle cx="10.5" cy="9" r="1.5"/><path d="M8 13.5c0-1.1.9-2 2-2h1c1.1 0 2 .9 2 2"/></svg>
+                    <span data-i18n="nav_myclass">My Class</span>
                 </a></li>
                 <li><a href="#" class="nav-link" data-page="textbooks" id="nav-textbooks" style="display:none;">
                     <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
@@ -72,6 +77,8 @@
                         <span class="sidebar-toggle-bar"></span>
                     </button>
                     <h1 class="page-title" id="page-title-text">—</h1>
+                    <span id="moe-code-badge" class="moe-code-badge" style="display:none;"></span>
+                    <span id="semester-status-badge" class="semester-status-badge semester-status-loading" style="display:none;">—</span>
                 </div>
 
                 <div class="user-actions">
@@ -132,6 +139,15 @@
                             <span data-i18n="widget_textbook_issued_to">How many textbooks you've issued to</span> <strong id="dashboard-textbook-section-label"></strong> <span data-i18n="widget_textbook_this_year">this school year.</span>
                         </p>
                         <div id="dashboard-textbook-summary"></div>
+                    </div>
+                    <div class="widget">
+                        <h3 data-i18n="dashboard_todays_classes">Today's Classes</h3>
+                        <div id="dashboard-todays-classes"><p style="color:#64748b; font-size:0.85rem;">Loading…</p></div>
+                    </div>
+                    <div class="widget">
+                        <h3 data-i18n="widget_student_performance">Student Performance</h3>
+                        <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;" data-i18n="widget_student_performance_desc">How each of your students is doing in your subject(s) this term.</p>
+                        <div id="dashboard-student-performance"><p style="color:#64748b; font-size:0.85rem;">Loading…</p></div>
                     </div>
                 </div>
             </section>
@@ -290,6 +306,51 @@
                 </div>
             </section>
 
+            <section id="page-myclass" class="page-content myclass-page" style="display:none;">
+                <div class="myclass-frozen-header">
+                    <h2 data-i18n="myclass_heading">My Class</h2>
+                    <p style="font-size:0.85rem; color:#64748b; margin-bottom:16px;">
+                        <span data-i18n="myclass_desc_prefix">Today's attendance for</span> <strong id="myclass-section-label"></strong>.
+                    </p>
+
+                    <div class="metrics-grid">
+                        <div class="metric-card"><h4 data-i18n="myclass_total">Total Students</h4><p class="count" id="myclass-total-count">0</p></div>
+                        <div class="metric-card"><h4 data-i18n="myclass_present">Present Today</h4><p class="count" id="myclass-present-count">0</p></div>
+                        <div class="metric-card"><h4 data-i18n="myclass_not_yet">Not Yet Marked</h4><p class="count" id="myclass-absent-count">0</p></div>
+                    </div>
+
+                    <div class="myclass-toolbar">
+                        <label for="myclass-search" class="sr-only" data-i18n="myclass_search_label">Search students</label>
+                        <input type="text" id="myclass-search" class="form-input" data-i18n-placeholder="myclass_search_placeholder" placeholder="Search by name or ID…" style="flex:2; min-width:180px;" oninput="applyMyClassSearch()">
+
+                        <label for="myclass-scanner-input" class="sr-only" data-i18n="myclass_scanner_label">Scan or type QR code</label>
+                        <input type="text" id="myclass-scanner-input" class="form-input" data-i18n-placeholder="myclass_scanner_placeholder" placeholder="Scan ID card here…" style="flex:2; min-width:180px;" autocomplete="off">
+
+                        <button type="button" class="btn-primary" style="width:auto; padding:10px 18px; white-space:nowrap;" onclick="openQrScanner()">
+                            <span aria-hidden="true">📷</span> <span data-i18n="myclass_scan_qr">Scan QR</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="widget myclass-roster-widget">
+                    <div id="myclass-roster-scroll" class="myclass-roster-scroll">
+                        <div id="myclass-roster"><p style="color:#64748b; font-size:0.85rem;" data-i18n="loading_text">Loading…</p></div>
+                    </div>
+                </div>
+            </section>
+
+            <div id="qr-scan-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="qr-scan-title" style="display:none;">
+                <div class="modal-content" style="width:420px;">
+                    <div class="modal-header-row">
+                        <h3 id="qr-scan-title" data-i18n="myclass_scan_qr">Scan QR</h3>
+                        <button onclick="closeQrScanner()" class="btn-return">Close</button>
+                    </div>
+                    <p style="font-size:0.85rem; color:#64748b; margin-bottom:10px;" data-i18n="myclass_scan_instructions">Point a student's ID card at the camera.</p>
+                    <div id="qr-reader" style="width:100%;"></div>
+                    <p id="qr-scan-status" style="font-size:0.85rem; margin-top:10px; min-height:1.2em;"></p>
+                </div>
+            </div>
+
             <section id="page-idcard" class="page-content" style="display:none;">
                 <h2 data-i18n="idcard_heading">My ID Card</h2>
                 <p style="font-size:0.85rem; color:#64748b; margin-bottom:20px;" data-i18n="idcard_desc">Present this alongside a physical copy if required by school policy.</p>
@@ -379,6 +440,12 @@
                         <h3 data-i18n="action_center_certificate_requests">Certificate Requests</h3>
                         <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;" data-i18n="action_center_certificate_requests_desc">Students asking for their certificate to be unlocked for download.</p>
                         <div id="certificate-requests-list"><p style="color:#64748b; font-size:0.85rem;">Loading…</p></div>
+                    </div>
+
+                    <div class="widget">
+                        <h3 data-i18n="action_center_absence_requests">Absence Requests</h3>
+                        <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;" data-i18n="action_center_absence_requests_desc">Students in your homeroom section asking to be excused — approve or reject directly, or escalate to Admin if it's beyond what you can approve.</p>
+                        <div id="absence-requests-list"><p style="color:#64748b; font-size:0.85rem;">Loading…</p></div>
                     </div>
 
                     <div class="widget">

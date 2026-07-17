@@ -49,9 +49,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.querySelector('a[data-page="notifications"]').addEventListener('click', loadNotifications);
     document.querySelector('a[data-page="marks"]').addEventListener('click', loadMarks);
     document.querySelector('a[data-page="textbooks"]').addEventListener('click', loadTextbooks);
-    document.querySelector('a[data-page="idcard"]').addEventListener('click', loadIDCard);
-    document.querySelector('a[data-page="certificate"]').addEventListener('click', loadCertificate);
+    document.querySelector('a[data-page="documents"]').addEventListener('click', () => { loadIDCard(); loadCertificate(); });
     document.querySelector('a[data-page="absence"]').addEventListener('click', loadAbsenceHistory);
+    const monitorNavLink = document.querySelector('a[data-page="class-monitor"]');
+    if (monitorNavLink) monitorNavLink.addEventListener('click', () => { loadMonitorRoster(); loadMonitorPeriods(); });
     // School Hub is now a standalone external page (hub.html) — no in-app
     // click handler needed; the nav link is a plain target="_blank" href.
 });
@@ -75,6 +76,9 @@ window.onSisLangChange = () => {
     loadIDCard();
     loadCertificate();
     loadAbsenceHistory();
+    loadRecognitionAward();
+    const monitorNav = document.getElementById('nav-class-monitor');
+    if (monitorNav && monitorNav.style.display !== 'none') { loadMonitorRoster(); loadMonitorPeriods(); }
 };
 
 // ---- ACCOUNT DROPDOWN (Profile Settings / Sign Out) ----
@@ -114,6 +118,14 @@ window.navigateTo = (target) => {
     if (page) page.style.display = 'block';
     closeSidebar();
     closeNotificationPanel();
+    // Leaving the Class Monitor page (or landing elsewhere) always
+    // releases the camera if the scanner was running — no reason to keep
+    // a video stream open once the student's navigated away.
+    if (target !== 'class-monitor' && typeof stopMonitorScanner === 'function') {
+        stopMonitorScanner();
+        const panel = document.getElementById('monitor-scanner-panel');
+        if (panel) panel.style.display = 'none';
+    }
 };
 
 function setupNavigation() {
@@ -207,6 +219,9 @@ async function loadProfile() {
         setText('p-lms',     data.lms_username);
         setText('p-email',   data.email_address);
         setText('p-pc',      data.assigned_computer);
+
+        const monitorNav = document.getElementById('nav-class-monitor');
+        if (monitorNav) monitorNav.style.display = data.is_class_monitor ? '' : 'none';
 
         loadIDPhotoRequestStatus();
     } catch (err) {
@@ -578,6 +593,24 @@ window.flipIDCard = () => {
     back.style.display = showingFront ? 'block' : 'none';
 };
 
+// ---- MY DOCUMENTS (ID Card / Certificate tabs) ----
+// A local tab switch, not a real page navigation — both tabs' data is
+// already loaded together when the Documents nav link is clicked, so
+// switching tabs is just a visibility/style toggle, no fetch involved.
+window.switchDocumentTab = (tab) => {
+    const idcardPane = document.getElementById('doc-tab-idcard');
+    const certPane = document.getElementById('doc-tab-certificate');
+    const idcardBtn = document.getElementById('doc-tab-btn-idcard');
+    const certBtn = document.getElementById('doc-tab-btn-certificate');
+    if (!idcardPane || !certPane || !idcardBtn || !certBtn) return;
+
+    const showingIdcard = tab === 'idcard';
+    idcardPane.style.display = showingIdcard ? 'block' : 'none';
+    certPane.style.display = showingIdcard ? 'none' : 'block';
+    idcardBtn.className = showingIdcard ? 'btn-primary' : 'btn-cancel';
+    certBtn.className = showingIdcard ? 'btn-cancel' : 'btn-primary';
+};
+
 // ---- ACCOUNT SECURITY ----
 window.updatePassword = async () => {
     const currentPass = document.getElementById('curr-pass').value;
@@ -626,17 +659,23 @@ window.updatePassword = async () => {
 
 // ---- MARKS ----
 let allMarks = [];
+let allMarkAppeals = [];
 
 async function loadMarks() {
     const output = document.getElementById('marks-output');
     if (!output) return;
     output.innerHTML = `<p class="muted">${t('loading')}</p>`;
     try {
-        const res = await apiFetch('/api/student/my-marks');
-        if (!res.ok) throw new Error();
-        allMarks = await res.json();
+        const [marksRes, appealsRes] = await Promise.all([
+            apiFetch('/api/student/my-marks'),
+            apiFetch('/api/student/mark-appeals')
+        ]);
+        if (!marksRes.ok) throw new Error();
+        allMarks = await marksRes.json();
+        allMarkAppeals = appealsRes.ok ? await appealsRes.json() : [];
         populateTermFilter(allMarks);
         renderMarks(allMarks);
+        renderMarkAppealHistory();
     } catch {
         output.innerHTML = `<p class="muted">${t('marks_could_not_load')}</p>`;
     }
@@ -721,11 +760,17 @@ function renderMarks(marks) {
                         <span class="marks-avg">${totalLabel}</span>
                     </div>
                     <div class="marks-rows">
-                        ${g.rows.map(r => `
+                        ${g.rows.map(r => {
+                            const existing = allMarkAppeals.find(a => a.subject_id === r.subject_id && a.term === r.term && a.type === r.type);
+                            const appealControl = (existing && existing.status === 'pending')
+                                ? `<span class="badge badge-issued" style="margin-left:8px;">${t('badge_pending')}</span>`
+                                : `<button type="button" class="btn-cancel" style="width:auto; padding:2px 10px; font-size:0.78rem; margin-left:8px;" onclick="openMarkAppealForm(${r.subject_id}, '${r.term}', '${r.type}', '${escapeHtml(subject).replace(/'/g, "\\'")}', ${r.score})">${t('appeal_button')}</button>`;
+                            return `
                             <div class="marks-row">
                                 <span class="marks-type">${assessmentLabel(r.type)}</span>
-                                <span class="marks-score ${scoreClass(r.score)}">${r.score}%</span>
-                            </div>`).join('')}
+                                <span class="marks-score ${scoreClass(r.score)}">${r.score}%${appealControl}</span>
+                            </div>`;
+                        }).join('')}
                     </div>
                 </div>`;
             }).join('')}
@@ -736,6 +781,99 @@ function scoreClass(score) {
     if (score >= 80) return 'score-high';
     if (score >= 50) return 'score-mid';
     return 'score-low';
+}
+
+// ---- MARK APPEALS ----
+let currentAppealContext = null;
+
+window.openMarkAppealForm = (subject_id, term, type, subjectName, recordedScore) => {
+    currentAppealContext = { subject_id, term, type, subjectName, recordedScore };
+    const container = document.getElementById('mark-appeal-form-container');
+    const contextEl = document.getElementById('mark-appeal-context');
+    if (!container || !contextEl) return;
+
+    contextEl.textContent = t('appeal_context', {
+        subject: subjectName, type: assessmentLabel(type), term, score: recordedScore
+    });
+    document.getElementById('appeal-claimed-score').value = '';
+    document.getElementById('appeal-reason').value = '';
+    document.getElementById('mark-appeal-submit-message').textContent = '';
+    container.style.display = 'block';
+    container.scrollIntoView({ behavior: 'smooth', block: 'center' });
+};
+
+window.closeMarkAppealForm = () => {
+    const container = document.getElementById('mark-appeal-form-container');
+    if (container) container.style.display = 'none';
+    currentAppealContext = null;
+};
+
+window.submitMarkAppeal = async () => {
+    if (!currentAppealContext) return;
+    const msgEl = document.getElementById('mark-appeal-submit-message');
+    const claimedScore = parseFloat(document.getElementById('appeal-claimed-score').value);
+    const reason = document.getElementById('appeal-reason').value.trim();
+
+    const showMsg = (text, isError) => {
+        msgEl.textContent = text;
+        msgEl.style.color = isError ? '#dc2626' : '#16a34a';
+    };
+
+    if (isNaN(claimedScore) || claimedScore < 0 || claimedScore > 100) {
+        showMsg(t('appeal_score_invalid'), true);
+        return;
+    }
+    if (!reason) {
+        showMsg(t('appeal_reason_required'), true);
+        return;
+    }
+
+    try {
+        const res = await apiFetch('/api/student/mark-appeals', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                subject_id: currentAppealContext.subject_id,
+                term: currentAppealContext.term,
+                type: currentAppealContext.type,
+                claimed_score: claimedScore,
+                reason
+            })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            showToast(t('appeal_submitted'), 'success');
+            closeMarkAppealForm();
+            await loadMarks();
+        } else {
+            showMsg(data.error || t('appeal_submit_failed'), true);
+        }
+    } catch {
+        showMsg(t('could_not_connect'), true);
+    }
+};
+
+function renderMarkAppealHistory() {
+    const el = document.getElementById('mark-appeal-history-output');
+    if (!el) return;
+    if (!allMarkAppeals.length) { el.innerHTML = `<p class="muted">${t('appeal_none')}</p>`; return; }
+
+    const statusBadge = {
+        pending:  `<span class="badge badge-issued">${t('badge_pending')}</span>`,
+        approved: `<span class="badge badge-returned">${t('badge_approved')}</span>`,
+        rejected: `<span class="badge badge-lost">${t('badge_rejected')}</span>`
+    };
+    el.innerHTML = allMarkAppeals.map(a => `
+        <div class="widget" style="margin-bottom:10px;">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;">
+                <strong>${escapeHtml(a.subject_name)} — ${assessmentLabel(a.type)} (${escapeHtml(a.term)})</strong>
+                ${statusBadge[a.status] || a.status}
+            </div>
+            <p class="muted" style="margin-top:6px; font-size:0.85rem;">${t('appeal_recorded_vs_claimed', { recorded: a.recorded_score, claimed: a.claimed_score })}</p>
+            <p style="margin-top:6px;">${escapeHtml(a.reason)}</p>
+            ${a.status === 'rejected' && a.resolution_note ? `<p class="request-status-box request-status-rejected" style="margin-top:8px;">${escapeHtml(a.resolution_note)}</p>` : ''}
+            ${a.status === 'approved' ? `<p class="request-status-box request-status-approved" style="margin-top:8px;">${t('appeal_approved_note', { score: a.claimed_score })}</p>` : ''}
+        </div>`).join('');
 }
 
 // ---- TEXTBOOKS ----
@@ -776,6 +914,262 @@ function renderTextbooks(books, container) {
             </table>
         </div>`;
 }
+
+// ---- CLASS MONITOR ----
+async function loadMonitorPeriods() {
+    const el = document.getElementById('monitor-periods-output');
+    if (!el) return;
+    el.innerHTML = `<p class="muted">${t('loading')}</p>`;
+    try {
+        const res = await apiFetch('/api/student/todays-periods');
+        if (!res.ok) throw new Error();
+        const periods = await res.json();
+        renderMonitorPeriods(periods);
+    } catch {
+        el.innerHTML = `<p class="muted">${t('monitor_could_not_load')}</p>`;
+    }
+}
+
+function renderMonitorPeriods(periods) {
+    const el = document.getElementById('monitor-periods-output');
+    if (!el) return;
+    if (!periods.length) { el.innerHTML = `<p class="muted">${t('monitor_no_periods_today')}</p>`; return; }
+
+    el.innerHTML = periods.map(p => {
+        const teacherName = p.teacher_last_name ? escapeHtml(`${p.teacher_first_name} ${p.teacher_last_name}`) : t('monitor_no_teacher_assigned');
+        let markedBlock;
+        if (p.teacher_on_leave) {
+            markedBlock = `<span class="badge badge-returned">${t('monitor_teacher_on_leave')}</span>`;
+        } else if (p.teacher_present === null || p.teacher_present === undefined) {
+            markedBlock = `
+                <div style="display:flex; gap:8px;">
+                    <button type="button" class="btn-primary" style="width:auto; padding:6px 14px;" onclick="markPeriodAttendance(${p.timetable_id}, true)" data-i18n="monitor_mark_present">Teacher came</button>
+                    <button type="button" class="btn-cancel" style="width:auto; padding:6px 14px;" onclick="markPeriodAttendance(${p.timetable_id}, false)" data-i18n="monitor_mark_absent">Teacher absent</button>
+                </div>`;
+        } else {
+            markedBlock = p.teacher_present
+                ? `<span class="badge badge-returned">${t('monitor_mark_present')}</span>`
+                : `<span class="badge badge-lost">${t('monitor_mark_absent')}</span>`;
+        }
+        return `
+            <div class="widget" style="margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+                <div>
+                    <strong>${escapeHtml(p.subject_name)}</strong>
+                    <span class="muted" style="font-size:0.8rem; margin-left:6px;">${p.start_time.slice(0, 5)}–${p.end_time.slice(0, 5)} · ${teacherName}</span>
+                </div>
+                ${markedBlock}
+            </div>`;
+    }).join('');
+}
+
+window.markPeriodAttendance = async (timetable_id, teacher_present) => {
+    try {
+        const res = await apiFetch('/api/student/mark-period-attendance', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ timetable_id, teacher_present })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            showToast(t('monitor_mark_saved'), 'success');
+            await loadMonitorPeriods();
+        } else {
+            showToast(data.error || t('monitor_mark_failed'), 'error');
+        }
+    } catch {
+        showToast(t('could_not_connect'), 'error');
+    }
+};
+
+let currentMonitorRosterData = null;
+
+async function loadMonitorRoster() {
+    const el = document.getElementById('monitor-roster-output');
+    if (!el) return;
+    el.innerHTML = `<p class="muted">${t('loading')}</p>`;
+    try {
+        const res = await apiFetch('/api/student/my-class-attendance');
+        if (!res.ok) throw new Error();
+        currentMonitorRosterData = await res.json();
+        renderMonitorRoster(currentMonitorRosterData);
+    } catch {
+        el.innerHTML = `<p class="muted">${t('monitor_could_not_load')}</p>`;
+    }
+}
+
+// filterText narrows the displayed roster to students whose ID or name
+// contains it — used live as the monitor types in the Student ID box, so
+// they can see who they're about to check in before hitting the button,
+// without a separate search action or network round trip (the roster's
+// already loaded; this just re-renders a subset of it).
+function renderMonitorRoster(data, filterText = '') {
+    const el = document.getElementById('monitor-roster-output');
+    if (!el) return;
+    if (!data.roster.length) { el.innerHTML = `<p class="muted">${t('monitor_no_students')}</p>`; return; }
+
+    const query = filterText.trim().toLowerCase();
+    const roster = query
+        ? data.roster.filter(s => s.student_id.toLowerCase().includes(query) || s.name.toLowerCase().includes(query))
+        : data.roster;
+
+    const excusedBadge = {
+        pending:   `<span class="badge badge-issued">${t('monitor_excuse_pending')}</span>`,
+        approved:  `<span class="badge badge-returned">${t('monitor_excuse_approved')}</span>`,
+        escalated: `<span class="badge badge-escalated">${t('badge_escalated')}</span>`
+    };
+
+    if (!roster.length) {
+        el.innerHTML = `<p class="muted">${t('monitor_no_match')}</p>`;
+        return;
+    }
+
+    el.innerHTML = `
+        <p class="muted" style="margin-bottom:10px;">${query ? t('monitor_showing_match', { count: roster.length }) : t('monitor_absent_count', { count: data.absent_count })}</p>
+        ${roster.map(s => `
+            <div class="widget" style="margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+                <div>
+                    <strong>${escapeHtml(s.name)}</strong>
+                    <span class="muted" style="font-size:0.8rem; margin-left:6px;">${escapeHtml(s.student_id)}</span>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    ${s.present
+                        ? `<span class="badge badge-returned">${t('monitor_present')}</span>`
+                        : `<span class="badge badge-lost">${t('monitor_absent')}</span>${s.absence_request_status ? (excusedBadge[s.absence_request_status] || '') : ''}`}
+                </div>
+            </div>`).join('')}`;
+}
+
+window.filterMonitorRoster = () => {
+    if (!currentMonitorRosterData) return;
+    const input = document.getElementById('monitor-manual-id');
+    renderMonitorRoster(currentMonitorRosterData, input ? input.value : '');
+};
+
+// ---- CLASS MONITOR: QR SCANNER ----
+// jsQR decodes raw pixel data — it doesn't touch the camera itself, so
+// this is the standard pattern: grab a getUserMedia stream into a hidden
+// <video>, draw each frame to a canvas, hand that frame's pixels to
+// jsQR, repeat via requestAnimationFrame until something decodes.
+let monitorScannerStream = null;
+let monitorScannerRAF = null;
+let monitorScannerCooldownUntil = 0;
+
+window.toggleMonitorScanner = () => {
+    const panel = document.getElementById('monitor-scanner-panel');
+    if (!panel) return;
+    if (panel.style.display === 'none') {
+        panel.style.display = 'block';
+        startMonitorScanner();
+    } else {
+        panel.style.display = 'none';
+        stopMonitorScanner();
+    }
+};
+
+async function startMonitorScanner() {
+    const video = document.getElementById('monitor-scanner-video');
+    const statusEl = document.getElementById('monitor-scanner-status');
+    if (!video) return;
+
+    if (typeof jsQR !== 'function') {
+        statusEl.textContent = t('monitor_scan_lib_failed');
+        return;
+    }
+
+    try {
+        monitorScannerStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        video.srcObject = monitorScannerStream;
+        await video.play();
+        statusEl.textContent = t('monitor_scan_point_camera');
+        monitorScannerRAF = requestAnimationFrame(monitorScanFrame);
+    } catch (err) {
+        statusEl.textContent = t('monitor_scan_camera_denied');
+    }
+}
+
+function stopMonitorScanner() {
+    if (monitorScannerRAF) cancelAnimationFrame(monitorScannerRAF);
+    monitorScannerRAF = null;
+    if (monitorScannerStream) {
+        monitorScannerStream.getTracks().forEach(track => track.stop());
+        monitorScannerStream = null;
+    }
+}
+
+function monitorScanFrame() {
+    const video = document.getElementById('monitor-scanner-video');
+    const canvas = document.getElementById('monitor-scanner-canvas');
+    if (!video || !canvas || video.readyState !== video.HAVE_ENOUGH_DATA) {
+        monitorScannerRAF = requestAnimationFrame(monitorScanFrame);
+        return;
+    }
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
+
+    // A 3-second cooldown after each successful scan stops the same QR
+    // code (still sitting in frame while the student walks off) from
+    // firing a dozen duplicate check-in calls before they move away.
+    if (code && Date.now() > monitorScannerCooldownUntil) {
+        monitorScannerCooldownUntil = Date.now() + 3000;
+        monitorQrCheckin(code.data);
+    }
+    monitorScannerRAF = requestAnimationFrame(monitorScanFrame);
+}
+
+async function monitorQrCheckin(qrData) {
+    const statusEl = document.getElementById('monitor-scanner-status');
+    statusEl.textContent = t('monitor_scan_checking');
+    try {
+        const res = await apiFetch('/api/attendance/checkin', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ qr_data: qrData })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            statusEl.textContent = `✓ ${data.message}`;
+            showToast(data.message, 'success');
+            await loadMonitorRoster();
+        } else {
+            statusEl.textContent = data.error || t('monitor_scan_failed');
+        }
+    } catch {
+        statusEl.textContent = t('could_not_connect');
+    }
+}
+
+window.monitorManualCheckin = async () => {
+    const input = document.getElementById('monitor-manual-id');
+    const msgEl = document.getElementById('monitor-checkin-message');
+    const studentId = input.value.trim();
+    if (!studentId) return;
+
+    try {
+        const res = await apiFetch('/api/attendance/manual-checkin', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ student_id: studentId })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            msgEl.style.color = '#16a34a';
+            msgEl.textContent = data.message;
+            input.value = '';
+            await loadMonitorRoster();
+        } else {
+            msgEl.style.color = '#dc2626';
+            msgEl.textContent = data.error || t('monitor_checkin_failed');
+        }
+    } catch {
+        msgEl.style.color = '#dc2626';
+        msgEl.textContent = t('could_not_connect');
+    }
+};
 
 // ---- ABSENCE / PERMISSION REQUESTS ----
 let absenceAttachmentFile = null;
@@ -852,9 +1246,10 @@ async function loadAbsenceHistory() {
 function renderAbsenceHistory(requests, container) {
     if (!requests.length) { container.innerHTML = `<p class="muted">${t('absence_none')}</p>`; return; }
     const statusBadge = {
-        pending:  `<span class="badge badge-issued">${t('badge_pending')}</span>`,
-        approved: `<span class="badge badge-returned">${t('badge_approved')}</span>`,
-        rejected: `<span class="badge badge-lost">${t('badge_rejected')}</span>`
+        pending:   `<span class="badge badge-issued">${t('badge_pending')}</span>`,
+        approved:  `<span class="badge badge-returned">${t('badge_approved')}</span>`,
+        rejected:  `<span class="badge badge-lost">${t('badge_rejected')}</span>`,
+        escalated: `<span class="badge badge-escalated">${t('badge_escalated')}</span>`
     };
     const fmt = d => new Date(d).toLocaleDateString();
     container.innerHTML = requests.map(r => `
@@ -865,6 +1260,7 @@ function renderAbsenceHistory(requests, container) {
             </div>
             <p style="margin-top:8px;">${escapeHtml(r.reason)}</p>
             ${r.attachment_url ? `<p class="muted" style="font-size:0.82rem; margin-top:4px;"><a href="${r.attachment_url}" target="_blank" rel="noopener">${t('absence_view_attachment')}</a></p>` : ''}
+            ${r.status === 'escalated' ? `<p class="request-status-box request-status-pending" style="margin-top:8px;">${t('absence_escalated_note')}</p>` : ''}
             ${r.status === 'rejected' && r.rejection_reason ? `<p class="request-status-box request-status-rejected" style="margin-top:8px;">${escapeHtml(r.rejection_reason)}</p>` : ''}
         </div>`).join('');
 }
@@ -1007,30 +1403,194 @@ window.markRead = async (notif_id, el) => {
 
 // ---- DASHBOARD ----
 async function loadDashboard() {
-    await Promise.all([loadMarks(), loadTextbooks(), loadAttendanceStreak()]);
+    await Promise.all([loadMarks(), loadTextbooks(), loadAttendanceStreak(), loadDashboardTimetable(), loadRecognitionAward()]);
     updateDashboardSummary();
     updateDashboardTextbooks();
 }
 
+async function loadRecognitionAward() {
+    const banner = document.getElementById('recognition-award-banner');
+    const textEl = document.getElementById('recognition-award-text');
+    if (!banner || !textEl) return;
+    try {
+        const res = await apiFetch('/api/student/my-recognition-award');
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        if (!data.awarded) { banner.style.display = 'none'; return; }
+
+        const dateStr = new Date(data.awarded_at).toLocaleDateString();
+        textEl.innerHTML = `
+            <strong style="font-size:1.05rem;">🏆 ${t('recognition_award_title')}</strong>
+            <p style="margin-top:6px;">${t('recognition_award_body', { level: data.class_level, average: data.year_average, date: dateStr })}</p>`;
+        banner.style.display = 'block';
+    } catch {
+        // Silent — a banner failing to load isn't worth an error message
+        // on the Dashboard; it just stays hidden, same as "not awarded."
+        banner.style.display = 'none';
+    }
+}
+
+async function loadDashboardTimetable() {
+    const el = document.getElementById('dashboard-timetable');
+    if (!el) return;
+    try {
+        const res = await apiFetch('/api/student/my-timetable');
+        if (!res.ok) throw new Error();
+        const timetable = await res.json();
+        // day_of_week is stored 1=Monday..5=Friday, matching JS Date#getDay()
+        // directly, so no remapping needed here.
+        const todayDow = new Date().getDay();
+        const todayClasses = timetable
+            .filter(p => p.day_of_week === todayDow)
+            .sort((a, b) => a.start_time.localeCompare(b.start_time));
+
+        if (!todayClasses.length) {
+            el.innerHTML = `<p class="muted">${t('dashboard_no_classes_today')}</p>`;
+            return;
+        }
+        el.innerHTML = todayClasses.map(p => `
+            <div class="notif-card" style="margin-bottom:8px;">
+                <strong style="font-size:0.85rem;">${escapeHtml(p.subject_name)}</strong>
+                <p class="muted" style="font-size:0.82rem; margin-top:2px;">
+                    ${p.start_time.slice(0, 5)} – ${p.end_time.slice(0, 5)}${p.teacher_last_name ? ' · ' + escapeHtml(`${p.teacher_first_name} ${p.teacher_last_name}`) : ''}
+                </p>
+            </div>`).join('');
+    } catch {
+        el.innerHTML = `<p class="muted">${t('dashboard_could_not_load_timetable')}</p>`;
+    }
+}
+
+// ---- ETHIOPIAN CALENDAR CONVERSION ----
+// Standard Julian-Day-Number-based conversion (Amete Mihret epoch) — the
+// same method most Ethiopian calendar tools use. Ethiopian leap years are
+// every year where year % 4 === 3; New Year falls around Sept 11 (Sept 12
+// the Gregorian year before a Gregorian leap year), which the JDN math
+// handles automatically rather than needing a special-cased cutoff.
+const ETHIOPIAN_MONTHS = ['Meskerem', 'Tikimt', 'Hidar', 'Tahsas', 'Tir', 'Yekatit', 'Megabit', 'Miazia', 'Ginbot', 'Sene', 'Hamle', 'Nehase', 'Pagume'];
+const JD_EPOCH_OFFSET_AMETE_MIHRET = 1723856;
+
+function gregorianToJdn(year, month, day) {
+    const a = Math.floor((14 - month) / 12);
+    const y = year + 4800 - a;
+    const m = month + 12 * a - 3;
+    return day + Math.floor((153 * m + 2) / 5) + 365 * y + Math.floor(y / 4) - Math.floor(y / 100) + Math.floor(y / 400) - 32045;
+}
+
+function toEthiopianDate(dateInput) {
+    const d = new Date(dateInput);
+    const jdn = gregorianToJdn(d.getFullYear(), d.getMonth() + 1, d.getDate());
+    const r = (jdn - JD_EPOCH_OFFSET_AMETE_MIHRET) % 1461;
+    const n = (r % 365) + 365 * Math.floor(r / 1460);
+    const year = 4 * Math.floor((jdn - JD_EPOCH_OFFSET_AMETE_MIHRET) / 1461) + Math.floor(r / 365) - Math.floor(r / 1460);
+    const month = Math.floor(n / 30) + 1;
+    const day = (n % 30) + 1;
+    return { year, month, day, monthName: ETHIOPIAN_MONTHS[month - 1] };
+}
+
+function formatEthiopianDate(dateInput) {
+    const e = toEthiopianDate(dateInput);
+    return `${e.day} ${e.monthName} ${e.year} E.C.`;
+}
+
+// ---- ATTENDANCE HEATMAP CALENDAR ----
+let attendanceStreakHtml = ''; // the "N day streak" line, cached so paging the calendar doesn't need to re-fetch it
+let attendanceCalendarWeeksBack = 0;
+
 async function loadAttendanceStreak() {
     const el = document.getElementById('dashboard-attendance');
     if (!el) return;
+    el.innerHTML = `<p class="muted">${t('loading')}</p>`;
     try {
         const res = await apiFetch('/api/student/my-attendance-streak');
         if (!res.ok) throw new Error();
         const data = await res.json();
         const dots = Array.from({ length: Math.min(data.streak, 10) }, () => '🔥').join('');
-        el.innerHTML = `
+        attendanceStreakHtml = `
             <div class="summary-stat">
                 <span class="summary-num">${data.streak}</span>
                 <span class="muted">${t('dashboard_day_streak')}${data.streak > 0 ? ' ' + dots : ''}</span>
             </div>
-            <p class="muted" style="margin-top:6px; font-size:0.8rem;">
+            <p class="muted" style="margin-top:6px; margin-bottom:14px; font-size:0.8rem;">
                 ${data.present_today ? t('dashboard_checked_in_today') : t('dashboard_not_checked_in')}
             </p>`;
     } catch {
-        el.innerHTML = `<p class="muted">${t('dashboard_could_not_load_attendance')}</p>`;
+        attendanceStreakHtml = `<p class="muted">${t('dashboard_could_not_load_attendance')}</p>`;
     }
+    await loadAttendanceCalendar(0);
+}
+
+window.loadAttendanceCalendar = async (weeksBack) => {
+    attendanceCalendarWeeksBack = weeksBack;
+    const el = document.getElementById('dashboard-attendance');
+    if (!el) return;
+    try {
+        const res = await apiFetch(`/api/student/attendance-calendar?weeks_back=${weeksBack}`);
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        renderAttendanceCalendar(data);
+    } catch {
+        el.innerHTML = attendanceStreakHtml + `<p class="muted">${t('dashboard_could_not_load_calendar')}</p>`;
+    }
+};
+
+function renderAttendanceCalendar(data) {
+    const el = document.getElementById('dashboard-attendance');
+    if (!el || !data.days.length) return;
+
+    const statusColor = { present: '#16a34a', absent: '#dc2626', excused: '#3b82f6', weekend: '#d1d5db', future: '#f3f4f6', not_started: '#f3f4f6' };
+    const statusLabel = { present: t('calendar_present'), absent: t('calendar_absent'), excused: t('calendar_excused'), weekend: t('calendar_weekend') };
+
+    // GitHub-style grid: columns are weeks (Sunday-start), rows are the 7
+    // weekdays. startOffset accounts for the range not necessarily
+    // starting on a Sunday, so the first real column can be partial.
+    const firstDay = new Date(data.days[0].date + 'T00:00:00');
+    const startOffset = firstDay.getDay();
+    const weekCount = Math.ceil((startOffset + data.days.length) / 7);
+
+    const monthLabels = [];
+    let lastMonthKey = null;
+    data.days.forEach((d, i) => {
+        const dt = new Date(d.date + 'T00:00:00');
+        const monthKey = `${dt.getFullYear()}-${dt.getMonth()}`;
+        if (monthKey !== lastMonthKey) {
+            monthLabels.push({ week: Math.floor((startOffset + i) / 7), name: dt.toLocaleDateString(undefined, { month: 'short' }) });
+            lastMonthKey = monthKey;
+        }
+    });
+
+    const cells = data.days.map((d, i) => {
+        const cellIndex = startOffset + i;
+        const col = Math.floor(cellIndex / 7) + 1;
+        const row = (cellIndex % 7) + 1;
+        const dt = new Date(d.date + 'T00:00:00');
+        let title = '';
+        if (d.status !== 'future' && d.status !== 'not_started') {
+            const greg = dt.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+            title = `${greg}\n${formatEthiopianDate(dt)}\n${statusLabel[d.status]}`;
+        }
+        return `<div title="${escapeHtml(title)}" style="grid-column:${col}; grid-row:${row}; width:15px; height:15px; border-radius:3px; background:${statusColor[d.status]};"></div>`;
+    }).join('');
+
+    el.innerHTML = attendanceStreakHtml + `
+        <div style="overflow-x:auto;">
+            <div style="display:grid; grid-template-columns:repeat(${weekCount}, 15px); gap:3px; margin-bottom:4px; min-width:${weekCount * 18}px;">
+                ${monthLabels.map(m => `<div style="grid-column:${m.week + 1}; font-size:0.72rem; color:#64748b;">${m.name}</div>`).join('')}
+            </div>
+            <div style="display:grid; grid-template-columns:repeat(${weekCount}, 15px); grid-template-rows:repeat(7, 15px); gap:3px; min-width:${weekCount * 18}px;">
+                ${cells}
+            </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:12px; margin-top:12px; flex-wrap:wrap;">
+            <button type="button" class="btn-cancel" style="width:auto; padding:4px 12px;" onclick="loadAttendanceCalendar(${attendanceCalendarWeeksBack + 1})">&lt;</button>
+            <span class="muted" style="font-size:0.82rem;">${new Date(data.from + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', year: 'numeric' })} – ${new Date(data.to + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}</span>
+            ${attendanceCalendarWeeksBack > 0 ? `<button type="button" class="btn-cancel" style="width:auto; padding:4px 12px;" onclick="loadAttendanceCalendar(${attendanceCalendarWeeksBack - 1})">&gt;</button>` : ''}
+        </div>
+        <div style="display:flex; gap:14px; margin-top:10px; font-size:0.78rem; flex-wrap:wrap;">
+            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#16a34a;margin-right:4px;"></span>${t('calendar_present')}</span>
+            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#dc2626;margin-right:4px;"></span>${t('calendar_absent')}</span>
+            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#3b82f6;margin-right:4px;"></span>${t('calendar_excused')}</span>
+            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#d1d5db;margin-right:4px;"></span>${t('calendar_weekend')}</span>
+        </div>`;
 }
 
 function updateDashboardSummary() {

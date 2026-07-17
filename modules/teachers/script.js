@@ -23,6 +23,10 @@ window.onSisLangChange = () => {
     if (teacherIdCardData) renderTeacherIdCard(teacherIdCardData);
     if (lastPerformanceCompletion) renderPerformanceCompletion(lastPerformanceCompletion);
     if (lastDashboardTextbookData) renderDashboardTextbookSummary(lastDashboardTextbookData);
+    if (lastTodaysClasses) renderDashboardTodaysClasses(lastTodaysClasses);
+    if (lastStudentPerformance) renderDashboardStudentPerformance(lastStudentPerformance);
+    if (lastSemesterStatus) renderSemesterStatusBadge(lastSemesterStatus);
+    if (lastMyClassRoster) renderMyClassRoster(lastMyClassRoster);
     if (conductData && conductData.length > 0) {
         populateConductSectionFilter(conductData);
         renderConductList(conductData);
@@ -52,6 +56,16 @@ async function checkAuthAndInit() {
             if (logoEl) logoEl.textContent = CURRENT_SCHOOL_NAME;
         }
 
+        const moeBadge = document.getElementById('moe-code-badge');
+        if (moeBadge) {
+            if (data.moe_school_code) {
+                moeBadge.textContent = `MOE: ${data.moe_school_code}`;
+                moeBadge.style.display = 'inline-flex';
+            } else {
+                moeBadge.style.display = 'none';
+            }
+        }
+
         if (data.additional_role === 'registrar') {
             const item = document.getElementById('nav-registrar-item');
             if (item) item.style.display = 'block';
@@ -77,7 +91,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         loadDashboardPerformance(),
         loadConductStatus(),
         loadPushStatus(),
-        loadHomeroomInfo()
+        loadHomeroomInfo(),
+        loadDashboardTodaysClasses(),
+        loadDashboardStudentPerformance(),
+        loadSemesterStatus()
     ]);
     setupNavigation();
     setupPreferenceListeners();
@@ -85,10 +102,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupStudentFilters();
     setupConductFilter();
     setupSidebarToggle();
+    setupMyClassScannerInput();
 
     // Fetch notifications on load, then poll every 60 seconds
     loadNotifications();
     setInterval(loadNotifications, 60000);
+
+    // Semester status can change mid-session if Academic VP opens/closes
+    // it while a teacher is logged in — poll every 2 minutes so the
+    // header badge doesn't go stale for the rest of the day.
+    setInterval(loadSemesterStatus, 120000);
+
+    // Re-render "Now" / "Up next" on the Today's Classes widget every
+    // minute so it stays accurate as time passes, without re-fetching the
+    // timetable itself (that only needs to change if the schedule does).
+    setInterval(() => { if (lastTodaysClasses) renderDashboardTodaysClasses(lastTodaysClasses); }, 60000);
 });
 
 let performanceChartInstance = null;
@@ -200,6 +228,439 @@ async function loadDashboardTextbookSummary() {
     }
 }
 let lastDashboardTextbookData = null;
+
+// DASHBOARD: TODAY'S CLASSES WIDGET (all teachers)
+// Reuses /api/teacher/my-timetable (the teacher's whole-week schedule)
+// and filters down to today client-side, so the same endpoint can also
+// back a future full-week view without a second call. day_of_week on the
+// server is 1=Monday..5=Friday, deliberately matching JS Date#getDay()'s
+// own weekday numbering — on a weekend getDay() returns 0 or 6, which
+// naturally matches nothing and falls through to the "no classes" state.
+let lastTodaysClasses = null;
+
+async function loadDashboardTodaysClasses() {
+    const container = document.getElementById('dashboard-todays-classes');
+    if (!container) return;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/teacher/my-timetable`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Could not load timetable");
+        lastTodaysClasses = data;
+        renderDashboardTodaysClasses(data);
+    } catch (err) {
+        console.error("Today's classes load error:", err);
+        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('dashboard_could_not_load_timetable') : "Could not load today's schedule."}</p>`;
+    }
+}
+
+function formatTimeRange(startTime, endTime) {
+    const fmt = (raw) => {
+        const [h, m] = raw.split(':').map(Number);
+        const period = h >= 12 ? 'PM' : 'AM';
+        const hour12 = h % 12 === 0 ? 12 : h % 12;
+        return `${hour12}:${String(m).padStart(2, '0')} ${period}`;
+    };
+    return `${fmt(startTime)} – ${fmt(endTime)}`;
+}
+
+function renderDashboardTodaysClasses(rows) {
+    const container = document.getElementById('dashboard-todays-classes');
+    if (!container) return;
+
+    const now = new Date();
+    const todayDow = now.getDay();
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const toMinutes = (t) => {
+        const [h, m] = t.split(':').map(Number);
+        return h * 60 + m;
+    };
+
+    const todays = (rows || [])
+        .filter(r => r.day_of_week === todayDow)
+        .sort((a, b) => a.start_time.localeCompare(b.start_time));
+
+    if (todays.length === 0) {
+        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('dashboard_no_classes_today') : 'No classes scheduled today.'}</p>`;
+        return;
+    }
+
+    // Which period is happening right now (start <= now <= end), and —
+    // failing that — which one is next (soonest start still in the
+    // future). Only one row ever gets tagged "now", and only one "next",
+    // so a teacher glancing at the widget knows exactly where to be.
+    let nowIndex = -1;
+    let nextIndex = -1;
+    todays.forEach((r, i) => {
+        const start = toMinutes(r.start_time);
+        const end = toMinutes(r.end_time);
+        if (nowMinutes >= start && nowMinutes < end) {
+            nowIndex = i;
+        } else if (nowMinutes < start && nextIndex === -1) {
+            nextIndex = i;
+        }
+    });
+
+    const nowLabel = typeof t === 'function' ? t('dashboard_class_now') : 'Now';
+    const nextLabel = typeof t === 'function' ? t('dashboard_class_next') : 'Up next';
+    const doneLabel = typeof t === 'function' ? t('dashboard_class_done') : 'Done';
+
+    container.innerHTML = `<div class="todays-classes-list">${todays.map((r, i) => {
+        const end = toMinutes(r.end_time);
+        let rowClass = '';
+        let badge = '';
+        if (i === nowIndex) {
+            rowClass = 'is-now';
+            badge = `<span class="todays-class-badge badge-now">${nowLabel}</span>`;
+        } else if (i === nextIndex) {
+            rowClass = 'is-next';
+            badge = `<span class="todays-class-badge badge-next">${nextLabel}</span>`;
+        } else if (nowMinutes >= end) {
+            rowClass = 'is-done';
+            badge = `<span class="todays-class-badge badge-done">${doneLabel}</span>`;
+        }
+        return `
+        <div class="todays-class-row ${rowClass}">
+            <div class="todays-class-time">${formatTimeRange(r.start_time, r.end_time)}</div>
+            <div class="todays-class-info">
+                <strong>${escapeHtml(r.subject_name)}</strong>
+                <span>Grade ${escapeHtml(String(r.class_level))} - ${escapeHtml(r.section)} (${escapeHtml(r.stream)})</span>
+            </div>
+            ${badge}
+        </div>`;
+    }).join('')}</div>`;
+}
+
+// HEADER: SEMESTER STATUS BADGE (all teachers)
+// Reuses /api/term/current, the same endpoint every portal already polls
+// to know which term is active. semester_status is pushed by Academic VP
+// via the Start Semester / Close Semester buttons on their own portal —
+// this widget just reflects whatever that last press set: green "Open
+// <term>" or red "Closed".
+let lastSemesterStatus = null;
+
+async function loadSemesterStatus() {
+    const badge = document.getElementById('semester-status-badge');
+    if (!badge) return;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/term/current`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Could not load semester status");
+        lastSemesterStatus = data;
+        renderSemesterStatusBadge(data);
+    } catch (err) {
+        console.error("Semester status load error:", err);
+        badge.style.display = 'inline-flex';
+        badge.className = 'semester-status-badge semester-status-loading';
+        badge.textContent = typeof t === 'function' ? t('semester_status_error') : 'Semester status unavailable';
+    }
+}
+
+function renderSemesterStatusBadge(data) {
+    const badge = document.getElementById('semester-status-badge');
+    if (!badge || !data) return;
+
+    badge.style.display = 'inline-flex';
+    const isOpen = data.semester_status !== 'closed';
+    badge.className = `semester-status-badge ${isOpen ? 'semester-status-open' : 'semester-status-closed'}`;
+
+    if (isOpen) {
+        const template = typeof t === 'function' ? t('semester_open') : 'Open {term}';
+        badge.textContent = template.replace('{term}', data.current_term || '');
+    } else {
+        badge.textContent = typeof t === 'function' ? t('semester_closed') : 'Closed';
+    }
+}
+
+// MY CLASS (homeroom teachers only) — today's attendance roster
+let lastMyClassRoster = null;
+let myClassSearchTerm = '';
+
+async function loadMyClassRoster() {
+    const container = document.getElementById('myclass-roster');
+    if (!container) return;
+    container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('loading_text') : 'Loading…'}</p>`;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/attendance-today`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Could not load roster");
+        lastMyClassRoster = data;
+        renderMyClassRoster(data);
+    } catch (err) {
+        console.error("My Class roster load error:", err);
+        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('myclass_could_not_load') : 'Could not load your class roster.'}</p>`;
+    }
+}
+
+// Re-fetches the roster from the server but keeps the scroll list exactly
+// where the teacher left it — used after a QR scan, where we don't
+// necessarily know which row to patch locally.
+async function refreshMyClassRosterPreservingScroll() {
+    const scrollBox = document.getElementById('myclass-roster-scroll');
+    const savedScrollTop = scrollBox ? scrollBox.scrollTop : 0;
+    await loadMyClassRoster();
+    if (scrollBox) scrollBox.scrollTop = savedScrollTop;
+}
+
+window.applyMyClassSearch = () => {
+    const input = document.getElementById('myclass-search');
+    myClassSearchTerm = input ? input.value.trim().toLowerCase() : '';
+    if (lastMyClassRoster) renderMyClassRoster(lastMyClassRoster);
+};
+
+function renderMyClassRoster(data) {
+    const container = document.getElementById('myclass-roster');
+    if (!container || !data) return;
+
+    const totalEl = document.getElementById('myclass-total-count');
+    const presentEl = document.getElementById('myclass-present-count');
+    const absentEl = document.getElementById('myclass-absent-count');
+    if (totalEl) totalEl.textContent = data.total ?? 0;
+    if (presentEl) presentEl.textContent = data.present_count ?? 0;
+    if (absentEl) absentEl.textContent = (data.total ?? 0) - (data.present_count ?? 0);
+
+    const roster = data.roster || [];
+
+    const term = myClassSearchTerm;
+    const visible = term
+        ? roster.filter(s =>
+            `${s.first_name} ${s.last_name}`.toLowerCase().includes(term) ||
+            String(s.student_id).toLowerCase().includes(term))
+        : roster;
+
+    if (roster.length === 0) {
+        container.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">No students in your homeroom section yet.</p>';
+        return;
+    }
+    if (visible.length === 0) {
+        container.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">No students match your search.</p>';
+        return;
+    }
+
+    const presentLabel = typeof t === 'function' ? t('myclass_present_badge') : 'Present';
+    const notMarkedLabel = typeof t === 'function' ? t('myclass_not_marked_badge') : 'Not marked yet';
+    const markBtnLabel = typeof t === 'function' ? t('myclass_mark_present') : 'Mark Present';
+    const undoBtnLabel = typeof t === 'function' ? t('myclass_undo') : 'Undo';
+
+    container.innerHTML = `<div class="myclass-roster-list">${visible.map(s => `
+        <div class="myclass-roster-row ${s.present ? 'is-present' : ''}" data-student-id="${escapeHtml(String(s.student_id))}">
+            <span class="myclass-roster-name">${escapeHtml(s.first_name)} ${escapeHtml(s.last_name)}</span>
+            <span class="myclass-roster-status ${s.present ? 'status-present' : 'status-absent'}">${s.present ? presentLabel : notMarkedLabel}</span>
+            ${s.present
+                ? `<button class="textbook-action-btn textbook-action-undo" onclick="undoMyClassPresent('${s.student_id}')">${undoBtnLabel}</button>`
+                : `<button class="textbook-action-btn" onclick="markMyClassPresent('${s.student_id}')">${markBtnLabel}</button>`
+            }
+        </div>`).join('')}</div>`;
+}
+
+// Marking/undoing updates the in-memory roster and re-renders in place —
+// deliberately not a full loadMyClassRoster() round trip, so the list
+// never resets scroll position or jumps back to the first student the
+// way a full re-fetch/re-render would if this ran on every single click.
+window.markMyClassPresent = async (student_id) => {
+    const scrollBox = document.getElementById('myclass-roster-scroll');
+    const savedScrollTop = scrollBox ? scrollBox.scrollTop : 0;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/mark-present`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ student_id })
+        });
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.error || "Could not mark attendance");
+
+        if (lastMyClassRoster) {
+            const entry = lastMyClassRoster.roster.find(s => String(s.student_id) === String(student_id));
+            if (entry && !entry.present) {
+                entry.present = true;
+                entry.marked_by_me = true;
+                lastMyClassRoster.present_count = (lastMyClassRoster.present_count || 0) + 1;
+            }
+            renderMyClassRoster(lastMyClassRoster);
+        }
+    } catch (err) {
+        console.error("Mark present error:", err);
+        showAlertModal(err.message || "Could not mark attendance.");
+    } finally {
+        if (scrollBox) scrollBox.scrollTop = savedScrollTop;
+    }
+};
+
+window.undoMyClassPresent = async (student_id) => {
+    const scrollBox = document.getElementById('myclass-roster-scroll');
+    const savedScrollTop = scrollBox ? scrollBox.scrollTop : 0;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/undo-present`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ student_id })
+        });
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.error || "Could not undo attendance mark");
+
+        if (lastMyClassRoster) {
+            const entry = lastMyClassRoster.roster.find(s => String(s.student_id) === String(student_id));
+            if (entry && entry.present) {
+                entry.present = false;
+                entry.marked_by_me = false;
+                lastMyClassRoster.present_count = Math.max(0, (lastMyClassRoster.present_count || 0) - 1);
+            }
+            renderMyClassRoster(lastMyClassRoster);
+        }
+    } catch (err) {
+        console.error("Undo present error:", err);
+        showAlertModal(err.message || "Could not undo attendance mark.");
+    } finally {
+        if (scrollBox) scrollBox.scrollTop = savedScrollTop;
+    }
+};
+
+// --- QR / handheld-scanner check-in (My Class page) ---
+// Two ways in: (1) a camera-based scanner (html5-qrcode, loaded via CDN in
+// index.html) for phones/webcams, and (2) a plain text input for
+// keyboard-wedge handheld scanners (like the Honeywell mentioned on the
+// server) — those just "type" the QR payload followed by Enter into
+// whatever's focused, so a normal input field is all that's needed.
+// Both funnel into the same POST /api/attendance/checkin used elsewhere.
+let qrScannerInstance = null;
+
+async function submitQrCheckin(qr_data) {
+    const status = document.getElementById('qr-scan-status');
+    try {
+        const res = await apiFetch(`${API_BASE}/api/attendance/checkin`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ qr_data })
+        });
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.error || "Check-in failed");
+
+        if (status) {
+            status.style.color = '#166534';
+            status.textContent = result.message;
+        }
+        await refreshMyClassRosterPreservingScroll();
+        return true;
+    } catch (err) {
+        console.error("QR check-in error:", err);
+        if (status) {
+            status.style.color = '#991b1b';
+            status.textContent = err.message || "Check-in failed.";
+        }
+        return false;
+    }
+}
+
+window.openQrScanner = () => {
+    const modal = document.getElementById('qr-scan-modal');
+    const status = document.getElementById('qr-scan-status');
+    if (!modal) return;
+    modal.style.display = 'flex';
+    if (status) { status.textContent = ''; status.style.color = ''; }
+
+    if (typeof Html5Qrcode === 'undefined') {
+        if (status) {
+            status.style.color = '#991b1b';
+            status.textContent = "Camera scanner unavailable — use the handheld scanner input on the page instead.";
+        }
+        return;
+    }
+
+    qrScannerInstance = new Html5Qrcode('qr-reader');
+    qrScannerInstance.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: 220 },
+        async (decodedText) => {
+            // Pause further scans while this one is being submitted, so
+            // the same card held in frame doesn't fire the endpoint
+            // repeatedly.
+            if (qrScannerInstance) {
+                try { await qrScannerInstance.pause(true); } catch (e) { /* already stopped */ }
+            }
+            await submitQrCheckin(decodedText);
+            if (qrScannerInstance) {
+                try { qrScannerInstance.resume(); } catch (e) { /* modal likely closed */ }
+            }
+        },
+        () => { /* per-frame "no QR found" noise — ignored on purpose */ }
+    ).catch(err => {
+        console.error("Camera start error:", err);
+        if (status) {
+            status.style.color = '#991b1b';
+            status.textContent = "Could not access the camera. Check permissions, or use the handheld scanner input instead.";
+        }
+    });
+};
+
+window.closeQrScanner = () => {
+    const modal = document.getElementById('qr-scan-modal');
+    if (modal) modal.style.display = 'none';
+    if (qrScannerInstance) {
+        qrScannerInstance.stop().then(() => qrScannerInstance.clear()).catch(() => {});
+        qrScannerInstance = null;
+    }
+};
+
+function setupMyClassScannerInput() {
+    const input = document.getElementById('myclass-scanner-input');
+    if (!input) return;
+    input.addEventListener('keydown', async (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        const value = input.value.trim();
+        input.value = '';
+        if (!value) return;
+        await submitQrCheckin(value);
+        input.focus();
+    });
+}
+
+// DASHBOARD: STUDENT PERFORMANCE WIDGET (all teachers)
+// Every student this teacher is assigned to, with their average score
+// this term in the teacher's own subject(s) and a color-coded tier — see
+// /api/teacher/student-performance on the server for how the tier
+// thresholds are computed. Sorted so students who need attention surface
+// first rather than being buried alphabetically among students already
+// doing fine.
+let lastStudentPerformance = null;
+const PERF_TIER_ORDER = { poor: 0, average: 1, none: 2, good: 3 };
+const PERF_TIER_FALLBACK_LABELS = { good: 'Good', average: 'Average', poor: 'Needs Attention', none: 'No marks yet' };
+
+async function loadDashboardStudentPerformance() {
+    const container = document.getElementById('dashboard-student-performance');
+    if (!container) return;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/teacher/student-performance`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Could not load student performance");
+        lastStudentPerformance = data;
+        renderDashboardStudentPerformance(data);
+    } catch (err) {
+        console.error("Student performance load error:", err);
+        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('perf_could_not_load') : 'Could not load student performance.'}</p>`;
+    }
+}
+
+function renderDashboardStudentPerformance(data) {
+    const container = document.getElementById('dashboard-student-performance');
+    if (!container) return;
+    const students = (data && data.students) || [];
+
+    if (students.length === 0) {
+        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('perf_no_students') : 'No students assigned yet.'}</p>`;
+        return;
+    }
+
+    const sorted = [...students].sort((a, b) => PERF_TIER_ORDER[a.tier] - PERF_TIER_ORDER[b.tier]);
+    const tierLabel = (tier) => typeof t === 'function' ? t(`perf_tier_${tier}`) : PERF_TIER_FALLBACK_LABELS[tier];
+
+    container.innerHTML = `<div class="perf-list">${sorted.map(s => `
+        <div class="perf-row">
+            <span class="perf-dot perf-dot-${s.tier}" aria-hidden="true"></span>
+            <span class="perf-name">${escapeHtml(s.full_name)}</span>
+            <span class="perf-score">${s.average_score != null ? s.average_score + '%' : '—'}</span>
+            <span class="perf-tier-badge perf-tier-badge-${s.tier}">${tierLabel(s.tier)}</span>
+        </div>`).join('')}</div>`;
+}
 
 function renderDashboardTextbookSummary(data) {
     const container = document.getElementById('dashboard-textbook-summary');
@@ -491,6 +952,9 @@ async function loadHomeroomInfo() {
         const textbooksNav = document.getElementById('nav-textbooks');
         if (textbooksNav) textbooksNav.style.display = homeroomInfo.is_homeroom ? 'block' : 'none';
 
+        const myClassNav = document.getElementById('nav-myclass');
+        if (myClassNav) myClassNav.style.display = homeroomInfo.is_homeroom ? 'block' : 'none';
+
         const actionCenterNav = document.getElementById('nav-actioncenter');
         if (actionCenterNav) actionCenterNav.style.display = homeroomInfo.is_homeroom ? 'block' : 'none';
 
@@ -503,6 +967,9 @@ async function loadHomeroomInfo() {
 
             const dashboardLabel = document.getElementById('dashboard-textbook-section-label');
             if (dashboardLabel) dashboardLabel.textContent = `Grade ${homeroomInfo.class_level} - ${homeroomInfo.section} (${homeroomInfo.stream})`;
+
+            const myClassLabel = document.getElementById('myclass-section-label');
+            if (myClassLabel) myClassLabel.textContent = `Grade ${homeroomInfo.class_level} - ${homeroomInfo.section} (${homeroomInfo.stream})`;
 
             await Promise.all([
                 loadDashboardTextbookSummary(),
@@ -741,31 +1208,144 @@ function renderCertificateRequests(requests) {
         </div>`).join('');
 }
 
-// Loads both request lists in parallel, renders them, and refreshes the
-// sidebar badge from their combined pending count.
+// Loads all three request lists in parallel, renders them, and refreshes
+// the sidebar badge from their combined pending count.
 async function loadActionCenterRequests() {
     const photoList = document.getElementById('photo-requests-list');
     const certList = document.getElementById('certificate-requests-list');
+    const absenceList = document.getElementById('absence-requests-list');
     if (photoList) photoList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Loading…</p>';
     if (certList) certList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Loading…</p>';
+    if (absenceList) absenceList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Loading…</p>';
 
     try {
-        const [photoRes, certRes] = await Promise.all([
+        const [photoRes, certRes, absenceRes] = await Promise.all([
             apiFetch(`${API_BASE}/api/homeroom/id-photo-requests`),
-            apiFetch(`${API_BASE}/api/homeroom/certificate-requests`)
+            apiFetch(`${API_BASE}/api/homeroom/certificate-requests`),
+            apiFetch(`${API_BASE}/api/homeroom/absence-requests`)
         ]);
         const photoRequests = photoRes.ok ? await photoRes.json() : [];
         const certRequests = certRes.ok ? await certRes.json() : [];
+        const absenceRequests = absenceRes.ok ? await absenceRes.json() : [];
 
         renderPhotoRequests(photoRequests);
         renderCertificateRequests(certRequests);
-        updateActionCenterBadge(photoRequests.length + certRequests.length);
+        renderAbsenceRequests(absenceRequests);
+        updateActionCenterBadge(photoRequests.length + certRequests.length + absenceRequests.length);
     } catch (err) {
         console.error("loadActionCenterRequests error:", err);
         if (photoList) photoList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not load requests.</p>';
         if (certList) certList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not load requests.</p>';
+        if (absenceList) absenceList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not load requests.</p>';
     }
 }
+
+// Absence requests carry two extra pieces the photo/certificate cards
+// don't: a date range + day count, and a within_homeroom_authority flag
+// (computed server-side) that decides whether this teacher can Approve
+// directly or must Escalate instead — the server enforces the same cap
+// on the actual approve call, so this only ever affects which buttons
+// are shown, never what's actually allowed.
+function renderAbsenceRequests(requests) {
+    const list = document.getElementById('absence-requests-list');
+    if (!list) return;
+
+    if (!Array.isArray(requests) || requests.length === 0) {
+        list.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('absence_no_requests') : 'No pending absence requests.'}</p>`;
+        return;
+    }
+
+    list.innerHTML = requests.map(r => {
+        const from = new Date(r.date_from).toLocaleDateString();
+        const to = new Date(r.date_to).toLocaleDateString();
+        const attachment = r.attachment_url
+            ? `<a href="${escapeHtml(r.attachment_url)}" target="_blank" rel="noopener" style="font-size:0.78rem;">${typeof t === 'function' ? t('absence_view_attachment') : 'View attachment'}</a>`
+            : '';
+        const authorityNote = r.within_homeroom_authority
+            ? ''
+            : `<span class="absence-span-warning">${(typeof t === 'function' ? t('absence_beyond_authority_note') : 'Covers {days} days — beyond what you can approve directly.').replace('{days}', r.span_days)}</span>`;
+        const actionButtons = r.within_homeroom_authority
+            ? `<button type="button" class="request-approve-btn" onclick="approveAbsenceRequest(${r.request_id})">${typeof t === 'function' ? t('absence_approve') : 'Approve'}</button>
+               <button type="button" class="request-reject-btn" onclick="rejectAbsenceRequest(${r.request_id})">${typeof t === 'function' ? t('absence_reject') : 'Reject'}</button>`
+            : `<button type="button" class="request-escalate-btn" onclick="escalateAbsenceRequest(${r.request_id})">${typeof t === 'function' ? t('absence_escalate') : 'Escalate to Admin'}</button>
+               <button type="button" class="request-reject-btn" onclick="rejectAbsenceRequest(${r.request_id})">${typeof t === 'function' ? t('absence_reject') : 'Reject'}</button>`;
+
+        return `
+        <div class="request-card">
+            <div class="request-info">
+                <strong>${escapeHtml(r.first_name)} ${escapeHtml(r.last_name)}</strong>
+                <span>${escapeHtml(r.student_id)} — ${from} – ${to} (${r.span_days} day${r.span_days === 1 ? '' : 's'})</span>
+                ${r.reason ? `<span style="display:block; margin-top:4px;">${escapeHtml(r.reason)}</span>` : ''}
+                ${attachment ? `<span style="display:block; margin-top:4px;">${attachment}</span>` : ''}
+                ${authorityNote}
+            </div>
+            <div class="request-actions">
+                ${actionButtons}
+            </div>
+        </div>`;
+    }).join('');
+}
+
+window.approveAbsenceRequest = async (requestId) => {
+    const confirmed = await showConfirmModal("Approve this absence request? These days won't count as unexcused absences.", "Approve absence?");
+    if (!confirmed) return;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/absence-requests/${requestId}/approve`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) { showAlertModal(data.error || "Could not approve this request."); return; }
+        showSuccessModal(data.message);
+        await loadActionCenterRequests();
+    } catch (err) {
+        console.error("approveAbsenceRequest error:", err);
+        showAlertModal("Could not connect to server.");
+    }
+};
+
+window.rejectAbsenceRequest = async (requestId) => {
+    const reason = await showPromptModal(
+        "Reject this absence request? You can add an optional reason below — it'll be shown to the student.",
+        "Reject request?",
+        "Reason (optional)"
+    );
+    if (reason === null) return; // cancelled
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/absence-requests/${requestId}/reject`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: reason || undefined })
+        });
+        const data = await res.json();
+        if (!res.ok) { showAlertModal(data.error || "Could not reject this request."); return; }
+        showSuccessModal(data.message);
+        await loadActionCenterRequests();
+    } catch (err) {
+        console.error("rejectAbsenceRequest error:", err);
+        showAlertModal("Could not connect to server.");
+    }
+};
+
+window.escalateAbsenceRequest = async (requestId) => {
+    const note = await showPromptModal(
+        "Escalate this to school administration for review? You can add an optional note below explaining why.",
+        "Escalate to Admin?",
+        "Note (optional)"
+    );
+    if (note === null) return; // cancelled
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/absence-requests/${requestId}/escalate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ note: note || undefined })
+        });
+        const data = await res.json();
+        if (!res.ok) { showAlertModal(data.error || "Could not escalate this request."); return; }
+        showSuccessModal(data.message);
+        await loadActionCenterRequests();
+    } catch (err) {
+        console.error("escalateAbsenceRequest error:", err);
+        showAlertModal("Could not connect to server.");
+    }
+};
 
 window.approvePhotoRequest = async (requestId) => {
     const confirmed = await showConfirmModal("Approve this photo? It will become the student's official ID photo.", "Approve photo?");
@@ -1573,12 +2153,14 @@ function setupNavigation() {
             clicked.classList.add('active');
 
             pages.forEach(p => p.style.display = 'none');
+            if (typeof closeQrScanner === 'function') closeQrScanner();
 
             const target = clicked.getAttribute('data-page');
             const targetPage = document.getElementById(`page-${target}`);
             if (targetPage) {
                 targetPage.style.display = 'block';
                 if (target === 'textbooks') loadTextbooksGrid();
+                if (target === 'myclass') loadMyClassRoster();
                 if (target === 'contact') { loadContactThreads(); loadMysections(); }
                 if (target === 'idcard') loadTeacherIdCard();
                 if (target === 'actioncenter') loadActionCenterRequests();

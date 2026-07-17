@@ -94,8 +94,8 @@ function toDateOnly(d) {
 }
 const JWT_EXPIRES_IN = '30m'; // short-lived on purpose — see refresh notes below
 
-function issueAuthToken(res, { user_id, role, school_id, title }) {
-    const token = jwt.sign({ user_id, role, school_id, title: title || null }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+function issueAuthToken(res, { user_id, role, school_id, title, is_class_monitor }) {
+    const token = jwt.sign({ user_id, role, school_id, title: title || null, is_class_monitor: !!is_class_monitor }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     res.cookie('auth_token', token, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production', // requires HTTPS in production
@@ -149,6 +149,36 @@ function requirePrincipal(req, res, next) {
     next();
 }
 
+// Restricts a route to students who are also flagged as a Class Monitor
+// (students.is_class_monitor = 1 — ADD IT if it doesn't exist yet:
+//   ALTER TABLE students ADD COLUMN is_class_monitor BOOLEAN NOT NULL DEFAULT FALSE;
+// then set it TRUE on the specific students a homeroom teacher designates,
+// typically 2 per section). The flag is baked into the JWT at login (see
+// issueAuthToken/is_class_monitor), so this is a pure claim check with no
+// DB round trip — same trade-off as requirePrincipal above: if the role
+// changes mid-session, it won't take effect until the student's 30-minute
+// token expires and they log in again.
+function requireClassMonitor(req, res, next) {
+    if (!req.user || req.user.role !== 'students' || !req.user.is_class_monitor) {
+        return res.status(403).json({ error: "This action is restricted to your class's Class Monitor(s)." });
+    }
+    next();
+}
+
+// Mirrors getHomeroomSectionOrNull, but for a student acting as Class
+// Monitor: returns their own class_level/section/stream, since a monitor's
+// attendance-related permissions are scoped to their own class only, the
+// same way a homeroom teacher's are scoped to the section they're
+// homeroom for.
+async function getMonitorSectionOrNull(student_id, school_id) {
+    const [rows] = await pool.query(
+        'SELECT class_level, section, stream FROM students WHERE student_id = ? AND school_id = ? AND is_class_monitor = 1',
+        [student_id, school_id]
+    );
+    if (rows.length === 0) return null;
+    return { class_level: rows[0].class_level, section: rows[0].section, stream: rows[0].stream };
+}
+
 // In-memory store for teacher notification/security preferences.
 // NOTE: this is intentionally NOT persisted to the database — it resets
 const teacherPreferences = new Map();
@@ -177,6 +207,34 @@ async function getCurrentTerm(school_id) {
         [school_id]
     );
     return rows.length > 0 ? rows[0].setting_value : 'Semester 1';
+}
+
+// Set the moment Academic VP last pushed "Start Semester" (POST
+// /api/term/set below) — the authoritative start line for every
+// day-counting feature: absence counting, the attendance heatmap
+// calendar, and the streak. Returns null if the semester has never been
+// started yet for this school, in which case callers fall back to
+// whatever approximation they used before this existed.
+async function getTermStartDate(school_id) {
+    const [rows] = await pool.query(
+        "SELECT setting_value FROM school_settings WHERE setting_key = 'term_start_date' AND school_id = ?",
+        [school_id]
+    );
+    return rows.length > 0 ? rows[0].setting_value : null; // 'YYYY-MM-DD' string, matches toDateOnly()
+}
+
+// Whether the current semester is 'open' or 'closed' — pushed by Academic
+// VP via POST /api/term/set (opens, alongside starting/switching the
+// term) and POST /api/term/close (closes, without touching current_term
+// or term_start_date so the label stays "Closed <last term>" instead of
+// resetting). Defaults to 'open' for any school that hasn't touched this
+// yet, so nothing that upgrades mid-year suddenly reads as closed.
+async function getSemesterStatus(school_id) {
+    const [rows] = await pool.query(
+        "SELECT setting_value FROM school_settings WHERE setting_key = 'semester_status' AND school_id = ?",
+        [school_id]
+    );
+    return rows.length > 0 ? rows[0].setting_value : 'open';
 }
 
 // Checks whether a subject's marks for a given section+term have already
@@ -449,7 +507,7 @@ app.get('/api/student/me', requireAuth, requireRole('students'), async (req, res
         const [rows] = await pool.query(
             `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.class_level, st.section, st.stream, st.sex,
                     st.status, st.school_name, st.lms_username, st.email_address, st.assigned_computer,
-                    st.phone_number, st.created_at, st.profile_photo_url, st.id_photo_url,
+                    st.phone_number, st.created_at, st.profile_photo_url, st.id_photo_url, st.is_class_monitor,
                     sc.zone, sc.woreda, sc.region, sc.moe_school_code, sc.school_prefix
              FROM students st
              LEFT JOIN schools sc ON sc.id = st.school_id
@@ -567,7 +625,7 @@ app.get('/api/student/id-card.docx', requireAuth, requireRole('students'), async
 app.get('/api/student/my-marks', requireAuth, requireRole('students'), async (req, res) => {
     try {
         const [marks] = await pool.query(
-            `SELECT s.subject_name, m.score, m.type, m.term
+            `SELECT s.subject_id, s.subject_name, m.score, m.type, m.term
              FROM marks m
              JOIN subjects s ON m.subject_id = s.subject_id AND s.school_id = m.school_id
              WHERE m.student_id = ? AND m.school_id = ?
@@ -578,6 +636,194 @@ app.get('/api/student/my-marks', requireAuth, requireRole('students'), async (re
     } catch (err) {
         console.error("/api/student/my-marks error:", err);
         res.status(500).json({ error: "Could not fetch your marks" });
+    }
+});
+
+// --- Mark appeals (student disputes a recorded score) ---
+// Requires a new table — run this migration if it doesn't exist yet:
+//   CREATE TABLE mark_appeals (
+//     appeal_id INT AUTO_INCREMENT PRIMARY KEY,
+//     student_id VARCHAR(50) NOT NULL,
+//     school_id INT NOT NULL,
+//     subject_id INT NOT NULL,
+//     term VARCHAR(20) NOT NULL,
+//     type VARCHAR(30) NOT NULL,
+//     recorded_score DECIMAL(5,2) NOT NULL,
+//     claimed_score DECIMAL(5,2) NOT NULL,
+//     reason TEXT NOT NULL,
+//     status ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
+//     resolution_note VARCHAR(255) NULL,
+//     reviewed_by VARCHAR(50) NULL,
+//     reviewed_at DATETIME NULL,
+//     requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     INDEX idx_student (student_id, school_id)
+//   );
+//
+// recorded_score is captured at submission time — a snapshot of what the
+// mark was when the student flagged it, kept even if the teacher's own
+// mark entry changes in the meantime, so the appeal always shows what the
+// student was actually disputing. Routed to whichever teacher is
+// assigned (via teacher_assignments) to that subject for the student's
+// own class — not a fixed "the homeroom teacher handles everything"
+// path, since a mark is the actual subject teacher's call to correct.
+app.post('/api/student/mark-appeals', requireAuth, requireRole('students'), async (req, res) => {
+    const { subject_id, term, type, claimed_score, reason } = req.body;
+    if (!subject_id || !term || !type || claimed_score === undefined || claimed_score === null || !reason?.trim()) {
+        return res.status(400).json({ error: "subject_id, term, type, claimed_score, and reason are all required." });
+    }
+    if (!ASSESSMENT_TYPES.includes(type)) {
+        return res.status(400).json({ error: `Invalid type. Must be one of: ${ASSESSMENT_TYPES.join(', ')}` });
+    }
+    if (typeof claimed_score !== 'number' || claimed_score < 0 || claimed_score > 100) {
+        return res.status(400).json({ error: "claimed_score must be a number between 0 and 100." });
+    }
+
+    try {
+        const [markRows] = await pool.query(
+            `SELECT score FROM marks WHERE student_id = ? AND subject_id = ? AND term = ? AND type = ? AND school_id = ?`,
+            [req.user.user_id, subject_id, term, type, req.user.school_id]
+        );
+        if (markRows.length === 0) {
+            return res.status(404).json({ error: "No mark has been recorded for this yet — nothing to appeal." });
+        }
+        const recorded_score = markRows[0].score;
+        if (Number(recorded_score) === Number(claimed_score)) {
+            return res.status(400).json({ error: "That's already the recorded score." });
+        }
+
+        const [existingRows] = await pool.query(
+            `SELECT appeal_id FROM mark_appeals
+             WHERE student_id = ? AND school_id = ? AND subject_id = ? AND term = ? AND type = ? AND status = 'pending'`,
+            [req.user.user_id, req.user.school_id, subject_id, term, type]
+        );
+        if (existingRows.length > 0) {
+            return res.status(409).json({ error: "You already have a pending appeal for this mark." });
+        }
+
+        const [result] = await pool.query(
+            `INSERT INTO mark_appeals (student_id, school_id, subject_id, term, type, recorded_score, claimed_score, reason)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [req.user.user_id, req.user.school_id, subject_id, term, type, recorded_score, claimed_score, reason.trim()]
+        );
+        res.json({ message: "Appeal submitted.", appeal_id: result.insertId });
+    } catch (err) {
+        console.error("/api/student/mark-appeals POST error:", err);
+        res.status(500).json({ error: "Could not submit your appeal" });
+    }
+});
+
+app.get('/api/student/mark-appeals', requireAuth, requireRole('students'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT ma.appeal_id, ma.subject_id, ma.term, ma.type, ma.recorded_score, ma.claimed_score, ma.reason,
+                    ma.status, ma.resolution_note, ma.requested_at, ma.reviewed_at, s.subject_name
+             FROM mark_appeals ma
+             JOIN subjects s ON s.subject_id = ma.subject_id AND s.school_id = ma.school_id
+             WHERE ma.student_id = ? AND ma.school_id = ?
+             ORDER BY ma.requested_at DESC`,
+            [req.user.user_id, req.user.school_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/student/mark-appeals GET error:", err);
+        res.status(500).json({ error: "Could not load your appeals" });
+    }
+});
+
+// --- Teacher: review mark appeals for subjects they teach ---
+app.get('/api/teacher/mark-appeals', requireAuth, requireRole('teachers'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT ma.appeal_id, ma.student_id, ma.subject_id, ma.term, ma.type, ma.recorded_score, ma.claimed_score,
+                    ma.reason, ma.requested_at, s.subject_name, st.first_name, st.last_name,
+                    st.class_level, st.section, st.stream
+             FROM mark_appeals ma
+             JOIN students st ON st.student_id = ma.student_id AND st.school_id = ma.school_id
+             JOIN subjects s ON s.subject_id = ma.subject_id AND s.school_id = ma.school_id
+             JOIN teacher_assignments ta ON ta.subject_id = ma.subject_id AND ta.school_id = ma.school_id
+                    AND ta.class_level = st.class_level AND ta.section = st.section AND ta.stream = st.stream
+             WHERE ma.school_id = ? AND ma.status = 'pending' AND ta.teacher_id = ?
+             ORDER BY ma.requested_at ASC`,
+            [req.user.school_id, req.user.user_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/teacher/mark-appeals error:", err);
+        res.status(500).json({ error: "Could not load mark appeals" });
+    }
+});
+
+app.post('/api/teacher/mark-appeals/:id/approve', requireAuth, requireRole('teachers'), async (req, res) => {
+    const { corrected_score } = req.body;
+    try {
+        const [rows] = await pool.query(
+            `SELECT ma.appeal_id, ma.student_id, ma.school_id, ma.subject_id, ma.term, ma.type, ma.claimed_score
+             FROM mark_appeals ma
+             JOIN students st ON st.student_id = ma.student_id AND st.school_id = ma.school_id
+             JOIN teacher_assignments ta ON ta.subject_id = ma.subject_id AND ta.school_id = ma.school_id
+                    AND ta.class_level = st.class_level AND ta.section = st.section AND ta.stream = st.stream
+             WHERE ma.appeal_id = ? AND ma.school_id = ? AND ma.status = 'pending' AND ta.teacher_id = ?`,
+            [req.params.id, req.user.school_id, req.user.user_id]
+        );
+        if (rows.length === 0) {
+            return res.status(404).json({ error: "Appeal not found, already reviewed, or not for a subject you teach." });
+        }
+        const appeal = rows[0];
+        const finalScore = (corrected_score === undefined || corrected_score === null) ? appeal.claimed_score : corrected_score;
+
+        // Corrects the actual mark, not just the appeal record — this is
+        // a deliberate correction workflow, so it's allowed to update the
+        // mark even if normal entry for this class/subject/term has since
+        // been pushed to the homeroom teacher and locked (isPushedAndLocked
+        // only guards regular /api/add-mark entry, not this).
+        await pool.query(
+            `UPDATE marks SET score = ? WHERE student_id = ? AND subject_id = ? AND term = ? AND type = ? AND school_id = ?`,
+            [finalScore, appeal.student_id, appeal.subject_id, appeal.term, appeal.type, appeal.school_id]
+        );
+        await pool.query(
+            `UPDATE mark_appeals SET status = 'approved', reviewed_by = ?, reviewed_at = NOW() WHERE appeal_id = ?`,
+            [req.user.user_id, appeal.appeal_id]
+        );
+        await notifyStudent(
+            appeal.student_id, appeal.school_id, req.user.user_id, 'mark_appeal_approved',
+            `Your appeal was approved — your ${appeal.type.replace(/_/g, ' ')} score for ${appeal.term} has been corrected to ${finalScore}.`
+        );
+        res.json({ message: "Appeal approved and mark corrected.", corrected_score: finalScore });
+    } catch (err) {
+        console.error("/api/teacher/mark-appeals/:id/approve error:", err);
+        res.status(500).json({ error: "Could not approve this appeal" });
+    }
+});
+
+app.post('/api/teacher/mark-appeals/:id/reject', requireAuth, requireRole('teachers'), async (req, res) => {
+    const { resolution_note } = req.body;
+    try {
+        const [rows] = await pool.query(
+            `SELECT ma.appeal_id, ma.student_id, ma.school_id, ma.term, ma.type
+             FROM mark_appeals ma
+             JOIN students st ON st.student_id = ma.student_id AND st.school_id = ma.school_id
+             JOIN teacher_assignments ta ON ta.subject_id = ma.subject_id AND ta.school_id = ma.school_id
+                    AND ta.class_level = st.class_level AND ta.section = st.section AND ta.stream = st.stream
+             WHERE ma.appeal_id = ? AND ma.school_id = ? AND ma.status = 'pending' AND ta.teacher_id = ?`,
+            [req.params.id, req.user.school_id, req.user.user_id]
+        );
+        if (rows.length === 0) {
+            return res.status(404).json({ error: "Appeal not found, already reviewed, or not for a subject you teach." });
+        }
+        const appeal = rows[0];
+
+        await pool.query(
+            `UPDATE mark_appeals SET status = 'rejected', reviewed_by = ?, reviewed_at = NOW(), resolution_note = ? WHERE appeal_id = ?`,
+            [req.user.user_id, resolution_note || null, appeal.appeal_id]
+        );
+        await notifyStudent(
+            appeal.student_id, appeal.school_id, req.user.user_id, 'mark_appeal_rejected',
+            `Your appeal for your ${appeal.type.replace(/_/g, ' ')} score in ${appeal.term} was reviewed and the recorded score stands.${resolution_note ? ' Note: ' + resolution_note : ''}`
+        );
+        res.json({ message: "Appeal rejected." });
+    } catch (err) {
+        console.error("/api/teacher/mark-appeals/:id/reject error:", err);
+        res.status(500).json({ error: "Could not reject this appeal" });
     }
 });
 
@@ -680,7 +926,7 @@ app.post('/api/student/mark-notification-read', requireAuth, requireRole('studen
 // VP/Academic VP. If your admin_users table has a title column to
 // distinguish those from other admin accounts, tell me and I'll wire it
 // into the JWT and add a proper check here.
-app.post('/api/attendance/checkin', requireAuth, requireRole('teachers', 'admin_users', 'registrar_users'), async (req, res) => {
+app.post('/api/attendance/checkin', requireAuth, requireRole('teachers', 'admin_users', 'registrar_users', 'students'), async (req, res) => {
     const { qr_data } = req.body;
     if (!qr_data) return res.status(400).json({ error: "qr_data is required" });
 
@@ -691,12 +937,20 @@ app.post('/api/attendance/checkin', requireAuth, requireRole('teachers', 'admin_
 
     try {
         // Teachers may only take attendance if they're a homeroom teacher,
-        // and only for their own section's students.
+        // and only for their own section's students. A student may only
+        // take attendance if they're their section's Class Monitor —
+        // homeroomSection here doubles as "the one section this caller is
+        // scoped to," whichever of the two applies.
         let homeroomSection = null;
         if (req.user.role === 'teachers') {
             homeroomSection = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
             if (!homeroomSection) {
                 return res.status(403).json({ error: "Only homeroom teachers can take attendance." });
+            }
+        } else if (req.user.role === 'students') {
+            homeroomSection = await getMonitorSectionOrNull(req.user.user_id, req.user.school_id);
+            if (!homeroomSection) {
+                return res.status(403).json({ error: "Only your class's Class Monitor(s) can take attendance." });
             }
         }
 
@@ -773,12 +1027,18 @@ app.post('/api/admin/mark-teacher-attendance', requireAuth, requireRole('admin_u
 // Shared streak-walking logic: counts consecutive school days (Mon-Fri)
 // backward from today that have a 'present' row, stopping at the first
 // weekday gap or explicit 'absent'. Weekends are skipped, not counted.
-function computeStreak(presentDatesSet, maxLookbackDays = 120) {
+// minDateStr ('YYYY-MM-DD', optional) stops the walk at the semester's
+// declared start (see getTermStartDate) — a day before the semester
+// officially began was never going to have a real attendance row to
+// check in the first place, so it shouldn't be treated as a broken
+// streak either.
+function computeStreak(presentDatesSet, maxLookbackDays = 120, minDateStr = null) {
     let streak = 0;
     const cursor = new Date();
     for (let i = 0; i < maxLookbackDays; i++) {
+        const key = toDateOnly(cursor);
+        if (minDateStr && key < minDateStr) break;
         if (isSchoolDay(cursor)) {
-            const key = toDateOnly(cursor);
             if (presentDatesSet.has(key)) {
                 streak++;
             } else {
@@ -801,10 +1061,454 @@ app.get('/api/student/my-attendance-streak', requireAuth, requireRole('students'
             [req.user.user_id, req.user.school_id]
         );
         const presentDates = new Set(rows.map(r => toDateOnly(new Date(r.attendance_date))));
-        res.json({ streak: computeStreak(presentDates), present_today: presentDates.has(toDateOnly(new Date())) });
+        const termStartDate = await getTermStartDate(req.user.school_id);
+        res.json({ streak: computeStreak(presentDates, 120, termStartDate), present_today: presentDates.has(toDateOnly(new Date())) });
     } catch (err) {
         console.error("/api/student/my-attendance-streak error:", err);
         res.status(500).json({ error: "Could not load attendance streak" });
+    }
+});
+
+// Day-by-day attendance for the heatmap calendar widget. Returns one
+// ~182-day (26-week) window at a time — weeks_back=0 is the most recent
+// window ending today, weeks_back=1 is the window immediately before
+// that, and so on, so the widget's "<" button can page backward through
+// a student's whole history without ever loading more than one window's
+// worth of rows at once. Ethiopian-calendar labels for the tooltip are
+// computed client-side (see toEthiopianDate in script.js) — no need to
+// send them from here since it's pure date math with no DB dependency.
+app.get('/api/student/attendance-calendar', requireAuth, requireRole('students'), async (req, res) => {
+    const WINDOW_DAYS = 182;
+    const weeksBack = Math.max(0, parseInt(req.query.weeks_back, 10) || 0);
+
+    const to = new Date();
+    to.setDate(to.getDate() - weeksBack * WINDOW_DAYS);
+    const from = new Date(to);
+    from.setDate(from.getDate() - (WINDOW_DAYS - 1));
+
+    try {
+        const [presentRows] = await pool.query(
+            `SELECT attendance_date FROM student_attendance
+             WHERE student_id = ? AND school_id = ? AND status = 'present'
+               AND attendance_date >= ? AND attendance_date <= ?`,
+            [req.user.user_id, req.user.school_id, toDateOnly(from), toDateOnly(to)]
+        );
+        const presentSet = new Set(presentRows.map(r => toDateOnly(new Date(r.attendance_date))));
+
+        // Same excused-day logic as countAbsentDays() — an approved
+        // absence request colors that day differently from an
+        // unexplained absence, rather than just lumping them together.
+        const [excusedRows] = await pool.query(
+            `SELECT date_from, date_to FROM absence_requests
+             WHERE student_id = ? AND school_id = ? AND status = 'approved'
+               AND date_to >= ? AND date_from <= ?`,
+            [req.user.user_id, req.user.school_id, toDateOnly(from), toDateOnly(to)]
+        );
+        const excusedSet = new Set();
+        excusedRows.forEach(r => {
+            const cur = new Date(r.date_from);
+            const end = new Date(r.date_to);
+            while (cur <= end) {
+                excusedSet.add(toDateOnly(cur));
+                cur.setDate(cur.getDate() + 1);
+            }
+        });
+
+        const today = toDateOnly(new Date());
+        const termStartDate = await getTermStartDate(req.user.school_id);
+        const days = [];
+        const cursor = new Date(from);
+        while (cursor <= to) {
+            const dateStr = toDateOnly(cursor);
+            let status;
+            if (termStartDate && dateStr < termStartDate) status = 'not_started';
+            else if (!isSchoolDay(cursor)) status = 'weekend';
+            else if (dateStr > today) status = 'future';
+            else if (presentSet.has(dateStr)) status = 'present';
+            else if (excusedSet.has(dateStr)) status = 'excused';
+            else status = 'absent';
+            days.push({ date: dateStr, status });
+            cursor.setDate(cursor.getDate() + 1);
+        }
+
+        res.json({ from: toDateOnly(from), to: toDateOnly(to), term_start_date: termStartDate, days });
+    } catch (err) {
+        console.error("/api/student/attendance-calendar error:", err);
+        res.status(500).json({ error: "Could not load attendance calendar" });
+    }
+});
+
+// --- Class Timetable ---
+// Requires a new table — run this migration if it doesn't exist yet:
+//   CREATE TABLE class_timetable (
+//     timetable_id INT AUTO_INCREMENT PRIMARY KEY,
+//     school_id INT NOT NULL,
+//     class_level VARCHAR(20) NOT NULL,
+//     section VARCHAR(20) NOT NULL,
+//     stream VARCHAR(20) NOT NULL,
+//     day_of_week TINYINT NOT NULL,  -- 1=Monday ... 5=Friday, matches JS Date#getDay()
+//     subject_id INT NOT NULL,
+//     teacher_id VARCHAR(50) NULL,
+//     start_time TIME NOT NULL,
+//     end_time TIME NOT NULL,
+//     INDEX idx_class (school_id, class_level, section, stream, day_of_week)
+//   );
+// Returns the student's whole-week schedule (not just today) — the
+// Dashboard widget filters down to "today" client-side, so the same
+// response can also back a full weekly view later without a second call.
+app.get('/api/student/my-timetable', requireAuth, requireRole('students'), async (req, res) => {
+    try {
+        const [studentRows] = await pool.query(
+            'SELECT class_level, section, stream FROM students WHERE student_id = ? AND school_id = ?',
+            [req.user.user_id, req.user.school_id]
+        );
+        if (studentRows.length === 0) return res.status(404).json({ error: "Student record not found" });
+        const { class_level, section, stream } = studentRows[0];
+
+        const [rows] = await pool.query(
+            `SELECT ct.timetable_id, ct.day_of_week, ct.start_time, ct.end_time,
+                    s.subject_name, t.first_name AS teacher_first_name, t.last_name AS teacher_last_name
+             FROM class_timetable ct
+             JOIN subjects s ON s.subject_id = ct.subject_id AND s.school_id = ct.school_id
+             LEFT JOIN teachers t ON t.teacher_id = ct.teacher_id AND t.school_id = ct.school_id
+             WHERE ct.school_id = ? AND ct.class_level = ? AND ct.section = ? AND ct.stream = ?
+             ORDER BY ct.day_of_week, ct.start_time`,
+            [req.user.school_id, class_level, section, stream]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/student/my-timetable error:", err);
+        res.status(500).json({ error: "Could not load your timetable" });
+    }
+});
+
+// --- Teacher leave (Academic VP / Admin grants a teacher excused leave) ---
+// Requires a new table — run this migration if it doesn't exist yet:
+//   CREATE TABLE teacher_leave (
+//     leave_id INT AUTO_INCREMENT PRIMARY KEY,
+//     teacher_id VARCHAR(50) NOT NULL,
+//     school_id INT NOT NULL,
+//     date_from DATE NOT NULL,
+//     date_to DATE NOT NULL,
+//     reason VARCHAR(255) NULL,
+//     granted_by VARCHAR(50) NOT NULL,
+//     granted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     INDEX idx_teacher (teacher_id, school_id)
+//   );
+//
+// Unlike the student absence_requests flow, this isn't a request/approval
+// workflow — a teacher doesn't submit anything here. Admin grants leave
+// directly (e.g. after a conversation, a doctor's note handed in person,
+// etc.), and that grant is what makes a period/day excused. There's
+// intentionally no way for anyone but admin_users to create, see the
+// full list of, or revoke these rows.
+async function isTeacherOnLeave(teacher_id, school_id, date) {
+    const [rows] = await pool.query(
+        `SELECT 1 FROM teacher_leave WHERE teacher_id = ? AND school_id = ? AND date_from <= ? AND date_to >= ? LIMIT 1`,
+        [teacher_id, school_id, date, date]
+    );
+    return rows.length > 0;
+}
+
+app.post('/api/admin/teacher-leave', requireAuth, requireRole('admin_users'), async (req, res) => {
+    const { teacher_id, date_from, date_to, reason } = req.body;
+    if (!teacher_id || !date_from || !date_to) {
+        return res.status(400).json({ error: "teacher_id, date_from, and date_to are required." });
+    }
+    if (new Date(date_to) < new Date(date_from)) {
+        return res.status(400).json({ error: "date_to can't be before date_from." });
+    }
+    try {
+        const [result] = await pool.query(
+            `INSERT INTO teacher_leave (teacher_id, school_id, date_from, date_to, reason, granted_by)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [teacher_id, req.user.school_id, date_from, date_to, reason || null, req.user.user_id]
+        );
+        res.json({ message: "Leave granted. This teacher's absence won't count against them for these dates.", leave_id: result.insertId });
+    } catch (err) {
+        console.error("/api/admin/teacher-leave POST error:", err);
+        res.status(500).json({ error: "Could not grant leave" });
+    }
+});
+
+app.get('/api/admin/teacher-leave', requireAuth, requireRole('admin_users'), async (req, res) => {
+    const { teacher_id } = req.query;
+    try {
+        const [rows] = await pool.query(
+            `SELECT leave_id, teacher_id, date_from, date_to, reason, granted_by, granted_at
+             FROM teacher_leave WHERE school_id = ? ${teacher_id ? 'AND teacher_id = ?' : ''}
+             ORDER BY date_from DESC`,
+            teacher_id ? [req.user.school_id, teacher_id] : [req.user.school_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/admin/teacher-leave GET error:", err);
+        res.status(500).json({ error: "Could not load teacher leave records" });
+    }
+});
+
+app.delete('/api/admin/teacher-leave/:id', requireAuth, requireRole('admin_users'), async (req, res) => {
+    try {
+        const [result] = await pool.query(
+            'DELETE FROM teacher_leave WHERE leave_id = ? AND school_id = ?',
+            [req.params.id, req.user.school_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Leave record not found" });
+        res.json({ message: "Leave record revoked." });
+    } catch (err) {
+        console.error("/api/admin/teacher-leave DELETE error:", err);
+        res.status(500).json({ error: "Could not revoke leave record" });
+    }
+});
+
+// --- Period attendance log (Class Monitor marks whether the teacher for
+// each period actually showed up) ---
+// Requires a new table — run this migration if it doesn't exist yet:
+//   CREATE TABLE period_attendance_log (
+//     log_id INT AUTO_INCREMENT PRIMARY KEY,
+//     timetable_id INT NOT NULL,
+//     school_id INT NOT NULL,
+//     log_date DATE NOT NULL,
+//     teacher_present BOOLEAN NOT NULL,
+//     marked_by VARCHAR(50) NOT NULL,   -- the Class Monitor's student_id
+//     marked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     UNIQUE KEY one_log_per_period_per_day (timetable_id, log_date)
+//   );
+//
+// This is intentionally a monitor-only, mark-only log — a teacher can see
+// their own subject timetable (GET /api/teacher/my-timetable below) but
+// has no endpoint anywhere that lets them touch class_timetable OR
+// period_attendance_log. That asymmetry is the whole point: it's a
+// punctuality signal that feeds into teacher performance, so a teacher
+// being able to edit their own record would defeat it. Only a Class
+// Monitor (marking, same-day only) and Admin (read/report, see below)
+// can act on it. A period whose teacher has an approved teacher_leave
+// grant for that date is never markable at all — see teacher_on_leave in
+// the response below and the same check in the POST endpoint — so an
+// excused absence simply never becomes a log row in the first place,
+// rather than being logged as an absence and then explained away.
+app.get('/api/student/todays-periods', requireAuth, requireClassMonitor, async (req, res) => {
+    try {
+        const monitorSection = await getMonitorSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!monitorSection) return res.status(403).json({ error: "Only your class's Class Monitor(s) can view this." });
+
+        const today = toDateOnly(new Date());
+        const todayDow = new Date().getDay();
+
+        const [rows] = await pool.query(
+            `SELECT ct.timetable_id, ct.start_time, ct.end_time, ct.teacher_id, s.subject_name,
+                    t.first_name AS teacher_first_name, t.last_name AS teacher_last_name,
+                    pal.teacher_present, pal.marked_at,
+                    tl.reason AS leave_reason
+             FROM class_timetable ct
+             JOIN subjects s ON s.subject_id = ct.subject_id AND s.school_id = ct.school_id
+             LEFT JOIN teachers t ON t.teacher_id = ct.teacher_id AND t.school_id = ct.school_id
+             LEFT JOIN period_attendance_log pal ON pal.timetable_id = ct.timetable_id AND pal.log_date = ?
+             LEFT JOIN teacher_leave tl ON tl.teacher_id = ct.teacher_id AND tl.school_id = ct.school_id
+                    AND tl.date_from <= ? AND tl.date_to >= ?
+             WHERE ct.school_id = ? AND ct.class_level = ? AND ct.section = ? AND ct.stream = ? AND ct.day_of_week = ?
+             ORDER BY ct.start_time`,
+            [today, today, today, req.user.school_id, monitorSection.class_level, monitorSection.section, monitorSection.stream, todayDow]
+        );
+        // teacher_on_leave is derived from the LEFT JOIN, not a raw column —
+        // simpler for the frontend than having to know what a non-null
+        // leave_reason implies.
+        res.json(rows.map(r => ({ ...r, teacher_on_leave: r.leave_reason !== null })));
+    } catch (err) {
+        console.error("/api/student/todays-periods error:", err);
+        res.status(500).json({ error: "Could not load today's periods" });
+    }
+});
+
+app.post('/api/student/mark-period-attendance', requireAuth, requireClassMonitor, async (req, res) => {
+    const { timetable_id, teacher_present } = req.body;
+    if (!timetable_id || typeof teacher_present !== 'boolean') {
+        return res.status(400).json({ error: "timetable_id and a boolean teacher_present are required." });
+    }
+    try {
+        const monitorSection = await getMonitorSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!monitorSection) return res.status(403).json({ error: "Only your class's Class Monitor(s) can do this." });
+
+        const today = toDateOnly(new Date());
+        const todayDow = new Date().getDay();
+
+        // Confirm this period is (a) actually the monitor's own class and
+        // (b) actually scheduled for TODAY — a monitor can't mark a period
+        // that isn't happening today, which is what stops backdating or
+        // pre-filling a week's worth of "present" marks in one sitting.
+        const [periodRows] = await pool.query(
+            `SELECT timetable_id, teacher_id FROM class_timetable
+             WHERE timetable_id = ? AND school_id = ? AND class_level = ? AND section = ? AND stream = ? AND day_of_week = ?`,
+            [timetable_id, req.user.school_id, monitorSection.class_level, monitorSection.section, monitorSection.stream, todayDow]
+        );
+        if (periodRows.length === 0) {
+            return res.status(404).json({ error: "That period isn't on your class's timetable for today." });
+        }
+
+        // A teacher with an approved leave grant for today can't be marked
+        // at all — excused means excused, not "logged absent, but it's
+        // fine." See isTeacherOnLeave/teacher_leave above.
+        const period = periodRows[0];
+        if (period.teacher_id && await isTeacherOnLeave(period.teacher_id, req.user.school_id, today)) {
+            return res.status(400).json({ error: "This teacher has approved leave today — nothing to mark." });
+        }
+
+        // Upsert, not insert-only — lets the monitor correct a mis-tap
+        // later the same day. The UNIQUE(timetable_id, log_date) key means
+        // this can never create two rows for the same period/day either
+        // way, whether it's the first mark or a same-day correction.
+        await pool.query(
+            `INSERT INTO period_attendance_log (timetable_id, school_id, log_date, teacher_present, marked_by)
+             VALUES (?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE teacher_present = VALUES(teacher_present), marked_by = VALUES(marked_by), marked_at = NOW()`,
+            [timetable_id, req.user.school_id, today, teacher_present, req.user.user_id]
+        );
+        res.json({ message: "Recorded.", timetable_id, teacher_present });
+    } catch (err) {
+        console.error("/api/student/mark-period-attendance error:", err);
+        res.status(500).json({ error: "Could not record this" });
+    }
+});
+
+// Read-only — a teacher can see their own weekly schedule, full stop.
+// No corresponding PUT/PATCH/DELETE exists for a teacher on
+// class_timetable or period_attendance_log anywhere in this file, on
+// purpose (see the note above period_attendance_log's schema).
+app.get('/api/teacher/my-timetable', requireAuth, requireRole('teachers'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT ct.timetable_id, ct.day_of_week, ct.start_time, ct.end_time,
+                    ct.class_level, ct.section, ct.stream, s.subject_name
+             FROM class_timetable ct
+             JOIN subjects s ON s.subject_id = ct.subject_id AND s.school_id = ct.school_id
+             WHERE ct.school_id = ? AND ct.teacher_id = ?
+             ORDER BY ct.day_of_week, ct.start_time`,
+            [req.user.school_id, req.user.user_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/teacher/my-timetable error:", err);
+        res.status(500).json({ error: "Could not load your timetable" });
+    }
+});
+
+// Admin-side punctuality report — aggregates period_attendance_log for a
+// given teacher (optionally within a date range; defaults to the last 30
+// days). This is the "counts toward teacher performance" number the log
+// exists to produce. Loosely gated to any admin_users account for now,
+// same note as elsewhere in this file about tightening to a specific
+// title once one exists.
+app.get('/api/admin/teacher-punctuality', requireAuth, requireRole('admin_users'), async (req, res) => {
+    const { teacher_id } = req.query;
+    if (!teacher_id) return res.status(400).json({ error: "teacher_id is required" });
+
+    const to = req.query.to ? toDateOnly(new Date(req.query.to)) : toDateOnly(new Date());
+    const from = req.query.from ? toDateOnly(new Date(req.query.from)) : toDateOnly(new Date(Date.now() - 30 * 86400000));
+
+    try {
+        const [rows] = await pool.query(
+            `SELECT pal.log_date, pal.teacher_present, s.subject_name, ct.start_time, ct.end_time,
+                    ct.class_level, ct.section, ct.stream
+             FROM period_attendance_log pal
+             JOIN class_timetable ct ON ct.timetable_id = pal.timetable_id
+             JOIN subjects s ON s.subject_id = ct.subject_id AND s.school_id = ct.school_id
+             WHERE pal.school_id = ? AND ct.teacher_id = ? AND pal.log_date >= ? AND pal.log_date <= ?
+             ORDER BY pal.log_date DESC, ct.start_time`,
+            [req.user.school_id, teacher_id, from, to]
+        );
+        const present_count = rows.filter(r => r.teacher_present).length;
+
+        // Leave days never generate period_attendance_log rows at all (see
+        // the note on mark-period-attendance above), so they're already
+        // excluded from present_count/absent_count — this is purely
+        // informational, so an admin reading the report can tell "no
+        // periods logged" apart from "was on leave the whole time."
+        const [leaveRows] = await pool.query(
+            `SELECT date_from, date_to FROM teacher_leave
+             WHERE teacher_id = ? AND school_id = ? AND date_to >= ? AND date_from <= ?`,
+            [teacher_id, req.user.school_id, from, to]
+        );
+
+        res.json({
+            teacher_id, from, to,
+            total_logged_periods: rows.length,
+            present_count,
+            absent_count: rows.length - present_count,
+            punctuality_rate: rows.length ? Math.round((present_count / rows.length) * 100) : null,
+            leave_grants_in_range: leaveRows,
+            periods: rows
+        });
+    } catch (err) {
+        console.error("/api/admin/teacher-punctuality error:", err);
+        res.status(500).json({ error: "Could not load punctuality report" });
+    }
+});
+
+// --- Admin: manage the class timetable ---
+// Loosely gated to any admin_users account for now, same as the other
+// admin endpoints noted elsewhere in this file (see the absence-requests
+// admin section above) — there's no dedicated "Academic Coordinator"
+// title distinction yet. This is a bare CRUD with no timetable-builder UI
+// behind it yet either; it exists so the table can actually be populated
+// (e.g. via a quick admin script or Postman) before the teacher/admin
+// site has a proper screen for it.
+app.get('/api/admin/timetable', requireAuth, requireRole('admin_users'), async (req, res) => {
+    const { class_level, section, stream } = req.query;
+    if (!class_level || !section || !stream) {
+        return res.status(400).json({ error: "class_level, section, and stream are required" });
+    }
+    try {
+        const [rows] = await pool.query(
+            `SELECT ct.timetable_id, ct.day_of_week, ct.start_time, ct.end_time, ct.subject_id, ct.teacher_id,
+                    s.subject_name
+             FROM class_timetable ct
+             JOIN subjects s ON s.subject_id = ct.subject_id AND s.school_id = ct.school_id
+             WHERE ct.school_id = ? AND ct.class_level = ? AND ct.section = ? AND ct.stream = ?
+             ORDER BY ct.day_of_week, ct.start_time`,
+            [req.user.school_id, class_level, section, stream]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/admin/timetable GET error:", err);
+        res.status(500).json({ error: "Could not load timetable" });
+    }
+});
+
+app.post('/api/admin/timetable', requireAuth, requireRole('admin_users'), async (req, res) => {
+    const { class_level, section, stream, day_of_week, subject_id, teacher_id, start_time, end_time } = req.body;
+    if (!class_level || !section || !stream || !day_of_week || !subject_id || !start_time || !end_time) {
+        return res.status(400).json({ error: "class_level, section, stream, day_of_week, subject_id, start_time, and end_time are required." });
+    }
+    if (day_of_week < 1 || day_of_week > 5) {
+        return res.status(400).json({ error: "day_of_week must be 1 (Monday) through 5 (Friday)." });
+    }
+    if (end_time <= start_time) {
+        return res.status(400).json({ error: "end_time must be after start_time." });
+    }
+    try {
+        const [result] = await pool.query(
+            `INSERT INTO class_timetable (school_id, class_level, section, stream, day_of_week, subject_id, teacher_id, start_time, end_time)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [req.user.school_id, class_level, section, stream, day_of_week, subject_id, teacher_id || null, start_time, end_time]
+        );
+        res.json({ message: "Timetable slot added.", timetable_id: result.insertId });
+    } catch (err) {
+        console.error("/api/admin/timetable POST error:", err);
+        res.status(500).json({ error: "Could not add timetable slot" });
+    }
+});
+
+app.delete('/api/admin/timetable/:id', requireAuth, requireRole('admin_users'), async (req, res) => {
+    try {
+        const [result] = await pool.query(
+            'DELETE FROM class_timetable WHERE timetable_id = ? AND school_id = ?',
+            [req.params.id, req.user.school_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Timetable slot not found" });
+        res.json({ message: "Timetable slot removed." });
+    } catch (err) {
+        console.error("/api/admin/timetable DELETE error:", err);
+        res.status(500).json({ error: "Could not remove timetable slot" });
     }
 });
 
@@ -817,7 +1521,8 @@ app.get('/api/teacher/my-attendance-streak', requireAuth, requireRole('teachers'
             [req.user.user_id, req.user.school_id]
         );
         const presentDates = new Set(rows.map(r => toDateOnly(new Date(r.attendance_date))));
-        res.json({ streak: computeStreak(presentDates), present_today: presentDates.has(toDateOnly(new Date())) });
+        const termStartDate = await getTermStartDate(req.user.school_id);
+        res.json({ streak: computeStreak(presentDates, 120, termStartDate), present_today: presentDates.has(toDateOnly(new Date())) });
     } catch (err) {
         console.error("/api/teacher/my-attendance-streak error:", err);
         res.status(500).json({ error: "Could not load attendance streak" });
@@ -829,7 +1534,7 @@ app.get('/api/teacher/my-attendance-streak', requireAuth, requireRole('teachers'
 // verify here (there's no physical card being read), so this relies on
 // the same trust model as calling roll from a paper list: an authenticated
 // staff member vouching for a specific student's presence.
-app.post('/api/attendance/manual-checkin', requireAuth, requireRole('teachers', 'admin_users', 'registrar_users'), async (req, res) => {
+app.post('/api/attendance/manual-checkin', requireAuth, requireRole('teachers', 'admin_users', 'registrar_users', 'students'), async (req, res) => {
     const { student_id } = req.body;
     if (!student_id) return res.status(400).json({ error: "student_id is required" });
 
@@ -839,6 +1544,11 @@ app.post('/api/attendance/manual-checkin', requireAuth, requireRole('teachers', 
             homeroomSection = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
             if (!homeroomSection) {
                 return res.status(403).json({ error: "Only homeroom teachers can take attendance." });
+            }
+        } else if (req.user.role === 'students') {
+            homeroomSection = await getMonitorSectionOrNull(req.user.user_id, req.user.school_id);
+            if (!homeroomSection) {
+                return res.status(403).json({ error: "Only your class's Class Monitor(s) can take attendance." });
             }
         }
 
@@ -887,6 +1597,53 @@ app.post('/api/attendance/manual-checkin', requireAuth, requireRole('teachers', 
     } catch (err) {
         console.error("/api/attendance/manual-checkin error:", err);
         res.status(500).json({ error: "Check-in failed" });
+    }
+});
+
+// Lets a Class Monitor see today's (or any given day's) attendance for
+// their own class — who's present, who's absent, and for anyone absent,
+// whether an absence request already covers that day (so the monitor
+// isn't chasing a student who's already sorted it out with the homeroom
+// teacher). Read-only — actually taking attendance is the checkin/
+// manual-checkin endpoints above, which a monitor can also call.
+app.get('/api/student/my-class-attendance', requireAuth, requireClassMonitor, async (req, res) => {
+    const date = req.query.date ? toDateOnly(new Date(req.query.date)) : toDateOnly(new Date());
+    try {
+        const monitorSection = await getMonitorSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!monitorSection) return res.status(403).json({ error: "Only your class's Class Monitor(s) can view this." });
+
+        const [students] = await pool.query(
+            `SELECT student_id, first_name, last_name FROM students
+             WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ?
+             ORDER BY first_name, last_name`,
+            [req.user.school_id, monitorSection.class_level, monitorSection.section, monitorSection.stream]
+        );
+
+        const [presentRows] = await pool.query(
+            `SELECT student_id FROM student_attendance
+             WHERE school_id = ? AND attendance_date = ? AND status = 'present'`,
+            [req.user.school_id, date]
+        );
+        const presentSet = new Set(presentRows.map(r => r.student_id));
+
+        const [excusedRows] = await pool.query(
+            `SELECT student_id, status FROM absence_requests
+             WHERE school_id = ? AND date_from <= ? AND date_to >= ? AND status IN ('pending', 'approved', 'escalated')`,
+            [req.user.school_id, date, date]
+        );
+        const excusedMap = new Map(excusedRows.map(r => [r.student_id, r.status]));
+
+        const roster = students.map(s => ({
+            student_id: s.student_id,
+            name: `${s.first_name} ${s.last_name}`,
+            present: presentSet.has(s.student_id),
+            absence_request_status: excusedMap.get(s.student_id) || null
+        }));
+
+        res.json({ date, roster, absent_count: roster.filter(r => !r.present).length });
+    } catch (err) {
+        console.error("/api/student/my-class-attendance error:", err);
+        res.status(500).json({ error: "Could not load class attendance" });
     }
 });
 
@@ -1151,13 +1908,12 @@ async function getSchoolYearLeaderboard(school_id) {
 // same signal the Dashboard's attendance streak already uses (a
 // student_attendance row only ever gets written as 'present'; absence is
 // never recorded directly, just implied by a missing school-day row).
-// There's no explicit "term start/end date" anywhere in the schema, so
-// the term's boundary is approximated as: the day after the PREVIOUS
-// term was synced (or the student's account creation date, for a first
-// Semester 1) through the day THIS term was synced. This is an
-// approximation — if marks sync lags the actual last day of classes,
-// the count will run a little short — but it's the only boundary signal
-// available without adding a real academic-calendar table.
+// The term's start boundary is whatever Academic VP last set via POST
+// /api/term/set (see getTermStartDate) — if that's never been pushed for
+// this school, this falls back to the older approximation (day after the
+// previous term synced, or the student's account creation date) so
+// nothing breaks for a school that hasn't adopted the Start Semester
+// button yet.
 async function countAbsentDays(student_id, school_id, class_level, section, stream, term, syncedAt) {
     let startDate = null;
 
@@ -1179,6 +1935,16 @@ async function countAbsentDays(student_id, school_id, class_level, section, stre
         );
         startDate = studentRows.length > 0 ? new Date(studentRows[0].created_at) : new Date(syncedAt);
     }
+
+    // Never count a day before the semester was actually declared
+    // started, even if the fallback above would otherwise reach further
+    // back (e.g. a student's account was created weeks before classes
+    // began).
+    const termStartDate = await getTermStartDate(school_id);
+    if (termStartDate && new Date(termStartDate) > startDate) {
+        startDate = new Date(termStartDate);
+    }
+
     const endDate = new Date(syncedAt);
     if (startDate > endDate) return 0;
 
@@ -1816,9 +2582,15 @@ app.get('/api/student/certificate-request-status', requireAuth, requireRole('stu
 //     date_to DATE NOT NULL,
 //     reason TEXT NOT NULL,
 //     attachment_url VARCHAR(255) NULL,
-//     status ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
+//     status ENUM('pending','approved','rejected','escalated') NOT NULL DEFAULT 'pending',
 //     rejection_reason VARCHAR(255) NULL,
-//     reviewed_by VARCHAR(50) NULL,
+//     escalated_by VARCHAR(50) NULL,
+//     escalated_at DATETIME NULL,
+//     escalation_note TEXT NULL,
+//     reviewed_by VARCHAR(50) NULL,   -- whoever made the FINAL call — the
+//                                     -- homeroom teacher for a direct
+//                                     -- approve/reject, or the admin who
+//                                     -- decided an escalated case
 //     reviewed_at DATETIME NULL,
 //     requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 //     INDEX idx_student (student_id, school_id)
@@ -1828,10 +2600,48 @@ app.get('/api/student/certificate-request-status', requireAuth, requireRole('stu
 // a scheduled hospital visit) or AFTER one (explaining an absence that
 // already happened, e.g. malaria) — date_from/date_to just describe which
 // day(s) it covers, with no constraint on being in the past or future.
-// Approval is a homeroom-teacher call, same shape as the ID-photo and
-// certificate request flows. Once approved, those days are excluded from
-// the "absent days" count used on the certificate — see
-// countAbsentDays()'s excusedSet, defined earlier in this file.
+//
+// Approval authority is capped: a homeroom teacher can approve/reject a
+// request up to MAX_HOMEROOM_ABSENCE_DAYS on their own. Anything longer
+// is outside their authority to grant — they escalate it instead, which
+// hands it to school administration (Academic VP or similar admin_users
+// account) to make the actual call. Rejection has no such cap: a
+// homeroom teacher can reject a request of any length on their own,
+// since rejecting doesn't require the extra authority approving a long
+// absence does.
+//
+// Once approved (by either party), those days are excluded from the
+// "absent days" count used on the certificate — see countAbsentDays()'s
+// excusedSet, defined earlier in this file.
+const MAX_HOMEROOM_ABSENCE_DAYS = 3;
+function absenceRequestSpanDays(date_from, date_to) {
+    const ms = new Date(date_to) - new Date(date_from);
+    return Math.round(ms / 86400000) + 1; // inclusive of both endpoints
+}
+
+// Shared by every decision path that needs to tell a student something
+// happened to a request of theirs (absence approve/reject/escalate, mark
+// appeal approve/reject, etc.) — files a notification into the same
+// student_notifications table/UI already used for assessment reminders,
+// so the student doesn't have to keep re-checking a status page to find
+// out. assessment_type is reused loosely here as a free-form type tag
+// rather than a real assessment; assessmentLabel() on the frontend
+// already falls back to a readable label for any type it has no
+// translation for.
+async function notifyStudent(student_id, school_id, sent_by, notifType, message) {
+    const [studentRows] = await pool.query(
+        'SELECT class_level, section, stream FROM students WHERE student_id = ? AND school_id = ?',
+        [student_id, school_id]
+    );
+    if (studentRows.length === 0) return; // best-effort — don't fail the approval/rejection over this
+    const { class_level, section, stream } = studentRows[0];
+    await pool.query(
+        `INSERT INTO student_notifications (student_id, school_id, sent_by, assessment_type, message, section, class_level, stream)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [student_id, school_id, sent_by, notifType, message, section, class_level, stream]
+    );
+}
+
 app.post('/api/student/absence-requests', requireAuth, requireRole('students'), handleUploadError(upload.single('attachment')), async (req, res) => {
     const { date_from, date_to, reason } = req.body;
     if (!date_from || !date_to || !reason?.trim()) {
@@ -1869,7 +2679,8 @@ app.post('/api/student/absence-requests', requireAuth, requireRole('students'), 
 app.get('/api/student/absence-requests', requireAuth, requireRole('students'), async (req, res) => {
     try {
         const [rows] = await pool.query(
-            `SELECT request_id, date_from, date_to, reason, attachment_url, status, rejection_reason, requested_at, reviewed_at
+            `SELECT request_id, date_from, date_to, reason, attachment_url, status, rejection_reason,
+                    escalated_at, requested_at, reviewed_at
              FROM absence_requests
              WHERE student_id = ? AND school_id = ?
              ORDER BY requested_at DESC`,
@@ -3233,6 +4044,192 @@ app.post('/api/homeroom/reset-student-password', requireAuth, async (req, res) =
     }
 });
 
+// --- Homeroom: Class Monitor designation ---
+// Requires a new column — run this migration if it doesn't exist yet:
+//   ALTER TABLE students ADD COLUMN is_class_monitor BOOLEAN NOT NULL DEFAULT FALSE;
+// No hard cap enforced here — "at least 2 per section" is guidance, not a
+// rule, so a homeroom teacher can name as many (or as few) as they want.
+// The flag only takes effect on that student's NEXT login (it's baked
+// into the JWT at login time), same caveat as requirePrincipal/title.
+app.get('/api/homeroom/section-roster', requireAuth, async (req, res) => {
+    try {
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) return res.status(403).json({ error: "You are not a homeroom teacher." });
+
+        const [students] = await pool.query(
+            `SELECT student_id, first_name, last_name, is_class_monitor FROM students
+             WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ?
+             ORDER BY first_name, last_name`,
+            [req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
+        );
+        res.json(students);
+    } catch (err) {
+        console.error("/api/homeroom/section-roster error:", err);
+        res.status(500).json({ error: "Could not load section roster" });
+    }
+});
+
+app.post('/api/homeroom/set-class-monitor', requireAuth, async (req, res) => {
+    const { student_id, is_class_monitor } = req.body;
+    if (!student_id || typeof is_class_monitor !== 'boolean') {
+        return res.status(400).json({ error: "student_id and a boolean is_class_monitor are required." });
+    }
+    try {
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) return res.status(403).json({ error: "You are not a homeroom teacher." });
+
+        const [result] = await pool.query(
+            `UPDATE students SET is_class_monitor = ?
+             WHERE student_id = ? AND school_id = ? AND class_level = ? AND section = ? AND stream = ?`,
+            [is_class_monitor, student_id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
+        );
+        if (result.affectedRows === 0) {
+            return res.status(403).json({ error: "This student is not in your homeroom section." });
+        }
+        res.json({ message: is_class_monitor ? "Set as Class Monitor." : "Removed as Class Monitor.", student_id, is_class_monitor });
+    } catch (err) {
+        console.error("/api/homeroom/set-class-monitor error:", err);
+        res.status(500).json({ error: "Could not update Class Monitor status" });
+    }
+});
+
+// --- Homeroom: My Class attendance ---
+// Consistent with the QR check-in model earlier in this file: a
+// student_attendance row is only ever written with status 'present' —
+// there is no 'absent' status to write. A student with no row for today
+// simply hasn't been checked in yet, and every day-counting feature
+// (countAbsentDays, the streak, etc.) already treats a missing row as
+// absent. This endpoint gives a homeroom teacher a full roster of their
+// own section with today's present/not-yet-present status, and a way to
+// mark a student present by hand (e.g. they forgot their ID card) —
+// without inventing a second status those other features don't expect.
+app.get('/api/homeroom/attendance-today', requireAuth, async (req, res) => {
+    try {
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) return res.status(403).json({ error: "You are not a homeroom teacher." });
+
+        const [students] = await pool.query(
+            `SELECT student_id, first_name, last_name FROM students
+             WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ?
+             ORDER BY first_name, last_name`,
+            [req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
+        );
+
+        const today = toDateOnly(new Date());
+        let presentMap = new Map();
+        if (students.length > 0) {
+            const [presentRows] = await pool.query(
+                `SELECT student_id, marked_by FROM student_attendance
+                 WHERE school_id = ? AND attendance_date = ? AND student_id IN (?)`,
+                [req.user.school_id, today, students.map(s => s.student_id)]
+            );
+            presentMap = new Map(presentRows.map(r => [r.student_id, r.marked_by]));
+        }
+
+        const roster = students.map(s => ({
+            student_id: s.student_id,
+            first_name: s.first_name,
+            last_name: s.last_name,
+            present: presentMap.has(s.student_id),
+            marked_by_me: presentMap.get(s.student_id) === req.user.user_id
+        }));
+
+        res.json({
+            class_level: homeroom.class_level,
+            section: homeroom.section,
+            stream: homeroom.stream,
+            date: today,
+            total: roster.length,
+            present_count: roster.filter(r => r.present).length,
+            roster
+        });
+    } catch (err) {
+        console.error("/api/homeroom/attendance-today error:", err);
+        res.status(500).json({ error: "Could not load today's attendance" });
+    }
+});
+
+// Manual equivalent of /api/attendance/checkin for a homeroom teacher who
+// doesn't have (or doesn't want to use) a scanner handy — same
+// same-day-only, one-row-per-student behavior, just triggered by tapping
+// a name instead of scanning a QR code.
+app.post('/api/homeroom/mark-present', requireAuth, async (req, res) => {
+    const { student_id } = req.body;
+    if (!student_id) return res.status(400).json({ error: "student_id is required" });
+    try {
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) return res.status(403).json({ error: "You are not a homeroom teacher." });
+
+        const [studentRows] = await pool.query(
+            `SELECT student_id, first_name, last_name FROM students
+             WHERE student_id = ? AND school_id = ? AND class_level = ? AND section = ? AND stream = ?`,
+            [student_id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
+        );
+        if (studentRows.length === 0) {
+            return res.status(403).json({ error: "This student isn't in your homeroom section." });
+        }
+        const student = studentRows[0];
+        const today = toDateOnly(new Date());
+
+        const [existing] = await pool.query(
+            'SELECT attendance_id FROM student_attendance WHERE student_id = ? AND attendance_date = ?',
+            [student_id, today]
+        );
+        if (existing.length > 0) {
+            return res.json({
+                message: `${student.first_name} ${student.last_name} was already checked in today`,
+                already_checked_in: true,
+                student_id
+            });
+        }
+
+        await pool.query(
+            `INSERT INTO student_attendance (student_id, school_id, attendance_date, status, marked_by)
+             VALUES (?, ?, ?, 'present', ?)`,
+            [student_id, req.user.school_id, today, req.user.user_id]
+        );
+        res.json({
+            message: `Marked ${student.first_name} ${student.last_name} present`,
+            already_checked_in: false,
+            student_id
+        });
+    } catch (err) {
+        console.error("/api/homeroom/mark-present error:", err);
+        res.status(500).json({ error: "Could not mark attendance" });
+    }
+});
+
+// Undo a manual present-mark made by mistake — same day only, mirroring
+// the textbook "Undo Lost" pattern elsewhere in this file. Only removes
+// today's row, so it can't be used to erase attendance history.
+app.post('/api/homeroom/undo-present', requireAuth, async (req, res) => {
+    const { student_id } = req.body;
+    if (!student_id) return res.status(400).json({ error: "student_id is required" });
+    try {
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) return res.status(403).json({ error: "You are not a homeroom teacher." });
+
+        const [studentRows] = await pool.query(
+            `SELECT student_id FROM students
+             WHERE student_id = ? AND school_id = ? AND class_level = ? AND section = ? AND stream = ?`,
+            [student_id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
+        );
+        if (studentRows.length === 0) {
+            return res.status(403).json({ error: "This student isn't in your homeroom section." });
+        }
+
+        const today = toDateOnly(new Date());
+        const [result] = await pool.query(
+            'DELETE FROM student_attendance WHERE student_id = ? AND school_id = ? AND attendance_date = ?',
+            [student_id, req.user.school_id, today]
+        );
+        res.json({ message: result.affectedRows > 0 ? "Attendance mark undone." : "No mark to undo.", student_id });
+    } catch (err) {
+        console.error("/api/homeroom/undo-present error:", err);
+        res.status(500).json({ error: "Could not undo attendance mark" });
+    }
+});
+
 // --- Homeroom: upload a student's official photo directly ---
 // For when a student can't get a usable photo of their own (or asks their
 // homeroom teacher to just handle it) — the teacher uploads one photo,
@@ -3421,7 +4418,14 @@ app.get('/api/homeroom/absence-requests', requireAuth, async (req, res) => {
              ORDER BY r.requested_at ASC`,
             [req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
         );
-        res.json(rows);
+        // span_days/within_authority let the teacher's UI decide whether to
+        // show Approve/Reject or just Escalate/Reject for each row, without
+        // having to reimplement the day-math client-side.
+        const withSpan = rows.map(r => {
+            const span_days = absenceRequestSpanDays(r.date_from, r.date_to);
+            return { ...r, span_days, within_homeroom_authority: span_days <= MAX_HOMEROOM_ABSENCE_DAYS };
+        });
+        res.json(withSpan);
     } catch (err) {
         console.error("/api/homeroom/absence-requests error:", err);
         res.status(500).json({ error: "Could not load absence requests" });
@@ -3433,17 +4437,40 @@ app.post('/api/homeroom/absence-requests/:id/approve', requireAuth, async (req, 
         const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
         if (!homeroom) return res.status(403).json({ error: "You are not a homeroom teacher." });
 
-        const [result] = await pool.query(
-            `UPDATE absence_requests r
+        const [rows] = await pool.query(
+            `SELECT r.request_id, r.student_id, r.school_id, r.date_from, r.date_to
+             FROM absence_requests r
              JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
-             SET r.status = 'approved', r.reviewed_by = ?, r.reviewed_at = NOW()
              WHERE r.request_id = ? AND r.school_id = ? AND r.status = 'pending'
                AND st.class_level = ? AND st.section = ? AND st.stream = ?`,
-            [req.user.user_id, req.params.id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
+            [req.params.id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
         );
-        if (result.affectedRows === 0) {
+        if (rows.length === 0) {
             return res.status(404).json({ error: "Request not found, already reviewed, or not in your homeroom section." });
         }
+        const request = rows[0];
+
+        // A homeroom teacher's approval authority is capped — anything
+        // longer needs to go to school administration instead. Checked
+        // here too (not just hidden client-side), so the cap can't be
+        // bypassed by calling this endpoint directly.
+        const span_days = absenceRequestSpanDays(request.date_from, request.date_to);
+        if (span_days > MAX_HOMEROOM_ABSENCE_DAYS) {
+            return res.status(400).json({
+                error: `This request covers ${span_days} days, more than you're able to approve directly (max ${MAX_HOMEROOM_ABSENCE_DAYS}). Escalate it to Admin instead.`,
+                span_days,
+                max_homeroom_days: MAX_HOMEROOM_ABSENCE_DAYS
+            });
+        }
+
+        await pool.query(
+            `UPDATE absence_requests SET status = 'approved', reviewed_by = ?, reviewed_at = NOW() WHERE request_id = ?`,
+            [req.user.user_id, request.request_id]
+        );
+        await notifyStudent(
+            request.student_id, request.school_id, req.user.user_id, 'absence_approved',
+            `Your absence request for ${request.date_from} to ${request.date_to} was approved by your homeroom teacher.`
+        );
         res.json({ message: "Approved. These days won't count as unexcused absences." });
     } catch (err) {
         console.error("/api/homeroom/absence-requests/:id/approve error:", err);
@@ -3457,20 +4484,153 @@ app.post('/api/homeroom/absence-requests/:id/reject', requireAuth, async (req, r
         const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
         if (!homeroom) return res.status(403).json({ error: "You are not a homeroom teacher." });
 
-        const [result] = await pool.query(
-            `UPDATE absence_requests r
+        const [rows] = await pool.query(
+            `SELECT r.request_id, r.student_id, r.school_id, r.date_from, r.date_to
+             FROM absence_requests r
              JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
-             SET r.status = 'rejected', r.reviewed_by = ?, r.reviewed_at = NOW(), r.rejection_reason = ?
              WHERE r.request_id = ? AND r.school_id = ? AND r.status = 'pending'
                AND st.class_level = ? AND st.section = ? AND st.stream = ?`,
-            [req.user.user_id, reason || null, req.params.id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
+            [req.params.id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
         );
-        if (result.affectedRows === 0) {
+        if (rows.length === 0) {
             return res.status(404).json({ error: "Request not found, already reviewed, or not in your homeroom section." });
         }
+        const request = rows[0];
+
+        // No day-span cap on rejection — a homeroom teacher can decline a
+        // request of any length on their own; only *granting* a long
+        // absence requires escalating to admin.
+        await pool.query(
+            `UPDATE absence_requests SET status = 'rejected', reviewed_by = ?, reviewed_at = NOW(), rejection_reason = ? WHERE request_id = ?`,
+            [req.user.user_id, reason || null, request.request_id]
+        );
+        await notifyStudent(
+            request.student_id, request.school_id, req.user.user_id, 'absence_rejected',
+            `Your absence request for ${request.date_from} to ${request.date_to} was rejected by your homeroom teacher.${reason ? ' Reason: ' + reason : ''}`
+        );
         res.json({ message: "Request rejected." });
     } catch (err) {
         console.error("/api/homeroom/absence-requests/:id/reject error:", err);
+        res.status(500).json({ error: "Could not reject this request" });
+    }
+});
+
+// Hands a request to school administration when it's beyond a homeroom
+// teacher's own approval authority (see MAX_HOMEROOM_ABSENCE_DAYS above).
+// Doesn't decide anything itself — just moves it into the admin queue;
+// /api/admin/absence-requests/:id/approve|reject makes the actual call.
+app.post('/api/homeroom/absence-requests/:id/escalate', requireAuth, async (req, res) => {
+    const { note } = req.body;
+    try {
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) return res.status(403).json({ error: "You are not a homeroom teacher." });
+
+        const [rows] = await pool.query(
+            `SELECT r.request_id, r.student_id, r.school_id, r.date_from, r.date_to
+             FROM absence_requests r
+             JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
+             WHERE r.request_id = ? AND r.school_id = ? AND r.status = 'pending'
+               AND st.class_level = ? AND st.section = ? AND st.stream = ?`,
+            [req.params.id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
+        );
+        if (rows.length === 0) {
+            return res.status(404).json({ error: "Request not found, already reviewed, or not in your homeroom section." });
+        }
+        const request = rows[0];
+
+        await pool.query(
+            `UPDATE absence_requests SET status = 'escalated', escalated_by = ?, escalated_at = NOW(), escalation_note = ? WHERE request_id = ?`,
+            [req.user.user_id, note || null, request.request_id]
+        );
+        await notifyStudent(
+            request.student_id, request.school_id, req.user.user_id, 'absence_escalated',
+            `Your absence request for ${request.date_from} to ${request.date_to} needs review by school administration and has been forwarded to them.`
+        );
+        res.json({ message: "Escalated to Admin for review." });
+    } catch (err) {
+        console.error("/api/homeroom/absence-requests/:id/escalate error:", err);
+        res.status(500).json({ error: "Could not escalate this request" });
+    }
+});
+
+// --- Admin: escalated absence / permission requests ---
+// Open to any admin_users account today (same relaxed gating as
+// /api/admin/textbooks and the announcements/gallery endpoints) rather
+// than a specific title like "Academic VP" — admin_users.title exists
+// now (see requirePrincipal above) but only 'Principal' is currently a
+// meaningful value anywhere in the app. If/when "Academic VP" becomes a
+// real, populated title, swap requireRole('admin_users') here for a
+// title check the same way requirePrincipal does.
+app.get('/api/admin/absence-requests', requireAuth, requireRole('admin_users'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT r.request_id, r.student_id, r.date_from, r.date_to, r.reason, r.attachment_url,
+                    r.escalated_at, r.escalation_note, st.first_name, st.last_name,
+                    st.class_level, st.section, st.stream
+             FROM absence_requests r
+             JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
+             WHERE r.school_id = ? AND r.status = 'escalated'
+             ORDER BY r.escalated_at ASC`,
+            [req.user.school_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/admin/absence-requests error:", err);
+        res.status(500).json({ error: "Could not load escalated absence requests" });
+    }
+});
+
+app.post('/api/admin/absence-requests/:id/approve', requireAuth, requireRole('admin_users'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT request_id, student_id, school_id, date_from, date_to FROM absence_requests
+             WHERE request_id = ? AND school_id = ? AND status = 'escalated'`,
+            [req.params.id, req.user.school_id]
+        );
+        if (rows.length === 0) {
+            return res.status(404).json({ error: "Request not found or not currently escalated to Admin." });
+        }
+        const request = rows[0];
+
+        await pool.query(
+            `UPDATE absence_requests SET status = 'approved', reviewed_by = ?, reviewed_at = NOW() WHERE request_id = ?`,
+            [req.user.user_id, request.request_id]
+        );
+        await notifyStudent(
+            request.student_id, request.school_id, req.user.user_id, 'absence_approved',
+            `Your absence request for ${request.date_from} to ${request.date_to} was approved by school administration.`
+        );
+        res.json({ message: "Approved. These days won't count as unexcused absences." });
+    } catch (err) {
+        console.error("/api/admin/absence-requests/:id/approve error:", err);
+        res.status(500).json({ error: "Could not approve this request" });
+    }
+});
+
+app.post('/api/admin/absence-requests/:id/reject', requireAuth, requireRole('admin_users'), async (req, res) => {
+    const { reason } = req.body;
+    try {
+        const [rows] = await pool.query(
+            `SELECT request_id, student_id, school_id, date_from, date_to FROM absence_requests
+             WHERE request_id = ? AND school_id = ? AND status = 'escalated'`,
+            [req.params.id, req.user.school_id]
+        );
+        if (rows.length === 0) {
+            return res.status(404).json({ error: "Request not found or not currently escalated to Admin." });
+        }
+        const request = rows[0];
+
+        await pool.query(
+            `UPDATE absence_requests SET status = 'rejected', reviewed_by = ?, reviewed_at = NOW(), rejection_reason = ? WHERE request_id = ?`,
+            [req.user.user_id, reason || null, request.request_id]
+        );
+        await notifyStudent(
+            request.student_id, request.school_id, req.user.user_id, 'absence_rejected',
+            `Your absence request for ${request.date_from} to ${request.date_to} was rejected by school administration.${reason ? ' Reason: ' + reason : ''}`
+        );
+        res.json({ message: "Request rejected." });
+    } catch (err) {
+        console.error("/api/admin/absence-requests/:id/reject error:", err);
         res.status(500).json({ error: "Could not reject this request" });
     }
 });
@@ -4277,32 +5437,75 @@ app.post('/api/contact/thread/:thread_id/status', requireAuth, async (req, res) 
 app.get('/api/term/current', requireAuth, async (req, res) => {
     try {
         const term = await getCurrentTerm(req.user.school_id);
-        res.json({ current_term: term, available_terms: TERMS });
+        const term_start_date = await getTermStartDate(req.user.school_id);
+        const semester_status = await getSemesterStatus(req.user.school_id);
+        res.json({ current_term: term, available_terms: TERMS, term_start_date, semester_status });
     } catch (err) {
         console.error("term/current error:", err);
         res.status(500).json({ error: "Could not load current term" });
     }
 });
 
-// POST is intended for the admin page only — there's no admin auth wired
-// up yet, so when you build that page, gate this call behind whatever
-// admin-only check you add then. For now it's reachable by anyone who
-// knows the URL, same trust level as the rest of this API.
+// This is the "Start Semester" button — Academic VP (or any admin_users
+// account, per the loose gating noted elsewhere in this file) calls this
+// to both (a) set which term new marks get stamped with, and (b) mark
+// TODAY as the day counting starts for that term. That second part is
+// what countAbsentDays(), the attendance heatmap calendar, and the
+// streak all key off of — none of them will count a day before this
+// timestamp, no matter how far back their own query window reaches.
+// Pushing this again (e.g. correcting a mistake, or moving to Semester 2)
+// resets the start date to today each time — the clock always reflects
+// the most recent press of the button, not the first ever.
 app.post('/api/term/set', requireAuth, requireRole('admin_users'), async (req, res) => {
     const { term } = req.body;
     if (!TERMS.includes(term)) {
         return res.status(400).json({ error: `term must be one of: ${TERMS.join(', ')}` });
     }
     try {
+        const startDate = toDateOnly(new Date());
         await pool.query(
             `INSERT INTO school_settings (setting_key, setting_value, school_id) VALUES ('current_term', ?, ?)
              ON DUPLICATE KEY UPDATE setting_value = ?`,
             [term, req.user.school_id, term]
         );
-        res.json({ message: `Active term set to ${term}`, current_term: term });
+        await pool.query(
+            `INSERT INTO school_settings (setting_key, setting_value, school_id) VALUES ('term_start_date', ?, ?)
+             ON DUPLICATE KEY UPDATE setting_value = ?`,
+            [startDate, req.user.school_id, startDate]
+        );
+        // Starting (or switching to) a term always (re)opens it — this is
+        // the only way semester_status flips back to 'open' once Academic
+        // VP has closed it, e.g. moving on to Semester 2.
+        await pool.query(
+            `INSERT INTO school_settings (setting_key, setting_value, school_id) VALUES ('semester_status', 'open', ?)
+             ON DUPLICATE KEY UPDATE setting_value = 'open'`,
+            [req.user.school_id]
+        );
+        res.json({ message: `${term} started. Attendance counting begins today (${startDate}).`, current_term: term, term_start_date: startDate, semester_status: 'open' });
     } catch (err) {
         console.error("term/set error:", err);
         res.status(500).json({ error: "Could not update current term" });
+    }
+});
+
+// "Close Semester" — Academic VP marks the currently active term as
+// closed (e.g. once every section's marks have been pushed and the term
+// is administratively wrapped up). Deliberately doesn't touch
+// current_term or term_start_date: the label everyone sees should read
+// "Closed · Semester 1", not silently reset to some other term. Re-opens
+// via POST /api/term/set (Start Semester) same as above.
+app.post('/api/term/close', requireAuth, requireRole('admin_users'), async (req, res) => {
+    try {
+        const term = await getCurrentTerm(req.user.school_id);
+        await pool.query(
+            `INSERT INTO school_settings (setting_key, setting_value, school_id) VALUES ('semester_status', 'closed', ?)
+             ON DUPLICATE KEY UPDATE setting_value = 'closed'`,
+            [req.user.school_id]
+        );
+        res.json({ message: `${term} closed.`, current_term: term, semester_status: 'closed' });
+    } catch (err) {
+        console.error("term/close error:", err);
+        res.status(500).json({ error: "Could not close semester" });
     }
 });
 
@@ -4580,7 +5783,8 @@ app.post('/api/login', async (req, res) => {
             user_id: id,
             role: userRole,
             school_id: user.school_id || null,
-            title: userRole === 'admin_users' ? (user.title || null) : null
+            title: userRole === 'admin_users' ? (user.title || null) : null,
+            is_class_monitor: userRole === 'students' ? !!user.is_class_monitor : false
         });
 
         // The token itself is httpOnly and never exposed to JS — this JSON
