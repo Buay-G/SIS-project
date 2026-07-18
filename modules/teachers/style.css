@@ -15,11 +15,7 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background-color: var(--b
 /* Sidebar */
 .sidebar {
     background-color: var(--primary);
-    background-image: linear-gradient(rgba(15, 23, 42, 0.82), rgba(15, 23, 42, 0.82)), url('/assets/images/nav.png');
-    background-size: cover;
-    background-position: top center;
-    background-repeat: no-repeat;
-    background-attachment: scroll;
+    background-image: linear-gradient(180deg, #0f1f45 0%, var(--primary) 45%, #142c66 100%);
     color: white;
     padding: 0;
     display: flex;
@@ -36,6 +32,18 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background-color: var(--b
     border-bottom: 1px solid rgba(255,255,255,0.1);
     color: #ffffff;
     margin: 0;
+}
+.nav-school-logo {
+    display: block;
+    max-width: 100px;
+    max-height: 56px;
+    width: auto;
+    height: auto;
+    margin: 0 auto 10px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.9);
+    padding: 4px;
+    object-fit: contain;
 }
 .logo span {
     display: block;
@@ -99,6 +107,48 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background-color: var(--b
     border-radius: 999px;
     line-height: 1.5;
 }
+
+/* Sidebar footer: pinned below the scrollable nav menu, holds the
+   "Homeroom of ..." badge (only for homeroom teachers) above the
+   Logout button, so signing out is always reachable in the same place
+   regardless of how long the menu above it is. */
+.sidebar-footer {
+    flex-shrink: 0;
+    padding: 12px;
+    border-top: 1px solid rgba(255,255,255,0.12);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.sidebar-homeroom-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: rgba(255,255,255,0.85);
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 8px;
+    padding: 8px 10px;
+}
+.sidebar-homeroom-badge svg { flex-shrink: 0; color: #60a5fa; }
+.sidebar-homeroom-badge #sidebar-homeroom-label { color: #ffffff; }
+.sidebar-logout-btn {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: rgba(255,255,255,0.85);
+    text-decoration: none;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    background: rgba(239, 68, 68, 0.16);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    transition: background 0.15s, color 0.15s;
+}
+.sidebar-logout-btn:hover { background: rgba(239, 68, 68, 0.32); color: #ffffff; }
 
 /* --- Action Center: photo/certificate request cards --- */
 .request-card {
@@ -643,7 +693,7 @@ body.dark-theme #progress-table {
 #progress-table thead {
     position: sticky;
     top: 0;
-    background: #1a2a40; /* Dark blue background */
+    background: #1a2a47; /* same dark blue used by the other data tables */
     color: white;
     z-index: 10;
 }
@@ -651,7 +701,16 @@ body.dark-theme #progress-table {
 #progress-table {
     width: 100%;
     border-collapse: collapse;
+    font-size: 0.85rem;
 }
+#progress-table th, #progress-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #e2e8f0;
+    white-space: nowrap;
+    text-align: left;
+}
+#progress-table th { background: #1a2a47; color: white; }
+body.dark-theme #progress-table td { border-color: #334155; }
 
 /* Dedicated scroll container for the textbook distribution table.
    `position: sticky` on the thead above only works if IT has a bounded
@@ -683,7 +742,7 @@ body.dark-theme #progress-table {
    alone, or the header row's background would paint over it as you
    scroll right, leaving the corner looking blank/glitchy. */
 .textbook-table-scroll #progress-table thead th:first-child {
-    background: #1a2a40;
+    background: #1a2a47;
     z-index: 11;
 }
 
@@ -763,7 +822,7 @@ select#type-select {
 .top-bar {
     position: sticky; top: 0; z-index: 1000;
     display: flex; justify-content: space-between; align-items: center;
-    background: linear-gradient(135deg, #1e3a8a 0%, #1e6e94 100%);
+    background: linear-gradient(135deg, #142c66 0%, var(--primary) 100%);
     padding: 0 24px;
     height: 60px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.18);
@@ -1579,6 +1638,49 @@ body.dark-theme .notif-item:hover { background: #273548; }
     transition: background 0.15s;
 }
 .btn-photo:hover { background: #e2e8f0; }
+
+/* --- Teacher document approvals (signature + ID photo) --- */
+.approval-hint { font-size: 0.8rem; color: #64748b; margin-bottom: 14px; }
+.document-approval-row {
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+    padding: 12px 0;
+    border-bottom: 1px solid #e2e8f0;
+}
+.document-approval-row:last-child { border-bottom: none; }
+.document-approval-preview {
+    width: 84px;
+    height: 84px;
+    flex-shrink: 0;
+    border: 1px dashed #cbd5e1;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f8fafc;
+    overflow: hidden;
+}
+.signature-preview-img { width: 100%; height: 100%; object-fit: contain; }
+.document-preview-empty { font-size: 0.65rem; color: #94a3b8; text-align: center; padding: 4px; }
+.document-approval-controls { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.document-approval-controls strong { font-size: 0.9rem; }
+.document-approval-controls .btn-photo { margin-top: 6px; margin-bottom: 0; width: auto; }
+.approval-badge {
+    display: inline-block;
+    width: fit-content;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 3px 9px;
+    border-radius: 999px;
+}
+.approval-badge-none { background: #f1f5f9; color: #64748b; }
+.approval-badge-pending { background: #fef3c7; color: #92400e; }
+.approval-badge-approved { background: #dcfce7; color: #166534; }
+.approval-badge-rejected { background: #fee2e2; color: #991b1b; }
+.approval-rejection-reason { font-size: 0.75rem; color: #991b1b; margin: 0; }
+body.dark-theme .document-approval-row { border-color: #334155; }
+body.dark-theme .document-approval-preview { background: #1e293b; border-color: #475569; }
 
 /* Inline edit button next to Contact Number */
 .edit-inline-btn {

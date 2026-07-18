@@ -56,6 +56,20 @@ async function checkAuthAndInit() {
             if (logoEl) logoEl.textContent = CURRENT_SCHOOL_NAME;
         }
 
+        // Show the school's logo in the nav header automatically once a
+        // zonal/school admin has uploaded one (POST /api/admin/school-logo)
+        // — nothing for the teacher to configure, it just appears.
+        const schoolLogoEl = document.getElementById('nav-school-logo');
+        if (schoolLogoEl) {
+            if (data.logo_url) {
+                schoolLogoEl.src = data.logo_url;
+                schoolLogoEl.alt = CURRENT_SCHOOL_NAME ? `${CURRENT_SCHOOL_NAME} logo` : "School logo";
+                schoolLogoEl.style.display = 'block';
+            } else {
+                schoolLogoEl.style.display = 'none';
+            }
+        }
+
         const moeBadge = document.getElementById('moe-code-badge');
         if (moeBadge) {
             if (data.moe_school_code) {
@@ -971,11 +985,19 @@ async function loadHomeroomInfo() {
             const myClassLabel = document.getElementById('myclass-section-label');
             if (myClassLabel) myClassLabel.textContent = `Grade ${homeroomInfo.class_level} - ${homeroomInfo.section} (${homeroomInfo.stream})`;
 
+            const sidebarBadge = document.getElementById('sidebar-homeroom-badge');
+            const sidebarLabel = document.getElementById('sidebar-homeroom-label');
+            if (sidebarLabel) sidebarLabel.textContent = `Grade ${homeroomInfo.class_level} - ${homeroomInfo.section}`;
+            if (sidebarBadge) sidebarBadge.style.display = 'flex';
+
             await Promise.all([
                 loadDashboardTextbookSummary(),
                 loadMarksPushStatus(),
                 loadActionCenterRequests()
             ]);
+        } else {
+            const sidebarBadge = document.getElementById('sidebar-homeroom-badge');
+            if (sidebarBadge) sidebarBadge.style.display = 'none';
         }
     } catch (err) {
         console.error("Homeroom info load error:", err);
@@ -2165,6 +2187,7 @@ function setupNavigation() {
                 if (target === 'idcard') loadTeacherIdCard();
                 if (target === 'actioncenter') loadActionCenterRequests();
                 if (target === 'upload') loadGradeSheetSections();
+                if (target === 'profile') loadTeacherDocumentStatus();
             } else {
                 console.warn(`No page found for data-page="${target}". Did you forget to add <section id="page-${target}">?`);
             }
@@ -2647,6 +2670,116 @@ window.uploadAvatar = async () => {
     }
 };
 
+// PROFILE — signature & ID photo, both pending Principal approval before
+// they take effect. Reused rendering logic since the two document types
+// only differ in which DOM elements and endpoint they use.
+function renderApprovalBadge(badgeEl, reasonEl, status, rejectionReason) {
+    if (!badgeEl) return;
+    const statusKey = status || 'none';
+    badgeEl.className = `approval-badge approval-badge-${statusKey}`;
+    badgeEl.textContent = typeof t === 'function' ? t(`approval_status_${statusKey}`) : statusKey;
+    if (reasonEl) {
+        if (statusKey === 'rejected' && rejectionReason) {
+            reasonEl.textContent = `Reason: ${rejectionReason}`;
+            reasonEl.style.display = 'block';
+        } else {
+            reasonEl.style.display = 'none';
+        }
+    }
+}
+
+async function loadTeacherDocumentStatus() {
+    try {
+        const res = await apiFetch(`${API_BASE}/api/teacher/document-status`);
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const sigImg = document.getElementById('signature-preview');
+        const sigEmpty = document.getElementById('signature-preview-empty');
+        if (data.signature_url && sigImg) {
+            sigImg.src = data.signature_url;
+            sigImg.style.display = 'block';
+            if (sigEmpty) sigEmpty.style.display = 'none';
+        } else if (sigEmpty) {
+            if (sigImg) sigImg.style.display = 'none';
+            sigEmpty.style.display = 'block';
+        }
+        renderApprovalBadge(
+            document.getElementById('signature-status-badge'),
+            document.getElementById('signature-rejection-reason'),
+            data.signature_request?.status,
+            data.signature_request?.rejection_reason
+        );
+
+        const idImg = document.getElementById('teacher-idphoto-preview');
+        const idEmpty = document.getElementById('teacher-idphoto-preview-empty');
+        if (data.id_photo_url && idImg) {
+            idImg.src = data.id_photo_url;
+            idImg.style.display = 'block';
+            if (idEmpty) idEmpty.style.display = 'none';
+        } else if (idEmpty) {
+            if (idImg) idImg.style.display = 'none';
+            idEmpty.style.display = 'block';
+        }
+        renderApprovalBadge(
+            document.getElementById('idphoto-status-badge'),
+            document.getElementById('idphoto-rejection-reason'),
+            data.id_photo_request?.status,
+            data.id_photo_request?.rejection_reason
+        );
+    } catch (err) {
+        console.error("loadTeacherDocumentStatus error:", err);
+    }
+}
+
+window.uploadTeacherSignature = async () => {
+    const fileInput = document.getElementById('signature-upload');
+    const file = fileInput.files[0];
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('signature', file);
+
+    try {
+        const res = await apiFetch(`${API_BASE}/api/teacher/upload-signature`, { method: 'POST', body: formData });
+        const result = await res.json();
+        if (!res.ok) {
+            showAlertModal(result.error || "Could not submit your signature for approval.");
+            return;
+        }
+        showAlertModal("Signature submitted — it will appear once the Principal approves it.");
+        fileInput.value = '';
+        await loadTeacherDocumentStatus();
+    } catch (err) {
+        console.error("Error uploading signature:", err);
+        showAlertModal("Could not connect to server.");
+    }
+};
+
+window.uploadTeacherIdPhoto = async () => {
+    const fileInput = document.getElementById('teacher-idphoto-upload');
+    const file = fileInput.files[0];
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('photo', file);
+
+    try {
+        const res = await apiFetch(`${API_BASE}/api/teacher/upload-id-photo`, { method: 'POST', body: formData });
+        const result = await res.json();
+        if (!res.ok) {
+            showAlertModal(result.error || "Could not submit your ID photo for approval.");
+            return;
+        }
+        showAlertModal("ID photo submitted — it will appear once the Principal approves it.");
+        fileInput.value = '';
+        await loadTeacherDocumentStatus();
+    } catch (err) {
+        console.error("Error uploading ID photo:", err);
+        showAlertModal("Could not connect to server.");
+    }
+};
+
 // PROFILE — notification/security checkboxes (single listener,
 // event delegation so it's safe regardless of render timing)
 function setupPreferenceListeners() {
@@ -3079,6 +3212,7 @@ window.navigateToProfile = () => {
     document.querySelectorAll('.page-content').forEach(p => p.style.display = 'none');
     const profilePage = document.getElementById('page-profile');
     if (profilePage) profilePage.style.display = 'block';
+    loadTeacherDocumentStatus();
 };
 
 // --- Help / Support modal ---
@@ -3214,8 +3348,8 @@ window.onclick = (event) => {
 };
 
 // 3. Logout Logic
-const logoutBtn = document.querySelector('.logout-btn');
-if (logoutBtn) {
+const logoutBtns = document.querySelectorAll('.logout-btn');
+logoutBtns.forEach(logoutBtn => {
     logoutBtn.addEventListener('click', async (e) => {
         e.preventDefault();
         try {
@@ -3228,7 +3362,7 @@ if (logoutBtn) {
         }
         window.location.href = '/login.html';
     });
-}
+});
 
 window.toggleTheme = () => document.body.classList.toggle('dark-theme');
 

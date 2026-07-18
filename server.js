@@ -508,7 +508,7 @@ app.get('/api/student/me', requireAuth, requireRole('students'), async (req, res
             `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.class_level, st.section, st.stream, st.sex,
                     st.status, st.school_name, st.lms_username, st.email_address, st.assigned_computer,
                     st.phone_number, st.created_at, st.profile_photo_url, st.id_photo_url, st.is_class_monitor,
-                    sc.zone, sc.woreda, sc.region, sc.moe_school_code, sc.school_prefix
+                    sc.zone, sc.woreda, sc.region, sc.moe_school_code, sc.school_prefix, sc.logo_url
              FROM students st
              LEFT JOIN schools sc ON sc.id = st.school_id
              WHERE st.student_id = ? AND st.school_id = ?`,
@@ -1167,7 +1167,7 @@ app.get('/api/student/my-timetable', requireAuth, requireRole('students'), async
 
         const [rows] = await pool.query(
             `SELECT ct.timetable_id, ct.day_of_week, ct.start_time, ct.end_time,
-                    s.subject_name, t.first_name AS teacher_first_name, t.last_name AS teacher_last_name
+                    s.subject_name, CONCAT_WS(' ', t.first_name, t.middle_name, t.last_name) AS teacher_name
              FROM class_timetable ct
              JOIN subjects s ON s.subject_id = ct.subject_id AND s.school_id = ct.school_id
              LEFT JOIN teachers t ON t.teacher_id = ct.teacher_id AND t.school_id = ct.school_id
@@ -1297,7 +1297,7 @@ app.get('/api/student/todays-periods', requireAuth, requireClassMonitor, async (
 
         const [rows] = await pool.query(
             `SELECT ct.timetable_id, ct.start_time, ct.end_time, ct.teacher_id, s.subject_name,
-                    t.first_name AS teacher_first_name, t.last_name AS teacher_last_name,
+                    CONCAT_WS(' ', t.first_name, t.middle_name, t.last_name) AS teacher_name,
                     pal.teacher_present, pal.marked_at,
                     tl.reason AS leave_reason
              FROM class_timetable ct
@@ -1613,7 +1613,7 @@ app.get('/api/student/my-class-attendance', requireAuth, requireClassMonitor, as
         if (!monitorSection) return res.status(403).json({ error: "Only your class's Class Monitor(s) can view this." });
 
         const [students] = await pool.query(
-            `SELECT student_id, first_name, last_name FROM students
+            `SELECT student_id, first_name, middle_name, last_name FROM students
              WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ?
              ORDER BY first_name, last_name`,
             [req.user.school_id, monitorSection.class_level, monitorSection.section, monitorSection.stream]
@@ -1635,7 +1635,7 @@ app.get('/api/student/my-class-attendance', requireAuth, requireClassMonitor, as
 
         const roster = students.map(s => ({
             student_id: s.student_id,
-            name: `${s.first_name} ${s.last_name}`,
+            name: [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' '),
             present: presentSet.has(s.student_id),
             absence_request_status: excusedMap.get(s.student_id) || null
         }));
@@ -2823,6 +2823,36 @@ app.post('/api/gallery', requireAuth, requireRole('admin_users'), handleUploadEr
     }
 });
 
+// Sets the school's logo, shown in the nav header on every portal for that
+// tenant (student/teacher/etc). Whoever ends up owning "school setup" —
+// today that's any admin_users account, scoped to their own school_id —
+// uploads it once and every user at that school sees it from then on via
+// /api/me's logo_url. NOTE: there's no distinct "zonal admin" role in this
+// schema yet (login only recognizes students/teachers/admin_users/
+// registrar_users) — when that role exists, swap requireRole('admin_users')
+// here for whatever it's actually called, and decide whether it should be
+// scoped to one school_id per call (e.g. a body param) rather than the
+// logged-in account's own school_id like the rest of this file assumes.
+app.post('/api/admin/school-logo', requireAuth, requireRole('admin_users'), handleUploadError(upload.single('logo')), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+        if (!req.file.mimetype.startsWith('image/')) {
+            return res.status(400).json({ error: "Logo must be an image file (JPEG, PNG, GIF, or WEBP)." });
+        }
+
+        const converted = await convertHeicIfNeeded(req.file);
+        if (converted) req.file = converted;
+
+        const filePath = `/uploads/${req.file.filename}`;
+        await pool.query('UPDATE schools SET logo_url = ? WHERE id = ?', [filePath, req.user.school_id]);
+
+        res.json({ logo_url: filePath });
+    } catch (err) {
+        console.error("POST /api/admin/school-logo error:", err);
+        res.status(500).json({ error: "Could not upload school logo" });
+    }
+});
+
 app.delete('/api/gallery/:id', requireAuth, requireRole('admin_users'), async (req, res) => {
     try {
         const [result] = await pool.query(
@@ -3312,6 +3342,219 @@ app.post('/api/teacher/update-avatar', requireAuth, handleUploadError(upload.sin
         res.status(500).json({ error: "Upload failed" });
     }
 });
+
+// --- Teacher document approvals: signature + ID photo ---
+// A homeroom teacher can upload a signature (used on report cards/
+// certificates) and an ID photo (used on their staff ID card), but
+// neither takes effect immediately — both go through the Principal for
+// approval first, mirroring the same pending-request pattern used for
+// student ID photo changes (id_photo_change_requests) above, just scoped
+// to teachers and reviewed by the Principal specifically instead of a
+// homeroom teacher.
+//
+// Requires a new table — run this migration if it doesn't exist yet:
+//   CREATE TABLE teacher_document_requests (
+//     request_id INT AUTO_INCREMENT PRIMARY KEY,
+//     teacher_id VARCHAR(50) NOT NULL,
+//     school_id INT NOT NULL,
+//     doc_type ENUM('signature','id_photo') NOT NULL,
+//     requested_file_url VARCHAR(255) NOT NULL,
+//     status ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
+//     rejection_reason VARCHAR(255) NULL,
+//     reviewed_by VARCHAR(50) NULL,
+//     reviewed_at DATETIME NULL,
+//     requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     INDEX idx_teacher_doc (teacher_id, school_id, doc_type)
+//   );
+// Also requires these columns on teachers, which only get written once
+// the Principal approves a request (never directly by the teacher):
+//   ALTER TABLE teachers ADD COLUMN signature_url VARCHAR(255) NULL;
+//   ALTER TABLE teachers ADD COLUMN id_photo_url VARCHAR(255) NULL;
+
+async function submitTeacherDocumentRequest(req, res, docType, filePath) {
+    // Replace any existing pending request of the same type rather than
+    // piling up duplicates — same reasoning as the student ID photo flow.
+    const [existingPending] = await pool.query(
+        `SELECT request_id, requested_file_url FROM teacher_document_requests
+         WHERE teacher_id = ? AND school_id = ? AND doc_type = ? AND status = 'pending'`,
+        [req.user.user_id, req.user.school_id, docType]
+    );
+
+    if (existingPending.length > 0) {
+        const oldPath = path.join(__dirname, 'uploads', path.basename(existingPending[0].requested_file_url));
+        fs.unlink(oldPath, () => {}); // best-effort cleanup
+        await pool.query(
+            'UPDATE teacher_document_requests SET requested_file_url = ?, requested_at = NOW(), status = \'pending\', rejection_reason = NULL WHERE request_id = ?',
+            [filePath, existingPending[0].request_id]
+        );
+    } else {
+        await pool.query(
+            `INSERT INTO teacher_document_requests (teacher_id, school_id, doc_type, requested_file_url, status)
+             VALUES (?, ?, ?, ?, 'pending')`,
+            [req.user.user_id, req.user.school_id, docType, filePath]
+        );
+    }
+
+    res.json({ status: 'pending', doc_type: docType, requested_file_url: filePath });
+}
+
+app.post('/api/teacher/upload-signature', requireAuth, requireRole('teachers'), handleUploadError(upload.single('signature')), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+        if (!req.file.mimetype.startsWith('image/')) {
+            fs.unlink(req.file.path, () => {});
+            return res.status(400).json({ error: "Signature must be an image file (JPEG or PNG)." });
+        }
+        const converted = await convertHeicIfNeeded(req.file);
+        if (converted) req.file = converted;
+
+        const filePath = `/uploads/${req.file.filename}`;
+        await submitTeacherDocumentRequest(req, res, 'signature', filePath);
+    } catch (err) {
+        console.error("/api/teacher/upload-signature error:", err);
+        res.status(500).json({ error: "Could not submit your signature for approval" });
+    }
+});
+
+app.post('/api/teacher/upload-id-photo', requireAuth, requireRole('teachers'), handleUploadError(upload.single('photo')), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+        if (!req.file.mimetype.startsWith('image/')) {
+            fs.unlink(req.file.path, () => {});
+            return res.status(400).json({ error: "ID photo must be an image file (JPEG, PNG, GIF, or WEBP)." });
+        }
+        const converted = await convertHeicIfNeeded(req.file);
+        if (converted) req.file = converted;
+
+        let dimensions;
+        try {
+            dimensions = sizeOf(req.file.path);
+        } catch (dimErr) {
+            fs.unlink(req.file.path, () => {});
+            return res.status(400).json({ error: "Could not read image dimensions — file may be corrupted, or in a format we don't support. Please use a JPEG or PNG photo." });
+        }
+        const { width, height } = dimensions;
+        const shortSide = Math.min(width, height);
+        const longSide = Math.max(width, height);
+        if (shortSide < ID_PHOTO_MIN_WIDTH || longSide < ID_PHOTO_MIN_HEIGHT) {
+            fs.unlink(req.file.path, () => {});
+            return res.status(400).json({
+                error: `ID photo is too small (yours was ${width}×${height}px). Please use a clearer, higher-resolution photo.`
+            });
+        }
+
+        const filePath = `/uploads/${req.file.filename}`;
+        await submitTeacherDocumentRequest(req, res, 'id_photo', filePath);
+    } catch (err) {
+        console.error("/api/teacher/upload-id-photo error:", err);
+        res.status(500).json({ error: "Could not submit your ID photo for approval" });
+    }
+});
+
+// Returns the latest request (and its status) for both document types,
+// plus whatever is currently the teacher's live approved signature/photo,
+// so the profile page can show "pending", "approved", or "rejected" per
+// document without two separate round trips.
+app.get('/api/teacher/document-status', requireAuth, requireRole('teachers'), async (req, res) => {
+    try {
+        const [live] = await pool.query(
+            'SELECT signature_url, id_photo_url FROM teachers WHERE teacher_id = ? AND school_id = ?',
+            [req.user.user_id, req.user.school_id]
+        );
+        const [requests] = await pool.query(
+            `SELECT request_id, doc_type, requested_file_url, status, rejection_reason, requested_at, reviewed_at
+             FROM teacher_document_requests
+             WHERE teacher_id = ? AND school_id = ?
+             ORDER BY requested_at DESC`,
+            [req.user.user_id, req.user.school_id]
+        );
+
+        const latestByType = {};
+        for (const r of requests) {
+            if (!latestByType[r.doc_type]) latestByType[r.doc_type] = r;
+        }
+
+        res.json({
+            signature_url: live[0]?.signature_url || null,
+            id_photo_url: live[0]?.id_photo_url || null,
+            signature_request: latestByType.signature || { status: 'none' },
+            id_photo_request: latestByType.id_photo || { status: 'none' }
+        });
+    } catch (err) {
+        console.error("/api/teacher/document-status error:", err);
+        res.status(500).json({ error: "Could not load document approval status" });
+    }
+});
+
+// --- Principal review: teacher signature / ID photo requests ---
+app.get('/api/principal/teacher-document-requests', requireAuth, requirePrincipal, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT r.request_id, r.teacher_id, r.doc_type, r.requested_file_url, r.requested_at,
+                    t.first_name, t.last_name
+             FROM teacher_document_requests r
+             JOIN teachers t ON t.teacher_id = r.teacher_id AND t.school_id = r.school_id
+             WHERE r.school_id = ? AND r.status = 'pending'
+             ORDER BY r.requested_at ASC`,
+            [req.user.school_id]
+        );
+        res.json(rows.map(r => ({
+            request_id: r.request_id,
+            teacher_id: r.teacher_id,
+            teacher_name: [r.first_name, r.last_name].filter(Boolean).join(' '),
+            doc_type: r.doc_type,
+            requested_file_url: r.requested_file_url,
+            requested_at: r.requested_at
+        })));
+    } catch (err) {
+        console.error("/api/principal/teacher-document-requests error:", err);
+        res.status(500).json({ error: "Could not load pending requests" });
+    }
+});
+
+app.post('/api/principal/teacher-document-requests/:id/approve', requireAuth, requirePrincipal, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT request_id, teacher_id, doc_type, requested_file_url FROM teacher_document_requests
+             WHERE request_id = ? AND school_id = ? AND status = 'pending'`,
+            [req.params.id, req.user.school_id]
+        );
+        if (rows.length === 0) return res.status(404).json({ error: "Request not found or already reviewed." });
+        const request = rows[0];
+
+        const column = request.doc_type === 'signature' ? 'signature_url' : 'id_photo_url';
+        await pool.query(
+            `UPDATE teachers SET ${column} = ? WHERE teacher_id = ? AND school_id = ?`,
+            [request.requested_file_url, request.teacher_id, req.user.school_id]
+        );
+        await pool.query(
+            `UPDATE teacher_document_requests SET status = 'approved', reviewed_by = ?, reviewed_at = NOW() WHERE request_id = ?`,
+            [req.user.user_id, request.request_id]
+        );
+        res.json({ message: "Approved." });
+    } catch (err) {
+        console.error("/api/principal/teacher-document-requests/:id/approve error:", err);
+        res.status(500).json({ error: "Could not approve request" });
+    }
+});
+
+app.post('/api/principal/teacher-document-requests/:id/reject', requireAuth, requirePrincipal, async (req, res) => {
+    const { reason } = req.body;
+    try {
+        const [result] = await pool.query(
+            `UPDATE teacher_document_requests
+             SET status = 'rejected', rejection_reason = ?, reviewed_by = ?, reviewed_at = NOW()
+             WHERE request_id = ? AND school_id = ? AND status = 'pending'`,
+            [reason || null, req.user.user_id, req.params.id, req.user.school_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Request not found or already reviewed." });
+        res.json({ message: "Rejected." });
+    } catch (err) {
+        console.error("/api/principal/teacher-document-requests/:id/reject error:", err);
+        res.status(500).json({ error: "Could not reject request" });
+    }
+});
+
 app.post('/api/teacher/update-password', requireAuth, async (req, res) => {
     const { currentPass, newPass } = req.body;
 
@@ -3407,7 +3650,7 @@ app.get('/api/teacher/eligible-subjects', requireAuth, async (req, res) => {
 app.get('/api/teacher/full-profile', requireAuth, async (req, res) => {
     try {
         const [rows] = await pool.query(
-            `SELECT t.full_name, t.teacher_id, t.contact_number, t.email, t.additional_role, t.avatar_url,
+            `SELECT t.first_name, t.middle_name, t.last_name, t.teacher_id, t.contact_number, t.email, t.additional_role, t.avatar_url,
                     ta.stream, s.subject_name
              FROM teachers t
              LEFT JOIN teacher_assignments ta ON t.teacher_id = ta.teacher_id AND t.school_id = ta.school_id
@@ -3417,7 +3660,10 @@ app.get('/api/teacher/full-profile', requireAuth, async (req, res) => {
         );
         if (rows.length === 0) return res.status(404).json({ error: "Teacher not found" });
         res.json({
-            full_name: rows[0].full_name,
+            first_name: rows[0].first_name,
+            middle_name: rows[0].middle_name,
+            last_name: rows[0].last_name,
+            full_name: [rows[0].first_name, rows[0].middle_name, rows[0].last_name].filter(Boolean).join(' '),
             teacher_id: rows[0].teacher_id,
             contact_number: rows[0].contact_number,
             email: rows[0].email,
@@ -3437,7 +3683,7 @@ app.get('/api/teacher/full-profile', requireAuth, async (req, res) => {
 app.get('/api/teacher/id-card', requireAuth, async (req, res) => {
     try {
         const [rows] = await pool.query(
-            `SELECT t.full_name, t.teacher_id, t.contact_number, t.email, t.avatar_url, t.additional_role,
+            `SELECT t.first_name, t.middle_name, t.last_name, t.teacher_id, t.contact_number, t.email, t.avatar_url, t.additional_role,
                     ta.stream, s.subject_name,
                     sc.school_name, sc.zone, sc.woreda, sc.region, sc.moe_school_code
              FROM teachers t
@@ -3460,7 +3706,7 @@ app.get('/api/teacher/id-card', requireAuth, async (req, res) => {
         const validYear = new Date().getFullYear();
 
         res.json({
-            full_name: row0.full_name,
+            full_name: [row0.first_name, row0.middle_name, row0.last_name].filter(Boolean).join(' '),
             teacher_id: row0.teacher_id,
             contact_number: row0.contact_number,
             email: row0.email,
@@ -4865,6 +5111,18 @@ app.post('/api/homeroom/textbooks/return', requireAuth, async (req, res) => {
 // Mark a previously issued textbook as lost. Separate from "returned" —
 // this is for books that are gone for good (damaged beyond use, misplaced,
 // etc.), not books that have come back to the homeroom teacher.
+//
+// Penalty decisions live one level up from the homeroom teacher — a
+// homeroom teacher can only report a book lost; Admin VP decides what
+// happens next (charge, waive, warning) from the school-wide textbook
+// view. Requires these columns on textbook_distributions — ADD THEM if
+// they don't exist yet:
+//   ALTER TABLE textbook_distributions
+//     ADD COLUMN penalty_status ENUM('none','pending','waived','charged') NOT NULL DEFAULT 'none',
+//     ADD COLUMN penalty_amount DECIMAL(10,2) NULL,
+//     ADD COLUMN penalty_note VARCHAR(255) NULL,
+//     ADD COLUMN penalty_decided_by VARCHAR(50) NULL,
+//     ADD COLUMN penalty_decided_at DATETIME NULL;
 app.post('/api/homeroom/textbooks/lost', requireAuth, async (req, res) => {
     const { student_id, subject_id } = req.body;
     if (!student_id || !subject_id) {
@@ -4886,9 +5144,15 @@ app.post('/api/homeroom/textbooks/lost', requireAuth, async (req, res) => {
         }
 
         const school_year = getSchoolYear();
+        // Marking a book "lost" also opens a penalty case for Admin VP —
+        // the homeroom teacher only reports that the book is gone; whether
+        // the student is charged, warned, or waived is Admin VP's call,
+        // made from the Admin/VP textbook view (see /api/admin/textbooks
+        // and /api/admin/textbooks/penalty), not something decided here.
         const [result] = await pool.query(
             `UPDATE textbook_distributions
-             SET status = 'lost', lost_at = NOW(), lost_reported_by = ?
+             SET status = 'lost', lost_at = NOW(), lost_reported_by = ?, penalty_status = 'pending',
+                 penalty_amount = NULL, penalty_note = NULL, penalty_decided_by = NULL, penalty_decided_at = NULL
              WHERE student_id = ? AND subject_id = ? AND school_year = ? AND school_id = ? AND status = 'issued'`,
             [req.user.user_id, student_id, subject_id, school_year, req.user.school_id]
         );
@@ -4896,7 +5160,7 @@ app.post('/api/homeroom/textbooks/lost', requireAuth, async (req, res) => {
             return res.status(404).json({ error: "No active (issued, unreturned) distribution found for this student/subject." });
         }
 
-        res.json({ message: "Textbook marked as lost." });
+        res.json({ message: "Textbook marked as lost. Admin VP will review and decide on any penalty." });
     } catch (err) {
         console.error("lost textbook error:", err);
         res.status(500).json({ error: "Could not mark textbook as lost" });
@@ -4942,7 +5206,8 @@ app.post('/api/homeroom/textbooks/undo-lost', requireAuth, async (req, res) => {
 
         const [result] = await pool.query(
             `UPDATE textbook_distributions
-             SET status = 'issued', lost_at = NULL, lost_reported_by = NULL
+             SET status = 'issued', lost_at = NULL, lost_reported_by = NULL, penalty_status = 'none',
+                 penalty_amount = NULL, penalty_note = NULL, penalty_decided_by = NULL, penalty_decided_at = NULL
              WHERE student_id = ? AND subject_id = ? AND school_year = ? AND school_id = ? AND status = 'lost'`,
             [student_id, subject_id, school_year, req.user.school_id]
         );
@@ -5232,7 +5497,9 @@ app.get('/api/admin/textbooks', requireAuth, requireRole('admin_users'), async (
             `SELECT td.student_id, st.first_name, st.middle_name, st.last_name,
                     st.class_level, st.section, st.stream,
                     s.subject_id, s.subject_name,
-                    td.issued_by, td.issued_at, td.status, td.returned_at, td.lost_at
+                    td.issued_by, td.issued_at, td.status, td.returned_at, td.lost_at,
+                    td.penalty_status, td.penalty_amount, td.penalty_note,
+                    td.penalty_decided_by, td.penalty_decided_at
              FROM textbook_distributions td
              JOIN students st ON st.student_id = td.student_id AND st.school_id = td.school_id
              JOIN subjects s ON s.subject_id = td.subject_id AND s.school_id = td.school_id
@@ -5275,12 +5542,55 @@ app.get('/api/admin/textbooks', requireAuth, requireRole('admin_users'), async (
                 issued_at: r.issued_at,
                 status: r.status,
                 returned_at: r.returned_at,
-                lost_at: r.lost_at
+                lost_at: r.lost_at,
+                penalty_status: r.penalty_status,
+                penalty_amount: r.penalty_amount,
+                penalty_note: r.penalty_note,
+                penalty_decided_by: r.penalty_decided_by,
+                penalty_decided_at: r.penalty_decided_at
             }))
         });
     } catch (err) {
         console.error("admin textbooks error:", err);
         res.status(500).json({ error: "Could not load textbook records" });
+    }
+});
+
+// Admin VP records the penalty decision for a lost textbook — waive it,
+// charge a specific amount, or leave a note (e.g. "replacement brought
+// in"). This is intentionally separate from the homeroom teacher's
+// /api/homeroom/textbooks/lost, which only reports that a book is gone;
+// deciding the consequence is Admin VP's call, scoped across every
+// homeroom section in the school (not just one teacher's own).
+app.post('/api/admin/textbooks/penalty', requireAuth, requireRole('admin_users'), async (req, res) => {
+    const { student_id, subject_id, decision, amount, note } = req.body;
+    if (!student_id || !subject_id || !decision) {
+        return res.status(400).json({ error: "student_id, subject_id, and decision are required" });
+    }
+    if (!['waived', 'charged'].includes(decision)) {
+        return res.status(400).json({ error: "decision must be 'waived' or 'charged'" });
+    }
+    if (decision === 'charged' && (amount === undefined || amount === null || isNaN(Number(amount)) || Number(amount) < 0)) {
+        return res.status(400).json({ error: "A valid, non-negative amount is required when charging a student." });
+    }
+
+    try {
+        const school_year = getSchoolYear();
+        const [result] = await pool.query(
+            `UPDATE textbook_distributions
+             SET penalty_status = ?, penalty_amount = ?, penalty_note = ?,
+                 penalty_decided_by = ?, penalty_decided_at = NOW()
+             WHERE student_id = ? AND subject_id = ? AND school_year = ? AND school_id = ? AND status = 'lost'`,
+            [decision, decision === 'charged' ? Number(amount) : null, note || null,
+             req.user.user_id, student_id, subject_id, school_year, req.user.school_id]
+        );
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: "No textbook marked Lost was found for this student/subject." });
+        }
+        res.json({ message: `Penalty recorded: ${decision}.` });
+    } catch (err) {
+        console.error("admin textbook penalty error:", err);
+        res.status(500).json({ error: "Could not record penalty decision" });
     }
 });
 
@@ -5810,14 +6120,16 @@ app.get('/api/me', requireAuth, async (req, res) => {
     try {
         let school_name = null;
         let moe_school_code = null;
+        let logo_url = null;
         if (req.user.school_id) {
             const [schoolRows] = await pool.query(
-                'SELECT school_name, moe_school_code FROM schools WHERE id = ?',
+                'SELECT school_name, moe_school_code, logo_url FROM schools WHERE id = ?',
                 [req.user.school_id]
             );
             if (schoolRows.length > 0) {
                 school_name = schoolRows[0].school_name;
                 moe_school_code = schoolRows[0].moe_school_code;
+                logo_url = schoolRows[0].logo_url || null;
             }
         }
 
@@ -5836,6 +6148,7 @@ app.get('/api/me', requireAuth, async (req, res) => {
             school_id: req.user.school_id,
             school_name,
             moe_school_code,
+            logo_url,
             additional_role
         });
     } catch (err) {

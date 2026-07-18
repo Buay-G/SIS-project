@@ -25,12 +25,21 @@ async function checkAuth() {
         CURRENT_STUDENT_ID = data.user_id;
         const titleEl = document.getElementById('page-title-text');
         const logoEl  = document.getElementById('nav-school-name');
+        const logoImgEl = document.getElementById('nav-school-logo');
         const displayName = data.school_name
             ? (data.moe_school_code ? `${data.school_name} · MOE ${data.moe_school_code}` : data.school_name)
             : null;
         if (displayName) {
             if (titleEl) titleEl.textContent = displayName;
             if (logoEl)  logoEl.textContent  = displayName;
+        }
+        if (logoImgEl) {
+            if (data.logo_url) {
+                logoImgEl.src = data.logo_url;
+                logoImgEl.style.display = 'block';
+            } else {
+                logoImgEl.style.display = 'none';
+            }
         }
         return true;
     } catch {
@@ -39,13 +48,44 @@ async function checkAuth() {
     }
 }
 
+// Shows which semester Academic VP currently has open (POST /api/term/set
+// / /api/term/close), so students always know at a glance whether the
+// active term is open for e.g. absence requests, or closed between terms.
+async function loadSemesterBadge() {
+    const el = document.getElementById('semester-badge');
+    if (!el) return;
+    el.textContent = t('semester_status_loading');
+    el.className = 'semester-badge semester-badge-closed';
+    el.style.display = 'inline-flex';
+    try {
+        const res = await apiFetch('/api/term/current');
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        const isOpen = data.semester_status === 'open';
+        el.textContent = isOpen
+            ? t('semester_open', { term: data.current_term })
+            : t('semester_closed');
+        el.className = 'semester-badge ' + (isOpen ? 'semester-badge-open' : 'semester-badge-closed');
+    } catch {
+        el.textContent = t('semester_status_error');
+        el.className = 'semester-badge semester-badge-closed';
+    }
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
+    // i18n.js only re-applies translations from inside setLang() — call it
+    // here too, or a returning user with Amharic already selected would
+    // see every static data-i18n label in English until they clicked a
+    // language button again.
+    if (typeof applyTranslations === 'function') applyTranslations();
+
     const ok = await checkAuth();
     if (!ok) return;
     setupNavigation();
     setupSidebarToggle();
     await Promise.all([loadProfile(), loadNotifications()]);
     loadDashboard();
+    loadSemesterBadge();
     document.querySelector('a[data-page="notifications"]').addEventListener('click', loadNotifications);
     document.querySelector('a[data-page="marks"]').addEventListener('click', loadMarks);
     document.querySelector('a[data-page="textbooks"]').addEventListener('click', loadTextbooks);
@@ -71,6 +111,7 @@ window.onSisLangChange = () => {
     loadProfile();
     loadNotifications();
     loadDashboard();
+    loadSemesterBadge();
     loadMarks();
     loadTextbooks();
     loadIDCard();
@@ -103,6 +144,29 @@ document.addEventListener('click', (e) => {
     if (!e.target.closest('.account-wrapper')) closeAccountMenu();
 });
 
+// ---- TOPBAR "MORE" DROPDOWN (mobile only — collapses lang/notifications/
+// help/account behind a single kebab button so they don't crowd the page
+// title and semester badge on narrow screens) ----
+window.toggleTopbarActions = () => {
+    const el = document.getElementById('topbar-user-actions');
+    const btn = document.getElementById('topbar-more-btn');
+    if (!el) return;
+    const opening = !el.classList.contains('topbar-actions-open');
+    el.classList.toggle('topbar-actions-open', opening);
+    if (btn) btn.setAttribute('aria-expanded', String(opening));
+};
+
+window.closeTopbarActions = () => {
+    const el = document.getElementById('topbar-user-actions');
+    const btn = document.getElementById('topbar-more-btn');
+    if (el) el.classList.remove('topbar-actions-open');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+};
+
+document.addEventListener('click', (e) => {
+    if (!e.target.closest('#topbar-user-actions') && !e.target.closest('#topbar-more-btn')) closeTopbarActions();
+});
+
 // ---- NAVIGATION ----
 // Programmatic equivalent of clicking a sidebar link — used by the
 // settings button and the notification panel's "See all" link, so they
@@ -118,6 +182,7 @@ window.navigateTo = (target) => {
     if (page) page.style.display = 'block';
     closeSidebar();
     closeNotificationPanel();
+    closeTopbarActions();
     // Leaving the Class Monitor page (or landing elsewhere) always
     // releases the camera if the scanner was running — no reason to keep
     // a video stream open once the student's navigated away.
@@ -222,6 +287,20 @@ async function loadProfile() {
 
         const monitorNav = document.getElementById('nav-class-monitor');
         if (monitorNav) monitorNav.style.display = data.is_class_monitor ? '' : 'none';
+
+        // Class Monitor is always of the student's own class — no separate
+        // lookup needed, the class_level/section/stream already came back
+        // with this same profile response.
+        const monitorBadge = document.getElementById('nav-monitor-badge');
+        const monitorBadgeText = document.getElementById('nav-monitor-badge-text');
+        if (monitorBadge && monitorBadgeText) {
+            if (data.is_class_monitor) {
+                monitorBadgeText.textContent = t('nav_monitor_badge', { level: data.class_level, section: data.section });
+                monitorBadge.style.display = 'flex';
+            } else {
+                monitorBadge.style.display = 'none';
+            }
+        }
 
         loadIDPhotoRequestStatus();
     } catch (err) {
@@ -518,7 +597,7 @@ function renderIDCard(data, container) {
         <div class="id-card-flip-wrap">
             <div class="id-card id-card-front">
                 <div class="id-card-header">
-                    <img src="/assets/images/Logo.png" alt="School logo" class="id-card-logo" onerror="this.style.display='none'">
+                    <img src="${data.logo_url || '/assets/images/Logo.png'}" alt="School logo" class="id-card-logo" onerror="this.onerror=null; this.src='/assets/images/Logo.png';">
                     <div class="id-card-header-text">
                         <div class="id-card-school-name">${data.school_name || 'School'}</div>
                         <div class="id-card-subtitle">የተማሪ መታወቂያ ካርድ | Student Identity Card</div>
@@ -936,7 +1015,7 @@ function renderMonitorPeriods(periods) {
     if (!periods.length) { el.innerHTML = `<p class="muted">${t('monitor_no_periods_today')}</p>`; return; }
 
     el.innerHTML = periods.map(p => {
-        const teacherName = p.teacher_last_name ? escapeHtml(`${p.teacher_first_name} ${p.teacher_last_name}`) : t('monitor_no_teacher_assigned');
+        const teacherName = p.teacher_name ? escapeHtml(p.teacher_name) : t('monitor_no_teacher_assigned');
         let markedBlock;
         if (p.teacher_on_leave) {
             markedBlock = `<span class="badge badge-returned">${t('monitor_teacher_on_leave')}</span>`;
@@ -952,7 +1031,7 @@ function renderMonitorPeriods(periods) {
                 : `<span class="badge badge-lost">${t('monitor_mark_absent')}</span>`;
         }
         return `
-            <div class="widget" style="margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+            <div class="monitor-period-row">
                 <div>
                     <strong>${escapeHtml(p.subject_name)}</strong>
                     <span class="muted" style="font-size:0.8rem; margin-left:6px;">${p.start_time.slice(0, 5)}–${p.end_time.slice(0, 5)} · ${teacherName}</span>
@@ -1004,13 +1083,20 @@ async function loadMonitorRoster() {
 // already loaded; this just re-renders a subset of it).
 function renderMonitorRoster(data, filterText = '') {
     const el = document.getElementById('monitor-roster-output');
+    const countEl = document.getElementById('monitor-absent-count-line');
     if (!el) return;
-    if (!data.roster.length) { el.innerHTML = `<p class="muted">${t('monitor_no_students')}</p>`; return; }
+    if (!data.roster.length) {
+        el.innerHTML = `<p class="muted">${t('monitor_no_students')}</p>`;
+        if (countEl) countEl.textContent = '';
+        return;
+    }
 
     const query = filterText.trim().toLowerCase();
     const roster = query
         ? data.roster.filter(s => s.student_id.toLowerCase().includes(query) || s.name.toLowerCase().includes(query))
         : data.roster;
+
+    if (countEl) countEl.textContent = query ? t('monitor_showing_match', { count: roster.length }) : t('monitor_absent_count', { count: data.absent_count });
 
     const excusedBadge = {
         pending:   `<span class="badge badge-issued">${t('monitor_excuse_pending')}</span>`,
@@ -1024,9 +1110,8 @@ function renderMonitorRoster(data, filterText = '') {
     }
 
     el.innerHTML = `
-        <p class="muted" style="margin-bottom:10px;">${query ? t('monitor_showing_match', { count: roster.length }) : t('monitor_absent_count', { count: data.absent_count })}</p>
         ${roster.map(s => `
-            <div class="widget" style="margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+            <div class="widget monitor-row" style="margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
                 <div>
                     <strong>${escapeHtml(s.name)}</strong>
                     <span class="muted" style="font-size:0.8rem; margin-left:6px;">${escapeHtml(s.student_id)}</span>
@@ -1353,7 +1438,7 @@ document.addEventListener('click', (e) => {
     if (!e.target.closest('.notification-wrapper')) closeNotificationPanel();
 });
 document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { closeNotificationPanel(); closeAccountMenu(); }
+    if (e.key === 'Escape') { closeNotificationPanel(); closeAccountMenu(); closeTopbarActions(); }
 });
 
 // ---- HELP MODAL ----
@@ -1452,7 +1537,7 @@ async function loadDashboardTimetable() {
             <div class="notif-card" style="margin-bottom:8px;">
                 <strong style="font-size:0.85rem;">${escapeHtml(p.subject_name)}</strong>
                 <p class="muted" style="font-size:0.82rem; margin-top:2px;">
-                    ${p.start_time.slice(0, 5)} – ${p.end_time.slice(0, 5)}${p.teacher_last_name ? ' · ' + escapeHtml(`${p.teacher_first_name} ${p.teacher_last_name}`) : ''}
+                    ${p.start_time.slice(0, 5)} – ${p.end_time.slice(0, 5)}${p.teacher_name ? ' · ' + escapeHtml(p.teacher_name) : ''}
                 </p>
             </div>`).join('');
     } catch {

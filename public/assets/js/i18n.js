@@ -27,6 +27,7 @@ const SIS_TRANSLATIONS = {
         nav_certificate: 'My Certificate',
         nav_absence: 'Absence Requests',
         nav_class_monitor: 'Class Attendance',
+        nav_monitor_badge: 'Class Monitor of Grade {level} - {section}',
         nav_documents: 'My Documents',
         sidebar_open: 'Open navigation menu',
 
@@ -39,7 +40,23 @@ const SIS_TRANSLATIONS = {
         nav_contact: 'Contact',
         nav_registrar: 'Registrar',
         nav_back_to_site: 'Back to School Website',
+        nav_logout: 'Logout',
+        sidebar_homeroom_of: 'Homeroom of',
         teacher_portal_title: 'Teachers Portal',
+
+        // Profile: document approvals (signature / ID photo)
+        profile_documents_heading: 'ID Card & Signature',
+        profile_documents_hint: "These require Principal approval before they take effect — you'll see the status below once submitted.",
+        profile_signature_label: 'Signature',
+        profile_no_signature: 'No signature on file',
+        profile_upload_signature: '📝 Upload Signature',
+        profile_idphoto_label: 'ID Photo',
+        profile_no_idphoto: 'No ID photo on file',
+        profile_upload_idphoto: '📷 Upload ID Photo',
+        approval_status_none: 'Not submitted',
+        approval_status_pending: 'Pending approval',
+        approval_status_approved: 'Approved',
+        approval_status_rejected: 'Rejected',
 
         // Top bar
         topbar_notifications: 'Notifications',
@@ -428,6 +445,7 @@ const SIS_TRANSLATIONS = {
         nav_certificate: 'ምስክር ወረቀቴ',
         nav_absence: 'የቀሪ ጥያቄዎች',
         nav_class_monitor: 'የክፍል ተገኝነት',
+        nav_monitor_badge: 'የክፍል {level} - {section} ተቆጣጣሪ',
         nav_documents: 'የእኔ ሰነዶች',
         sidebar_open: 'የዳሰሳ ምናሌ ክፈት',
 
@@ -440,7 +458,23 @@ const SIS_TRANSLATIONS = {
         nav_contact: 'ያግኙን',
         nav_registrar: 'መዝጋቢ',
         nav_back_to_site: 'ወደ ትምህርት ቤት ድረ-ገጽ ተመለስ',
+        nav_logout: 'ውጣ',
+        sidebar_homeroom_of: 'የክፍል መምህር',
         teacher_portal_title: 'የመምህራን መግቢያ ገጽ',
+
+        // Profile: document approvals (signature / ID photo)
+        profile_documents_heading: 'መታወቂያ እና ፊርማ',
+        profile_documents_hint: 'እነዚህ ከመስቀላቸው በፊት በርእሰ መምህሩ መጽደቅ ያስፈልጋቸዋል — ከተላኩ በኋላ ሁኔታውን ከታች ያያሉ።',
+        profile_signature_label: 'ፊርማ',
+        profile_no_signature: 'ምንም ፊርማ የለም',
+        profile_upload_signature: '📝 ፊርማ ስቀል',
+        profile_idphoto_label: 'የመታወቂያ ፎቶ',
+        profile_no_idphoto: 'ምንም የመታወቂያ ፎቶ የለም',
+        profile_upload_idphoto: '📷 የመታወቂያ ፎቶ ስቀል',
+        approval_status_none: 'አልተላከም',
+        approval_status_pending: 'ማጽደቅ በመጠባበቅ ላይ',
+        approval_status_approved: 'ጸድቋል',
+        approval_status_rejected: 'ውድቅ ተደርጓል',
 
         // Top bar
         topbar_notifications: 'ማሳወቂያዎች',

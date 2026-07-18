@@ -14,7 +14,10 @@
     <div class="dashboard-container">
 
         <nav class="sidebar" id="sidebar" aria-label="Main navigation">
-            <h2 class="logo">Student Portal <span id="nav-school-name">—</span></h2>
+            <h2 class="logo">
+                <img id="nav-school-logo" class="sidebar-logo-img" alt="" style="display:none;" onerror="this.style.display='none';">
+                Student Portal <span id="nav-school-name">—</span>
+            </h2>
             <ul class="nav-menu">
                 <li><a href="#" class="nav-link active" data-page="dashboard">
                     <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
@@ -60,6 +63,17 @@
                     <span data-i18n="nav_documents">My Documents</span>
                 </a></li>
             </ul>
+
+            <div class="sidebar-footer">
+                <div id="nav-monitor-badge" class="nav-monitor-badge" style="display:none;">
+                    <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                    <span id="nav-monitor-badge-text"></span>
+                </div>
+                <button type="button" class="sidebar-signout-btn" onclick="signOutNow()">
+                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                    <span data-i18n="topbar_sign_out">Sign Out</span>
+                </button>
+            </div>
         </nav>
 
         <div id="sidebar-overlay" class="sidebar-overlay"></div>
@@ -75,8 +89,10 @@
                         <span class="sidebar-toggle-bar"></span>
                     </button>
                     <h1 class="page-title" id="page-title-text">—</h1>
+                    <span id="semester-badge" class="semester-badge semester-badge-open" style="display:none;"></span>
                 </div>
-                <div class="user-actions">
+                <button type="button" id="topbar-more-btn" class="topbar-more-btn" aria-label="More" aria-haspopup="true" aria-expanded="false" aria-controls="topbar-user-actions" onclick="toggleTopbarActions()">⋮</button>
+                <div class="user-actions" id="topbar-user-actions">
                     <div class="lang-switch" role="group" aria-label="Language / ቋንቋ">
                         <button type="button" class="lang-switch-btn" data-lang="en" onclick="setLang('en')">EN</button>
                         <button type="button" class="lang-switch-btn" data-lang="am" onclick="setLang('am')">አማ</button>
@@ -101,7 +117,6 @@
                         </button>
                         <div id="account-menu" class="account-menu" role="menu" style="display:none;">
                             <button class="account-menu-item" data-i18n="topbar_profile_settings" onclick="navigateTo('profile'); closeAccountMenu();">⚙️ Profile Settings</button>
-                            <button class="account-menu-item account-menu-signout" data-i18n="topbar_sign_out" onclick="signOutNow()">Sign Out</button>
                         </div>
                     </div>
                 </div>
@@ -187,30 +202,40 @@
                 <h2 data-i18n="monitor_heading">Class Attendance</h2>
                 <p class="muted" style="margin-bottom:20px;" data-i18n="monitor_desc">As Class Monitor, you can see who's present today and check in classmates who arrive without their ID card scanned yet.</p>
 
-                <div class="widget" style="margin-bottom:20px;">
-                    <button type="button" id="monitor-scan-toggle-btn" class="btn-primary" style="width:auto;" onclick="toggleMonitorScanner()" data-i18n="monitor_scan_qr">Scan QR Code</button>
-                    <div id="monitor-scanner-panel" style="display:none; margin-top:14px;">
-                        <video id="monitor-scanner-video" playsinline style="width:100%; max-width:360px; border-radius:8px; background:#000;"></video>
-                        <canvas id="monitor-scanner-canvas" style="display:none;"></canvas>
-                        <p id="monitor-scanner-status" class="muted" style="margin-top:8px;" data-i18n="monitor_scan_point_camera">Point the camera at a student's ID card QR code.</p>
+                <div class="monitor-columns">
+                    <!-- Left: scan QR + check-in + roster, grouped together as one flow -->
+                    <div class="monitor-col-attendance">
+                        <div class="widget" style="margin-bottom:20px;">
+                            <button type="button" id="monitor-scan-toggle-btn" class="btn-primary" style="width:auto;" onclick="toggleMonitorScanner()" data-i18n="monitor_scan_qr">Scan QR Code</button>
+                            <div id="monitor-scanner-panel" style="display:none; margin-top:14px;">
+                                <video id="monitor-scanner-video" playsinline style="width:100%; max-width:360px; border-radius:8px; background:#000;"></video>
+                                <canvas id="monitor-scanner-canvas" style="display:none;"></canvas>
+                                <p id="monitor-scanner-status" class="muted" style="margin-top:8px;" data-i18n="monitor_scan_point_camera">Point the camera at a student's ID card QR code.</p>
+                            </div>
+                        </div>
+
+                        <div class="widget monitor-sticky-checkin" style="margin-bottom:16px;">
+                            <label for="monitor-manual-id" class="sr-only">Student ID</label>
+                            <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                                <input type="text" id="monitor-manual-id" class="form-input" style="flex:1; min-width:160px;" placeholder="Student ID" data-i18n-placeholder="monitor_student_id_placeholder" oninput="filterMonitorRoster()">
+                                <button type="button" class="btn-primary" style="width:auto;" onclick="monitorManualCheckin()" data-i18n="monitor_check_in">Check In</button>
+                            </div>
+                            <div id="monitor-checkin-message" class="password-message"></div>
+                            <hr style="border:none; border-top:1px solid var(--border); margin:14px 0 10px;">
+                            <h3 style="margin:0;" data-i18n="monitor_roster_heading">Today's Attendance</h3>
+                            <p class="muted" id="monitor-absent-count-line" style="margin:4px 0 0; font-size:0.85rem;"></p>
+                        </div>
+
+                        <div id="monitor-roster-output"><p class="muted" data-i18n="loading">Loading…</p></div>
+                    </div>
+
+                    <!-- Right: Today's Periods, its own box -->
+                    <div class="monitor-col-periods">
+                        <h3 style="margin-bottom:10px;" data-i18n="monitor_periods_heading">Today's Periods</h3>
+                        <p class="muted" style="margin-bottom:12px;" data-i18n="monitor_periods_desc">Mark whether the teacher for each period actually came to class.</p>
+                        <div id="monitor-periods-output"><p class="muted" data-i18n="loading">Loading…</p></div>
                     </div>
                 </div>
-
-                <div class="widget monitor-sticky-checkin" style="margin-bottom:20px;">
-                    <label for="monitor-manual-id" class="sr-only">Student ID</label>
-                    <div style="display:flex; gap:10px; flex-wrap:wrap;">
-                        <input type="text" id="monitor-manual-id" class="form-input" style="flex:1; min-width:160px;" placeholder="Student ID" data-i18n-placeholder="monitor_student_id_placeholder" oninput="filterMonitorRoster()">
-                        <button type="button" class="btn-primary" style="width:auto;" onclick="monitorManualCheckin()" data-i18n="monitor_check_in">Check In</button>
-                    </div>
-                    <div id="monitor-checkin-message" class="password-message"></div>
-                </div>
-
-                <h3 style="margin-bottom:10px;" data-i18n="monitor_periods_heading">Today's Periods</h3>
-                <p class="muted" style="margin-bottom:12px;" data-i18n="monitor_periods_desc">Mark whether the teacher for each period actually came to class.</p>
-                <div id="monitor-periods-output" style="margin-bottom:24px;"><p class="muted" data-i18n="loading">Loading…</p></div>
-
-                <h3 style="margin-bottom:10px;" data-i18n="monitor_roster_heading">Today's Attendance</h3>
-                <div id="monitor-roster-output"><p class="muted" data-i18n="loading">Loading…</p></div>
             </section>
 
             <!-- ABSENCE / PERMISSION REQUESTS -->
@@ -342,7 +367,7 @@
             <label for="help-subject" class="sr-only">Subject</label>
             <input type="text" id="help-subject" placeholder="Subject" class="form-input" style="margin-bottom:10px;" data-i18n-placeholder="help_subject_placeholder">
             <label for="help-body" class="sr-only">Describe your issue</label>
-            <textarea id="help-body" placeholder="Describe your issue..." class="form-input" rows="4" style="margin-bottom:14px;" data-i18n-placeholder="help_body_placeholder"></textarea>
+            <textarea id="help-body" placeholder="Describe your issue..." class="form-input" style="margin-bottom:14px; height:120px;" data-i18n-placeholder="help_body_placeholder"></textarea>
             <div class="confirm-modal-actions">
                 <button class="btn-cancel" onclick="closeHelpModal()" data-i18n="help_cancel">Cancel</button>
                 <button class="btn-primary" style="width:auto;" onclick="submitHelpRequest()" data-i18n="help_send">Send</button>
