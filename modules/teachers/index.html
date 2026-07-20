@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.0.3/qrcode.min.js" defer></script>
     <script src="/assets/js/guard.js"></script>
     <script src="/assets/js/i18n.js"></script>
 </head>
@@ -116,12 +117,12 @@
                     
                     <div class="user-profile-trigger" onclick="toggleDropdown()" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false" aria-label="Open profile menu" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleDropdown();}">
                         <span id="nav-greeting">Hi, Teacher!</span>
-                        <img src="" alt="" class="nav-avatar" id="nav-avatar" onerror="this.style.display='none'">
+                        <img src="" alt="" class="nav-avatar" id="nav-avatar" onerror="this.style.display='none'; document.getElementById('nav-avatar-initials').style.display='flex';">
+                        <div id="nav-avatar-initials" class="nav-avatar-initials" aria-hidden="true"></div>
                     </div>
                     
                     <div id="profile-dropdown" class="dropdown-menu" role="menu">
                         <a href="#" class="nav-link" data-page="profile" role="menuitem">Profile Settings</a>
-                        <a href="#" class="logout-btn" role="menuitem">Logout</a>
                     </div>
                 </div>
             </header>
@@ -381,7 +382,7 @@
                                         </div>
                                         <div class="idcard-brand-text">
                                             <div class="idcard-zone-line" id="idcard-zone-front">—</div>
-                                            <div class="idcard-brand-school" id="idcard-school-name-front">—</div>
+                                            <div class="idcard-brand-school" id="idcard-woreda-front">—</div>
                                         </div>
                                     </div>
                                 </div>
@@ -396,6 +397,7 @@
                                     <div class="idcard-role">SCHOOL TEACHER <span class="idcard-am">/ የትምህርት ቤት መምህር</span></div>
                                     <div class="idcard-detail-rows">
                                         <div class="idcard-detail-row"><span class="idcard-detail-label">TEACHER ID <span class="idcard-am">/ የመምህር መታወቂያ</span></span><span id="idcard-teacher-id">—</span></div>
+                                        <div class="idcard-detail-row"><span class="idcard-detail-label">SCHOOL <span class="idcard-am">/ ትምህርት ቤት</span></span><span id="idcard-school-name-front">—</span></div>
                                         <div class="idcard-detail-row"><span class="idcard-detail-label">SUBJECT <span class="idcard-am">/ ትምህርት</span></span><span id="idcard-subject">—</span></div>
                                         <div class="idcard-detail-row"><span class="idcard-detail-label">VALID UNTIL <span class="idcard-am">/ የሚያገለግልበት</span></span><span id="idcard-valid-until">—</span></div>
                                     </div>
@@ -410,7 +412,7 @@
                                         </div>
                                         <div class="idcard-brand-text idcard-brand-text-dark">
                                             <div class="idcard-zone-line" id="idcard-zone-back">—</div>
-                                            <div class="idcard-brand-school" id="idcard-school-name-back">—</div>
+                                            <div class="idcard-brand-school" id="idcard-woreda-back">—</div>
                                         </div>
                                     </div>
                                 </div>
@@ -422,10 +424,10 @@
 
                                     <div class="idcard-signature">
                                         <div class="idcard-signature-line"></div>
-                                        <div class="idcard-signature-label">HEAD OF ZONE <span class="idcard-am">/ የዞኑ ኃላፊ</span></div>
+                                        <div class="idcard-signature-label">HEAD OF EDUCATION <span class="idcard-am">/ የትምህርት ኃላፊ</span></div>
                                     </div>
 
-                                    <div class="idcard-barcode" id="idcard-barcode" aria-hidden="true"></div>
+                                    <div class="idcard-qrcode" id="idcard-qrcode" aria-hidden="true"></div>
                                 </div>
                             </div>
                         </div>
@@ -593,6 +595,26 @@
 
             <section id="page-contact" class="page-content" style="display:none;">
                 <h2>Contact School Management</h2>
+
+                <div class="widget" style="margin-bottom:24px;">
+                    <h3>Request Absence</h3>
+                    <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;">
+                        Sent to the <strong>Admin Vice Principal</strong> for approval. The <strong>Academic Vice Principal</strong> and <strong>Principal</strong> are automatically tagged so they're aware too.
+                    </p>
+                    <div class="dashboard-grid" style="gap:12px; margin-bottom:12px;">
+                        <div>
+                            <label for="absence-date-from">Absent From</label>
+                            <input type="date" id="absence-date-from" class="form-input">
+                        </div>
+                        <div>
+                            <label for="absence-date-to">Absent To</label>
+                            <input type="date" id="absence-date-to" class="form-input">
+                        </div>
+                    </div>
+                    <label for="absence-reason" class="sr-only">Reason for absence</label>
+                    <textarea id="absence-reason" class="form-input" rows="3" placeholder="Reason for your absence..."></textarea>
+                    <button type="button" class="btn-primary" style="margin-top:10px;" onclick="sendAbsenceRequest()">Send Absence Request</button>
+                </div>
 
                 <div class="dashboard-grid">
                     <div class="widget">

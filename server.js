@@ -3700,10 +3700,10 @@ app.get('/api/teacher/id-card', requireAuth, async (req, res) => {
         const subjects = [...new Set(rows.map(r => r.subject_name).filter(Boolean))];
         const schoolAddress = [row0.zone, row0.woreda, row0.region].filter(Boolean).join(', ') || null;
 
-        // No academic-year concept exists yet (see getSchoolYear() below) —
-        // cards are shown valid through the end of the current calendar
-        // year, same convention as the rest of the app.
-        const validYear = new Date().getFullYear();
+        // ID cards are valid for 2 years from the day they're issued/viewed.
+        const validUntilDate = new Date();
+        validUntilDate.setFullYear(validUntilDate.getFullYear() + 2);
+        const validUntil = `${String(validUntilDate.getMonth() + 1).padStart(2, '0')}/${String(validUntilDate.getDate()).padStart(2, '0')}/${validUntilDate.getFullYear()}`;
 
         res.json({
             full_name: [row0.first_name, row0.middle_name, row0.last_name].filter(Boolean).join(' '),
@@ -3713,10 +3713,14 @@ app.get('/api/teacher/id-card', requireAuth, async (req, res) => {
             avatar_url: row0.avatar_url || null,
             department: streams.length > 0 ? streams.join(', ') : (row0.additional_role || null),
             subjects,
+            subject: subjects.length > 0 ? subjects.join(', ') : null,
             school_name: row0.school_name,
             school_address: schoolAddress,
+            zone: row0.zone || null,
+            woreda: row0.woreda || null,
             moe_school_code: row0.moe_school_code,
-            valid_until: `12/31/${validYear}`
+            valid_until: validUntil,
+            qr_payload: signQrPayload(String(row0.teacher_id))
         });
     } catch (err) {
         console.error("/api/teacher/id-card error:", err);
@@ -4355,7 +4359,7 @@ app.get('/api/homeroom/attendance-today', requireAuth, async (req, res) => {
         if (!homeroom) return res.status(403).json({ error: "You are not a homeroom teacher." });
 
         const [students] = await pool.query(
-            `SELECT student_id, first_name, last_name FROM students
+            `SELECT student_id, first_name, middle_name, last_name FROM students
              WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ?
              ORDER BY first_name, last_name`,
             [req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
@@ -4375,6 +4379,7 @@ app.get('/api/homeroom/attendance-today', requireAuth, async (req, res) => {
         const roster = students.map(s => ({
             student_id: s.student_id,
             first_name: s.first_name,
+            middle_name: s.middle_name,
             last_name: s.last_name,
             present: presentMap.has(s.student_id),
             marked_by_me: presentMap.get(s.student_id) === req.user.user_id
@@ -5602,9 +5607,21 @@ app.post('/api/admin/textbooks/penalty', requireAuth, requireRole('admin_users')
 const MANAGEMENT_ROLES = ['Principal', 'Admin VP', 'Academic VP'];
 const CONTACT_CATEGORIES = ['Permission Request', 'Complaint', 'General Inquiry'];
 
+// Optional additional roles a thread is tagged with, beyond the single
+// recipient_role — e.g. an absence request always goes to Admin VP but
+// also tags Academic VP and Principal so they're aware without being the
+// primary responder. Stored as a comma-separated string of MANAGEMENT_ROLES
+// values.
+//   ALTER TABLE contact_threads ADD COLUMN cc_roles VARCHAR(255) NULL;
+function parseCcRoles(raw) {
+    if (!raw) return [];
+    const list = Array.isArray(raw) ? raw : String(raw).split(',').map(r => r.trim());
+    return [...new Set(list.filter(r => MANAGEMENT_ROLES.includes(r)))];
+}
+
 // Teacher starts a new thread.
 app.post('/api/contact/new', requireAuth, async (req, res) => {
-    const { recipient_role, category, subject, body } = req.body;
+    const { recipient_role, category, subject, body, cc_roles } = req.body;
 
     if (!recipient_role || !category || !subject || !body) {
         return res.status(400).json({ error: "recipient_role, category, subject, and body are all required" });
@@ -5616,11 +5633,13 @@ app.post('/api/contact/new', requireAuth, async (req, res) => {
         return res.status(400).json({ error: `category must be one of: ${CONTACT_CATEGORIES.join(', ')}` });
     }
 
+    const ccRoleList = parseCcRoles(cc_roles).filter(r => r !== recipient_role);
+
     try {
         const [threadResult] = await pool.query(
-            `INSERT INTO contact_threads (teacher_id, recipient_role, category, subject, school_id)
-             VALUES (?, ?, ?, ?, ?)`,
-            [req.user.user_id, recipient_role, category, subject, req.user.school_id]
+            `INSERT INTO contact_threads (teacher_id, recipient_role, cc_roles, category, subject, school_id)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [req.user.user_id, recipient_role, ccRoleList.join(',') || null, category, subject, req.user.school_id]
         );
         const thread_id = threadResult.insertId;
 
@@ -5641,14 +5660,14 @@ app.post('/api/contact/new', requireAuth, async (req, res) => {
 app.get('/api/contact/my-threads', requireAuth, async (req, res) => {
     try {
         const [threads] = await pool.query(
-            `SELECT t.thread_id, t.recipient_role, t.category, t.subject, t.status, t.updated_at,
+            `SELECT t.thread_id, t.recipient_role, t.cc_roles, t.category, t.subject, t.status, t.updated_at,
                     (SELECT COUNT(*) FROM contact_messages WHERE thread_id = t.thread_id) as message_count
              FROM contact_threads t
              WHERE t.teacher_id = ? AND t.school_id = ?
              ORDER BY t.updated_at DESC`,
             [req.user.user_id, req.user.school_id]
         );
-        res.json(threads);
+        res.json(threads.map(t => ({ ...t, cc_roles: t.cc_roles ? t.cc_roles.split(',') : [] })));
     } catch (err) {
         console.error("contact/my-threads error:", err);
         res.status(500).json({ error: "Could not load your messages" });
@@ -5674,7 +5693,8 @@ app.get('/api/contact/thread/:thread_id', requireAuth, async (req, res) => {
             [thread_id, req.user.school_id]
         );
 
-        res.json({ thread: threadRows[0], messages });
+        const thread = { ...threadRows[0], cc_roles: threadRows[0].cc_roles ? threadRows[0].cc_roles.split(',') : [] };
+        res.json({ thread, messages });
     } catch (err) {
         console.error("contact/thread error:", err);
         res.status(500).json({ error: "Could not load thread" });
@@ -6235,6 +6255,90 @@ app.get('/api/teacher/my-subjects', requireAuth, async (req, res) => {
     } catch (err) {
         console.error("Database error in /my-subjects:", err);
         res.status(500).json({ error: "Could not fetch subjects" });
+    }
+});
+
+// DASHBOARD: per-student performance for the "Student Performance" widget.
+// This was previously missing entirely — the frontend has always called
+// this exact path (see the comment above loadDashboardStudentPerformance
+// in script.js), so the widget could never load anything before this.
+// For every student this teacher is assigned to, average that student's
+// marks (current term only, across just the subject(s) this teacher
+// teaches to that student's class) and bucket into a tier so students who
+// need attention surface first on the dashboard.
+app.get('/api/teacher/student-performance', requireAuth, async (req, res) => {
+    try {
+        const currentTerm = await getCurrentTerm(req.user.school_id);
+
+        const [assignments] = await pool.query(
+            `SELECT DISTINCT subject_id, class_level, section, stream
+             FROM teacher_assignments
+             WHERE teacher_id = ? AND school_id = ?`,
+            [req.user.user_id, req.user.school_id]
+        );
+
+        if (assignments.length === 0) {
+            return res.json({ students: [] });
+        }
+
+        // Group the subjects this teacher teaches by which section they
+        // teach them to, since a teacher can teach different subjects to
+        // different sections.
+        const subjectsBySection = {};
+        assignments.forEach(a => {
+            const key = `${a.class_level}|${a.section}|${a.stream}`;
+            if (!subjectsBySection[key]) subjectsBySection[key] = [];
+            subjectsBySection[key].push(a.subject_id);
+        });
+        const sectionKeys = Object.keys(subjectsBySection);
+
+        const sectionClause = sectionKeys.map(() => '(class_level = ? AND section = ? AND stream = ?)').join(' OR ');
+        const sectionParams = [];
+        sectionKeys.forEach(key => sectionParams.push(...key.split('|')));
+
+        const [students] = await pool.query(
+            `SELECT student_id, first_name, middle_name, last_name, class_level, section, stream
+             FROM students
+             WHERE school_id = ? AND (${sectionClause})
+             ORDER BY first_name, last_name`,
+            [req.user.school_id, ...sectionParams]
+        );
+
+        const results = [];
+        for (const student of students) {
+            const key = `${student.class_level}|${student.section}|${student.stream}`;
+            const subjectIds = subjectsBySection[key] || [];
+            if (subjectIds.length === 0) continue;
+
+            const [[{ avg_score }]] = await pool.query(
+                `SELECT AVG(score) as avg_score FROM marks
+                 WHERE student_id = ? AND school_id = ? AND term = ? AND subject_id IN (${subjectIds.map(() => '?').join(',')})`,
+                [student.student_id, req.user.school_id, currentTerm, ...subjectIds]
+            );
+
+            let tier, average_score;
+            if (avg_score == null) {
+                tier = 'none';
+                average_score = null;
+            } else {
+                average_score = Math.round(Number(avg_score) * 100) / 100;
+                if (average_score >= 75) tier = 'good';
+                else if (average_score >= 50) tier = 'average';
+                else tier = 'poor';
+            }
+
+            results.push({
+                student_id: student.student_id,
+                full_name: [student.first_name, student.middle_name, student.last_name].filter(Boolean).join(' '),
+                average_score,
+                tier
+            });
+        }
+
+        res.json({ students: results });
+    } catch (err) {
+        console.error("student-performance error:", err);
+        res.status(500).json({ error: "Could not load student performance" });
     }
 });
 

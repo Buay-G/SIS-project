@@ -437,7 +437,7 @@ function renderMyClassRoster(data) {
     const term = myClassSearchTerm;
     const visible = term
         ? roster.filter(s =>
-            `${s.first_name} ${s.last_name}`.toLowerCase().includes(term) ||
+            `${s.first_name} ${s.middle_name || ''} ${s.last_name}`.toLowerCase().includes(term) ||
             String(s.student_id).toLowerCase().includes(term))
         : roster;
 
@@ -457,7 +457,7 @@ function renderMyClassRoster(data) {
 
     container.innerHTML = `<div class="myclass-roster-list">${visible.map(s => `
         <div class="myclass-roster-row ${s.present ? 'is-present' : ''}" data-student-id="${escapeHtml(String(s.student_id))}">
-            <span class="myclass-roster-name">${escapeHtml(s.first_name)} ${escapeHtml(s.last_name)}</span>
+            <span class="myclass-roster-name">${[s.first_name, s.middle_name, s.last_name].filter(Boolean).map(escapeHtml).join(' ')}</span>
             <span class="myclass-roster-status ${s.present ? 'status-present' : 'status-absent'}">${s.present ? presentLabel : notMarkedLabel}</span>
             ${s.present
                 ? `<button class="textbook-action-btn textbook-action-undo" onclick="undoMyClassPresent('${s.student_id}')">${undoBtnLabel}</button>`
@@ -2004,6 +2004,46 @@ window.sendStudentNotification = async () => {
     }
 };
 
+window.sendAbsenceRequest = async () => {
+    const date_from = document.getElementById('absence-date-from').value;
+    const date_to = document.getElementById('absence-date-to').value;
+    const reason = document.getElementById('absence-reason').value.trim();
+
+    if (!date_from || !date_to || !reason) {
+        showAlertModal("Please fill in the absence dates and reason.");
+        return;
+    }
+
+    try {
+        const res = await apiFetch(`${API_BASE}/api/contact/new`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                teacher_id: CURRENT_TEACHER_ID,
+                recipient_role: 'Admin VP',
+                cc_roles: ['Academic VP', 'Principal'],
+                category: 'Permission Request',
+                subject: `Absence Request: ${date_from} to ${date_to}`,
+                body: `Absence requested from ${date_from} to ${date_to}.\n\nReason: ${reason}`
+            })
+        });
+        const result = await res.json();
+        if (!res.ok) {
+            showAlertModal(result.error || "Could not send absence request.");
+            return;
+        }
+
+        showSuccessModal("Your absence request has been sent to the Admin VP. Academic VP and Principal have been tagged.");
+        document.getElementById('absence-date-from').value = '';
+        document.getElementById('absence-date-to').value = '';
+        document.getElementById('absence-reason').value = '';
+        loadContactThreads();
+    } catch (err) {
+        console.error("Send absence request error:", err);
+        showAlertModal("Could not connect to server.");
+    }
+};
+
 window.sendContactMessage = async () => {
     const recipient_role = document.getElementById('contact-recipient').value;
     const category = document.getElementById('contact-category').value;
@@ -2055,7 +2095,7 @@ async function loadContactThreads() {
             <div class="contact-thread-row" onclick="openContactThread(${t.thread_id})">
                 <div>
                     <strong>${t.subject}</strong>
-                    <span class="contact-thread-meta">${t.category} → ${t.recipient_role}</span>
+                    <span class="contact-thread-meta">${t.category} → ${t.recipient_role}${t.cc_roles && t.cc_roles.length ? ` (cc: ${t.cc_roles.join(', ')})` : ''}</span>
                 </div>
                 <span class="contact-status contact-status-${t.status.toLowerCase()}">${t.status}</span>
             </div>`).join('');
@@ -2089,7 +2129,7 @@ window.openContactThread = async (thread_id) => {
 
         content.innerHTML = `
             <h3>${thread.subject}</h3>
-            <p style="font-size:0.85rem; color:#64748b;">${thread.category} → ${thread.recipient_role}</p>
+            <p style="font-size:0.85rem; color:#64748b;">${thread.category} → ${thread.recipient_role}${thread.cc_roles && thread.cc_roles.length ? ` <span style="color:#94a3b8;">(cc: ${thread.cc_roles.join(', ')})</span>` : ''}</p>
             <div class="contact-thread-messages">${messagesHtml}</div>
             <textarea id="contact-reply-body" class="form-input" rows="3" placeholder="Write a reply..."></textarea>
             <div style="display:flex; gap:10px;">
@@ -2422,7 +2462,18 @@ async function loadProfileData() {
         }
 
         const navAvatar = document.getElementById('nav-avatar');
-        if (navAvatar && data.avatar_url) navAvatar.src = data.avatar_url;
+        const navAvatarInitials = document.getElementById('nav-avatar-initials');
+        if (data.avatar_url && navAvatar) {
+            navAvatar.src = data.avatar_url;
+            navAvatar.style.display = '';
+            if (navAvatarInitials) navAvatarInitials.style.display = 'none';
+        } else {
+            if (navAvatar) navAvatar.style.display = 'none';
+            if (navAvatarInitials) {
+                navAvatarInitials.textContent = (data.full_name || '?').split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+                navAvatarInitials.style.display = 'flex';
+            }
+        }
 
         const profileImg = document.getElementById('profile-img');
         const initialsEl = document.getElementById('profile-avatar-initials');
@@ -2512,10 +2563,12 @@ function renderTeacherIdCard(data) {
     // credential, not a page that should change depending on which tab
     // was last clicked.
     const zoneLabel = data.zone ? `${data.zone.toUpperCase()} ZONE` : 'ZONE —';
+    const woredaLabel = data.woreda || '—';
     setText('idcard-zone-front', zoneLabel);
     setText('idcard-zone-back', zoneLabel);
+    setText('idcard-woreda-front', woredaLabel);
+    setText('idcard-woreda-back', woredaLabel);
     setText('idcard-school-name-front', data.school_name || '—');
-    setText('idcard-school-name-back', data.school_name || '—');
     setText('idcard-name', data.full_name || '—');
     setText('idcard-teacher-id', data.teacher_id || '—');
     setText('idcard-subject', data.subject || 'General / አጠቃላይ');
@@ -2536,32 +2589,23 @@ function renderTeacherIdCard(data) {
         if (placeholder) placeholder.style.display = 'flex';
     }
 
-    renderIdCardBarcode(data.teacher_id || '');
+    renderIdCardQrCode(data.qr_payload || data.teacher_id || '');
 }
 
-// Purely decorative barcode — a deterministic bar pattern derived from the
-// teacher ID, matching the visual on the reference card. Not meant to be
-// scannable; there's no real barcode symbology or check-digit behind it.
-function renderIdCardBarcode(seed) {
-    const container = document.getElementById('idcard-barcode');
+// Real, scannable QR code encoding the server-signed "<teacher_id>.<signature>"
+// payload (same signing scheme already used for student QR check-in — see
+// signQrPayload/verifyQrPayload on the server) so the card can eventually be
+// scanned for verification/attendance, unlike the old decorative bar pattern.
+function renderIdCardQrCode(payload) {
+    const container = document.getElementById('idcard-qrcode');
     if (!container) return;
     container.innerHTML = '';
+    if (typeof qrcode !== 'function' || !payload) return;
 
-    let hash = 0;
-    const str = String(seed) || 'TEACHER';
-    for (let i = 0; i < str.length; i++) hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
-
-    const barCount = 40;
-    for (let i = 0; i < barCount; i++) {
-        hash = (hash * 1103515245 + 12345) >>> 0;
-        const height = 14 + (hash % 24); // 14px–38px
-        hash = (hash * 1103515245 + 12345) >>> 0;
-        const width = 1 + (hash % 3); // 1px–3px
-        const bar = document.createElement('span');
-        bar.style.height = `${height}px`;
-        bar.style.width = `${width}px`;
-        container.appendChild(bar);
-    }
+    const qr = qrcode(0, 'M'); // type 0 = auto-detect smallest size that fits the data
+    qr.addData(String(payload));
+    qr.make();
+    container.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2 });
 }
 
 window.flipIdCard = () => {

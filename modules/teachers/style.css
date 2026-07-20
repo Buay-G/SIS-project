@@ -424,13 +424,10 @@ body.dark-theme .myclass-roster-status.status-absent { background: #334155; colo
     display: flex;
     flex-direction: column;
     gap: 24px;
-    background-image: linear-gradient(rgba(248, 250, 252, 0.85), rgba(248, 250, 252, 0.85)), url('/assets/images/background.png');
-    background-size: cover;
-    background-position: center;
-    background-attachment: fixed;
+    background-color: #ffffff;
 }
 body.dark-theme .main-content {
-    background-image: linear-gradient(rgba(15, 23, 42, 0.93), rgba(15, 23, 42, 0.93)), url('/assets/images/background.png');
+    background-color: #0f172a;
 }
 
 /* Widgets & Cards */
@@ -693,7 +690,7 @@ body.dark-theme #progress-table {
 #progress-table thead {
     position: sticky;
     top: 0;
-    background: #1a2a47; /* same dark blue used by the other data tables */
+    background: var(--primary);
     color: white;
     z-index: 10;
 }
@@ -704,13 +701,24 @@ body.dark-theme #progress-table {
     font-size: 0.85rem;
 }
 #progress-table th, #progress-table td {
-    padding: 8px 10px;
+    padding: 10px 14px;
     border-bottom: 1px solid #e2e8f0;
     white-space: nowrap;
     text-align: left;
 }
-#progress-table th { background: #1a2a47; color: white; }
+#progress-table th {
+    background: var(--primary);
+    color: white;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.72rem;
+    letter-spacing: 0.03em;
+}
+#progress-table tbody tr:nth-child(even) { background: #f8fafc; }
+#progress-table tbody tr:hover { background: #eef2ff; }
 body.dark-theme #progress-table td { border-color: #334155; }
+body.dark-theme #progress-table tbody tr:nth-child(even) { background: #1e293b; }
+body.dark-theme #progress-table tbody tr:hover { background: #273548; }
 
 /* Dedicated scroll container for the textbook distribution table.
    `position: sticky` on the thead above only works if IT has a bounded
@@ -723,8 +731,10 @@ body.dark-theme #progress-table td { border-color: #334155; }
     overflow-x: auto;
     position: relative;
     border: 1px solid #e2e8f0;
-    border-radius: 8px;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 }
+body.dark-theme .textbook-table-scroll { border-color: #334155; }
 
 /* Freeze the Student name column (first column) so it stays visible
    while scrolling sideways through a wide subject list. Applies to both
@@ -734,21 +744,25 @@ body.dark-theme #progress-table td { border-color: #334155; }
     position: sticky;
     left: 0;
     background: #ffffff;
+    font-weight: 600;
     box-shadow: 2px 0 4px rgba(0,0,0,0.06); /* subtle edge so it reads as "above" the scrolling content */
 }
+.textbook-table-scroll #progress-table tbody tr:nth-child(even) td:first-child { background: #f8fafc; }
+.textbook-table-scroll #progress-table tbody tr:hover td:first-child { background: #eef2ff; }
 
 /* The top-left corner cell is sticky on BOTH axes at once (header row +
    first column), so it needs a higher z-index than either sticky rule
    alone, or the header row's background would paint over it as you
    scroll right, leaving the corner looking blank/glitchy. */
 .textbook-table-scroll #progress-table thead th:first-child {
-    background: #1a2a47;
+    background: var(--primary);
     z-index: 11;
 }
 
 body.dark-theme .textbook-table-scroll #progress-table td:first-child {
     background: #1e293b;
 }
+body.dark-theme .textbook-table-scroll #progress-table tbody tr:nth-child(even) td:first-child { background: #273548; }
 /* Shared styling for all form elements */
 .form-input, 
 select#subject-select, 
@@ -949,7 +963,21 @@ select#type-select {
     width: 120px; height: 120px; border-radius: 50%; object-fit: cover; 
     border: 4px solid #4a90e2; display: block; margin: 0 auto 15px auto; 
 }
-.user-profile-trigger { display: flex; align-items: center; cursor: pointer; }
+/* Header avatar initials fallback — shown instead of nav-avatar when the
+   teacher has no photo on file yet, so the header always shows exactly
+   one clean circle rather than an empty/broken image. */
+.nav-avatar-initials {
+    width: 32px; height: 32px; border-radius: 50%;
+    margin-right: 10px;
+    background: rgba(255,255,255,0.25);
+    border: 1px solid rgba(255,255,255,0.4);
+    color: #fff;
+    font-size: 0.72rem;
+    font-weight: 700;
+    display: none;
+    align-items: center;
+    justify-content: center;
+}
 
 /* 8. MISC & UTILITIES */
 .card ul { list-style: none; padding: 0; }
@@ -1967,18 +1995,14 @@ body.dark-theme .document-approval-preview { background: #1e293b; border-color: 
     letter-spacing: 0.04em;
     font-weight: 700;
 }
-.idcard-barcode {
+.idcard-qrcode {
     display: flex;
     justify-content: center;
-    align-items: flex-end;
-    gap: 2px;
-    height: 34px;
     margin-top: 14px;
 }
-.idcard-barcode span {
-    display: inline-block;
-    width: 2px;
-    background: #111;
+.idcard-qrcode svg {
+    width: 88px;
+    height: 88px;
 }
 
 .idcard-actions {
