@@ -1,793 +1,2018 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Teacher Portal | Newland High</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
-    <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.0.3/qrcode.min.js" defer></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"
+      defer
+    ></script>
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.0.3/qrcode.min.js"
+      defer
+    ></script>
     <script src="/assets/js/guard.js"></script>
     <script src="/assets/js/i18n.js"></script>
-</head>
-<body>
-
+  </head>
+  <body>
     <div class="dashboard-container">
-        <nav class="sidebar" id="sidebar" aria-label="Main navigation">
-            <h2 class="logo">
-                <img src="" alt="" id="nav-school-logo" class="nav-school-logo" style="display:none;" onerror="this.style.display='none';">
-                <span data-i18n="teacher_portal_title">Teachers Portal</span> <span id="nav-school-name">—</span>
-            </h2>
-            <ul class="nav-menu">
-                <li><a href="#" class="nav-link active" data-page="dashboard">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-                    <span data-i18n="nav_dashboard">Dashboard</span>
-                </a></li>
-                <li><a href="#" class="nav-link" data-page="upload">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                    <span data-i18n="nav_upload_marks">Upload Marks</span>
-                </a></li>
-                <li><a href="#" class="nav-link" data-page="students">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                    <span data-i18n="nav_view_students">View Students</span>
-                </a></li>
-                <li><a href="#" class="nav-link" data-page="idcard">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><circle cx="8" cy="11" r="2.2"/><path d="M5 17c0-1.8 1.5-3 3-3s3 1.2 3 3"/><line x1="14" y1="9" x2="19" y2="9"/><line x1="14" y1="13" x2="19" y2="13"/></svg>
-                    <span data-i18n="nav_idcard">My ID</span>
-                </a></li>
-                <li><a href="#" class="nav-link" data-page="myclass" id="nav-myclass" style="display:none;">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><circle cx="10.5" cy="9" r="1.5"/><path d="M8 13.5c0-1.1.9-2 2-2h1c1.1 0 2 .9 2 2"/></svg>
-                    <span data-i18n="nav_myclass">My Class</span>
-                </a></li>
-                <li><a href="#" class="nav-link" data-page="textbooks" id="nav-textbooks" style="display:none;">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-                    <span data-i18n="nav_textbooks">Textbooks</span>
-                </a></li>
-                <li><a href="#" class="nav-link" data-page="reports">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-                    <span data-i18n="nav_reports">Reports</span>
-                </a></li>
-                <li><a href="#" class="nav-link" data-page="actioncenter" id="nav-actioncenter" style="display:none;">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
-                    <span data-i18n="nav_action_center">Action Center</span>
-                    <span id="action-center-badge" class="nav-badge" style="display:none;">0</span>
-                </a></li>
-                <li><a href="#" class="nav-link" data-page="contact">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                    <span data-i18n="nav_contact">Contact</span>
-                </a></li>
-                <li id="nav-registrar-item" style="display:none;">
-                    <a href="/registrar/index.html" class="nav-link nav-external" id="nav-registrar">
-                        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>
-                        <span data-i18n="nav_registrar">Registrar</span>
-                    </a>
-                </li>
-                <li class="nav-divider"></li>
-                <li><a href="/hub.html" class="nav-link nav-external">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5 12 3l9 6.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"/></svg>
-                    <span data-i18n="nav_hub">School Hub</span>
-                </a></li>
-            </ul>
-            <div class="sidebar-footer">
-                <div id="sidebar-homeroom-badge" class="sidebar-homeroom-badge" style="display:none;">
-                    <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-                    <span data-i18n="sidebar_homeroom_of">Homeroom of</span> <span id="sidebar-homeroom-label">—</span>
-                </div>
-                <a href="#" class="logout-btn sidebar-logout-btn" role="menuitem">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-                    <span data-i18n="nav_logout">Logout</span>
-                </a>
+      <nav class="sidebar" id="sidebar" aria-label="Main navigation">
+        <h2 class="logo">
+          <img
+            src=""
+            alt=""
+            id="nav-school-logo"
+            class="nav-school-logo"
+            style="display: none"
+            onerror="this.style.display = 'none'"
+          />
+          <span data-i18n="teacher_portal_title">Teachers Portal</span>
+          <span id="nav-school-name">—</span>
+        </h2>
+        <ul class="nav-menu">
+          <li>
+            <a href="#" class="nav-link active" data-page="dashboard">
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <rect x="3" y="3" width="7" height="7" />
+                <rect x="14" y="3" width="7" height="7" />
+                <rect x="3" y="14" width="7" height="7" />
+                <rect x="14" y="14" width="7" height="7" />
+              </svg>
+              <span data-i18n="nav_dashboard">Dashboard</span>
+            </a>
+          </li>
+          <li>
+            <a href="#" class="nav-link" data-page="upload">
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+              <span data-i18n="nav_upload_marks">Upload Marks</span>
+            </a>
+          </li>
+          <li>
+            <a href="#" class="nav-link" data-page="students">
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+              </svg>
+              <span data-i18n="nav_view_students">View Students</span>
+            </a>
+          </li>
+          <li>
+            <a href="#" class="nav-link" data-page="idcard">
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <rect x="2" y="4" width="20" height="16" rx="2" />
+                <circle cx="8" cy="11" r="2.2" />
+                <path d="M5 17c0-1.8 1.5-3 3-3s3 1.2 3 3" />
+                <line x1="14" y1="9" x2="19" y2="9" />
+                <line x1="14" y1="13" x2="19" y2="13" />
+              </svg>
+              <span data-i18n="nav_idcard">My ID</span>
+            </a>
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="myclass"
+              id="nav-myclass"
+              style="display: none"
+            >
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                <path
+                  d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"
+                />
+                <circle cx="10.5" cy="9" r="1.5" />
+                <path d="M8 13.5c0-1.1.9-2 2-2h1c1.1 0 2 .9 2 2" />
+              </svg>
+              <span data-i18n="nav_myclass">My Class</span>
+            </a>
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="textbooks"
+              id="nav-textbooks"
+              style="display: none"
+            >
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                <path
+                  d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"
+                />
+              </svg>
+              <span data-i18n="nav_textbooks">Textbooks</span>
+            </a>
+          </li>
+          <li>
+            <a href="#" class="nav-link" data-page="reports">
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path
+                  d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+                />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="16" y1="13" x2="8" y2="13" />
+                <line x1="16" y1="17" x2="8" y2="17" />
+                <polyline points="10 9 9 9 8 9" />
+              </svg>
+              <span data-i18n="nav_reports">Reports</span>
+            </a>
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="actioncenter"
+              id="nav-actioncenter"
+              style="display: none"
+            >
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" />
+              </svg>
+              <span data-i18n="nav_action_center">Action Center</span>
+              <span
+                id="action-center-badge"
+                class="nav-badge"
+                style="display: none"
+                >0</span
+              >
+            </a>
+          </li>
+          <li>
+            <a href="#" class="nav-link" data-page="contact">
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path
+                  d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
+                />
+              </svg>
+              <span data-i18n="nav_contact">Contact</span>
+            </a>
+          </li>
+          <li id="nav-registrar-item" style="display: none">
+            <a
+              href="/registrar/index.html"
+              class="nav-link nav-external"
+              id="nav-registrar"
+            >
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <rect x="2" y="7" width="20" height="14" rx="2" />
+                <path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2" />
+              </svg>
+              <span data-i18n="nav_registrar">Registrar</span>
+            </a>
+          </li>
+          <li class="nav-divider"></li>
+          <li>
+            <a href="/hub.html" class="nav-link nav-external">
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path d="M3 9.5 12 3l9 6.5" />
+                <path
+                  d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"
+                />
+              </svg>
+              <span data-i18n="nav_hub">School Hub</span>
+            </a>
+          </li>
+        </ul>
+        <div class="sidebar-footer">
+          <div
+            id="sidebar-homeroom-badge"
+            class="sidebar-homeroom-badge"
+            style="display: none"
+          >
+            <svg
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+              <path
+                d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"
+              />
+            </svg>
+            <span data-i18n="sidebar_homeroom_of">Homeroom of</span>
+            <span id="sidebar-homeroom-label">—</span>
+          </div>
+          <a href="#" class="logout-btn sidebar-logout-btn" role="menuitem">
+            <svg
+              width="16"
+              height="16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+            <span data-i18n="nav_logout">Logout</span>
+          </a>
+        </div>
+      </nav>
+      <div id="sidebar-overlay" class="sidebar-overlay"></div>
+
+      <main
+        class="main-content"
+        aria-live="polite"
+        aria-relevant="additions text"
+      >
+        <header class="top-bar">
+          <div class="topbar-left">
+            <button
+              id="sidebar-toggle"
+              class="sidebar-toggle-btn"
+              aria-label="Open navigation menu"
+              aria-expanded="false"
+              aria-controls="sidebar"
+            >
+              <span class="sidebar-toggle-bar"></span>
+              <span class="sidebar-toggle-bar"></span>
+              <span class="sidebar-toggle-bar"></span>
+            </button>
+            <h1 class="page-title" id="page-title-text">—</h1>
+            <span
+              id="moe-code-badge"
+              class="moe-code-badge"
+              style="display: none"
+            ></span>
+            <span
+              id="semester-status-badge"
+              class="semester-status-badge semester-status-loading"
+              style="display: none"
+              >—</span
+            >
+          </div>
+
+          <div class="user-actions">
+            <div
+              class="lang-switch-group"
+              role="tablist"
+              aria-label="Language / ቋንቋ"
+            >
+              <button
+                type="button"
+                class="lang-switch-btn"
+                data-lang="en"
+                role="tab"
+                aria-selected="true"
+                onclick="setLang('en')"
+              >
+                EN
+              </button>
+              <button
+                type="button"
+                class="lang-switch-btn"
+                data-lang="am"
+                role="tab"
+                aria-selected="false"
+                onclick="setLang('am')"
+              >
+                አማ
+              </button>
             </div>
-        </nav>
-        <div id="sidebar-overlay" class="sidebar-overlay"></div>
-
-        <main class="main-content" aria-live="polite" aria-relevant="additions text">
-            <header class="top-bar">
-                <div class="topbar-left">
-                    <button id="sidebar-toggle" class="sidebar-toggle-btn" aria-label="Open navigation menu" aria-expanded="false" aria-controls="sidebar">
-                        <span class="sidebar-toggle-bar"></span>
-                        <span class="sidebar-toggle-bar"></span>
-                        <span class="sidebar-toggle-bar"></span>
-                    </button>
-                    <h1 class="page-title" id="page-title-text">—</h1>
-                    <span id="moe-code-badge" class="moe-code-badge" style="display:none;"></span>
-                    <span id="semester-status-badge" class="semester-status-badge semester-status-loading" style="display:none;">—</span>
+            <div class="notification-wrapper">
+              <button
+                class="notification-btn"
+                aria-label="Notifications"
+                onclick="toggleNotificationPanel()"
+                aria-haspopup="true"
+                aria-expanded="false"
+                aria-controls="notification-panel"
+              >
+                🔔<span
+                  id="notif-badge"
+                  class="notif-badge"
+                  style="display: none"
+                ></span>
+              </button>
+              <div
+                id="notification-panel"
+                class="notification-panel"
+                role="menu"
+                style="display: none"
+              >
+                <div class="notification-panel-header">
+                  <strong>Notifications</strong>
+                  <button
+                    class="notif-clear-btn"
+                    onclick="markAllNotificationsRead()"
+                  >
+                    Mark all read
+                  </button>
                 </div>
-
-                <div class="user-actions">
-                    <div class="lang-switch-group" role="tablist" aria-label="Language / ቋንቋ">
-                        <button type="button" class="lang-switch-btn" data-lang="en" role="tab" aria-selected="true" onclick="setLang('en')">EN</button>
-                        <button type="button" class="lang-switch-btn" data-lang="am" role="tab" aria-selected="false" onclick="setLang('am')">አማ</button>
-                    </div>
-                    <div class="notification-wrapper">
-                        <button class="notification-btn" aria-label="Notifications" onclick="toggleNotificationPanel()" aria-haspopup="true" aria-expanded="false" aria-controls="notification-panel">
-                            🔔<span id="notif-badge" class="notif-badge" style="display:none;"></span>
-                        </button>
-                        <div id="notification-panel" class="notification-panel" role="menu" style="display:none;">
-                            <div class="notification-panel-header">
-                                <strong>Notifications</strong>
-                                <button class="notif-clear-btn" onclick="markAllNotificationsRead()">Mark all read</button>
-                            </div>
-                            <div id="notification-list"><p class="notif-empty">No new notifications</p></div>
-                        </div>
-                    </div>
-                    <button class="settings-btn" aria-label="Settings" onclick="navigateToProfile()">⚙️</button>
-                    <button class="help-btn" aria-label="Help and support" onclick="openHelpModal()">❓</button>
-                    
-                    <div class="user-profile-trigger" onclick="toggleDropdown()" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false" aria-label="Open profile menu" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleDropdown();}">
-                        <span id="nav-greeting">Hi, Teacher!</span>
-                        <img src="" alt="" class="nav-avatar" id="nav-avatar" onerror="this.style.display='none'; document.getElementById('nav-avatar-initials').style.display='flex';">
-                        <div id="nav-avatar-initials" class="nav-avatar-initials" aria-hidden="true"></div>
-                    </div>
-                    
-                    <div id="profile-dropdown" class="dropdown-menu" role="menu">
-                        <a href="#" class="nav-link" data-page="profile" role="menuitem">Profile Settings</a>
-                    </div>
+                <div id="notification-list">
+                  <p class="notif-empty">No new notifications</p>
                 </div>
-            </header>
-
-            <section id="page-dashboard" class="page-content">
-                <div class="dashboard-grid">
-                    <div class="widget">
-                        <h3 data-i18n="widget_my_performance">My Performance</h3>
-                        <div class="performance-chart-wrapper">
-                            <canvas id="performanceChart"></canvas>
-                        </div>
-                        <div id="performance-completion"></div>
-                    </div>
-                    <div class="widget">
-                        <h3 data-i18n="widget_conduct_heading">Assessment &amp; Exam Conduct</h3>
-                        <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;" data-i18n="widget_conduct_desc">
-                            Auto-tracked from entered marks. A box ticks once at least 50% of students in that section have a recorded score.
-                        </p>
-                        <label for="conduct-section-filter" class="sr-only" data-i18n="widget_filter_by_section">Filter by section</label>
-                        <select id="conduct-section-filter" class="form-input" style="margin-bottom:15px;">
-                            <option value="" data-i18n="widget_all_my_sections">All my sections</option>
-                        </select>
-                        <div id="conduct-list"></div>
-                    </div>
-                    <div class="widget" id="dashboard-textbook-widget" style="display:none;">
-                        <h3 data-i18n="widget_textbook_distribution">Textbook Distribution</h3>
-                        <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;">
-                            <span data-i18n="widget_textbook_issued_to">How many textbooks you've issued to</span> <strong id="dashboard-textbook-section-label"></strong> <span data-i18n="widget_textbook_this_year">this school year.</span>
-                        </p>
-                        <div id="dashboard-textbook-summary"></div>
-                    </div>
-                    <div class="widget">
-                        <h3 data-i18n="dashboard_todays_classes">Today's Classes</h3>
-                        <div id="dashboard-todays-classes"><p style="color:#64748b; font-size:0.85rem;">Loading…</p></div>
-                    </div>
-                    <div class="widget">
-                        <h3 data-i18n="widget_student_performance">Student Performance</h3>
-                        <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;" data-i18n="widget_student_performance_desc">How each of your students is doing in your subject(s) this term.</p>
-                        <div id="dashboard-student-performance"><p style="color:#64748b; font-size:0.85rem;">Loading…</p></div>
-                    </div>
-                </div>
-            </section>
-            <div id="student-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-student-name" style="display:none;">
-                <div class="modal-content">
-                    <div id="student-info" class="modal-header-row">
-                        <div>
-                            <h3 id="modal-student-name"></h3>
-                            <p>Term: Semester 1 | Total: <span id="modal-total"></span> | Average: <span id="modal-avg"></span></p>
-                        </div>
-                        <button onclick="closeModal()" class="btn-return">Return</button>
-                    </div>
-                    
-                    <div style="overflow-y: auto;">
-                        <table id="progress-table">
-                            <thead>
-                                <tr>
-                                    <th rowspan="2">Subject</th>
-                                    <th colspan="2">Ind. Assign. 1</th>
-                                    <th colspan="2">Ind. Assign. 2</th>
-                                    <th colspan="2">Group Assign.</th>
-                                    <th colspan="2">Quiz</th>
-                                    <th colspan="2">Midterm</th>
-                                    <th colspan="2">Final</th>
-                                </tr>
-                                <tr>
-                                    <th>S1</th><th>S2</th>
-                                    <th>S1</th><th>S2</th>
-                                    <th>S1</th><th>S2</th>
-                                    <th>S1</th><th>S2</th>
-                                    <th>S1</th><th>S2</th>
-                                    <th>S1</th><th>S2</th>
-                                </tr>
-                            </thead>
-                            <tbody id="progress-body"></tbody>
-                        </table>
-                    </div>
-                </div>
+              </div>
             </div>
-            <section id="page-upload" class="page-content" style="display:none;">
-                <div class="dashboard-grid">
-                    <div class="widget">
-                        <h3>Bulk Upload</h3>
-                        <div class="file-wrapper">
-                            <div>
-                                <label for="csv-file" class="sr-only">CSV file of marks to upload</label>
-                                <button class="file-btn" onclick="document.getElementById('csv-file').click()">Choose CSV File</button>
-                                <span id="file-name" style="margin-left:10px; font-size:0.9rem; color:#64748b;">No file chosen</span>
-                                <input type="file" id="csv-file" accept=".csv" style="display:none;" onchange="updateFileName(this)">
-                            </div>
-                            
-                            <button class="btn-primary" onclick="uploadData()">Upload Data</button>
-                        </div>
-                    </div>
-                    <div class="widget">
-                        <h3>Individual Entry</h3>
-                        <form id="markEntryForm">
-                            <div class="search-group">
-                                <label for="search-id" class="sr-only">Student ID to search for</label>
-                                <input type="text" id="search-id" placeholder="Student ID" class="form-input">
-                                <button type="button" class="btn-primary" onclick="searchStudent()">Search</button>
-                            </div>
-                            <div id="student-display"></div>
-                            <div id="mark-inputs" style="display:none;">
-                                <label for="subject-select" class="sr-only">Subject</label>
-                                <select id="subject-select">
-                                    <option value="">Select a Subject</option>
-                                </select>
+            <button
+              class="settings-btn"
+              aria-label="Settings"
+              onclick="navigateToProfile()"
+            >
+              ⚙️
+            </button>
+            <button
+              class="help-btn"
+              aria-label="Help and support"
+              onclick="openHelpModal()"
+            >
+              ❓
+            </button>
 
-                                <label for="type-select" class="sr-only">Assessment type</label>
-                                <select id="type-select">
-                                    <option value="individual_assignment_1">Individual Assignment 1</option>
-                                    <option value="individual_assignment_2">Individual Assignment 2</option>
-                                    <option value="group_assignment">Group Assignment</option>
-                                    <option value="quiz">Quiz</option>
-                                    <option value="midterm">Midterm</option>
-                                    <option value="final">Final</option>
-                                </select>
-
-                                <label for="score-input" class="sr-only">Score, 0 to 100</label>
-                                <input type="number" id="score-input" placeholder="Enter Score (0-100)" min="0" max="100" oninput="if(this.value.length > 2) this.value = this.value.slice(0,2);">
-                                <button type="button" class="btn-primary" onclick="submitIndividualMark()">Submit</button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-
-                <div class="widget" style="margin-top:24px;">
-                    <h3>Section Grade Sheet</h3>
-                    <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;">Enter marks for a whole section at once — pick a section and subject below, then fill in scores directly in the table. Only cells you change get saved.</p>
-
-                    <div class="search-group" style="flex-wrap:wrap; margin-bottom:14px;">
-                        <label for="gradesheet-section" class="sr-only">Section</label>
-                        <select id="gradesheet-section" class="form-input" style="max-width:240px;" onchange="onGradeSheetSectionChange()">
-                            <option value="">Select section…</option>
-                        </select>
-
-                        <label for="gradesheet-subject" class="sr-only">Subject</label>
-                        <select id="gradesheet-subject" class="form-input" style="max-width:200px;" onchange="onGradeSheetSubjectChange()">
-                            <option value="">Select subject…</option>
-                        </select>
-
-                        <label for="gradesheet-search" class="sr-only">Search students in this section</label>
-                        <input type="text" id="gradesheet-search" class="form-input" placeholder="Search by name or ID…" style="max-width:200px;" oninput="applyGradeSheetSearch()">
-                    </div>
-
-                    <div id="gradesheet-container">
-                        <p style="color:#64748b; font-size:0.85rem;">Select a section and subject above to begin.</p>
-                    </div>
-
-                    <div id="gradesheet-actions" style="display:none; margin-top:14px; align-items:center; gap:12px;">
-                        <button type="button" class="btn-primary" style="width:auto; padding:10px 22px;" onclick="saveGradeSheet()">Save All Marks</button>
-                        <span id="gradesheet-status" style="font-size:0.85rem;"></span>
-                    </div>
-                </div>
-            </section>
-            <section id="page-students" class="page-content" style="display:none;">
-                <h3>Student Candidates</h3>
-                <p style="margin-bottom: 20px; color: #666;">View and manage student registrations for the national exam.</p>
-
-                <div class="student-filter-row">
-                    <label for="student-search" class="sr-only">Search students by name or ID</label>
-                    <input type="text" id="student-search" class="form-input" placeholder="Search by name or ID..." style="flex:2;">
-                    <label for="student-filter-class" class="sr-only">Filter by class</label>
-                    <select id="student-filter-class" class="form-input" style="flex:1;">
-                        <option value="">All Classes</option>
-                    </select>
-                    <label for="student-filter-section" class="sr-only">Filter by section</label>
-                    <select id="student-filter-section" class="form-input" style="flex:1;">
-                        <option value="">All Sections</option>
-                    </select>
-                </div>
-
-                <div class="metrics-grid">
-                    <div class="metric-card"><h4>Total Student</h4><p class="count" id="total-count">0</p></div>
-                    <div class="metric-card"><h4>Female</h4><p class="count" id="female-count">0</p></div>
-                    <div class="metric-card"><h4>Male</h4><p class="count" id="male-count">0</p></div>
-                </div>
-
-                <div class="table-container">
-                    <table class="student-table">
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>Full Name</th>
-                                <th>Gender</th>
-                                <th>Class</th>
-                                <th>Section</th>
-                                <th>Stream</th>
-                                <th>View</th>
-                            </tr>
-                        </thead>
-                        <tbody id="student-table-body">
-                            </tbody>
-                    </table>
-                </div>
-            </section>
-
-            <section id="page-myclass" class="page-content myclass-page" style="display:none;">
-                <div class="myclass-frozen-header">
-                    <h2 data-i18n="myclass_heading">My Class</h2>
-                    <p style="font-size:0.85rem; color:#64748b; margin-bottom:16px;">
-                        <span data-i18n="myclass_desc_prefix">Today's attendance for</span> <strong id="myclass-section-label"></strong>.
-                    </p>
-
-                    <div class="metrics-grid">
-                        <div class="metric-card"><h4 data-i18n="myclass_total">Total Students</h4><p class="count" id="myclass-total-count">0</p></div>
-                        <div class="metric-card"><h4 data-i18n="myclass_present">Present Today</h4><p class="count" id="myclass-present-count">0</p></div>
-                        <div class="metric-card"><h4 data-i18n="myclass_not_yet">Not Yet Marked</h4><p class="count" id="myclass-absent-count">0</p></div>
-                    </div>
-
-                    <div class="myclass-toolbar">
-                        <label for="myclass-search" class="sr-only" data-i18n="myclass_search_label">Search students</label>
-                        <input type="text" id="myclass-search" class="form-input" data-i18n-placeholder="myclass_search_placeholder" placeholder="Search by name or ID…" style="flex:2; min-width:180px;" oninput="applyMyClassSearch()">
-
-                        <label for="myclass-scanner-input" class="sr-only" data-i18n="myclass_scanner_label">Scan or type QR code</label>
-                        <input type="text" id="myclass-scanner-input" class="form-input" data-i18n-placeholder="myclass_scanner_placeholder" placeholder="Scan ID card here…" style="flex:2; min-width:180px;" autocomplete="off">
-
-                        <button type="button" class="btn-primary" style="width:auto; padding:10px 18px; white-space:nowrap;" onclick="openQrScanner()">
-                            <span aria-hidden="true">📷</span> <span data-i18n="myclass_scan_qr">Scan QR</span>
-                        </button>
-                    </div>
-                </div>
-
-                <div class="widget myclass-roster-widget">
-                    <div id="myclass-roster-scroll" class="myclass-roster-scroll">
-                        <div id="myclass-roster"><p style="color:#64748b; font-size:0.85rem;" data-i18n="loading_text">Loading…</p></div>
-                    </div>
-                </div>
-            </section>
-
-            <div id="qr-scan-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="qr-scan-title" style="display:none;">
-                <div class="modal-content" style="width:420px;">
-                    <div class="modal-header-row">
-                        <h3 id="qr-scan-title" data-i18n="myclass_scan_qr">Scan QR</h3>
-                        <button onclick="closeQrScanner()" class="btn-return">Close</button>
-                    </div>
-                    <p style="font-size:0.85rem; color:#64748b; margin-bottom:10px;" data-i18n="myclass_scan_instructions">Point a student's ID card at the camera.</p>
-                    <div id="qr-reader" style="width:100%;"></div>
-                    <p id="qr-scan-status" style="font-size:0.85rem; margin-top:10px; min-height:1.2em;"></p>
-                </div>
-            </div>
-
-            <section id="page-idcard" class="page-content" style="display:none;">
-                <h2 data-i18n="idcard_heading">My ID Card</h2>
-                <p style="font-size:0.85rem; color:#64748b; margin-bottom:20px;" data-i18n="idcard_desc">Present this alongside a physical copy if required by school policy.</p>
-
-                <div id="idcard-error" style="display:none; color:#b91c1c; font-size:0.9rem; margin-bottom:16px;"></div>
-
-                <div class="idcard-wrap" id="idcard-wrap" style="display:none;">
-                    <div class="idcard-scene">
-                        <div class="idcard-flipper" id="idcard-flipper">
-                            <div class="idcard-face idcard-front">
-                                <div class="idcard-front-top">
-                                    <div class="idcard-front-top-content">
-                                        <div class="idcard-logo-badge" aria-hidden="true">
-                                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3d1f3d" stroke-width="2"><path d="M12 2l2.4 4.9L20 8l-4 3.9L17 18l-5-2.6L7 18l1-6.1L4 8l5.6-1.1z"/></svg>
-                                        </div>
-                                        <div class="idcard-brand-text">
-                                            <div class="idcard-zone-line" id="idcard-zone-front">—</div>
-                                            <div class="idcard-brand-school" id="idcard-woreda-front">—</div>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="idcard-photo-ring">
-                                    <img id="idcard-photo" src="" alt="" style="display:none;" onerror="this.style.display='none'; document.getElementById('idcard-photo-placeholder').style.display='flex';">
-                                    <div id="idcard-photo-placeholder" class="idcard-photo-placeholder" aria-hidden="true">
-                                        <svg width="46" height="46" viewBox="0 0 24 24" fill="#8a6d8a"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7"/></svg>
-                                    </div>
-                                </div>
-                                <div class="idcard-front-bottom">
-                                    <div class="idcard-name" id="idcard-name">—</div>
-                                    <div class="idcard-role">SCHOOL TEACHER <span class="idcard-am">/ የትምህርት ቤት መምህር</span></div>
-                                    <div class="idcard-detail-rows">
-                                        <div class="idcard-detail-row"><span class="idcard-detail-label">TEACHER ID <span class="idcard-am">/ የመምህር መታወቂያ</span></span><span id="idcard-teacher-id">—</span></div>
-                                        <div class="idcard-detail-row"><span class="idcard-detail-label">SCHOOL <span class="idcard-am">/ ትምህርት ቤት</span></span><span id="idcard-school-name-front">—</span></div>
-                                        <div class="idcard-detail-row"><span class="idcard-detail-label">SUBJECT <span class="idcard-am">/ ትምህርት</span></span><span id="idcard-subject">—</span></div>
-                                        <div class="idcard-detail-row"><span class="idcard-detail-label">VALID UNTIL <span class="idcard-am">/ የሚያገለግልበት</span></span><span id="idcard-valid-until">—</span></div>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="idcard-face idcard-back">
-                                <div class="idcard-back-header">
-                                    <div class="idcard-back-header-content">
-                                        <div class="idcard-logo-badge" aria-hidden="true">
-                                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#f0b429" stroke-width="2"><path d="M12 2l2.4 4.9L20 8l-4 3.9L17 18l-5-2.6L7 18l1-6.1L4 8l5.6-1.1z"/></svg>
-                                        </div>
-                                        <div class="idcard-brand-text idcard-brand-text-dark">
-                                            <div class="idcard-zone-line" id="idcard-zone-back">—</div>
-                                            <div class="idcard-brand-school" id="idcard-woreda-back">—</div>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="idcard-back-body">
-                                    <div class="idcard-contact-title">CONTACT INFORMATION <span class="idcard-am">/ የመገኛ አድራሻ መረጃ</span></div>
-                                    <div class="idcard-contact-row"><span class="idcard-contact-label">PHONE <span class="idcard-am">/ ስልክ</span></span><span id="idcard-phone">—</span></div>
-                                    <div class="idcard-contact-row"><span class="idcard-contact-label">EMAIL <span class="idcard-am">/ ኢሜይል</span></span><span id="idcard-email">—</span></div>
-                                    <div class="idcard-contact-row"><span class="idcard-contact-label">SCHOOL ADDRESS <span class="idcard-am">/ የትምህርት ቤት አድራሻ</span></span><span id="idcard-address">—</span></div>
-
-                                    <div class="idcard-signature">
-                                        <div class="idcard-signature-line"></div>
-                                        <div class="idcard-signature-label">HEAD OF EDUCATION <span class="idcard-am">/ የትምህርት ኃላፊ</span></div>
-                                    </div>
-
-                                    <div class="idcard-qrcode" id="idcard-qrcode" aria-hidden="true"></div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="idcard-actions" id="idcard-actions" style="display:none;">
-                    <button type="button" class="btn-primary" style="width:auto; padding:10px 22px;" onclick="flipIdCard()" data-i18n="idcard_flip">Flip Card</button>
-                    <button type="button" class="btn-primary" style="width:auto; padding:10px 22px;" onclick="printIdCard()" data-i18n="idcard_print">Print ID Card</button>
-                </div>
-            </section>
-
-            <section id="page-actioncenter" class="page-content" style="display:none;">
-                <h2 data-i18n="nav_action_center">Action Center</h2>
-                <p style="font-size:0.85rem; color:#64748b; margin-bottom:20px;" data-i18n="action_center_desc">Things your homeroom students need from you: photo/certificate approvals, direct photo uploads, and password resets.</p>
-
-                <div class="dashboard-grid">
-                    <div class="widget">
-                        <h3 data-i18n="action_center_photo_requests">Photo Requests</h3>
-                        <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;" data-i18n="action_center_photo_requests_desc">Students who submitted a new photo for their ID card — review and approve or reject.</p>
-                        <div id="photo-requests-list"><p style="color:#64748b; font-size:0.85rem;">Loading…</p></div>
-                    </div>
-
-                    <div class="widget">
-                        <h3 data-i18n="action_center_certificate_requests">Certificate Requests</h3>
-                        <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;" data-i18n="action_center_certificate_requests_desc">Students asking for their certificate to be unlocked for download.</p>
-                        <div id="certificate-requests-list"><p style="color:#64748b; font-size:0.85rem;">Loading…</p></div>
-                    </div>
-
-                    <div class="widget">
-                        <h3 data-i18n="action_center_absence_requests">Absence Requests</h3>
-                        <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;" data-i18n="action_center_absence_requests_desc">Students in your homeroom section asking to be excused — approve or reject directly, or escalate to Admin if it's beyond what you can approve.</p>
-                        <div id="absence-requests-list"><p style="color:#64748b; font-size:0.85rem;">Loading…</p></div>
-                    </div>
-
-                    <div class="widget">
-                        <h3 data-i18n="action_center_upload_photo">Upload Photo for a Student</h3>
-                        <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;" data-i18n="action_center_upload_photo_desc">If a student can't get a usable photo themselves, upload one directly here. It becomes their official photo for both their ID card and certificate — no approval step needed.</p>
-                        <div class="search-group" style="margin-bottom:10px; flex-wrap:wrap; align-items:center;">
-                            <label for="upload-photo-student-id" class="sr-only" data-i18n="homeroom_reset_placeholder">Student ID</label>
-                            <input type="text" id="upload-photo-student-id" data-i18n-placeholder="homeroom_reset_placeholder" placeholder="Student ID" class="form-input" style="max-width:160px;">
-                            <label for="upload-photo-file" class="sr-only">Student photo file</label>
-                            <button type="button" class="file-btn" onclick="document.getElementById('upload-photo-file').click()">Choose Photo</button>
-                            <span id="upload-photo-file-name" style="margin-left:4px; font-size:0.85rem; color:#64748b;">No file chosen</span>
-                            <input type="file" id="upload-photo-file" accept="image/*" style="display:none;" onchange="updateFileName(this, 'upload-photo-file-name')">
-                            <button type="button" class="btn-primary" style="width:auto; padding:10px 22px;" onclick="uploadStudentPhoto()" data-i18n="action_center_upload_button">Upload Photo</button>
-                        </div>
-                        <div id="upload-photo-status" style="font-size:0.85rem;"></div>
-                    </div>
-
-                    <div class="widget">
-                        <h3 data-i18n="homeroom_reset_heading">Reset Student Password</h3>
-                        <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;" data-i18n="homeroom_reset_desc">
-                            If a student in your homeroom section forgets their password, reset it here. They can log in with the default password below, then should change it right away from their own Profile page.
-                        </p>
-                        <div class="search-group" style="margin-bottom:10px;">
-                            <label for="homeroom-reset-student-id" class="sr-only" data-i18n="homeroom_reset_placeholder">Student ID</label>
-                            <input type="text" id="homeroom-reset-student-id" data-i18n-placeholder="homeroom_reset_placeholder" placeholder="Student ID" class="form-input">
-                            <button type="button" class="btn-primary" onclick="resetHomeroomStudentPassword()" data-i18n="homeroom_reset_button">Reset Password</button>
-                        </div>
-                        <div id="homeroom-reset-status" style="font-size:0.85rem;"></div>
-                    </div>
-                </div>
-            </section>
-
-            <div id="page-profile" class="page-content" style="display:none;">
-                <h2>Profile Settings</h2>
-                
-                <div class="profile-grid">
-                    <section class="card">
-                        <h3>Identity</h3>
-                        <div class="avatar-container">
-                            <img src="" class="profile-avatar-large" id="profile-img" alt="Profile photo" onerror="this.style.display='none'; document.getElementById('profile-avatar-initials').style.display='flex';">
-                            <div id="profile-avatar-initials" class="avatar-initials" style="display:none;" aria-hidden="true"></div>
-                        </div>
-                        <button onclick="document.getElementById('avatar-upload').click()" class="btn-photo">📷 Change Photo</button>
-                        <label for="avatar-upload" class="sr-only">Upload a new profile photo</label>
-                        <input type="file" id="avatar-upload" style="display:none;" onchange="uploadAvatar()">
-                        
-                        <p><strong>Full Name:</strong> <span id="profile-name">Loading...</span></p>
-                        <p><strong>Teacher ID:</strong> <span id="profile-id">Loading...</span></p>
-                        <p style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-                            <strong>Contact Number:</strong>
-                            <span id="profile-contact-display">—</span>
-                            <button onclick="toggleContactEdit()" class="edit-inline-btn" aria-label="Edit contact number">Edit</button>
-                        </p>
-                        <div id="profile-contact-edit" style="display:none; margin-top:8px;">
-                            <label for="profile-contact" class="sr-only">Contact number</label>
-                            <input type="text" id="profile-contact" placeholder="Enter contact number" style="margin-bottom:6px;">
-                            <div style="display:flex; gap:8px;">
-                                <button onclick="saveProfileChanges()" class="btn-primary" style="flex:1; margin:0;">Save</button>
-                                <button onclick="toggleContactEdit()" class="btn-cancel" style="flex:1; margin:0;">Cancel</button>
-                            </div>
-                        </div>
-                    </section>
-
-                    <section class="card">
-                        <h3>Professional Data</h3>
-                        <p><strong>Department / Stream:</strong></p>
-                        <ul id="profile-streams-list"><li>N/A</li></ul>
-                        <p style="margin-top:12px;"><strong>Assigned Subjects:</strong></p>
-                        <ul id="profile-subjects-list">
-                            <li>No subjects assigned</li>
-                        </ul>
-                        <p><small><em>Note: Contact your Administrator to change these assignments.</em></small></p>
-                    </section>
-
-                    <section class="card">
-                        <h3 data-i18n="profile_documents_heading">ID Card & Signature</h3>
-                        <p class="approval-hint" data-i18n="profile_documents_hint">These require Principal approval before they take effect — you'll see the status below once submitted.</p>
-
-                        <div class="document-approval-row">
-                            <div class="document-approval-preview">
-                                <img id="signature-preview" class="signature-preview-img" src="" alt="Your approved signature" style="display:none;">
-                                <div id="signature-preview-empty" class="document-preview-empty" data-i18n="profile_no_signature">No signature on file</div>
-                            </div>
-                            <div class="document-approval-controls">
-                                <strong data-i18n="profile_signature_label">Signature</strong>
-                                <span id="signature-status-badge" class="approval-badge approval-badge-none" data-i18n="approval_status_none">Not submitted</span>
-                                <p id="signature-rejection-reason" class="approval-rejection-reason" style="display:none;"></p>
-                                <button type="button" onclick="document.getElementById('signature-upload').click()" class="btn-photo" data-i18n="profile_upload_signature">📝 Upload Signature</button>
-                                <label for="signature-upload" class="sr-only">Upload your signature</label>
-                                <input type="file" id="signature-upload" accept="image/*" style="display:none;" onchange="uploadTeacherSignature()">
-                            </div>
-                        </div>
-
-                        <div class="document-approval-row">
-                            <div class="document-approval-preview">
-                                <img id="teacher-idphoto-preview" class="signature-preview-img" src="" alt="Your approved ID photo" style="display:none;">
-                                <div id="teacher-idphoto-preview-empty" class="document-preview-empty" data-i18n="profile_no_idphoto">No ID photo on file</div>
-                            </div>
-                            <div class="document-approval-controls">
-                                <strong data-i18n="profile_idphoto_label">ID Photo</strong>
-                                <span id="idphoto-status-badge" class="approval-badge approval-badge-none" data-i18n="approval_status_none">Not submitted</span>
-                                <p id="idphoto-rejection-reason" class="approval-rejection-reason" style="display:none;"></p>
-                                <button type="button" onclick="document.getElementById('teacher-idphoto-upload').click()" class="btn-photo" data-i18n="profile_upload_idphoto">📷 Upload ID Photo</button>
-                                <label for="teacher-idphoto-upload" class="sr-only">Upload your ID photo</label>
-                                <input type="file" id="teacher-idphoto-upload" accept="image/*" style="display:none;" onchange="uploadTeacherIdPhoto()">
-                            </div>
-                        </div>
-                    </section>
-
-                    <section class="card">
-                        <h3>Account Security</h3>
-                        <label for="curr-pass" class="sr-only">Current password</label>
-                        <input type="password" id="curr-pass" placeholder="Current Password">
-                        <label for="new-pass" class="sr-only">New password</label>
-                        <input type="password" id="new-pass" placeholder="New Password">
-                        <label for="confirm-pass" class="sr-only">Confirm new password</label>
-                        <input type="password" id="confirm-pass" placeholder="Confirm New Password">
-                        <button onclick="updatePassword()">Update Password</button>
-                        <div style="margin-top:15px;">
-                            <label><input type="checkbox" id="2fa-toggle"> Enable 2FA Security</label>
-                        </div>
-                    </section>
-
-                    <section class="card">
-                        <h3>Notifications</h3>
-                        <label><input type="checkbox" id="notify-reg" checked> New Student Registration</label><br>
-                        <label><input type="checkbox" id="notify-deadlines" checked> Mark Submission Deadlines</label><br>
-                        <label><input type="checkbox" id="notify-maint"> System Maintenance Alerts</label>
-                    </section>
-                </div>
+            <div
+              class="user-profile-trigger"
+              onclick="toggleDropdown()"
+              role="button"
+              tabindex="0"
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-label="Open profile menu"
+              onkeydown="
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  toggleDropdown();
+                }
+              "
+            >
+              <span id="nav-greeting">Hi, Teacher!</span>
+              <img
+                src=""
+                alt=""
+                class="nav-avatar"
+                id="nav-avatar"
+                onerror="
+                  this.style.display = 'none';
+                  document.getElementById('nav-avatar-initials').style.display =
+                    'flex';
+                "
+              />
+              <div
+                id="nav-avatar-initials"
+                class="nav-avatar-initials"
+                aria-hidden="true"
+              ></div>
             </div>
 
-            <section id="page-contact" class="page-content" style="display:none;">
-                <h2>Contact School Management</h2>
+            <div id="profile-dropdown" class="dropdown-menu" role="menu">
+              <a href="#" class="nav-link" data-page="profile" role="menuitem"
+                >Profile Settings</a
+              >
+            </div>
+          </div>
+        </header>
 
-                <div class="widget" style="margin-bottom:24px;">
-                    <h3>Request Absence</h3>
-                    <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;">
-                        Sent to the <strong>Admin Vice Principal</strong> for approval. The <strong>Academic Vice Principal</strong> and <strong>Principal</strong> are automatically tagged so they're aware too.
-                    </p>
-                    <div class="dashboard-grid" style="gap:12px; margin-bottom:12px;">
-                        <div>
-                            <label for="absence-date-from">Absent From</label>
-                            <input type="date" id="absence-date-from" class="form-input">
-                        </div>
-                        <div>
-                            <label for="absence-date-to">Absent To</label>
-                            <input type="date" id="absence-date-to" class="form-input">
-                        </div>
-                    </div>
-                    <label for="absence-reason" class="sr-only">Reason for absence</label>
-                    <textarea id="absence-reason" class="form-input" rows="3" placeholder="Reason for your absence..."></textarea>
-                    <button type="button" class="btn-primary" style="margin-top:10px;" onclick="sendAbsenceRequest()">Send Absence Request</button>
-                </div>
-
-                <div class="dashboard-grid">
-                    <div class="widget">
-                        <h3>New Message</h3>
-                        <label for="contact-recipient" class="sr-only">Recipient</label>
-                        <select id="contact-recipient" class="form-input">
-                            <option value="Principal">School Principal</option>
-                            <option value="Admin VP">Administration Vice Principal</option>
-                            <option value="Academic VP">Academic Vice Principal</option>
-                        </select>
-                        <label for="contact-category" class="sr-only">Message category</label>
-                        <select id="contact-category" class="form-input">
-                            <option value="Permission Request">Permission Request</option>
-                            <option value="Complaint">Complaint</option>
-                            <option value="General Inquiry">General Inquiry</option>
-                        </select>
-                        <label for="contact-subject" class="sr-only">Subject</label>
-                        <input type="text" id="contact-subject" placeholder="Subject" class="form-input">
-                        <label for="contact-body" class="sr-only">Message</label>
-                        <textarea id="contact-body" placeholder="Write your message..." class="form-input" rows="5"></textarea>
-                        <button type="button" class="btn-primary" onclick="sendContactMessage()">Send</button>
-                    </div>
-
-                    <div class="widget">
-                        <h3>My Messages</h3>
-                        <div id="contact-thread-list"></div>
-                    </div>
-                </div>
-
-                <div id="contact-thread-detail" style="display:none; margin-top:20px;" class="widget">
-                    <button onclick="closeContactThread()" class="btn-return" style="margin-bottom:10px;">Back to Messages</button>
-                    <div id="contact-thread-content"></div>
-                </div>
-
-                <div class="widget" style="margin-top:24px;">
-                    <h3>Notify Students</h3>
-                    <p style="font-size:0.85rem; color:#64748b; margin-bottom:14px;">
-                        Send a notification to students in your sections who haven't completed a specific assessment.
-                    </p>
-                    <div class="dashboard-grid" style="gap:12px; margin-bottom:12px;">
-                        <div>
-                            <label for="notif-student-section" class="sr-only">Target section</label>
-                            <select id="notif-student-section" class="form-input">
-                                <option value="">Select section…</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label for="notif-assessment-type" class="sr-only">Assessment type</label>
-                            <select id="notif-assessment-type" class="form-input">
-                                <option value="">Assessment type…</option>
-                                <option value="individual_assignment_1">Individual Assignment 1</option>
-                                <option value="individual_assignment_2">Individual Assignment 2</option>
-                                <option value="group_assignment">Group Assignment</option>
-                                <option value="quiz">Quiz</option>
-                                <option value="midterm">Midterm</option>
-                                <option value="final">Final Exam</option>
-                            </select>
-                        </div>
-                    </div>
-                    <label for="notif-student-message" class="sr-only">Notification message</label>
-                    <textarea id="notif-student-message" class="form-input" rows="3" placeholder="Message to students (e.g. 'Please submit your assignment before Friday.')"></textarea>
-                    <button type="button" class="btn-primary" style="margin-top:10px;" onclick="sendStudentNotification()">Send Notification</button>
-                    <div id="notif-student-preview" style="margin-top:10px; font-size:0.82rem; color:#64748b;"></div>
-                </div>
-            </section>
-
-            <section id="page-textbooks" class="page-content" style="display:none;">
-                <h2>Textbook Distribution</h2>
-                <p style="font-size:0.85rem; color:#64748b; margin-bottom:15px;">
-                    Issue and track textbooks for your homeroom section. Each student gets one book per subject; mark it returned once they bring it back, or lost if it won't be coming back. Deciding any penalty for a lost textbook is Admin VP's call — they can see which student lost which book, and from which class, once you mark it lost.
+        <section id="page-dashboard" class="page-content">
+          <div class="dashboard-grid">
+            <div class="widget">
+              <h3 data-i18n="widget_my_performance">My Performance</h3>
+              <div class="performance-chart-wrapper">
+                <canvas id="performanceChart"></canvas>
+              </div>
+              <div id="performance-completion"></div>
+            </div>
+            <div class="widget">
+              <h3 data-i18n="widget_conduct_heading">
+                Assessment &amp; Exam Conduct
+              </h3>
+              <p
+                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                data-i18n="widget_conduct_desc"
+              >
+                Auto-tracked from entered marks. A box ticks once at least 50%
+                of students in that section have a recorded score.
+              </p>
+              <label
+                for="conduct-section-filter"
+                class="sr-only"
+                data-i18n="widget_filter_by_section"
+                >Filter by section</label
+              >
+              <select
+                id="conduct-section-filter"
+                class="form-input"
+                style="margin-bottom: 15px"
+              >
+                <option value="" data-i18n="widget_all_my_sections">
+                  All my sections
+                </option>
+              </select>
+              <div id="conduct-list"></div>
+            </div>
+            <div
+              class="widget"
+              id="dashboard-textbook-widget"
+              style="display: none"
+            >
+              <h3 data-i18n="widget_textbook_distribution">
+                Textbook Distribution
+              </h3>
+              <p
+                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+              >
+                <span data-i18n="widget_textbook_issued_to"
+                  >How many textbooks you've issued to</span
+                >
+                <strong id="dashboard-textbook-section-label"></strong>
+                <span data-i18n="widget_textbook_this_year"
+                  >this school year.</span
+                >
+              </p>
+              <div id="dashboard-textbook-summary"></div>
+            </div>
+            <div class="widget">
+              <h3 data-i18n="dashboard_todays_classes">Today's Classes</h3>
+              <div id="dashboard-todays-classes">
+                <p style="color: #64748b; font-size: 0.85rem">Loading…</p>
+              </div>
+            </div>
+            <div class="widget">
+              <h3 data-i18n="widget_student_performance">
+                Student Performance
+              </h3>
+              <p
+                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                data-i18n="widget_student_performance_desc"
+              >
+                How each of your students is doing in your subject(s) this term.
+              </p>
+              <div id="dashboard-student-performance">
+                <p style="color: #64748b; font-size: 0.85rem">Loading…</p>
+              </div>
+            </div>
+          </div>
+        </section>
+        <div
+          id="student-modal"
+          class="modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="modal-student-name"
+          style="display: none"
+        >
+          <div class="modal-content">
+            <div id="student-info" class="modal-header-row">
+              <div>
+                <h3 id="modal-student-name"></h3>
+                <p>
+                  Term: Semester 1 | Total: <span id="modal-total"></span> |
+                  Average: <span id="modal-avg"></span>
                 </p>
-                <label for="textbook-search" class="sr-only">Search students by name or ID</label>
-                <input type="text" id="textbook-search" class="form-input" placeholder="Search by student name or ID..." style="margin-bottom:15px;">
-                <div id="textbooks-output"></div>
+              </div>
+              <button onclick="closeModal()" class="btn-return">Return</button>
+            </div>
 
-                <div style="margin-top:24px;">
-                    <h3 style="margin-bottom:10px;">Push to Admin VP</h3>
-                    <div id="textbook-push-status"></div>
+            <div style="overflow-y: auto">
+              <table id="progress-table">
+                <thead>
+                  <tr>
+                    <th rowspan="2">Subject</th>
+                    <th colspan="2">Ind. Assign. 1</th>
+                    <th colspan="2">Ind. Assign. 2</th>
+                    <th colspan="2">Group Assign.</th>
+                    <th colspan="2">Quiz</th>
+                    <th colspan="2">Midterm</th>
+                    <th colspan="2">Final</th>
+                  </tr>
+                  <tr>
+                    <th>S1</th>
+                    <th>S2</th>
+                    <th>S1</th>
+                    <th>S2</th>
+                    <th>S1</th>
+                    <th>S2</th>
+                    <th>S1</th>
+                    <th>S2</th>
+                    <th>S1</th>
+                    <th>S2</th>
+                    <th>S1</th>
+                    <th>S2</th>
+                  </tr>
+                </thead>
+                <tbody id="progress-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <section id="page-upload" class="page-content" style="display: none">
+          <div class="dashboard-grid">
+            <div class="widget">
+              <h3>Bulk Upload</h3>
+              <div class="file-wrapper">
+                <div>
+                  <label for="csv-file" class="sr-only"
+                    >CSV file of marks to upload</label
+                  >
+                  <button
+                    class="file-btn"
+                    onclick="document.getElementById('csv-file').click()"
+                  >
+                    Choose CSV File
+                  </button>
+                  <span
+                    id="file-name"
+                    style="margin-left: 10px; font-size: 0.9rem; color: #64748b"
+                    >No file chosen</span
+                  >
+                  <input
+                    type="file"
+                    id="csv-file"
+                    accept=".csv"
+                    style="display: none"
+                    onchange="updateFileName(this)"
+                  />
                 </div>
-            </section>
 
-            <section id="page-reports" class="page-content" style="display:none;">
-                <h2>Reports</h2>
+                <button class="btn-primary" onclick="uploadData()">
+                  Upload Data
+                </button>
+              </div>
+            </div>
+            <div class="widget">
+              <h3>Individual Entry</h3>
+              <form id="markEntryForm">
+                <div class="search-group">
+                  <label for="search-id" class="sr-only"
+                    >Student ID to search for</label
+                  >
+                  <input
+                    type="text"
+                    id="search-id"
+                    placeholder="Student ID"
+                    class="form-input"
+                  />
+                  <button
+                    type="button"
+                    class="btn-primary"
+                    onclick="searchStudent()"
+                  >
+                    Search
+                  </button>
+                </div>
+                <div id="student-display"></div>
+                <div id="mark-inputs" style="display: none">
+                  <label for="subject-select" class="sr-only">Subject</label>
+                  <select id="subject-select">
+                    <option value="">Select a Subject</option>
+                  </select>
 
-                <div class="dashboard-grid">
-                    <div class="widget">
-                        <h3>Push to Homeroom</h3>
-                        <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;">
-                            Once you push a subject's report for a section and term, it locks — no further marks can be entered for it.
-                        </p>
-                        <div id="push-list"></div>
+                  <label for="type-select" class="sr-only"
+                    >Assessment type</label
+                  >
+                  <select id="type-select">
+                    <option value="individual_assignment_1">
+                      Individual Assignment 1
+                    </option>
+                    <option value="individual_assignment_2">
+                      Individual Assignment 2
+                    </option>
+                    <option value="group_assignment">Group Assignment</option>
+                    <option value="quiz">Quiz</option>
+                    <option value="midterm">Midterm</option>
+                    <option value="final">Final</option>
+                  </select>
+
+                  <label for="score-input" class="sr-only"
+                    >Score, 0 to 100</label
+                  >
+                  <input
+                    type="number"
+                    id="score-input"
+                    placeholder="Enter Score (0-100)"
+                    min="0"
+                    max="100"
+                    oninput="
+                      if (this.value.length > 2)
+                        this.value = this.value.slice(0, 2);
+                    "
+                  />
+                  <button
+                    type="button"
+                    class="btn-primary"
+                    onclick="submitIndividualMark()"
+                  >
+                    Submit
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <div class="widget" style="margin-top: 24px">
+            <h3>Section Grade Sheet</h3>
+            <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px">
+              Enter marks for a whole section at once — pick a section and
+              subject below, then fill in scores directly in the table. Only
+              cells you change get saved.
+            </p>
+
+            <div
+              class="search-group"
+              style="flex-wrap: wrap; margin-bottom: 14px"
+            >
+              <label for="gradesheet-section" class="sr-only">Section</label>
+              <select
+                id="gradesheet-section"
+                class="form-input"
+                style="max-width: 240px"
+                onchange="onGradeSheetSectionChange()"
+              >
+                <option value="">Select section…</option>
+              </select>
+
+              <label for="gradesheet-subject" class="sr-only">Subject</label>
+              <select
+                id="gradesheet-subject"
+                class="form-input"
+                style="max-width: 200px"
+                onchange="onGradeSheetSubjectChange()"
+              >
+                <option value="">Select subject…</option>
+              </select>
+
+              <label for="gradesheet-search" class="sr-only"
+                >Search students in this section</label
+              >
+              <input
+                type="text"
+                id="gradesheet-search"
+                class="form-input"
+                placeholder="Search by name or ID…"
+                style="max-width: 200px"
+                oninput="applyGradeSheetSearch()"
+              />
+            </div>
+
+            <div id="gradesheet-container">
+              <p style="color: #64748b; font-size: 0.85rem">
+                Select a section and subject above to begin.
+              </p>
+            </div>
+
+            <div
+              id="gradesheet-actions"
+              style="
+                display: none;
+                margin-top: 14px;
+                align-items: center;
+                gap: 12px;
+              "
+            >
+              <button
+                type="button"
+                class="btn-primary"
+                style="width: auto; padding: 10px 22px"
+                onclick="saveGradeSheet()"
+              >
+                Save All Marks
+              </button>
+              <span id="gradesheet-status" style="font-size: 0.85rem"></span>
+            </div>
+          </div>
+        </section>
+        <section id="page-students" class="page-content" style="display: none">
+          <h3>Student Candidates</h3>
+          <p style="margin-bottom: 20px; color: #666">
+            View and manage student registrations for the national exam.
+          </p>
+
+          <div class="student-filter-row">
+            <label for="student-search" class="sr-only"
+              >Search students by name or ID</label
+            >
+            <input
+              type="text"
+              id="student-search"
+              class="form-input"
+              placeholder="Search by name or ID..."
+              style="flex: 2"
+            />
+            <label for="student-filter-class" class="sr-only"
+              >Filter by class</label
+            >
+            <select
+              id="student-filter-class"
+              class="form-input"
+              style="flex: 1"
+            >
+              <option value="">All Classes</option>
+            </select>
+            <label for="student-filter-section" class="sr-only"
+              >Filter by section</label
+            >
+            <select
+              id="student-filter-section"
+              class="form-input"
+              style="flex: 1"
+            >
+              <option value="">All Sections</option>
+            </select>
+          </div>
+
+          <div class="metrics-grid">
+            <div class="metric-card">
+              <h4>Total Student</h4>
+              <p class="count" id="total-count">0</p>
+            </div>
+            <div class="metric-card">
+              <h4>Female</h4>
+              <p class="count" id="female-count">0</p>
+            </div>
+            <div class="metric-card">
+              <h4>Male</h4>
+              <p class="count" id="male-count">0</p>
+            </div>
+          </div>
+
+          <div class="table-container">
+            <table class="student-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Full Name</th>
+                  <th>Gender</th>
+                  <th>Class</th>
+                  <th>Stream</th>
+                  <th>Section</th>
+                  <th>View</th>
+                </tr>
+              </thead>
+              <tbody id="student-table-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section
+          id="page-myclass"
+          class="page-content myclass-page"
+          style="display: none"
+        >
+          <div class="myclass-frozen-header">
+            <h2 data-i18n="myclass_heading">My Class</h2>
+            <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 16px">
+              <span data-i18n="myclass_desc_prefix"
+                >Today's attendance for</span
+              >
+              <strong id="myclass-section-label"></strong>.
+            </p>
+
+            <div class="metrics-grid">
+              <div class="metric-card">
+                <h4 data-i18n="myclass_total">Total Students</h4>
+                <p class="count" id="myclass-total-count">0</p>
+              </div>
+              <div class="metric-card">
+                <h4 data-i18n="myclass_present">Present Today</h4>
+                <p class="count" id="myclass-present-count">0</p>
+              </div>
+              <div class="metric-card">
+                <h4 data-i18n="myclass_not_yet">Not Yet Marked</h4>
+                <p class="count" id="myclass-absent-count">0</p>
+              </div>
+            </div>
+
+            <div class="myclass-toolbar">
+              <label
+                for="myclass-search"
+                class="sr-only"
+                data-i18n="myclass_search_label"
+                >Search students</label
+              >
+              <input
+                type="text"
+                id="myclass-search"
+                class="form-input"
+                data-i18n-placeholder="myclass_search_placeholder"
+                placeholder="Search by name or ID…"
+                style="flex: 2; min-width: 180px"
+                oninput="applyMyClassSearch()"
+              />
+
+              <label
+                for="myclass-scanner-input"
+                class="sr-only"
+                data-i18n="myclass_scanner_label"
+                >Scan or type QR code</label
+              >
+              <input
+                type="text"
+                id="myclass-scanner-input"
+                class="form-input"
+                data-i18n-placeholder="myclass_scanner_placeholder"
+                placeholder="Scan ID card here…"
+                style="flex: 2; min-width: 180px"
+                autocomplete="off"
+              />
+
+              <button
+                type="button"
+                class="btn-primary"
+                style="width: auto; padding: 10px 18px; white-space: nowrap"
+                onclick="openQrScanner()"
+              >
+                <span aria-hidden="true">📷</span>
+                <span data-i18n="myclass_scan_qr">Scan QR</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="widget myclass-roster-widget">
+            <div id="myclass-roster-scroll" class="myclass-roster-scroll">
+              <div id="myclass-roster">
+                <p
+                  style="color: #64748b; font-size: 0.85rem"
+                  data-i18n="loading_text"
+                >
+                  Loading…
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div
+          id="qr-scan-modal"
+          class="modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="qr-scan-title"
+          style="display: none"
+        >
+          <div class="modal-content" style="width: 420px">
+            <div class="modal-header-row">
+              <h3 id="qr-scan-title" data-i18n="myclass_scan_qr">Scan QR</h3>
+              <button onclick="closeQrScanner()" class="btn-return">
+                Close
+              </button>
+            </div>
+            <p
+              style="font-size: 0.85rem; color: #64748b; margin-bottom: 10px"
+              data-i18n="myclass_scan_instructions"
+            >
+              Point a student's ID card at the camera.
+            </p>
+            <div id="qr-reader" style="width: 100%"></div>
+            <p
+              id="qr-scan-status"
+              style="font-size: 0.85rem; margin-top: 10px; min-height: 1.2em"
+            ></p>
+          </div>
+        </div>
+
+        <section id="page-idcard" class="page-content" style="display: none">
+          <h2 data-i18n="idcard_heading">My ID Card</h2>
+          <p
+            style="font-size: 0.85rem; color: #64748b; margin-bottom: 20px"
+            data-i18n="idcard_desc"
+          >
+            Present this alongside a physical copy if required by school policy.
+          </p>
+
+          <div
+            id="idcard-error"
+            style="
+              display: none;
+              color: #b91c1c;
+              font-size: 0.9rem;
+              margin-bottom: 16px;
+            "
+          ></div>
+
+          <div class="idcard-wrap" id="idcard-wrap" style="display: none">
+            <div class="idcard-scene">
+              <div class="idcard-flipper" id="idcard-flipper">
+                <div class="idcard-face idcard-front">
+                  <div class="idcard-front-top">
+                    <div class="idcard-front-top-content">
+                      <div class="idcard-logo-badge">
+                        <img src="/assets/images/gflag.jpg" alt="" />
+                      </div>
+                      <div class="idcard-brand-text">
+                        <div class="idcard-zone-line" id="idcard-zone-front">
+                          —
+                        </div>
+                        <div
+                          class="idcard-brand-school"
+                          id="idcard-woreda-front"
+                        >
+                          —
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="idcard-photo-ring">
+                    <img
+                      id="idcard-photo"
+                      src=""
+                      alt=""
+                      style="display: none"
+                      onerror="
+                        this.style.display = 'none';
+                        document.getElementById(
+                          'idcard-photo-placeholder',
+                        ).style.display = 'flex';
+                      "
+                    />
+                    <div
+                      id="idcard-photo-placeholder"
+                      class="idcard-photo-placeholder"
+                      aria-hidden="true"
+                    >
+                      <svg
+                        width="46"
+                        height="46"
+                        viewBox="0 0 24 24"
+                        fill="#8a6d8a"
+                      >
+                        <circle cx="12" cy="8" r="4" />
+                        <path d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7" />
+                      </svg>
+                    </div>
+                  </div>
+                  <div class="idcard-front-bottom">
+                    <div class="idcard-name" id="idcard-name">—</div>
+                    <div class="idcard-role">
+                      SCHOOL TEACHER
+                      <span class="idcard-am">/ የትምህርት ቤት መምህር</span>
+                    </div>
+                    <div class="idcard-detail-rows">
+                      <div class="idcard-detail-row">
+                        <span class="idcard-detail-label"
+                          >TEACHER ID
+                          <span class="idcard-am">/ የመምህር መታወቂያ</span></span
+                        ><span id="idcard-teacher-id">—</span>
+                      </div>
+                      <div class="idcard-detail-row">
+                        <span class="idcard-detail-label"
+                          >SCHOOL
+                          <span class="idcard-am">/ ትምህርት ቤት</span></span
+                        ><span id="idcard-school-name-front">—</span>
+                      </div>
+                      <div class="idcard-detail-row">
+                        <span class="idcard-detail-label"
+                          >SUBJECT <span class="idcard-am">/ ትምህርት</span></span
+                        ><span id="idcard-subject">—</span>
+                      </div>
+                      <div class="idcard-detail-row">
+                        <span class="idcard-detail-label"
+                          >VALID UNTIL
+                          <span class="idcard-am">/ የሚያገለግልበት</span></span
+                        ><span id="idcard-valid-until">—</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="idcard-face idcard-back">
+                  <div class="idcard-back-header">
+                    <div class="idcard-back-header-content">
+                      <div class="idcard-logo-badge">
+                        <img src="/assets/images/gflag.jpg" alt="" />
+                      </div>
+                      <div class="idcard-brand-text idcard-brand-text-dark">
+                        <div class="idcard-zone-line" id="idcard-zone-back">
+                          —
+                        </div>
+                        <div
+                          class="idcard-brand-school"
+                          id="idcard-woreda-back"
+                        >
+                          —
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="idcard-back-body">
+                    <div class="idcard-contact-title">
+                      CONTACT INFORMATION
+                      <span class="idcard-am">/ የመገኛ አድራሻ መረጃ</span>
+                    </div>
+                    <div class="idcard-contact-row">
+                      <span class="idcard-contact-label"
+                        >PHONE <span class="idcard-am">/ ስልክ</span></span
+                      ><span id="idcard-phone">—</span>
+                    </div>
+                    <div class="idcard-contact-row">
+                      <span class="idcard-contact-label"
+                        >EMAIL <span class="idcard-am">/ ኢሜይል</span></span
+                      ><span id="idcard-email">—</span>
+                    </div>
+                    <div class="idcard-contact-row">
+                      <span class="idcard-contact-label"
+                        >SCHOOL ADDRESS
+                        <span class="idcard-am">/ የትምህርት ቤት አድራሻ</span></span
+                      ><span id="idcard-address">—</span>
                     </div>
 
-                    <div class="widget" id="homeroom-widget" style="display:none;">
-                        <h3>My Homeroom Reports</h3>
-                        <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;">
-                            You are the homeroom teacher for <strong id="homeroom-section-label"></strong>.
-                        </p>
-                        <div class="search-group" style="margin-bottom:15px;">
-                            <label for="homeroom-student-id" class="sr-only">Student ID to view report for</label>
-                            <input type="text" id="homeroom-student-id" placeholder="Student ID" class="form-input">
-                            <button type="button" class="btn-primary" onclick="loadHomeroomStudentReport()">View Student Report</button>
-                        </div>
-                        <button type="button" class="btn-primary" onclick="loadHomeroomSectionReport()" style="margin-bottom:15px;">View Whole Section / Export CSV</button>
-                        <div id="homeroom-report-output"></div>
+                    <div
+                      class="idcard-qrcode"
+                      id="idcard-qrcode"
+                      aria-hidden="true"
+                    ></div>
 
-                        <div style="margin-top:20px; padding-top:20px; border-top:1px solid #e2e8f0;">
-                            <h4 style="margin-bottom:6px;">Push Marks to Academic VP</h4>
-                            <p style="font-size:0.85rem; color:#64748b; margin-bottom:12px;">
-                                Sends your section's compiled marks once every subject teacher has pushed their report for the current term.
-                            </p>
-                            <div id="marks-push-status"></div>
-                        </div>
+                    <div class="idcard-signature">
+                      <div class="idcard-signature-line"></div>
+                      <div class="idcard-signature-label">
+                        HEAD OF EDUCATION
+                        <span class="idcard-am">/ የትምህርት ኃላፊ</span>
+                      </div>
                     </div>
+                  </div>
                 </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="idcard-actions" id="idcard-actions" style="display: none">
+            <button
+              type="button"
+              class="btn-primary"
+              style="width: auto; padding: 10px 22px"
+              onclick="flipIdCard()"
+              data-i18n="idcard_flip"
+            >
+              Flip Card
+            </button>
+            <button
+              type="button"
+              class="btn-primary"
+              style="width: auto; padding: 10px 22px"
+              onclick="printIdCard()"
+              data-i18n="idcard_print"
+            >
+              Print ID Card
+            </button>
+          </div>
+        </section>
+
+        <section
+          id="page-actioncenter"
+          class="page-content"
+          style="display: none"
+        >
+          <h2 data-i18n="nav_action_center">Action Center</h2>
+          <p
+            style="font-size: 0.85rem; color: #64748b; margin-bottom: 20px"
+            data-i18n="action_center_desc"
+          >
+            Things your homeroom students need from you: photo/certificate
+            approvals, direct photo uploads, and password resets.
+          </p>
+
+          <div class="dashboard-grid">
+            <div class="widget">
+              <h3 data-i18n="action_center_photo_requests">Photo Requests</h3>
+              <p
+                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                data-i18n="action_center_photo_requests_desc"
+              >
+                Students who submitted a new photo for their ID card — review
+                and approve or reject.
+              </p>
+              <div id="photo-requests-list">
+                <p style="color: #64748b; font-size: 0.85rem">Loading…</p>
+              </div>
+            </div>
+
+            <div class="widget">
+              <h3 data-i18n="action_center_certificate_requests">
+                Certificate Requests
+              </h3>
+              <p
+                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                data-i18n="action_center_certificate_requests_desc"
+              >
+                Students asking for their certificate to be unlocked for
+                download.
+              </p>
+              <div id="certificate-requests-list">
+                <p style="color: #64748b; font-size: 0.85rem">Loading…</p>
+              </div>
+            </div>
+
+            <div class="widget">
+              <h3 data-i18n="action_center_absence_requests">
+                Absence Requests
+              </h3>
+              <p
+                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                data-i18n="action_center_absence_requests_desc"
+              >
+                Students in your homeroom section asking to be excused — approve
+                or reject directly, or escalate to Admin if it's beyond what you
+                can approve.
+              </p>
+              <div id="absence-requests-list">
+                <p style="color: #64748b; font-size: 0.85rem">Loading…</p>
+              </div>
+            </div>
+
+            <div class="widget">
+              <h3 data-i18n="action_center_upload_photo">
+                Upload Photo for a Student
+              </h3>
+              <p
+                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                data-i18n="action_center_upload_photo_desc"
+              >
+                If a student can't get a usable photo themselves, upload one
+                directly here. It becomes their official photo for both their ID
+                card and certificate — no approval step needed.
+              </p>
+              <div
+                class="search-group"
+                style="
+                  margin-bottom: 10px;
+                  flex-wrap: wrap;
+                  align-items: center;
+                "
+              >
+                <label
+                  for="upload-photo-student-id"
+                  class="sr-only"
+                  data-i18n="homeroom_reset_placeholder"
+                  >Student ID</label
+                >
+                <input
+                  type="text"
+                  id="upload-photo-student-id"
+                  data-i18n-placeholder="homeroom_reset_placeholder"
+                  placeholder="Student ID"
+                  class="form-input"
+                  style="max-width: 160px"
+                />
+                <label for="upload-photo-file" class="sr-only"
+                  >Student photo file</label
+                >
+                <button
+                  type="button"
+                  class="file-btn"
+                  onclick="document.getElementById('upload-photo-file').click()"
+                >
+                  Choose Photo
+                </button>
+                <span
+                  id="upload-photo-file-name"
+                  style="margin-left: 4px; font-size: 0.85rem; color: #64748b"
+                  >No file chosen</span
+                >
+                <input
+                  type="file"
+                  id="upload-photo-file"
+                  accept="image/*"
+                  style="display: none"
+                  onchange="updateFileName(this, 'upload-photo-file-name')"
+                />
+                <button
+                  type="button"
+                  class="btn-primary"
+                  style="width: auto; padding: 10px 22px"
+                  onclick="uploadStudentPhoto()"
+                  data-i18n="action_center_upload_button"
+                >
+                  Upload Photo
+                </button>
+              </div>
+              <div id="upload-photo-status" style="font-size: 0.85rem"></div>
+            </div>
+
+            <div class="widget">
+              <h3 data-i18n="homeroom_reset_heading">Reset Student Password</h3>
+              <p
+                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                data-i18n="homeroom_reset_desc"
+              >
+                If a student in your homeroom section forgets their password,
+                reset it here. They can log in with the default password below,
+                then should change it right away from their own Profile page.
+              </p>
+              <div class="search-group" style="margin-bottom: 10px">
+                <label
+                  for="homeroom-reset-student-id"
+                  class="sr-only"
+                  data-i18n="homeroom_reset_placeholder"
+                  >Student ID</label
+                >
+                <input
+                  type="text"
+                  id="homeroom-reset-student-id"
+                  data-i18n-placeholder="homeroom_reset_placeholder"
+                  placeholder="Student ID"
+                  class="form-input"
+                />
+                <button
+                  type="button"
+                  class="btn-primary"
+                  onclick="resetHomeroomStudentPassword()"
+                  data-i18n="homeroom_reset_button"
+                >
+                  Reset Password
+                </button>
+              </div>
+              <div id="homeroom-reset-status" style="font-size: 0.85rem"></div>
+            </div>
+          </div>
+        </section>
+
+        <div id="page-profile" class="page-content" style="display: none">
+          <h2>Profile Settings</h2>
+
+          <div class="profile-grid">
+            <section class="card">
+              <h3>Identity</h3>
+              <div class="avatar-container">
+                <img
+                  src=""
+                  class="profile-avatar-large"
+                  id="profile-img"
+                  alt="Profile photo"
+                  onerror="
+                    this.style.display = 'none';
+                    document.getElementById(
+                      'profile-avatar-initials',
+                    ).style.display = 'flex';
+                  "
+                />
+                <div
+                  id="profile-avatar-initials"
+                  class="avatar-initials"
+                  style="display: none"
+                  aria-hidden="true"
+                ></div>
+              </div>
+              <button
+                onclick="document.getElementById('avatar-upload').click()"
+                class="btn-photo"
+              >
+                📷 Change Photo
+              </button>
+              <label for="avatar-upload" class="sr-only"
+                >Upload a new profile photo</label
+              >
+              <input
+                type="file"
+                id="avatar-upload"
+                style="display: none"
+                onchange="uploadAvatar()"
+              />
+
+              <p>
+                <strong>Full Name:</strong>
+                <span id="profile-name">Loading...</span>
+              </p>
+              <p>
+                <strong>Teacher ID:</strong>
+                <span id="profile-id">Loading...</span>
+              </p>
+              <p
+                style="
+                  display: flex;
+                  align-items: center;
+                  gap: 6px;
+                  flex-wrap: wrap;
+                "
+              >
+                <strong>Contact Number:</strong>
+                <span id="profile-contact-display">—</span>
+                <button
+                  onclick="toggleContactEdit()"
+                  class="edit-inline-btn"
+                  aria-label="Edit contact number"
+                >
+                  Edit
+                </button>
+              </p>
+              <div
+                id="profile-contact-edit"
+                style="display: none; margin-top: 8px"
+              >
+                <label for="profile-contact" class="sr-only"
+                  >Contact number</label
+                >
+                <input
+                  type="text"
+                  id="profile-contact"
+                  placeholder="Enter contact number"
+                  style="margin-bottom: 6px"
+                />
+                <div style="display: flex; gap: 8px">
+                  <button
+                    onclick="saveProfileChanges()"
+                    class="btn-primary"
+                    style="flex: 1; margin: 0"
+                  >
+                    Save
+                  </button>
+                  <button
+                    onclick="toggleContactEdit()"
+                    class="btn-cancel"
+                    style="flex: 1; margin: 0"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
             </section>
-        </main>
-    </div>
-        <div id="success-modal" role="dialog" aria-modal="true" aria-labelledby="success-modal-title" aria-describedby="success-modal-message" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); justify-content:center; align-items:center;">
-        <div style="background:white; padding:30px; border-radius:12px; text-align:center; box-shadow:0 4px 15px rgba(0,0,0,0.2);;">
-            <div style="color: #2563eb; font-size: 50px;" aria-hidden="true">✔</div> <h2 id="success-modal-title">Success!</h2>
-            <p id="success-modal-message">The mark has been saved successfully.</p>
-            <button onclick="closeSuccessModal()" style="padding:10px 20px; background:#2563eb; color:white; border:none; border-radius:6px; cursor:pointer;">Return</button>
+
+            <section class="card">
+              <h3>Professional Data</h3>
+              <p><strong>Department / Stream:</strong></p>
+              <ul id="profile-streams-list">
+                <li>N/A</li>
+              </ul>
+              <p style="margin-top: 12px">
+                <strong>Assigned Subjects:</strong>
+              </p>
+              <ul id="profile-subjects-list">
+                <li>No subjects assigned</li>
+              </ul>
+              <p>
+                <small
+                  ><em
+                    >Note: Contact your Administrator to change these
+                    assignments.</em
+                  ></small
+                >
+              </p>
+            </section>
+
+            <section class="card">
+              <h3 data-i18n="profile_documents_heading">ID Card & Signature</h3>
+              <p class="approval-hint" data-i18n="profile_documents_hint">
+                These require Principal approval before they take effect —
+                you'll see the status below once submitted.
+              </p>
+
+              <div class="document-approval-row">
+                <div class="document-approval-preview">
+                  <img
+                    id="signature-preview"
+                    class="signature-preview-img"
+                    src=""
+                    alt="Your approved signature"
+                    style="display: none"
+                  />
+                  <div
+                    id="signature-preview-empty"
+                    class="document-preview-empty"
+                    data-i18n="profile_no_signature"
+                  >
+                    No signature on file
+                  </div>
+                </div>
+                <div class="document-approval-controls">
+                  <strong data-i18n="profile_signature_label">Signature</strong>
+                  <span
+                    id="signature-status-badge"
+                    class="approval-badge approval-badge-none"
+                    data-i18n="approval_status_none"
+                    >Not submitted</span
+                  >
+                  <p
+                    id="signature-rejection-reason"
+                    class="approval-rejection-reason"
+                    style="display: none"
+                  ></p>
+                  <button
+                    type="button"
+                    onclick="
+                      document.getElementById('signature-upload').click()
+                    "
+                    class="btn-photo"
+                    data-i18n="profile_upload_signature"
+                  >
+                    📝 Upload Signature
+                  </button>
+                  <label for="signature-upload" class="sr-only"
+                    >Upload your signature</label
+                  >
+                  <input
+                    type="file"
+                    id="signature-upload"
+                    accept="image/*"
+                    style="display: none"
+                    onchange="uploadTeacherSignature()"
+                  />
+                </div>
+              </div>
+
+              <div class="document-approval-row">
+                <div class="document-approval-preview">
+                  <img
+                    id="teacher-idphoto-preview"
+                    class="signature-preview-img"
+                    src=""
+                    alt="Your approved ID photo"
+                    style="display: none"
+                  />
+                  <div
+                    id="teacher-idphoto-preview-empty"
+                    class="document-preview-empty"
+                    data-i18n="profile_no_idphoto"
+                  >
+                    No ID photo on file
+                  </div>
+                </div>
+                <div class="document-approval-controls">
+                  <strong data-i18n="profile_idphoto_label">ID Photo</strong>
+                  <span
+                    id="idphoto-status-badge"
+                    class="approval-badge approval-badge-none"
+                    data-i18n="approval_status_none"
+                    >Not submitted</span
+                  >
+                  <p
+                    id="idphoto-rejection-reason"
+                    class="approval-rejection-reason"
+                    style="display: none"
+                  ></p>
+                  <button
+                    type="button"
+                    onclick="
+                      document.getElementById('teacher-idphoto-upload').click()
+                    "
+                    class="btn-photo"
+                    data-i18n="profile_upload_idphoto"
+                  >
+                    📷 Upload ID Photo
+                  </button>
+                  <label for="teacher-idphoto-upload" class="sr-only"
+                    >Upload your ID photo</label
+                  >
+                  <input
+                    type="file"
+                    id="teacher-idphoto-upload"
+                    accept="image/*"
+                    style="display: none"
+                    onchange="uploadTeacherIdPhoto()"
+                  />
+                </div>
+              </div>
+            </section>
+
+            <section class="card">
+              <h3>Account Security</h3>
+              <label for="curr-pass" class="sr-only">Current password</label>
+              <input
+                type="password"
+                id="curr-pass"
+                placeholder="Current Password"
+              />
+              <label for="new-pass" class="sr-only">New password</label>
+              <input type="password" id="new-pass" placeholder="New Password" />
+              <label for="confirm-pass" class="sr-only"
+                >Confirm new password</label
+              >
+              <input
+                type="password"
+                id="confirm-pass"
+                placeholder="Confirm New Password"
+              />
+              <button onclick="updatePassword()">Update Password</button>
+              <div style="margin-top: 15px">
+                <label
+                  ><input type="checkbox" id="2fa-toggle" /> Enable 2FA
+                  Security</label
+                >
+              </div>
+            </section>
+
+            <section class="card">
+              <h3>Notifications</h3>
+              <label
+                ><input type="checkbox" id="notify-reg" checked /> New Student
+                Registration</label
+              ><br />
+              <label
+                ><input type="checkbox" id="notify-deadlines" checked /> Mark
+                Submission Deadlines</label
+              ><br />
+              <label
+                ><input type="checkbox" id="notify-maint" /> System Maintenance
+                Alerts</label
+              >
+            </section>
+          </div>
         </div>
+
+        <section id="page-contact" class="page-content" style="display: none">
+          <h2>Contact School Management</h2>
+
+          <div class="widget" style="margin-bottom: 24px">
+            <h3>Request Absence</h3>
+            <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px">
+              Sent to the <strong>Admin Vice Principal</strong> for approval.
+              The <strong>Academic Vice Principal</strong> and
+              <strong>Principal</strong> are automatically tagged so they're
+              aware too.
+            </p>
+            <div class="dashboard-grid" style="gap: 12px; margin-bottom: 12px">
+              <div>
+                <label for="absence-date-from">Absent From</label>
+                <input type="date" id="absence-date-from" class="form-input" />
+              </div>
+              <div>
+                <label for="absence-date-to">Absent To</label>
+                <input type="date" id="absence-date-to" class="form-input" />
+              </div>
+            </div>
+            <label for="absence-reason" class="sr-only"
+              >Reason for absence</label
+            >
+            <textarea
+              id="absence-reason"
+              class="form-input"
+              rows="3"
+              placeholder="Reason for your absence..."
+            ></textarea>
+            <button
+              type="button"
+              class="btn-primary"
+              style="margin-top: 10px"
+              onclick="sendAbsenceRequest()"
+            >
+              Send Absence Request
+            </button>
+          </div>
+
+          <div class="dashboard-grid">
+            <div class="widget">
+              <h3>New Message</h3>
+              <label for="contact-recipient" class="sr-only">Recipient</label>
+              <select id="contact-recipient" class="form-input">
+                <option value="Principal">School Principal</option>
+                <option value="Admin VP">Administration Vice Principal</option>
+                <option value="Academic VP">Academic Vice Principal</option>
+              </select>
+              <label for="contact-category" class="sr-only"
+                >Message category</label
+              >
+              <select id="contact-category" class="form-input">
+                <option value="Permission Request">Permission Request</option>
+                <option value="Complaint">Complaint</option>
+                <option value="General Inquiry">General Inquiry</option>
+              </select>
+              <label for="contact-subject" class="sr-only">Subject</label>
+              <input
+                type="text"
+                id="contact-subject"
+                placeholder="Subject"
+                class="form-input"
+              />
+              <label for="contact-body" class="sr-only">Message</label>
+              <textarea
+                id="contact-body"
+                placeholder="Write your message..."
+                class="form-input"
+                rows="5"
+              ></textarea>
+              <button
+                type="button"
+                class="btn-primary"
+                onclick="sendContactMessage()"
+              >
+                Send
+              </button>
+            </div>
+
+            <div class="widget">
+              <h3>My Messages</h3>
+              <div id="contact-thread-list"></div>
+            </div>
+          </div>
+
+          <div
+            id="contact-thread-detail"
+            style="display: none; margin-top: 20px"
+            class="widget"
+          >
+            <button
+              onclick="closeContactThread()"
+              class="btn-return"
+              style="margin-bottom: 10px"
+            >
+              Back to Messages
+            </button>
+            <div id="contact-thread-content"></div>
+          </div>
+
+          <div class="widget" style="margin-top: 24px">
+            <h3>Notify Students</h3>
+            <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 14px">
+              Send a notification to students in your sections who haven't
+              completed a specific assessment.
+            </p>
+            <div class="dashboard-grid" style="gap: 12px; margin-bottom: 12px">
+              <div>
+                <label for="notif-student-section" class="sr-only"
+                  >Target section</label
+                >
+                <select id="notif-student-section" class="form-input">
+                  <option value="">Select section…</option>
+                </select>
+              </div>
+              <div>
+                <label for="notif-assessment-type" class="sr-only"
+                  >Assessment type</label
+                >
+                <select id="notif-assessment-type" class="form-input">
+                  <option value="">Assessment type…</option>
+                  <option value="individual_assignment_1">
+                    Individual Assignment 1
+                  </option>
+                  <option value="individual_assignment_2">
+                    Individual Assignment 2
+                  </option>
+                  <option value="group_assignment">Group Assignment</option>
+                  <option value="quiz">Quiz</option>
+                  <option value="midterm">Midterm</option>
+                  <option value="final">Final Exam</option>
+                </select>
+              </div>
+            </div>
+            <label for="notif-student-message" class="sr-only"
+              >Notification message</label
+            >
+            <textarea
+              id="notif-student-message"
+              class="form-input"
+              rows="3"
+              placeholder="Message to students (e.g. 'Please submit your assignment before Friday.')"
+            ></textarea>
+            <button
+              type="button"
+              class="btn-primary"
+              style="margin-top: 10px"
+              onclick="sendStudentNotification()"
+            >
+              Send Notification
+            </button>
+            <div
+              id="notif-student-preview"
+              style="margin-top: 10px; font-size: 0.82rem; color: #64748b"
+            ></div>
+          </div>
+        </section>
+
+        <section id="page-textbooks" class="page-content" style="display: none">
+          <h2>Textbook Distribution</h2>
+          <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 15px">
+            Issue and track textbooks for your homeroom section. Each student
+            gets one book per subject; mark it returned once they bring it back,
+            or lost if it won't be coming back. Deciding any penalty for a lost
+            textbook is Admin VP's call — they can see which student lost which
+            book, and from which class, once you mark it lost.
+          </p>
+          <label for="textbook-search" class="sr-only"
+            >Search students by name or ID</label
+          >
+          <input
+            type="text"
+            id="textbook-search"
+            class="form-input"
+            placeholder="Search by student name or ID..."
+            style="margin-bottom: 15px"
+          />
+          <div id="textbooks-output"></div>
+
+          <div style="margin-top: 24px">
+            <h3 style="margin-bottom: 10px">Push to Admin VP</h3>
+            <div id="textbook-push-status"></div>
+          </div>
+        </section>
+
+        <section id="page-reports" class="page-content" style="display: none">
+          <h2>Reports</h2>
+
+          <div class="dashboard-grid">
+            <div class="widget">
+              <h3>Push to Homeroom</h3>
+              <p
+                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+              >
+                Once you push a subject's report for a section and term, it
+                locks — no further marks can be entered for it.
+              </p>
+              <div id="push-list"></div>
+            </div>
+
+            <div class="widget" id="homeroom-widget" style="display: none">
+              <h3>My Homeroom Reports</h3>
+              <p
+                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+              >
+                You are the homeroom teacher for
+                <strong id="homeroom-section-label"></strong>.
+              </p>
+              <div class="search-group" style="margin-bottom: 15px">
+                <label for="homeroom-student-id" class="sr-only"
+                  >Student ID to view report for</label
+                >
+                <input
+                  type="text"
+                  id="homeroom-student-id"
+                  placeholder="Student ID"
+                  class="form-input"
+                />
+                <button
+                  type="button"
+                  class="btn-primary"
+                  onclick="loadHomeroomStudentReport()"
+                >
+                  View Student Report
+                </button>
+              </div>
+              <button
+                type="button"
+                class="btn-primary"
+                onclick="loadHomeroomSectionReport()"
+                style="margin-bottom: 15px"
+              >
+                View Whole Section / Export CSV
+              </button>
+              <div id="homeroom-report-output"></div>
+
+              <div
+                style="
+                  margin-top: 20px;
+                  padding-top: 20px;
+                  border-top: 1px solid #e2e8f0;
+                "
+              >
+                <h4 style="margin-bottom: 6px">Push Marks to Academic VP</h4>
+                <p
+                  style="
+                    font-size: 0.85rem;
+                    color: #64748b;
+                    margin-bottom: 12px;
+                  "
+                >
+                  Sends your section's compiled marks once every subject teacher
+                  has pushed their report for the current term.
+                </p>
+                <div id="marks-push-status"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <div
+      id="success-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="success-modal-title"
+      aria-describedby="success-modal-message"
+      style="
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        justify-content: center;
+        align-items: center;
+      "
+    >
+      <div
+        style="
+          background: white;
+          padding: 30px;
+          border-radius: 12px;
+          text-align: center;
+          box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        "
+      >
+        <div style="color: #2563eb; font-size: 50px" aria-hidden="true">✔</div>
+        <h2 id="success-modal-title">Success!</h2>
+        <p id="success-modal-message">The mark has been saved successfully.</p>
+        <button
+          onclick="closeSuccessModal()"
+          style="
+            padding: 10px 20px;
+            background: #2563eb;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+          "
+        >
+          Return
+        </button>
+      </div>
     </div>
 
-    <div id="confirm-modal" class="confirm-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title" aria-describedby="confirm-modal-message" style="display:none;">
-        <div class="confirm-modal-box">
-            <h3 id="confirm-modal-title">Are you sure?</h3>
-            <p id="confirm-modal-message"></p>
-            <div class="confirm-modal-actions">
-                <button id="confirm-modal-cancel" class="btn-confirm-cancel">Cancel</button>
-                <button id="confirm-modal-ok" class="btn-confirm-ok">Confirm</button>
-            </div>
+    <div
+      id="confirm-modal"
+      class="confirm-modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="confirm-modal-title"
+      aria-describedby="confirm-modal-message"
+      style="display: none"
+    >
+      <div class="confirm-modal-box">
+        <h3 id="confirm-modal-title">Are you sure?</h3>
+        <p id="confirm-modal-message"></p>
+        <div class="confirm-modal-actions">
+          <button id="confirm-modal-cancel" class="btn-confirm-cancel">
+            Cancel
+          </button>
+          <button id="confirm-modal-ok" class="btn-confirm-ok">Confirm</button>
         </div>
+      </div>
     </div>
 
-    <div id="alert-modal" class="confirm-modal-overlay" role="alertdialog" aria-modal="true" aria-labelledby="alert-modal-title" aria-describedby="alert-modal-message" style="display:none;">
-        <div class="confirm-modal-box">
-            <h3 id="alert-modal-title">Notice</h3>
-            <p id="alert-modal-message"></p>
-            <div class="confirm-modal-actions">
-                <button id="alert-modal-ok" class="btn-confirm-ok">OK</button>
-            </div>
+    <div
+      id="alert-modal"
+      class="confirm-modal-overlay"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="alert-modal-title"
+      aria-describedby="alert-modal-message"
+      style="display: none"
+    >
+      <div class="confirm-modal-box">
+        <h3 id="alert-modal-title">Notice</h3>
+        <p id="alert-modal-message"></p>
+        <div class="confirm-modal-actions">
+          <button id="alert-modal-ok" class="btn-confirm-ok">OK</button>
         </div>
+      </div>
     </div>
-    <div id="help-modal" class="confirm-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="help-modal-title" style="display:none;">
-        <div class="confirm-modal-box" style="max-width:480px;">
-            <h3 id="help-modal-title">Help &amp; Support</h3>
-            <p style="font-size:0.85rem; color:#64748b; margin-bottom:16px;">Send a message to the system support team.</p>
-            <label for="help-subject" class="sr-only">Support request subject</label>
-            <input type="text" id="help-subject" placeholder="Subject" class="form-input" style="margin-bottom:10px;">
-            <label for="help-body" class="sr-only">Describe your issue</label>
-            <textarea id="help-body" placeholder="Describe your issue..." class="form-input" rows="4" style="margin-bottom:14px;"></textarea>
-            <div class="confirm-modal-actions">
-                <button class="btn-confirm-cancel" onclick="closeHelpModal()">Cancel</button>
-                <button class="btn-confirm-ok" onclick="submitHelpRequest()">Send</button>
-            </div>
+    <div
+      id="help-modal"
+      class="confirm-modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="help-modal-title"
+      style="display: none"
+    >
+      <div class="confirm-modal-box" style="max-width: 480px">
+        <h3 id="help-modal-title">Help &amp; Support</h3>
+        <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 16px">
+          Send a message to the system support team.
+        </p>
+        <label for="help-subject" class="sr-only"
+          >Support request subject</label
+        >
+        <input
+          type="text"
+          id="help-subject"
+          placeholder="Subject"
+          class="form-input"
+          style="margin-bottom: 10px"
+        />
+        <label for="help-body" class="sr-only">Describe your issue</label>
+        <textarea
+          id="help-body"
+          placeholder="Describe your issue..."
+          class="form-input"
+          rows="4"
+          style="margin-bottom: 14px"
+        ></textarea>
+        <div class="confirm-modal-actions">
+          <button class="btn-confirm-cancel" onclick="closeHelpModal()">
+            Cancel
+          </button>
+          <button class="btn-confirm-ok" onclick="submitHelpRequest()">
+            Send
+          </button>
         </div>
+      </div>
     </div>
-    <div id="prompt-modal" class="confirm-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="prompt-modal-title" aria-describedby="prompt-modal-message" style="display:none;">
-        <div class="confirm-modal-box">
-            <h3 id="prompt-modal-title">Add a note</h3>
-            <p id="prompt-modal-message"></p>
-            <label for="prompt-modal-input" class="sr-only">Response</label>
-            <textarea id="prompt-modal-input" class="form-input" rows="3" style="margin-bottom:4px;"></textarea>
-            <div class="confirm-modal-actions">
-                <button id="prompt-modal-cancel" class="btn-confirm-cancel">Cancel</button>
-                <button id="prompt-modal-ok" class="btn-confirm-ok">Confirm</button>
-            </div>
+    <div
+      id="prompt-modal"
+      class="confirm-modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="prompt-modal-title"
+      aria-describedby="prompt-modal-message"
+      style="display: none"
+    >
+      <div class="confirm-modal-box">
+        <h3 id="prompt-modal-title">Add a note</h3>
+        <p id="prompt-modal-message"></p>
+        <label for="prompt-modal-input" class="sr-only">Response</label>
+        <textarea
+          id="prompt-modal-input"
+          class="form-input"
+          rows="3"
+          style="margin-bottom: 4px"
+        ></textarea>
+        <div class="confirm-modal-actions">
+          <button id="prompt-modal-cancel" class="btn-confirm-cancel">
+            Cancel
+          </button>
+          <button id="prompt-modal-ok" class="btn-confirm-ok">Confirm</button>
         </div>
+      </div>
     </div>
 
     <script src="script.js"></script>
-</body>
+  </body>
 </html>

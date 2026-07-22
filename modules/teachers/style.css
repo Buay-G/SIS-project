@@ -278,6 +278,9 @@ body.dark-theme .todays-class-badge.badge-done { background: #334155; color: #94
     border-radius: 999px;
     margin-left: 12px;
     white-space: nowrap;
+    flex-shrink: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .semester-status-badge::before {
     content: '';
@@ -341,6 +344,9 @@ body.dark-theme .semester-status-loading { background: #334155; color: #94a3b8; 
     background: #e2e8f0;
     color: #334155;
     white-space: nowrap;
+    flex-shrink: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 body.dark-theme .moe-code-badge { background: #334155; color: #cbd5e1; }
 
@@ -439,6 +445,29 @@ body.dark-theme .main-content {
 .form-input { width: 100%; padding: 12px; margin: 8px 0; border: 1px solid #e2e8f0; border-radius: 8px; }
 .btn-primary { background: var(--primary); color: white; border: none; padding: 12px; border-radius: 8px; cursor: pointer; font-weight: 600; width: 100%; }
 .btn-primary:hover { opacity: 0.9; }
+
+/* Search/filter row (input or select + action button side by side).
+   Several usage sites add inline flex-wrap/align-items overrides that
+   only make sense with display:flex as a base — that base rule was
+   missing, so these were rendering as stacked full-width blocks. */
+.search-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+.search-group .form-input,
+.search-group select.form-input {
+    width: auto;
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+}
+.search-group .btn-primary {
+    width: auto;
+    flex-shrink: 0;
+    white-space: nowrap;
+}
 
 /* Utilities */
 .dropdown-menu { display: none; position: absolute; top: 80px; right: 40px; background: white; border: 1px solid #e2e8f0; border-radius: 8px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); z-index: 1000; width: 160px; }
@@ -672,7 +701,11 @@ body.dark-theme #progress-table {
     z-index: 1000;
 }
 
-.modal-content {
+/* #student-modal's grade table has 13 columns and needs real width —
+   scoped to this modal specifically so it doesn't affect (or get
+   silently clobbered by) the small confirm/alert/prompt dialogs that
+   share the plain .modal-content class further down. */
+#student-modal .modal-content {
     background: white;
     padding: 20px;
     border-radius: 8px;
@@ -683,7 +716,6 @@ body.dark-theme #progress-table {
     position: relative;
     display: flex;
     flex-direction: column;
-    max-height: 80vh;
 }
 
 /* Freeze the header */
@@ -983,8 +1015,6 @@ select#type-select {
 .card ul { list-style: none; padding: 0; }
 .card ul li { background: #f7fafc; margin: 5px 0; padding: 8px; border-radius: 4px; color: #4a5568; }
 .card label { display: block; margin: 10px 0; font-size: 0.95rem; color: #4a5568; }
-.modal { position: fixed; z-index: 2000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: flex; justify-content: center; align-items: center; }
-.modal-content { background: white; padding: 25px; border-radius: 12px; width: 600px; max-width: 90%; }
 /* Ensure the button is visible and styled */
 .student-table button {
     background-color: #f1f5f9;
@@ -1390,6 +1420,7 @@ textarea:focus-visible,
    below the breakpoint via the media query further down. */
 .sidebar-toggle-btn {
     display: none;
+    flex-shrink: 0;
     flex-direction: column;
     justify-content: center;
     gap: 4px;
@@ -1458,11 +1489,19 @@ textarea:focus-visible,
 
     .top-bar {
         flex-wrap: nowrap;
-        height: 50px;
+        height: clamp(46px, 13vw, 50px);
         padding: 0 10px;
         border-radius: 0;
         margin-bottom: 10px;
         gap: 0;
+    }
+    /* Secondary badges are supplementary info, not core navigation — drop
+       them below tablet width so the hamburger, title, and user actions
+       (the things people actually need to tap) always have room to
+       breathe instead of everything fighting over the same strip. */
+    .moe-code-badge,
+    #semester-status-badge {
+        display: none !important;
     }
     .page-title {
         font-size: 0.78rem;
@@ -1546,6 +1585,23 @@ textarea:focus-visible,
 }
 
 @media (max-width: 480px) {
+    .top-bar {
+        height: 44px;
+        padding: 0 6px;
+    }
+    .topbar-left { gap: 6px; }
+    .user-actions { gap: 2px; }
+    .lang-switch-group { padding: 2px; gap: 1px; margin-right: 2px; }
+    .lang-switch-btn { padding: 4px 7px; font-size: 0.7rem; }
+    .user-actions > button,
+    .notification-btn,
+    .settings-btn,
+    .help-btn {
+        width: 26px;
+        height: 26px;
+        font-size: 0.75rem;
+    }
+    .user-profile-trigger { padding: 2px; }
     .dashboard-textbook-summary,
     .textbook-dot-grid {
         gap: 3px;
@@ -1754,7 +1810,7 @@ body.dark-theme .document-approval-preview { background: #1e293b; border-color: 
 }
 .idcard-scene {
     width: 320px;
-    height: 480px;
+    height: 500px;
     perspective: 1800px;
 }
 .idcard-flipper {
@@ -1770,6 +1826,7 @@ body.dark-theme .document-approval-preview { background: #1e293b; border-color: 
     inset: 0;
     backface-visibility: hidden;
     border-radius: 16px;
+    border: 1px solid #cbd5e1;
     overflow: hidden;
     background: #fff;
     box-shadow: 0 10px 28px rgba(0,0,0,0.22);
@@ -1800,8 +1857,11 @@ body.dark-theme .document-approval-preview { background: #1e293b; border-color: 
     position: relative;
     z-index: 2;
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 10px;
+    justify-content: center;
+    text-align: center;
+    gap: 6px;
     padding: 18px 20px;
 }
 .idcard-logo-badge {
@@ -1814,7 +1874,9 @@ body.dark-theme .document-approval-preview { background: #1e293b; border-color: 
     display: flex;
     align-items: center;
     justify-content: center;
+    overflow: hidden;
 }
+.idcard-logo-badge img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
 .idcard-brand-text {
     font-weight: 800;
     text-transform: uppercase;
@@ -1823,6 +1885,7 @@ body.dark-theme .document-approval-preview { background: #1e293b; border-color: 
     line-height: 1.3;
     letter-spacing: 0.02em;
 }
+.idcard-zone-line { font-style: italic; }
 .idcard-brand-text-dark { color: #fff; }
 .idcard-brand-school {
     font-weight: 600;
@@ -1838,6 +1901,7 @@ body.dark-theme .document-approval-preview { background: #1e293b; border-color: 
     z-index: 3;
     width: 108px;
     height: 108px;
+    flex-shrink: 0;
     margin: -60px auto 0;
     border-radius: 50%;
     border: 4px solid var(--idcard-gold);
@@ -1914,12 +1978,13 @@ body.dark-theme .document-approval-preview { background: #1e293b; border-color: 
 /* Back face */
 .idcard-back-header {
     position: relative;
-    height: 76px;
+    height: 88px;
     flex-shrink: 0;
     background: var(--idcard-purple);
     overflow: hidden;
     display: flex;
     align-items: center;
+    justify-content: center;
 }
 .idcard-back-header::after {
     content: '';
@@ -1936,9 +2001,12 @@ body.dark-theme .document-approval-preview { background: #1e293b; border-color: 
     position: relative;
     z-index: 2;
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 10px;
-    padding: 0 20px;
+    justify-content: center;
+    text-align: center;
+    gap: 6px;
+    padding: 10px 20px;
 }
 .idcard-back-body {
     flex: 1;
@@ -2014,9 +2082,37 @@ body.dark-theme .document-approval-preview { background: #1e293b; border-color: 
 }
 
 @media print {
+    * {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+        color-adjust: exact !important;
+    }
+    /* The app shell locks body/.main-content to a fixed viewport height with
+       overflow:hidden/auto so the UI scrolls internally on screen. Printing
+       can't paginate content that's clipped like that — it just cuts it off
+       at the viewport edge instead of flowing to a new page. Free both up. */
+    body { height: auto !important; overflow: visible !important; }
+    .dashboard-container { display: block !important; height: auto !important; }
+    .main-content { height: auto !important; overflow: visible !important; display: block !important; }
+
     .sidebar, .top-bar, .idcard-actions, #sidebar-overlay { display: none !important; }
     .main-content { margin: 0 !important; }
-    .idcard-wrap { padding: 0; }
+    .idcard-wrap { padding: 0; display: block; }
+
+    /* Chromium also ignores page-break-after/break-after on children of a
+       flex container, so switch the flip-card's own ancestors to normal
+       block flow for print as well. */
+    .idcard-scene { display: block; height: auto; perspective: none; margin: 0 auto; }
+    .idcard-flipper { display: block; position: static; transform: none !important; transform-style: flat; }
+    .idcard-face {
+        position: static;
+        backface-visibility: visible;
+        box-shadow: none;
+        margin: 0 auto;
+        break-after: page;
+        page-break-after: always;
+    }
+    .idcard-back { transform: none; break-after: auto; page-break-after: auto; }
 }
 
 @media (max-width: 500px) {

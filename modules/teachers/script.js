@@ -98,7 +98,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     const authed = await checkAuthAndInit();
     if (!authed) return;
 
-    await Promise.all([
+    // allSettled (not all): a single loader rejecting must not stop the
+    // rest of init from running — otherwise unrelated setup below (nav,
+    // sidebar toggle, filters) would silently never wire up.
+    const results = await Promise.allSettled([
         loadStudents(),
         loadSubjects(),
         loadProfileData(),
@@ -110,6 +113,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         loadDashboardStudentPerformance(),
         loadSemesterStatus()
     ]);
+    results.forEach(r => { if (r.status === 'rejected') console.error('Init loader failed:', r.reason); });
     setupNavigation();
     setupPreferenceListeners();
     setupEnterKeySubmission();
@@ -2365,8 +2369,8 @@ function renderStudentTableAndStats(students) {
                 <td>${[s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' ')}</td>
                 <td>${s.sex}</td>
                 <td>${s.class_level}</td>
-                <td>${s.section}</td>
                 <td>${s.stream}</td>
+                <td>${s.section}</td>
                 <td>
                     <button onclick="viewStudentProgress('${s.student_id}', '${s.stream}')">
                         View
@@ -2481,6 +2485,7 @@ async function loadProfileData() {
             profileImg.src = data.avatar_url;
             profileImg.alt = data.full_name ? `Profile photo of ${data.full_name}` : "Profile photo";
             profileImg.style.display = '';
+            if (initialsEl) initialsEl.style.display = 'none';
         } else if (initialsEl) {
             if (profileImg) profileImg.style.display = 'none';
             const initials = (data.full_name || '?').split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
@@ -2562,7 +2567,7 @@ function renderTeacherIdCard(data) {
     // regardless of the site-wide language switch — it's a printable
     // credential, not a page that should change depending on which tab
     // was last clicked.
-    const zoneLabel = data.zone ? `${data.zone.toUpperCase()} ZONE` : 'ZONE —';
+    const zoneLabel = data.zone ? data.zone.toUpperCase() : '—';
     const woredaLabel = data.woreda || '—';
     setText('idcard-zone-front', zoneLabel);
     setText('idcard-zone-back', zoneLabel);
@@ -2602,10 +2607,10 @@ function renderIdCardQrCode(payload) {
     container.innerHTML = '';
     if (typeof qrcode !== 'function' || !payload) return;
 
-    const qr = qrcode(0, 'M'); // type 0 = auto-detect smallest size that fits the data
+    const qr = qrcode(4, 'M'); // type 4 comfortably fits a short "<id>.<signature>" payload; this library has no auto-detect (type 0 is invalid and crashes, not "auto")
     qr.addData(String(payload));
     qr.make();
-    container.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2 });
+    container.innerHTML = qr.createSvgTag(4, 2);
 }
 
 window.flipIdCard = () => {
@@ -2800,13 +2805,51 @@ window.uploadTeacherSignature = async () => {
     }
 };
 
+// Compress an image client-side before upload, but only if it's actually
+// large — small files pass through untouched. Keeps whatever aspect
+// ratio/dimensions the photo was taken at; only scales down if the
+// longest edge is bigger than maxDimension, then re-encodes as JPEG at
+// the given quality so a multi-MB phone photo doesn't get uploaded at
+// full size.
+function compressImageIfLarge(file, { maxSizeBytes = 1024 * 1024, maxDimension = 1600, quality = 0.82 } = {}) {
+    return new Promise((resolve) => {
+        if (!file.type.startsWith('image/') || file.size <= maxSizeBytes) {
+            resolve(file);
+            return;
+        }
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+            URL.revokeObjectURL(url);
+            let { width, height } = img;
+            if (width > maxDimension || height > maxDimension) {
+                const scale = maxDimension / Math.max(width, height);
+                width = Math.round(width * scale);
+                height = Math.round(height * scale);
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+            canvas.toBlob((blob) => {
+                if (!blob || blob.size >= file.size) { resolve(file); return; }
+                resolve(new File([blob], file.name.replace(/\.\w+$/, '.jpg'), { type: 'image/jpeg' }));
+            }, 'image/jpeg', quality);
+        };
+        img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+        img.src = url;
+    });
+}
+
 window.uploadTeacherIdPhoto = async () => {
     const fileInput = document.getElementById('teacher-idphoto-upload');
     const file = fileInput.files[0];
     if (!file) return;
 
+    const uploadFile = await compressImageIfLarge(file);
+
     const formData = new FormData();
-    formData.append('photo', file);
+    formData.append('photo', uploadFile);
 
     try {
         const res = await apiFetch(`${API_BASE}/api/teacher/upload-id-photo`, { method: 'POST', body: formData });
@@ -3419,12 +3462,9 @@ async function loadAuthorizedSubjects(stream) {
 
     try {
         const url = `${API_BASE}/api/teacher/eligible-subjects?teacher_id=${CURRENT_TEACHER_ID}&stream=${encodeURIComponent(stream)}`;
-        console.log("Fetching subjects from:", url);
-        
+
         const res = await apiFetch(url);
         const subjects = await res.json();
-        
-        console.log("Subjects received:", subjects);
 
         select.innerHTML = '<option value="">Select a Subject</option>';
         subjects.forEach(sub => {

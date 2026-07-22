@@ -1,6 +1,6 @@
 import express from 'express';
 import mysql from 'mysql2';
-import cors from 'cors'; 
+import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -39,7 +39,9 @@ app.use('/students', express.static(path.join(__dirname, 'modules/students')));
 app.use('/teachers', express.static(path.join(__dirname, 'modules/teachers')));
 app.use('/portal', express.static(path.join(__dirname, 'modules/portal')));
 app.use('/registrar', express.static(path.join(__dirname, 'modules/registrar')));
-app.use('/admin', express.static(path.join(__dirname, 'modules/admin')));
+app.use('/school-admin', express.static(path.join(__dirname, 'modules/school admin')));
+app.use('/zonal-admin', express.static(path.join(__dirname, 'modules/zonal admin')));
+app.use('/super-admin', express.static(path.join(__dirname, 'modules/super admin')));
 app.use('/library', express.static(path.join(__dirname, 'modules/library')));
 app.use('/uploads', express.static('uploads'));
 
@@ -94,8 +96,8 @@ function toDateOnly(d) {
 }
 const JWT_EXPIRES_IN = '30m'; // short-lived on purpose — see refresh notes below
 
-function issueAuthToken(res, { user_id, role, school_id, title, is_class_monitor }) {
-    const token = jwt.sign({ user_id, role, school_id, title: title || null, is_class_monitor: !!is_class_monitor }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+function issueAuthToken(res, { user_id, role, school_id, zone, zone_id, title, is_class_monitor, can_act_independently }) {
+    const token = jwt.sign({ user_id, role, school_id, zone: zone || null, zone_id: zone_id || null, title: title || null, is_class_monitor: !!is_class_monitor, can_act_independently: !!can_act_independently }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     res.cookie('auth_token', token, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production', // requires HTTPS in production
@@ -132,22 +134,511 @@ function requireRole(...allowedRoles) {
     };
 }
 
-// Requires not just an admin_users account, but specifically the one
-// whose admin_users.title = 'Principal'. This assumes admin_users has a
-// `title` column — ADD IT if it doesn't exist yet:
-//   ALTER TABLE admin_users ADD COLUMN title VARCHAR(50) NULL;
-// then set the actual principal's row: title = 'Principal'. Without that
-// column populated, every admin_users login will fail this check (title
-// comes back null from the token, matching no one) — safer to fail
-// closed than to silently let any admin account act as Principal, which
-// is exactly the gap this replaces (see MANAGEMENT_ROLES below and the
-// admin_users notes on /api/attendance/checkin and /api/announcements).
+// Requires not just a school_admins account, but specifically the one
+// whose title = 'Principal'. Set the actual principal's row: title =
+// 'Principal'. Without that column populated, every school_admins login
+// will fail this check (title comes back null from the token, matching
+// no one) — safer to fail closed than to silently let any school admin
+// account act as Principal.
 function requirePrincipal(req, res, next) {
-    if (!req.user || req.user.role !== 'admin_users' || req.user.title !== 'Principal') {
+    if (!req.user || req.user.role !== 'school_admins' || req.user.title !== 'Principal') {
         return res.status(403).json({ error: "This action is restricted to the Principal's account." });
     }
     next();
 }
+
+// School-level authority is split three ways within school_admins, by
+// title (same pattern as requirePrincipal above, generalized):
+//   - Admin VP: teacher attendance, textbook logistics (issue/return/lost
+//     + the penalty decision), and teacher absence requests up to 5 days
+//     — anything longer is routed straight to the Principal instead of
+//     Admin VP even seeing it as approvable (see /api/teacher/absence-requests).
+//   - Academic VP: the timetable, opening/closing the semester, reviewing
+//     every homeroom's pushed marks (and who hasn't pushed yet), and
+//     student conduct — a warning is theirs to give directly, a
+//     termination-level case gets handed to the Principal instead.
+//   - Principal: sees everything above and is the first to be alerted
+//     when something's escalated to them (long absence requests,
+//     termination-level conduct cases, document approvals, etc.) —
+//     already partly built via requirePrincipal.
+function requireAdminTitle(...allowedTitles) {
+    return (req, res, next) => {
+        if (!req.user || req.user.role !== 'school_admins' || !allowedTitles.includes(req.user.title)) {
+            return res.status(403).json({ error: `This action is restricted to: ${allowedTitles.join(', ')}.` });
+        }
+        next();
+    };
+}
+
+// --- Zonal admin & super admin ---
+// A "zone" isn't one flat admin role — it's three distinct positions,
+// all in the existing zonal_admins table (distinguished by `title`, same
+// pattern as school_admins.title), with three different scopes:
+//   - Head of Education: whole zone, full authority — hires teachers,
+//     appoints school admins, sees every school's performance.
+//   - Teacher Teamleader: whole zone for VIEWING, but no independent
+//     authority — can only write a proposal (hire/appoint), which Head
+//     of Education must approve before anything actually happens.
+//     Head of Education can delegate direct authority to a specific
+//     Teamleader (can_act_independently), which lets them skip the
+//     proposal step and act like Head of Education until revoked.
+//   - Supervisor: NOT whole-zone — scoped to a specific, individually
+//     assigned set of schools (e.g. 2 schools), view-only. They check
+//     teacher/school performance (attendance, whether marks are being
+//     uploaded on the usual ~2-week cadence) and follow up directly with
+//     the school admin or teacher; they have no account-creation power
+//     at all, not even for their own assigned schools.
+//
+// zonal_admins and super_admins already exist and can already log in
+// (see the authSources list in /api/login) — this just adds the columns
+// and tables the actual zonal/super-admin FEATURES need. ADD THESE if
+// they don't exist yet:
+//   CREATE TABLE zones (
+//     zone_id INT AUTO_INCREMENT PRIMARY KEY,
+//     zone_name VARCHAR(100) NOT NULL,
+//     zone_prefix VARCHAR(10) NOT NULL UNIQUE, -- e.g. 'GM'
+//     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+//   );
+//   ALTER TABLE schools ADD COLUMN zone_id INT NULL,
+//     ADD FOREIGN KEY (zone_id) REFERENCES zones(zone_id);
+//   -- backfill zone_id for existing rows from the old free-text
+//   -- schools.zone column once the matching zones rows exist; the old
+//   -- zone column can stay for display/history (the certificate and ID
+//   -- card templates already read it), zone_id is what scoping actually
+//   -- uses going forward.
+//
+//   ALTER TABLE zonal_admins
+//     ADD COLUMN zone_id INT NULL,
+//     ADD COLUMN title ENUM('Head of Education','Teacher Teamleader','Supervisor') NULL,
+//     ADD COLUMN can_act_independently BOOLEAN NOT NULL DEFAULT FALSE, -- only meaningful for Teacher Teamleader; set/unset by Head of Education
+//     ADD FOREIGN KEY (zone_id) REFERENCES zones(zone_id);
+//
+//   -- Which specific schools a Supervisor is assigned to (Head of
+//   -- Education and Teacher Teamleader don't need rows here — their
+//   -- scope is derived directly from zone_id instead).
+//   CREATE TABLE zone_admin_schools (
+//     admin_id VARCHAR(20) NOT NULL, -- zonal_admins.admin_id
+//     school_id INT NOT NULL,
+//     PRIMARY KEY (admin_id, school_id),
+//     FOREIGN KEY (admin_id) REFERENCES zonal_admins(admin_id),
+//     FOREIGN KEY (school_id) REFERENCES schools(id)
+//   );
+//
+//   -- A Teacher Teamleader's "write a proposal, Head of Education
+//   -- approves" workflow for hiring a teacher or appointing a school
+//   -- admin. `payload` carries whatever /api/zonal/admin-users or
+//   -- /api/zonal/teachers needs to actually create the account once
+//   -- approved — same shape as that endpoint's body.
+//   CREATE TABLE zonal_proposals (
+//     proposal_id INT AUTO_INCREMENT PRIMARY KEY,
+//     zone_id INT NOT NULL,
+//     proposed_by VARCHAR(20) NOT NULL, -- zonal_admins.admin_id
+//     proposal_type ENUM('hire_teacher','appoint_school_admin') NOT NULL,
+//     school_id INT NOT NULL,
+//     payload JSON NOT NULL,
+//     status ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
+//     rejection_reason VARCHAR(255) NULL,
+//     reviewed_by VARCHAR(20) NULL,
+//     reviewed_at DATETIME NULL,
+//     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     FOREIGN KEY (zone_id) REFERENCES zones(zone_id)
+//   );
+//
+// Super admin (super_admins, already live for login) stays manually
+// seeded, no auto-ID generation, no school_id/zone_id scoping — every
+// school_id-scoped query in this file needs its own super-admin bypass
+// to actually be usable by them; that's a broader follow-up, not part
+// of this block.
+function requireZonalAdmin(req, res, next) {
+    if (!req.user || req.user.role !== 'zonal_admins') {
+        return res.status(403).json({ error: "This action is restricted to zonal admin accounts." });
+    }
+    next();
+}
+function requireSuperAdmin(req, res, next) {
+    if (!req.user || req.user.role !== 'super_admins') {
+        return res.status(403).json({ error: "This action is restricted to super admin accounts." });
+    }
+    next();
+}
+// Only the Head of Education — hiring/appointing/delegating are theirs
+// alone to do directly; everyone else in the zone works through them.
+function requireHeadOfEducation(req, res, next) {
+    if (!req.user || req.user.role !== 'zonal_admins' || req.user.title !== 'Head of Education') {
+        return res.status(403).json({ error: "This action is restricted to the Head of Education." });
+    }
+    next();
+}
+// Head of Education always has direct authority; a Teacher Teamleader
+// only has it if Head of Education has delegated it
+// (can_act_independently); Supervisors never do, regardless of this
+// flag — the check on req.user.title !== 'Supervisor' isn't really
+// needed since Supervisors never get can_act_independently set, but
+// it's here so a bad seed value can't accidentally grant one supervisor
+// hiring power.
+function requireCanActInZone(req, res, next) {
+    if (!req.user || req.user.role !== 'zonal_admins') {
+        return res.status(403).json({ error: "This action is restricted to zonal admin accounts." });
+    }
+    if (req.user.title === 'Head of Education') return next();
+    if (req.user.title === 'Teacher Teamleader' && req.user.can_act_independently) return next();
+    return res.status(403).json({
+        error: req.user.title === 'Teacher Teamleader'
+            ? "You don't have delegated authority to do this directly — submit a proposal instead."
+            : "This action is restricted to the Head of Education."
+    });
+}
+
+// Returns the school IDs this zonal_admins account can see/act on:
+// Head of Education & Teacher Teamleader → every school in their zone;
+// Supervisor → only their individually assigned schools
+// (zone_admin_schools). Used to scope every zonal read/write so a
+// Supervisor calling a shared endpoint can never see beyond their own
+// assignment.
+async function getZonalSchoolIds(req) {
+    if (req.user.title === 'Supervisor') {
+        const [rows] = await pool.query(
+            'SELECT school_id FROM zone_admin_schools WHERE admin_id = ?',
+            [req.user.user_id]
+        );
+        return rows.map(r => r.school_id);
+    }
+    const [rows] = await pool.query('SELECT id FROM schools WHERE zone_id = ?', [req.user.zone_id]);
+    return rows.map(r => r.id);
+}
+
+// Generates the next ID for a given prefix at a given school, drawing
+// from ONE shared sequence across teachers AND school_admins. That's
+// what lets a school admin account carry the same TCH-style ID/prefix a
+// teacher would: whichever table actually holds "TCH0007" for this
+// school, the number is only ever handed out once, so the two tables
+// never collide on the same ID even though neither one has its own
+// dedicated counter.
+async function getNextStaffId(school_id, prefix, digits = 5) {
+    const [[teacherRows], [adminRows]] = await Promise.all([
+        pool.query('SELECT teacher_id AS id FROM teachers WHERE school_id = ? AND teacher_id LIKE ?', [school_id, `${prefix}%`]),
+        pool.query('SELECT admin_id AS id FROM school_admins WHERE school_id = ? AND admin_id LIKE ?', [school_id, `${prefix}%`])
+    ]);
+    const allIds = [...teacherRows, ...adminRows].map(r => r.id);
+    let maxNumber = 0;
+    for (const id of allIds) {
+        const numPart = parseInt(id.slice(prefix.length), 10);
+        if (!isNaN(numPart) && numPart > maxNumber) maxNumber = numPart;
+    }
+    return `${prefix}${String(maxNumber + 1).padStart(digits, '0')}`;
+}
+
+// --- Zonal: schools & school admin accounts ---
+// GET is available to all three zonal_admins titles, scoped by
+// getZonalSchoolIds — Head of Education/Teacher Teamleader see every
+// school in the zone, Supervisors see only their assigned schools.
+app.get('/api/zonal/schools', requireAuth, requireZonalAdmin, async (req, res) => {
+    try {
+        const schoolIds = await getZonalSchoolIds(req);
+        if (schoolIds.length === 0) return res.json([]);
+        const [schools] = await pool.query(
+            `SELECT sc.id, sc.school_name, sc.school_prefix, sc.moe_school_code,
+                    w.woreda_name AS woreda, r.region_name AS region
+             FROM schools sc
+             LEFT JOIN woreda w ON w.woreda_id = sc.woreda_id
+             LEFT JOIN region r ON r.region_id = sc.region_id
+             WHERE sc.id IN (?) ORDER BY sc.school_name`,
+            [schoolIds]
+        );
+        res.json(schools);
+    } catch (err) {
+        console.error("/api/zonal/schools error:", err);
+        res.status(500).json({ error: "Could not load your schools" });
+    }
+});
+
+// Creates a school admin (Principal, Admin VP, Academic VP, etc.) account
+// directly. Restricted to Head of Education, or a Teacher Teamleader
+// Head of Education has delegated direct authority to — everyone else
+// (including a non-delegated Teamleader) has to go through
+// /api/zonal/proposals instead. The new account's ID shares the school's
+// TCH-style staff sequence with its teachers (see getNextStaffId) — it's
+// not a separate identity space, just a different table for a different
+// set of privileges.
+async function createSchoolAdminAccount({ school_id, first_name, middle_name, last_name, title, contact_number, email, password }) {
+    const [schoolRows] = await pool.query('SELECT id, school_prefix FROM schools WHERE id = ?', [school_id]);
+    if (schoolRows.length === 0) throw Object.assign(new Error("School not found."), { status: 404 });
+    const { school_prefix } = schoolRows[0];
+    if (!school_prefix) throw Object.assign(new Error("This school has no ID prefix configured yet."), { status: 400 });
+
+    const admin_id = await getNextStaffId(school_id, school_prefix);
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await pool.query(
+        `INSERT INTO school_admins (admin_id, school_id, first_name, middle_name, last_name, title, contact_number, email, security_password)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [admin_id, school_id, first_name, middle_name || null, last_name, title, contact_number || null, email || null, hashedPassword]
+    );
+    return admin_id;
+}
+
+app.post('/api/zonal/admin-users', requireAuth, requireCanActInZone, async (req, res) => {
+    const { school_id, first_name, middle_name, last_name, title, contact_number, email, password } = req.body;
+    if (!school_id || !first_name || !last_name || !title || !password) {
+        return res.status(400).json({ error: "school_id, first_name, last_name, title, and password are required" });
+    }
+    try {
+        const zoneSchoolIds = await getZonalSchoolIds(req);
+        if (!zoneSchoolIds.includes(Number(school_id))) {
+            return res.status(403).json({ error: "That school isn't in your zone." });
+        }
+        const admin_id = await createSchoolAdminAccount({ school_id, first_name, middle_name, last_name, title, contact_number, email, password });
+        res.json({ message: "School admin account created.", admin_id });
+    } catch (err) {
+        console.error("/api/zonal/admin-users error:", err);
+        res.status(err.status || 500).json({ error: err.status ? err.message : "Could not create school admin account" });
+    }
+});
+
+app.get('/api/zonal/admin-users', requireAuth, requireZonalAdmin, async (req, res) => {
+    try {
+        const schoolIds = await getZonalSchoolIds(req);
+        if (schoolIds.length === 0) return res.json([]);
+        const [rows] = await pool.query(
+            `SELECT a.admin_id, a.first_name, a.middle_name, a.last_name, a.title, a.school_id, s.school_name
+             FROM school_admins a
+             JOIN schools s ON s.id = a.school_id
+             WHERE a.school_id IN (?)
+             ORDER BY s.school_name, a.title`,
+            [schoolIds]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/zonal/admin-users GET error:", err);
+        res.status(500).json({ error: "Could not load school admin accounts" });
+    }
+});
+
+// Hires a teacher directly — same authority restriction as appointing a
+// school admin (Head of Education, or a delegated Teacher Teamleader).
+async function createTeacherAccount({ school_id, first_name, middle_name, last_name, contact_number, email, password }) {
+    const [schoolRows] = await pool.query('SELECT id, school_prefix FROM schools WHERE id = ?', [school_id]);
+    if (schoolRows.length === 0) throw Object.assign(new Error("School not found."), { status: 404 });
+    const { school_prefix } = schoolRows[0];
+    if (!school_prefix) throw Object.assign(new Error("This school has no ID prefix configured yet."), { status: 400 });
+
+    const teacher_id = await getNextStaffId(school_id, school_prefix);
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await pool.query(
+        `INSERT INTO teachers (teacher_id, school_id, first_name, middle_name, last_name, contact_number, email, security_password)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [teacher_id, school_id, first_name, middle_name || null, last_name, contact_number || null, email || null, hashedPassword]
+    );
+    return teacher_id;
+}
+
+app.post('/api/zonal/teachers', requireAuth, requireCanActInZone, async (req, res) => {
+    const { school_id, first_name, middle_name, last_name, contact_number, email, password } = req.body;
+    if (!school_id || !first_name || !last_name || !password) {
+        return res.status(400).json({ error: "school_id, first_name, last_name, and password are required" });
+    }
+    try {
+        const zoneSchoolIds = await getZonalSchoolIds(req);
+        if (!zoneSchoolIds.includes(Number(school_id))) {
+            return res.status(403).json({ error: "That school isn't in your zone." });
+        }
+        const teacher_id = await createTeacherAccount({ school_id, first_name, middle_name, last_name, contact_number, email, password });
+        res.json({ message: "Teacher hired.", teacher_id });
+    } catch (err) {
+        console.error("/api/zonal/teachers error:", err);
+        res.status(err.status || 500).json({ error: err.status ? err.message : "Could not hire teacher" });
+    }
+});
+
+// --- Zonal: Teacher Teamleader proposals (hire / appoint), reviewed by Head of Education ---
+// A non-delegated Teamleader can't call /api/zonal/admin-users or
+// /api/zonal/teachers directly (requireCanActInZone blocks them) — this
+// is their path instead: describe what they want done, Head of
+// Education approves or rejects it.
+app.post('/api/zonal/proposals', requireAuth, requireZonalAdmin, async (req, res) => {
+    if (req.user.title !== 'Teacher Teamleader') {
+        return res.status(403).json({ error: "Only the Teacher Teamleader submits proposals — Head of Education acts directly, and Supervisors don't have hiring/appointing authority at all." });
+    }
+    const { proposal_type, school_id, payload } = req.body;
+    if (!proposal_type || !school_id || !payload) {
+        return res.status(400).json({ error: "proposal_type, school_id, and payload are required" });
+    }
+    if (!['hire_teacher', 'appoint_school_admin'].includes(proposal_type)) {
+        return res.status(400).json({ error: "proposal_type must be 'hire_teacher' or 'appoint_school_admin'" });
+    }
+    try {
+        const zoneSchoolIds = await getZonalSchoolIds(req);
+        if (!zoneSchoolIds.includes(Number(school_id))) {
+            return res.status(403).json({ error: "That school isn't in your zone." });
+        }
+        await pool.query(
+            `INSERT INTO zonal_proposals (zone_id, proposed_by, proposal_type, school_id, payload)
+             VALUES (?, ?, ?, ?, ?)`,
+            [req.user.zone_id, req.user.user_id, proposal_type, school_id, JSON.stringify(payload)]
+        );
+        res.json({ message: "Proposal submitted for Head of Education's review." });
+    } catch (err) {
+        console.error("/api/zonal/proposals POST error:", err);
+        res.status(500).json({ error: "Could not submit proposal" });
+    }
+});
+
+// Head of Education sees every pending proposal in the zone; a
+// Teamleader sees only their own (so they can track what they've sent).
+app.get('/api/zonal/proposals', requireAuth, requireZonalAdmin, async (req, res) => {
+    try {
+        const params = [req.user.zone_id];
+        let whereClause = 'WHERE zone_id = ?';
+        if (req.user.title !== 'Head of Education') {
+            whereClause += ' AND proposed_by = ?';
+            params.push(req.user.user_id);
+        }
+        const [rows] = await pool.query(
+            `SELECT proposal_id, proposed_by, proposal_type, school_id, payload, status, rejection_reason, reviewed_by, reviewed_at, created_at
+             FROM zonal_proposals ${whereClause} ORDER BY created_at DESC`,
+            params
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/zonal/proposals GET error:", err);
+        res.status(500).json({ error: "Could not load proposals" });
+    }
+});
+
+app.post('/api/zonal/proposals/:id/approve', requireAuth, requireHeadOfEducation, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT * FROM zonal_proposals WHERE proposal_id = ? AND zone_id = ? AND status = 'pending'`,
+            [req.params.id, req.user.zone_id]
+        );
+        if (rows.length === 0) return res.status(404).json({ error: "Proposal not found or already reviewed." });
+        const proposal = rows[0];
+        const payload = typeof proposal.payload === 'string' ? JSON.parse(proposal.payload) : proposal.payload;
+
+        let resultId;
+        if (proposal.proposal_type === 'hire_teacher') {
+            resultId = await createTeacherAccount({ school_id: proposal.school_id, ...payload });
+        } else {
+            resultId = await createSchoolAdminAccount({ school_id: proposal.school_id, ...payload });
+        }
+
+        await pool.query(
+            `UPDATE zonal_proposals SET status = 'approved', reviewed_by = ?, reviewed_at = NOW() WHERE proposal_id = ?`,
+            [req.user.user_id, proposal.proposal_id]
+        );
+        res.json({ message: "Proposal approved and account created.", id: resultId });
+    } catch (err) {
+        console.error("/api/zonal/proposals/:id/approve error:", err);
+        res.status(err.status || 500).json({ error: err.status ? err.message : "Could not approve proposal" });
+    }
+});
+
+app.post('/api/zonal/proposals/:id/reject', requireAuth, requireHeadOfEducation, async (req, res) => {
+    const { reason } = req.body;
+    try {
+        const [result] = await pool.query(
+            `UPDATE zonal_proposals SET status = 'rejected', rejection_reason = ?, reviewed_by = ?, reviewed_at = NOW()
+             WHERE proposal_id = ? AND zone_id = ? AND status = 'pending'`,
+            [reason || null, req.user.user_id, req.params.id, req.user.zone_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Proposal not found or already reviewed." });
+        res.json({ message: "Proposal rejected." });
+    } catch (err) {
+        console.error("/api/zonal/proposals/:id/reject error:", err);
+        res.status(500).json({ error: "Could not reject proposal" });
+    }
+});
+
+// Head of Education grants/revokes a Teacher Teamleader's ability to act
+// directly (skip the proposal step). Scoped to Teamleaders in their own
+// zone only.
+app.post('/api/zonal/teamleader/:id/delegate', requireAuth, requireHeadOfEducation, async (req, res) => {
+    const { can_act_independently } = req.body;
+    try {
+        const [result] = await pool.query(
+            `UPDATE zonal_admins SET can_act_independently = ?
+             WHERE admin_id = ? AND zone_id = ? AND title = 'Teacher Teamleader'`,
+            [!!can_act_independently, req.params.id, req.user.zone_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Teacher Teamleader not found in your zone." });
+        res.json({ message: can_act_independently ? "Direct authority delegated." : "Direct authority revoked." });
+    } catch (err) {
+        console.error("/api/zonal/teamleader/:id/delegate error:", err);
+        res.status(500).json({ error: "Could not update delegation" });
+    }
+});
+
+// --- Zonal: Supervisor performance view ---
+// Read-only, scoped to the Supervisor's individually assigned schools
+// (or, for Head of Education/Teamleader, every school in the zone).
+// Flags two things per teacher: recent absence (period_attendance_log,
+// same source as /api/admin/teacher-punctuality) and whether marks have
+// been uploaded in roughly the last 2 weeks (marks.uploaded_at) — the
+// two signals a Supervisor actually follows up on in person.
+//
+// Requires a timestamp on marks to compute the second signal — ADD IT
+// if it doesn't exist yet:
+//   ALTER TABLE marks ADD COLUMN uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP;
+app.get('/api/zonal/performance', requireAuth, requireZonalAdmin, async (req, res) => {
+    try {
+        const schoolIds = await getZonalSchoolIds(req);
+        if (schoolIds.length === 0) return res.json([]);
+
+        const since = toDateOnly(new Date(Date.now() - 14 * 86400000));
+
+        const [teachers] = await pool.query(
+            `SELECT teacher_id, school_id, first_name, last_name FROM teachers WHERE school_id IN (?)`,
+            [schoolIds]
+        );
+
+        const [attendance] = await pool.query(
+            `SELECT ct.teacher_id, pal.teacher_present
+             FROM period_attendance_log pal
+             JOIN class_timetable ct ON ct.timetable_id = pal.timetable_id
+             WHERE pal.school_id IN (?) AND pal.log_date >= ?`,
+            [schoolIds, since]
+        );
+        const [lastMarks] = await pool.query(
+            `SELECT ta.teacher_id, MAX(m.uploaded_at) AS last_uploaded
+             FROM marks m
+             JOIN students st ON st.student_id = m.student_id AND st.school_id = m.school_id
+             JOIN teacher_assignments ta ON ta.subject_id = m.subject_id AND ta.school_id = m.school_id
+                 AND ta.class_level = st.class_level AND ta.section = st.section AND ta.stream = st.stream
+             WHERE m.school_id IN (?)
+             GROUP BY ta.teacher_id`,
+            [schoolIds]
+        ).catch(() => [[]]); // degrade gracefully rather than 500 the whole report if marks.uploaded_at hasn't been added yet
+
+        const attendanceByTeacher = {};
+        for (const row of attendance) {
+            if (!attendanceByTeacher[row.teacher_id]) attendanceByTeacher[row.teacher_id] = { present: 0, total: 0 };
+            attendanceByTeacher[row.teacher_id].total++;
+            if (row.teacher_present) attendanceByTeacher[row.teacher_id].present++;
+        }
+        const lastMarksByTeacher = {};
+        for (const row of lastMarks) lastMarksByTeacher[row.teacher_id] = row.last_uploaded;
+
+        const report = teachers.map(t => {
+            const att = attendanceByTeacher[t.teacher_id] || { present: 0, total: 0 };
+            const lastUpload = lastMarksByTeacher[t.teacher_id] || null;
+            const daysSinceUpload = lastUpload ? Math.floor((Date.now() - new Date(lastUpload).getTime()) / 86400000) : null;
+            return {
+                teacher_id: t.teacher_id,
+                full_name: `${t.first_name} ${t.last_name}`,
+                school_id: t.school_id,
+                periods_logged_last_14_days: att.total,
+                periods_present_last_14_days: att.present,
+                last_marks_upload: lastUpload,
+                days_since_marks_upload: daysSinceUpload,
+                needs_followup: att.total > 0 && (att.present / att.total) < 0.8 || daysSinceUpload === null || daysSinceUpload > 14
+            };
+        });
+
+        res.json(report);
+    } catch (err) {
+        console.error("/api/zonal/performance error:", err);
+        res.status(500).json({ error: "Could not load performance report" });
+    }
+});
 
 // Restricts a route to students who are also flagged as a Class Monitor
 // (students.is_class_monitor = 1 — ADD IT if it doesn't exist yet:
@@ -482,7 +973,7 @@ async function convertHeicIfNeeded(file) {
         const newFilename = file.filename.replace(/\.[^./]*$/, '') + '.jpg';
         const newPath = path.join(path.dirname(file.path), newFilename);
         fs.writeFileSync(newPath, outputBuffer);
-        fs.unlink(file.path, () => {}); // remove the original HEIC now that we have the JPEG
+        fs.unlink(file.path, () => { }); // remove the original HEIC now that we have the JPEG
         return { ...file, filename: newFilename, path: newPath, mimetype: 'image/jpeg' };
     } catch (err) {
         console.error('HEIC conversion failed:', err);
@@ -508,9 +999,12 @@ app.get('/api/student/me', requireAuth, requireRole('students'), async (req, res
             `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.class_level, st.section, st.stream, st.sex,
                     st.status, st.school_name, st.lms_username, st.email_address, st.assigned_computer,
                     st.phone_number, st.created_at, st.profile_photo_url, st.id_photo_url, st.is_class_monitor,
-                    sc.zone, sc.woreda, sc.region, sc.moe_school_code, sc.school_prefix, sc.logo_url
+                    z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region, sc.moe_school_code, sc.school_prefix, sc.logo_url
              FROM students st
              LEFT JOIN schools sc ON sc.id = st.school_id
+             LEFT JOIN zone z ON z.zone_id = sc.zone_id
+             LEFT JOIN woreda w ON w.woreda_id = sc.woreda_id
+             LEFT JOIN region r ON r.region_id = sc.region_id
              WHERE st.student_id = ? AND st.school_id = ?`,
             [req.user.user_id, req.user.school_id]
         );
@@ -531,10 +1025,10 @@ app.get('/api/student/me', requireAuth, requireRole('students'), async (req, res
 // wording for a specific student. Same 1-year validity rule as the
 // on-screen card (students move up a grade every year).
 const DOCX_NO_BORDER = {
-    top:    { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+    top: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
     bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-    left:   { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-    right:  { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+    left: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
+    right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
 };
 function docxFieldRow(labelBi, value) {
     return new TableRow({
@@ -920,13 +1414,10 @@ app.post('/api/student/mark-notification-read', requireAuth, requireRole('studen
 // could hit from home (defeats proving physical presence), and NOT open
 // to non-homeroom teachers, per school policy.
 //
-// NOTE: admin_users currently has no title/role distinction visible to
-// this middleware (JWT only carries user_id/role/school_id) — so today
-// this allows ANY admin_users account, not specifically Principal/Admin
-// VP/Academic VP. If your admin_users table has a title column to
-// distinguish those from other admin accounts, tell me and I'll wire it
-// into the JWT and add a proper check here.
-app.post('/api/attendance/checkin', requireAuth, requireRole('teachers', 'admin_users', 'registrar_users', 'students'), async (req, res) => {
+// Open to any school_admins account (Principal, Admin VP, or Academic
+// VP) — not restricted to a specific title, since any of them checking
+// in at school counts as physical presence for this purpose.
+app.post('/api/attendance/checkin', requireAuth, requireRole('teachers', 'school_admins', 'registrar_users', 'students'), async (req, res) => {
     const { qr_data } = req.body;
     if (!qr_data) return res.status(400).json({ error: "qr_data is required" });
 
@@ -1004,7 +1495,7 @@ app.post('/api/attendance/checkin', requireAuth, requireRole('teachers', 'admin_
 
 // Admin manually marks a teacher present/absent — teachers don't have a
 // QR-bearing ID card yet, so there's no scan-based flow for them yet.
-app.post('/api/admin/mark-teacher-attendance', requireAuth, requireRole('admin_users'), async (req, res) => {
+app.post('/api/admin/mark-teacher-attendance', requireAuth, requireAdminTitle('Admin VP'), async (req, res) => {
     const { teacher_id, status } = req.body;
     if (!teacher_id || !['present', 'absent'].includes(status)) {
         return res.status(400).json({ error: "teacher_id and a valid status ('present' or 'absent') are required" });
@@ -1200,7 +1691,7 @@ app.get('/api/student/my-timetable', requireAuth, requireRole('students'), async
 // workflow — a teacher doesn't submit anything here. Admin grants leave
 // directly (e.g. after a conversation, a doctor's note handed in person,
 // etc.), and that grant is what makes a period/day excused. There's
-// intentionally no way for anyone but admin_users to create, see the
+// intentionally no way for anyone but school_admins to create, see the
 // full list of, or revoke these rows.
 async function isTeacherOnLeave(teacher_id, school_id, date) {
     const [rows] = await pool.query(
@@ -1210,7 +1701,7 @@ async function isTeacherOnLeave(teacher_id, school_id, date) {
     return rows.length > 0;
 }
 
-app.post('/api/admin/teacher-leave', requireAuth, requireRole('admin_users'), async (req, res) => {
+app.post('/api/admin/teacher-leave', requireAuth, requireAdminTitle('Admin VP'), async (req, res) => {
     const { teacher_id, date_from, date_to, reason } = req.body;
     if (!teacher_id || !date_from || !date_to) {
         return res.status(400).json({ error: "teacher_id, date_from, and date_to are required." });
@@ -1231,7 +1722,7 @@ app.post('/api/admin/teacher-leave', requireAuth, requireRole('admin_users'), as
     }
 });
 
-app.get('/api/admin/teacher-leave', requireAuth, requireRole('admin_users'), async (req, res) => {
+app.get('/api/admin/teacher-leave', requireAuth, requireAdminTitle('Admin VP'), async (req, res) => {
     const { teacher_id } = req.query;
     try {
         const [rows] = await pool.query(
@@ -1247,7 +1738,7 @@ app.get('/api/admin/teacher-leave', requireAuth, requireRole('admin_users'), asy
     }
 });
 
-app.delete('/api/admin/teacher-leave/:id', requireAuth, requireRole('admin_users'), async (req, res) => {
+app.delete('/api/admin/teacher-leave/:id', requireAuth, requireAdminTitle('Admin VP'), async (req, res) => {
     try {
         const [result] = await pool.query(
             'DELETE FROM teacher_leave WHERE leave_id = ? AND school_id = ?',
@@ -1258,6 +1749,201 @@ app.delete('/api/admin/teacher-leave/:id', requireAuth, requireRole('admin_users
     } catch (err) {
         console.error("/api/admin/teacher-leave DELETE error:", err);
         res.status(500).json({ error: "Could not revoke leave record" });
+    }
+});
+
+// --- Teacher absence requests (teacher-initiated, unlike teacher_leave
+// above which is Admin VP granting leave directly) ---
+// A teacher requests time off; Admin VP can approve/reject it directly
+// ONLY if it's 5 days or fewer. Anything longer is outside Admin VP's
+// authority entirely — it's routed straight to the Principal at
+// submission time (status starts as 'escalated', not 'pending'), the
+// same "outside my authority, hand it up" shape as the student
+// absence_requests → escalate → admin flow elsewhere in this file, just
+// automatic here instead of a manual escalate step, since the 5-day line
+// is a fixed rule rather than a judgment call.
+//
+// Requires a new table — run this migration if it doesn't exist yet:
+//   CREATE TABLE teacher_absence_requests (
+//     request_id INT AUTO_INCREMENT PRIMARY KEY,
+//     teacher_id VARCHAR(50) NOT NULL,
+//     school_id INT NOT NULL,
+//     date_from DATE NOT NULL,
+//     date_to DATE NOT NULL,
+//     reason VARCHAR(255) NULL,
+//     status ENUM('pending','approved','rejected','escalated') NOT NULL DEFAULT 'pending',
+//     reviewed_by VARCHAR(50) NULL,
+//     reviewed_at DATETIME NULL,
+//     rejection_reason VARCHAR(255) NULL,
+//     requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     INDEX idx_teacher_absence (teacher_id, school_id)
+//   );
+const ADMIN_VP_ABSENCE_AUTHORITY_DAYS = 5;
+
+app.post('/api/teacher/absence-requests', requireAuth, requireRole('teachers'), async (req, res) => {
+    const { date_from, date_to, reason } = req.body;
+    if (!date_from || !date_to) {
+        return res.status(400).json({ error: "date_from and date_to are required" });
+    }
+    if (new Date(date_to) < new Date(date_from)) {
+        return res.status(400).json({ error: "date_to can't be before date_from." });
+    }
+    const spanDays = absenceRequestSpanDays(date_from, date_to);
+    const status = spanDays > ADMIN_VP_ABSENCE_AUTHORITY_DAYS ? 'escalated' : 'pending';
+
+    try {
+        const [result] = await pool.query(
+            `INSERT INTO teacher_absence_requests (teacher_id, school_id, date_from, date_to, reason, status)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [req.user.user_id, req.user.school_id, date_from, date_to, reason || null, status]
+        );
+        res.json({
+            message: status === 'escalated'
+                ? `Requests longer than ${ADMIN_VP_ABSENCE_AUTHORITY_DAYS} days go straight to the Principal for review.`
+                : "Request submitted to Admin VP for review.",
+            request_id: result.insertId,
+            status
+        });
+    } catch (err) {
+        console.error("/api/teacher/absence-requests POST error:", err);
+        res.status(500).json({ error: "Could not submit absence request" });
+    }
+});
+
+app.get('/api/teacher/absence-requests', requireAuth, requireRole('teachers'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT request_id, date_from, date_to, reason, status, rejection_reason, reviewed_by, reviewed_at, requested_at
+             FROM teacher_absence_requests WHERE teacher_id = ? AND school_id = ? ORDER BY requested_at DESC`,
+            [req.user.user_id, req.user.school_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/teacher/absence-requests GET error:", err);
+        res.status(500).json({ error: "Could not load your absence requests" });
+    }
+});
+
+// Admin VP's queue — pending requests only (5 days or fewer by
+// definition, since anything longer was never set to 'pending' in the
+// first place).
+app.get('/api/admin/teacher-absence-requests', requireAuth, requireAdminTitle('Admin VP'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT r.request_id, r.teacher_id, t.first_name, t.last_name, r.date_from, r.date_to, r.reason, r.status, r.requested_at
+             FROM teacher_absence_requests r
+             JOIN teachers t ON t.teacher_id = r.teacher_id AND t.school_id = r.school_id
+             WHERE r.school_id = ? AND r.status = 'pending'
+             ORDER BY r.requested_at ASC`,
+            [req.user.school_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/admin/teacher-absence-requests GET error:", err);
+        res.status(500).json({ error: "Could not load pending absence requests" });
+    }
+});
+
+app.post('/api/admin/teacher-absence-requests/:id/approve', requireAuth, requireAdminTitle('Admin VP'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT * FROM teacher_absence_requests WHERE request_id = ? AND school_id = ? AND status = 'pending'`,
+            [req.params.id, req.user.school_id]
+        );
+        if (rows.length === 0) return res.status(404).json({ error: "Request not found or already reviewed." });
+        const request = rows[0];
+
+        // Approving actually grants the leave — same teacher_leave table
+        // the direct-grant flow above uses, so it excuses the teacher's
+        // period attendance for these dates exactly the same way.
+        await pool.query(
+            `INSERT INTO teacher_leave (teacher_id, school_id, date_from, date_to, reason, granted_by)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [request.teacher_id, req.user.school_id, request.date_from, request.date_to, request.reason, req.user.user_id]
+        );
+        await pool.query(
+            `UPDATE teacher_absence_requests SET status = 'approved', reviewed_by = ?, reviewed_at = NOW() WHERE request_id = ?`,
+            [req.user.user_id, request.request_id]
+        );
+        res.json({ message: "Absence request approved and leave granted." });
+    } catch (err) {
+        console.error("/api/admin/teacher-absence-requests/:id/approve error:", err);
+        res.status(500).json({ error: "Could not approve this request" });
+    }
+});
+
+app.post('/api/admin/teacher-absence-requests/:id/reject', requireAuth, requireAdminTitle('Admin VP'), async (req, res) => {
+    const { reason } = req.body;
+    try {
+        const [result] = await pool.query(
+            `UPDATE teacher_absence_requests SET status = 'rejected', rejection_reason = ?, reviewed_by = ?, reviewed_at = NOW()
+             WHERE request_id = ? AND school_id = ? AND status = 'pending'`,
+            [reason || null, req.user.user_id, req.params.id, req.user.school_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Request not found or already reviewed." });
+        res.json({ message: "Absence request rejected." });
+    } catch (err) {
+        console.error("/api/admin/teacher-absence-requests/:id/reject error:", err);
+        res.status(500).json({ error: "Could not reject this request" });
+    }
+});
+
+// --- Principal's queue: requests over Admin VP's 5-day authority ---
+app.get('/api/principal/teacher-absence-requests', requireAuth, requirePrincipal, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT r.request_id, r.teacher_id, t.first_name, t.last_name, r.date_from, r.date_to, r.reason, r.status, r.requested_at
+             FROM teacher_absence_requests r
+             JOIN teachers t ON t.teacher_id = r.teacher_id AND t.school_id = r.school_id
+             WHERE r.school_id = ? AND r.status = 'escalated'
+             ORDER BY r.requested_at ASC`,
+            [req.user.school_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/principal/teacher-absence-requests GET error:", err);
+        res.status(500).json({ error: "Could not load escalated absence requests" });
+    }
+});
+
+app.post('/api/principal/teacher-absence-requests/:id/approve', requireAuth, requirePrincipal, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT * FROM teacher_absence_requests WHERE request_id = ? AND school_id = ? AND status = 'escalated'`,
+            [req.params.id, req.user.school_id]
+        );
+        if (rows.length === 0) return res.status(404).json({ error: "Request not found or not awaiting Principal review." });
+        const request = rows[0];
+
+        await pool.query(
+            `INSERT INTO teacher_leave (teacher_id, school_id, date_from, date_to, reason, granted_by)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [request.teacher_id, req.user.school_id, request.date_from, request.date_to, request.reason, req.user.user_id]
+        );
+        await pool.query(
+            `UPDATE teacher_absence_requests SET status = 'approved', reviewed_by = ?, reviewed_at = NOW() WHERE request_id = ?`,
+            [req.user.user_id, request.request_id]
+        );
+        res.json({ message: "Absence request approved and leave granted." });
+    } catch (err) {
+        console.error("/api/principal/teacher-absence-requests/:id/approve error:", err);
+        res.status(500).json({ error: "Could not approve this request" });
+    }
+});
+
+app.post('/api/principal/teacher-absence-requests/:id/reject', requireAuth, requirePrincipal, async (req, res) => {
+    const { reason } = req.body;
+    try {
+        const [result] = await pool.query(
+            `UPDATE teacher_absence_requests SET status = 'rejected', rejection_reason = ?, reviewed_by = ?, reviewed_at = NOW()
+             WHERE request_id = ? AND school_id = ? AND status = 'escalated'`,
+            [reason || null, req.user.user_id, req.params.id, req.user.school_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Request not found or not awaiting Principal review." });
+        res.json({ message: "Absence request rejected." });
+    } catch (err) {
+        console.error("/api/principal/teacher-absence-requests/:id/reject error:", err);
+        res.status(500).json({ error: "Could not reject this request" });
     }
 });
 
@@ -1395,10 +2081,10 @@ app.get('/api/teacher/my-timetable', requireAuth, requireRole('teachers'), async
 // Admin-side punctuality report — aggregates period_attendance_log for a
 // given teacher (optionally within a date range; defaults to the last 30
 // days). This is the "counts toward teacher performance" number the log
-// exists to produce. Loosely gated to any admin_users account for now,
-// same note as elsewhere in this file about tightening to a specific
-// title once one exists.
-app.get('/api/admin/teacher-punctuality', requireAuth, requireRole('admin_users'), async (req, res) => {
+// exists to produce. Open to any school_admins account (title is
+// available on req.user.title now if you want to tighten this to a
+// specific title like Academic VP later).
+app.get('/api/admin/teacher-punctuality', requireAuth, requireAdminTitle('Admin VP'), async (req, res) => {
     const { teacher_id } = req.query;
     if (!teacher_id) return res.status(400).json({ error: "teacher_id is required" });
 
@@ -1445,14 +2131,13 @@ app.get('/api/admin/teacher-punctuality', requireAuth, requireRole('admin_users'
 });
 
 // --- Admin: manage the class timetable ---
-// Loosely gated to any admin_users account for now, same as the other
-// admin endpoints noted elsewhere in this file (see the absence-requests
-// admin section above) — there's no dedicated "Academic Coordinator"
-// title distinction yet. This is a bare CRUD with no timetable-builder UI
+// Open to any school_admins account for now — there's no dedicated
+// "Academic Coordinator" title distinction yet, though title is on
+// req.user if you want to add one later. This is a bare CRUD with no timetable-builder UI
 // behind it yet either; it exists so the table can actually be populated
 // (e.g. via a quick admin script or Postman) before the teacher/admin
 // site has a proper screen for it.
-app.get('/api/admin/timetable', requireAuth, requireRole('admin_users'), async (req, res) => {
+app.get('/api/admin/timetable', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
     const { class_level, section, stream } = req.query;
     if (!class_level || !section || !stream) {
         return res.status(400).json({ error: "class_level, section, and stream are required" });
@@ -1474,7 +2159,7 @@ app.get('/api/admin/timetable', requireAuth, requireRole('admin_users'), async (
     }
 });
 
-app.post('/api/admin/timetable', requireAuth, requireRole('admin_users'), async (req, res) => {
+app.post('/api/admin/timetable', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
     const { class_level, section, stream, day_of_week, subject_id, teacher_id, start_time, end_time } = req.body;
     if (!class_level || !section || !stream || !day_of_week || !subject_id || !start_time || !end_time) {
         return res.status(400).json({ error: "class_level, section, stream, day_of_week, subject_id, start_time, and end_time are required." });
@@ -1498,7 +2183,7 @@ app.post('/api/admin/timetable', requireAuth, requireRole('admin_users'), async 
     }
 });
 
-app.delete('/api/admin/timetable/:id', requireAuth, requireRole('admin_users'), async (req, res) => {
+app.delete('/api/admin/timetable/:id', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
     try {
         const [result] = await pool.query(
             'DELETE FROM class_timetable WHERE timetable_id = ? AND school_id = ?',
@@ -1534,7 +2219,7 @@ app.get('/api/teacher/my-attendance-streak', requireAuth, requireRole('teachers'
 // verify here (there's no physical card being read), so this relies on
 // the same trust model as calling roll from a paper list: an authenticated
 // staff member vouching for a specific student's presence.
-app.post('/api/attendance/manual-checkin', requireAuth, requireRole('teachers', 'admin_users', 'registrar_users', 'students'), async (req, res) => {
+app.post('/api/attendance/manual-checkin', requireAuth, requireRole('teachers', 'school_admins', 'registrar_users', 'students'), async (req, res) => {
     const { student_id } = req.body;
     if (!student_id) return res.status(400).json({ error: "student_id is required" });
 
@@ -2182,9 +2867,12 @@ app.get('/api/student/certificate.pdf', requireAuth, requireRole('students'), as
 
         const [studentRows] = await pool.query(
             `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.sex, st.id_photo_url,
-                    sc.school_name, sc.zone, sc.woreda, sc.region
+                    sc.school_name, z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region
              FROM students st
              LEFT JOIN schools sc ON sc.id = st.school_id
+             LEFT JOIN zone z ON z.zone_id = sc.zone_id
+             LEFT JOIN woreda w ON w.woreda_id = sc.woreda_id
+             LEFT JOIN region r ON r.region_id = sc.region_id
              WHERE st.student_id = ? AND st.school_id = ?`,
             [req.user.user_id, req.user.school_id]
         );
@@ -2289,7 +2977,7 @@ app.get('/verify/:student_id', async (req, res) => {
 //     awarded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 //     UNIQUE KEY one_award_per_student_per_level (student_id, school_id, class_level)
 //   );
-// Also requires admin_users.title = 'Principal' on the actual principal's
+// Also requires school_admins.title = 'Principal' on the actual principal's
 // account — see requirePrincipal() above.
 
 // Principal reviews who's currently at the top of the whole school
@@ -2440,7 +3128,7 @@ app.post('/api/student/upload-id-photo', requireAuth, requireRole('students'), h
     try {
         if (!req.file) return res.status(400).json({ error: "No file uploaded" });
         if (!req.file.mimetype.startsWith('image/')) {
-            fs.unlink(req.file.path, () => {});
+            fs.unlink(req.file.path, () => { });
             return res.status(400).json({ error: "ID photo must be an image file (JPEG, PNG, GIF, or WEBP)." });
         }
 
@@ -2451,7 +3139,7 @@ app.post('/api/student/upload-id-photo', requireAuth, requireRole('students'), h
         try {
             dimensions = sizeOf(req.file.path);
         } catch (dimErr) {
-            fs.unlink(req.file.path, () => {});
+            fs.unlink(req.file.path, () => { });
             return res.status(400).json({ error: "Could not read image dimensions — file may be corrupted, or in a format we don't support. Please use a JPEG or PNG photo." });
         }
 
@@ -2462,7 +3150,7 @@ app.post('/api/student/upload-id-photo', requireAuth, requireRole('students'), h
         const shortSide = Math.min(width, height);
         const longSide = Math.max(width, height);
         if (shortSide < ID_PHOTO_MIN_WIDTH || longSide < ID_PHOTO_MIN_HEIGHT) {
-            fs.unlink(req.file.path, () => {});
+            fs.unlink(req.file.path, () => { });
             return res.status(400).json({
                 error: `ID photo is too small (yours was ${width}×${height}px). Please use a clearer, higher-resolution photo.`
             });
@@ -2483,7 +3171,7 @@ app.post('/api/student/upload-id-photo', requireAuth, requireRole('students'), h
 
         if (existingPending.length > 0) {
             const oldPath = path.join(__dirname, 'uploads', path.basename(existingPending[0].requested_photo_url));
-            fs.unlink(oldPath, () => {}); // best-effort cleanup, don't fail the request over it
+            fs.unlink(oldPath, () => { }); // best-effort cleanup, don't fail the request over it
             await pool.query(
                 'UPDATE id_photo_change_requests SET requested_photo_url = ?, requested_at = NOW() WHERE request_id = ?',
                 [filePath, existingPending[0].request_id]
@@ -2604,7 +3292,7 @@ app.get('/api/student/certificate-request-status', requireAuth, requireRole('stu
 // Approval authority is capped: a homeroom teacher can approve/reject a
 // request up to MAX_HOMEROOM_ABSENCE_DAYS on their own. Anything longer
 // is outside their authority to grant — they escalate it instead, which
-// hands it to school administration (Academic VP or similar admin_users
+// hands it to school administration (Academic VP or similar school_admins
 // account) to make the actual call. Rejection has no such cap: a
 // homeroom teacher can reject a request of any length on their own,
 // since rejecting doesn't require the extra authority approving a long
@@ -2645,15 +3333,15 @@ async function notifyStudent(student_id, school_id, sent_by, notifType, message)
 app.post('/api/student/absence-requests', requireAuth, requireRole('students'), handleUploadError(upload.single('attachment')), async (req, res) => {
     const { date_from, date_to, reason } = req.body;
     if (!date_from || !date_to || !reason?.trim()) {
-        if (req.file) fs.unlink(req.file.path, () => {});
+        if (req.file) fs.unlink(req.file.path, () => { });
         return res.status(400).json({ error: "date_from, date_to, and reason are all required." });
     }
     if (new Date(date_to) < new Date(date_from)) {
-        if (req.file) fs.unlink(req.file.path, () => {});
+        if (req.file) fs.unlink(req.file.path, () => { });
         return res.status(400).json({ error: "date_to can't be before date_from." });
     }
     if (req.file && !req.file.mimetype.startsWith('image/') && req.file.mimetype !== 'application/pdf') {
-        fs.unlink(req.file.path, () => {});
+        fs.unlink(req.file.path, () => { });
         return res.status(400).json({ error: "Attachment must be an image or a PDF." });
     }
 
@@ -2700,12 +3388,10 @@ app.get('/api/student/absence-requests', requireAuth, requireRole('students'), a
 // req.user.school_id from the verified session, never a URL parameter,
 // so a logged-in student can only ever see their own school's news, and
 // nobody can view any school's announcements without an account there.
-// Posting is restricted to admin_users only.
-//
-// NOTE: same limitation as attendance — admin_users has no title/role
-// column visible to this middleware yet, so today ANY admin_users account
-// can post, not specifically the Principal. Tell me if/when there's a
-// title column to check and I'll tighten this to Principal-only.
+// Posting is restricted to school_admins only. Any school_admins account
+// (Principal, Admin VP, or Academic VP) can post today, not specifically
+// the Principal — swap requireRole('school_admins') for requirePrincipal
+// below if you want to tighten this to Principal-only.
 //
 // Every post (announcement or gallery item) is tagged with the language
 // it was written in, since this school's community reads a mix of
@@ -2733,7 +3419,7 @@ app.get('/api/announcements', requireAuth, async (req, res) => {
     }
 });
 
-app.post('/api/announcements', requireAuth, requireRole('admin_users'), async (req, res) => {
+app.post('/api/announcements', requireAuth, requireRole('school_admins'), async (req, res) => {
     const { title, body, language } = req.body;
     if (!title || !body) {
         return res.status(400).json({ error: "Both a title and body are required" });
@@ -2752,7 +3438,7 @@ app.post('/api/announcements', requireAuth, requireRole('admin_users'), async (r
     }
 });
 
-app.delete('/api/announcements/:id', requireAuth, requireRole('admin_users'), async (req, res) => {
+app.delete('/api/announcements/:id', requireAuth, requireRole('school_admins'), async (req, res) => {
     try {
         const [result] = await pool.query(
             'DELETE FROM school_announcements WHERE announcement_id = ? AND school_id = ?',
@@ -2774,7 +3460,7 @@ app.delete('/api/announcements/:id', requireAuth, requireRole('admin_users'), as
 // EITHER body text OR a photo (or both), so admin can share a quick
 // text update without being forced to attach an image. Same access
 // model as announcements: any authenticated role can view, only
-// admin_users can post/delete. Reuses the same `upload` multer instance
+// school_admins can post/delete. Reuses the same `upload` multer instance
 // already used for profile/ID/avatar photos — the photo field is
 // optional here, unlike those routes.
 app.get('/api/gallery', requireAuth, async (req, res) => {
@@ -2793,7 +3479,7 @@ app.get('/api/gallery', requireAuth, async (req, res) => {
     }
 });
 
-app.post('/api/gallery', requireAuth, requireRole('admin_users'), handleUploadError(upload.single('photo')), async (req, res) => {
+app.post('/api/gallery', requireAuth, requireRole('school_admins'), handleUploadError(upload.single('photo')), async (req, res) => {
     try {
         const { body, language } = req.body;
         const hasText = body && body.trim().length > 0;
@@ -2824,16 +3510,15 @@ app.post('/api/gallery', requireAuth, requireRole('admin_users'), handleUploadEr
 });
 
 // Sets the school's logo, shown in the nav header on every portal for that
-// tenant (student/teacher/etc). Whoever ends up owning "school setup" —
-// today that's any admin_users account, scoped to their own school_id —
-// uploads it once and every user at that school sees it from then on via
-// /api/me's logo_url. NOTE: there's no distinct "zonal admin" role in this
-// schema yet (login only recognizes students/teachers/admin_users/
-// registrar_users) — when that role exists, swap requireRole('admin_users')
-// here for whatever it's actually called, and decide whether it should be
-// scoped to one school_id per call (e.g. a body param) rather than the
-// logged-in account's own school_id like the rest of this file assumes.
-app.post('/api/admin/school-logo', requireAuth, requireRole('admin_users'), handleUploadError(upload.single('logo')), async (req, res) => {
+// tenant (student/teacher/etc). Any school_admins account uploads it once,
+// scoped to their own school_id, and every user at that school sees it
+// from then on via /api/me's logo_url. zonal_admins/super_admins are
+// intentionally excluded here — they're not tied to a single school_id,
+// so this route as written (which always uses the logged-in account's
+// own school_id) doesn't make sense for them. If a zonal/super admin
+// needs to set a specific school's logo, that'll need its own route that
+// takes a school_id as a parameter instead of assuming the caller's own.
+app.post('/api/admin/school-logo', requireAuth, requireRole('school_admins'), handleUploadError(upload.single('logo')), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ error: "No file uploaded" });
         if (!req.file.mimetype.startsWith('image/')) {
@@ -2853,7 +3538,7 @@ app.post('/api/admin/school-logo', requireAuth, requireRole('admin_users'), hand
     }
 });
 
-app.delete('/api/gallery/:id', requireAuth, requireRole('admin_users'), async (req, res) => {
+app.delete('/api/gallery/:id', requireAuth, requireRole('school_admins'), async (req, res) => {
     try {
         const [result] = await pool.query(
             'DELETE FROM school_gallery WHERE photo_id = ? AND school_id = ?',
@@ -3382,7 +4067,7 @@ async function submitTeacherDocumentRequest(req, res, docType, filePath) {
 
     if (existingPending.length > 0) {
         const oldPath = path.join(__dirname, 'uploads', path.basename(existingPending[0].requested_file_url));
-        fs.unlink(oldPath, () => {}); // best-effort cleanup
+        fs.unlink(oldPath, () => { }); // best-effort cleanup
         await pool.query(
             'UPDATE teacher_document_requests SET requested_file_url = ?, requested_at = NOW(), status = \'pending\', rejection_reason = NULL WHERE request_id = ?',
             [filePath, existingPending[0].request_id]
@@ -3402,7 +4087,7 @@ app.post('/api/teacher/upload-signature', requireAuth, requireRole('teachers'), 
     try {
         if (!req.file) return res.status(400).json({ error: "No file uploaded" });
         if (!req.file.mimetype.startsWith('image/')) {
-            fs.unlink(req.file.path, () => {});
+            fs.unlink(req.file.path, () => { });
             return res.status(400).json({ error: "Signature must be an image file (JPEG or PNG)." });
         }
         const converted = await convertHeicIfNeeded(req.file);
@@ -3420,7 +4105,7 @@ app.post('/api/teacher/upload-id-photo', requireAuth, requireRole('teachers'), h
     try {
         if (!req.file) return res.status(400).json({ error: "No file uploaded" });
         if (!req.file.mimetype.startsWith('image/')) {
-            fs.unlink(req.file.path, () => {});
+            fs.unlink(req.file.path, () => { });
             return res.status(400).json({ error: "ID photo must be an image file (JPEG, PNG, GIF, or WEBP)." });
         }
         const converted = await convertHeicIfNeeded(req.file);
@@ -3430,14 +4115,14 @@ app.post('/api/teacher/upload-id-photo', requireAuth, requireRole('teachers'), h
         try {
             dimensions = sizeOf(req.file.path);
         } catch (dimErr) {
-            fs.unlink(req.file.path, () => {});
+            fs.unlink(req.file.path, () => { });
             return res.status(400).json({ error: "Could not read image dimensions — file may be corrupted, or in a format we don't support. Please use a JPEG or PNG photo." });
         }
         const { width, height } = dimensions;
         const shortSide = Math.min(width, height);
         const longSide = Math.max(width, height);
         if (shortSide < ID_PHOTO_MIN_WIDTH || longSide < ID_PHOTO_MIN_HEIGHT) {
-            fs.unlink(req.file.path, () => {});
+            fs.unlink(req.file.path, () => { });
             return res.status(400).json({
                 error: `ID photo is too small (yours was ${width}×${height}px). Please use a clearer, higher-resolution photo.`
             });
@@ -3685,11 +4370,14 @@ app.get('/api/teacher/id-card', requireAuth, async (req, res) => {
         const [rows] = await pool.query(
             `SELECT t.first_name, t.middle_name, t.last_name, t.teacher_id, t.contact_number, t.email, t.avatar_url, t.additional_role,
                     ta.stream, s.subject_name,
-                    sc.school_name, sc.zone, sc.woreda, sc.region, sc.moe_school_code
+                    sc.school_name, z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region, sc.moe_school_code
              FROM teachers t
              LEFT JOIN teacher_assignments ta ON t.teacher_id = ta.teacher_id AND t.school_id = ta.school_id
              LEFT JOIN subjects s ON ta.subject_id = s.subject_id AND ta.school_id = s.school_id
              LEFT JOIN schools sc ON sc.id = t.school_id
+             LEFT JOIN zone z ON z.zone_id = sc.zone_id
+             LEFT JOIN woreda w ON w.woreda_id = sc.woreda_id
+             LEFT JOIN region r ON r.region_id = sc.region_id
              WHERE t.teacher_id = ? AND t.school_id = ?`,
             [req.user.user_id, req.user.school_id]
         );
@@ -4492,18 +5180,18 @@ app.post('/api/homeroom/upload-student-photo', requireAuth, handleUploadError(up
     const { student_id } = req.body;
     try {
         if (!student_id) {
-            if (req.file) fs.unlink(req.file.path, () => {});
+            if (req.file) fs.unlink(req.file.path, () => { });
             return res.status(400).json({ error: "student_id is required" });
         }
         if (!req.file) return res.status(400).json({ error: "No photo uploaded" });
         if (!req.file.mimetype.startsWith('image/')) {
-            fs.unlink(req.file.path, () => {});
+            fs.unlink(req.file.path, () => { });
             return res.status(400).json({ error: "Photo must be an image file (JPEG, PNG, GIF, or WEBP)." });
         }
 
         const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
         if (!homeroom) {
-            fs.unlink(req.file.path, () => {});
+            fs.unlink(req.file.path, () => { });
             return res.status(403).json({ error: "You are not a homeroom teacher." });
         }
 
@@ -4514,14 +5202,14 @@ app.post('/api/homeroom/upload-student-photo', requireAuth, handleUploadError(up
         try {
             dimensions = sizeOf(req.file.path);
         } catch (dimErr) {
-            fs.unlink(req.file.path, () => {});
+            fs.unlink(req.file.path, () => { });
             return res.status(400).json({ error: "Could not read image dimensions — file may be corrupted, or in a format we don't support. Please use a JPEG or PNG photo." });
         }
         const { width, height } = dimensions;
         const shortSide = Math.min(width, height);
         const longSide = Math.max(width, height);
         if (shortSide < ID_PHOTO_MIN_WIDTH || longSide < ID_PHOTO_MIN_HEIGHT) {
-            fs.unlink(req.file.path, () => {});
+            fs.unlink(req.file.path, () => { });
             return res.status(400).json({
                 error: `Photo is too small (was ${width}×${height}px). Please use a clearer, higher-resolution photo.`
             });
@@ -4532,7 +5220,7 @@ app.post('/api/homeroom/upload-student-photo', requireAuth, handleUploadError(up
             [student_id, homeroom.class_level, homeroom.section, homeroom.stream, req.user.school_id]
         );
         if (studentRows.length === 0) {
-            fs.unlink(req.file.path, () => {});
+            fs.unlink(req.file.path, () => { });
             return res.status(403).json({ error: "This student is not in your homeroom section." });
         }
         const student = studentRows[0];
@@ -4547,7 +5235,7 @@ app.post('/api/homeroom/upload-student-photo', requireAuth, handleUploadError(up
         // been replaced.
         if (student.id_photo_url) {
             const oldPath = path.join(__dirname, 'uploads', path.basename(student.id_photo_url));
-            fs.unlink(oldPath, () => {});
+            fs.unlink(oldPath, () => { });
         }
 
         // Any pending self-submitted request from this student is now
@@ -4805,14 +5493,14 @@ app.post('/api/homeroom/absence-requests/:id/escalate', requireAuth, async (req,
 });
 
 // --- Admin: escalated absence / permission requests ---
-// Open to any admin_users account today (same relaxed gating as
+// Open to any school_admins account today (same relaxed gating as
 // /api/admin/textbooks and the announcements/gallery endpoints) rather
-// than a specific title like "Academic VP" — admin_users.title exists
+// than a specific title like "Academic VP" — title exists on the account
 // now (see requirePrincipal above) but only 'Principal' is currently a
 // meaningful value anywhere in the app. If/when "Academic VP" becomes a
-// real, populated title, swap requireRole('admin_users') here for a
+// real, populated title, swap requireRole('school_admins') here for a
 // title check the same way requirePrincipal does.
-app.get('/api/admin/absence-requests', requireAuth, requireRole('admin_users'), async (req, res) => {
+app.get('/api/admin/absence-requests', requireAuth, requireRole('school_admins'), async (req, res) => {
     try {
         const [rows] = await pool.query(
             `SELECT r.request_id, r.student_id, r.date_from, r.date_to, r.reason, r.attachment_url,
@@ -4831,7 +5519,7 @@ app.get('/api/admin/absence-requests', requireAuth, requireRole('admin_users'), 
     }
 });
 
-app.post('/api/admin/absence-requests/:id/approve', requireAuth, requireRole('admin_users'), async (req, res) => {
+app.post('/api/admin/absence-requests/:id/approve', requireAuth, requireRole('school_admins'), async (req, res) => {
     try {
         const [rows] = await pool.query(
             `SELECT request_id, student_id, school_id, date_from, date_to FROM absence_requests
@@ -4858,7 +5546,7 @@ app.post('/api/admin/absence-requests/:id/approve', requireAuth, requireRole('ad
     }
 });
 
-app.post('/api/admin/absence-requests/:id/reject', requireAuth, requireRole('admin_users'), async (req, res) => {
+app.post('/api/admin/absence-requests/:id/reject', requireAuth, requireRole('school_admins'), async (req, res) => {
     const { reason } = req.body;
     try {
         const [rows] = await pool.query(
@@ -5345,7 +6033,7 @@ app.post('/api/homeroom/textbooks/push-report', requireAuth, async (req, res) =>
                 (school_id, class_level, section, stream, school_year, pushed_by, total_slots, returned_count, lost_count, outstanding_count)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [req.user.school_id, class_level, section, stream, school_year, req.user.user_id,
-             summary.total_slots, summary.returned_count, summary.lost_count, summary.outstanding_count]
+            summary.total_slots, summary.returned_count, summary.lost_count, summary.outstanding_count]
         );
 
         res.json({
@@ -5434,6 +6122,145 @@ app.get('/api/homeroom/marks/push-status', requireAuth, async (req, res) => {
     }
 });
 
+// --- Academic VP: review every homeroom's pushed marks for the current
+// term, and see who hasn't pushed yet ---
+// Enumerates every homeroom section from teachers.homeroom_* (a teacher
+// counts as "homeroom" when those columns are set) and left-joins
+// pushed_marks_reports for the current term, so a homeroom that hasn't
+// pushed just comes back with pushed_at: null instead of being silently
+// absent from the list.
+app.get('/api/academic-vp/marks-review', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    try {
+        const term = await getCurrentTerm(req.user.school_id);
+        const [rows] = await pool.query(
+            `SELECT t.teacher_id, t.first_name, t.last_name,
+                    t.homeroom_class_level AS class_level, t.homeroom_section AS section, t.homeroom_stream AS stream,
+                    p.pushed_at
+             FROM teachers t
+             LEFT JOIN pushed_marks_reports p
+                 ON p.school_id = t.school_id
+                 AND p.class_level = t.homeroom_class_level AND p.section = t.homeroom_section AND p.stream = t.homeroom_stream
+                 AND p.term = ?
+             WHERE t.school_id = ? AND t.homeroom_class_level IS NOT NULL
+             ORDER BY t.homeroom_class_level, t.homeroom_section`,
+            [term, req.user.school_id]
+        );
+        res.json(rows.map(r => ({
+            teacher_id: r.teacher_id,
+            full_name: `${r.first_name} ${r.last_name}`,
+            class_level: r.class_level,
+            section: r.section,
+            stream: r.stream,
+            pushed: !!r.pushed_at,
+            pushed_at: r.pushed_at
+        })));
+    } catch (err) {
+        console.error("/api/academic-vp/marks-review error:", err);
+        res.status(500).json({ error: "Could not load the marks review" });
+    }
+});
+
+// --- Academic VP: student conduct — a warning is theirs to give
+// directly (goes straight to the student as a notification); anything
+// termination-level is handed to the Principal as a case instead of
+// decided here.
+//
+// Requires a new table — run this migration if it doesn't exist yet:
+//   CREATE TABLE student_disciplinary_cases (
+//     case_id INT AUTO_INCREMENT PRIMARY KEY,
+//     student_id VARCHAR(50) NOT NULL,
+//     school_id INT NOT NULL,
+//     raised_by VARCHAR(50) NOT NULL, -- Academic VP's admin_id
+//     description TEXT NOT NULL,
+//     status ENUM('pending','dismissed','terminated') NOT NULL DEFAULT 'pending',
+//     decided_by VARCHAR(50) NULL, -- Principal's admin_id
+//     decided_at DATETIME NULL,
+//     decision_note VARCHAR(255) NULL,
+//     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     INDEX idx_student_case (student_id, school_id)
+//   );
+app.post('/api/academic-vp/conduct-warning', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    const { student_id, message } = req.body;
+    if (!student_id || !message?.trim()) {
+        return res.status(400).json({ error: "student_id and message are required" });
+    }
+    try {
+        await notifyStudent(student_id, req.user.school_id, req.user.user_id, 'conduct_warning', message.trim());
+        res.json({ message: "Warning sent to student." });
+    } catch (err) {
+        console.error("/api/academic-vp/conduct-warning error:", err);
+        res.status(500).json({ error: "Could not send warning" });
+    }
+});
+
+// Academic VP hands a termination-level case to the Principal — this
+// doesn't terminate anyone by itself, it just opens the case for the
+// Principal to decide on.
+app.post('/api/academic-vp/disciplinary-cases', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    const { student_id, description } = req.body;
+    if (!student_id || !description?.trim()) {
+        return res.status(400).json({ error: "student_id and description are required" });
+    }
+    try {
+        const [result] = await pool.query(
+            `INSERT INTO student_disciplinary_cases (student_id, school_id, raised_by, description)
+             VALUES (?, ?, ?, ?)`,
+            [student_id, req.user.school_id, req.user.user_id, description.trim()]
+        );
+        res.json({ message: "Case handed to the Principal.", case_id: result.insertId });
+    } catch (err) {
+        console.error("/api/academic-vp/disciplinary-cases error:", err);
+        res.status(500).json({ error: "Could not open a disciplinary case" });
+    }
+});
+
+// --- Principal: decide pending disciplinary cases ---
+app.get('/api/principal/disciplinary-cases', requireAuth, requirePrincipal, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT c.case_id, c.student_id, st.first_name, st.last_name, st.class_level, st.section, st.stream,
+                    c.raised_by, c.description, c.status, c.created_at
+             FROM student_disciplinary_cases c
+             JOIN students st ON st.student_id = c.student_id AND st.school_id = c.school_id
+             WHERE c.school_id = ? AND c.status = 'pending'
+             ORDER BY c.created_at ASC`,
+            [req.user.school_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/principal/disciplinary-cases GET error:", err);
+        res.status(500).json({ error: "Could not load disciplinary cases" });
+    }
+});
+
+app.post('/api/principal/disciplinary-cases/:id/decide', requireAuth, requirePrincipal, async (req, res) => {
+    const { decision, note } = req.body; // decision: 'dismissed' | 'terminated'
+    if (!['dismissed', 'terminated'].includes(decision)) {
+        return res.status(400).json({ error: "decision must be 'dismissed' or 'terminated'" });
+    }
+    try {
+        const [rows] = await pool.query(
+            `SELECT * FROM student_disciplinary_cases WHERE case_id = ? AND school_id = ? AND status = 'pending'`,
+            [req.params.id, req.user.school_id]
+        );
+        if (rows.length === 0) return res.status(404).json({ error: "Case not found or already decided." });
+        const disciplinaryCase = rows[0];
+
+        await pool.query(
+            `UPDATE student_disciplinary_cases SET status = ?, decided_by = ?, decided_at = NOW(), decision_note = ? WHERE case_id = ?`,
+            [decision, req.user.user_id, note || null, disciplinaryCase.case_id]
+        );
+        await notifyStudent(
+            disciplinaryCase.student_id, req.user.school_id, req.user.user_id, 'disciplinary_decision',
+            decision === 'terminated' ? "Your enrollment has been terminated. Contact the Principal's office." : "Your disciplinary case has been reviewed and dismissed."
+        );
+        res.json({ message: `Case ${decision}.` });
+    } catch (err) {
+        console.error("/api/principal/disciplinary-cases/:id/decide error:", err);
+        res.status(500).json({ error: "Could not decide this case" });
+    }
+});
+
 // have been pushed for the current term — per instruction, this is 100%,
 // not a partial threshold like the textbook push.
 app.post('/api/homeroom/marks/push-report', requireAuth, async (req, res) => {
@@ -5474,7 +6301,7 @@ app.post('/api/homeroom/marks/push-report', requireAuth, async (req, res) => {
                 (school_id, class_level, section, stream, term, pushed_by, total_subjects, pushed_subjects)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
             [req.user.school_id, class_level, section, stream, term, req.user.user_id,
-             summary.total_subjects, summary.pushed_subjects]
+            summary.total_subjects, summary.pushed_subjects]
         );
 
         res.json({
@@ -5494,7 +6321,7 @@ app.post('/api/homeroom/marks/push-report', requireAuth, async (req, res) => {
 // Admin/Principal view: full log + per-subject summary counts, across
 // every section/teacher. No admin auth exists yet — same trust level as
 // the rest of this API for now; gate this when the admin page is built.
-app.get('/api/admin/textbooks', requireAuth, requireRole('admin_users'), async (req, res) => {
+app.get('/api/admin/textbooks', requireAuth, requireAdminTitle('Admin VP'), async (req, res) => {
     try {
         const school_year = getSchoolYear();
 
@@ -5542,6 +6369,7 @@ app.get('/api/admin/textbooks', requireAuth, requireRole('admin_users'), async (
                 class_level: r.class_level,
                 section: r.section,
                 stream: r.stream,
+                subject_id: r.subject_id,
                 subject_name: r.subject_name,
                 issued_by: r.issued_by,
                 issued_at: r.issued_at,
@@ -5567,7 +6395,7 @@ app.get('/api/admin/textbooks', requireAuth, requireRole('admin_users'), async (
 // /api/homeroom/textbooks/lost, which only reports that a book is gone;
 // deciding the consequence is Admin VP's call, scoped across every
 // homeroom section in the school (not just one teacher's own).
-app.post('/api/admin/textbooks/penalty', requireAuth, requireRole('admin_users'), async (req, res) => {
+app.post('/api/admin/textbooks/penalty', requireAuth, requireAdminTitle('Admin VP'), async (req, res) => {
     const { student_id, subject_id, decision, amount, note } = req.body;
     if (!student_id || !subject_id || !decision) {
         return res.status(400).json({ error: "student_id, subject_id, and decision are required" });
@@ -5587,7 +6415,7 @@ app.post('/api/admin/textbooks/penalty', requireAuth, requireRole('admin_users')
                  penalty_decided_by = ?, penalty_decided_at = NOW()
              WHERE student_id = ? AND subject_id = ? AND school_year = ? AND school_id = ? AND status = 'lost'`,
             [decision, decision === 'charged' ? Number(amount) : null, note || null,
-             req.user.user_id, student_id, subject_id, school_year, req.user.school_id]
+                req.user.user_id, student_id, subject_id, school_year, req.user.school_id]
         );
         if (result.affectedRows === 0) {
             return res.status(404).json({ error: "No textbook marked Lost was found for this student/subject." });
@@ -5601,9 +6429,8 @@ app.post('/api/admin/textbooks/penalty', requireAuth, requireRole('admin_users')
 
 // --- Contact School Management ---
 // Recipients are role labels ('Principal', 'Admin VP', 'Academic VP'), not
-// specific admin_id values, since admin accounts/roles don't exist yet.
-// Whoever holds that role (via admin_users.role, once seeded) will see
-// threads addressed to them when the admin inbox is built.
+// specific admin_id values. Whoever holds that role (via school_admins.role)
+// will see threads addressed to them once the admin inbox is built.
 const MANAGEMENT_ROLES = ['Principal', 'Admin VP', 'Academic VP'];
 const CONTACT_CATEGORIES = ['Permission Request', 'Complaint', 'General Inquiry'];
 
@@ -5776,7 +6603,7 @@ app.get('/api/term/current', requireAuth, async (req, res) => {
     }
 });
 
-// This is the "Start Semester" button — Academic VP (or any admin_users
+// This is the "Start Semester" button — Academic VP (or any school_admins
 // account, per the loose gating noted elsewhere in this file) calls this
 // to both (a) set which term new marks get stamped with, and (b) mark
 // TODAY as the day counting starts for that term. That second part is
@@ -5786,7 +6613,7 @@ app.get('/api/term/current', requireAuth, async (req, res) => {
 // Pushing this again (e.g. correcting a mistake, or moving to Semester 2)
 // resets the start date to today each time — the clock always reflects
 // the most recent press of the button, not the first ever.
-app.post('/api/term/set', requireAuth, requireRole('admin_users'), async (req, res) => {
+app.post('/api/term/set', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
     const { term } = req.body;
     if (!TERMS.includes(term)) {
         return res.status(400).json({ error: `term must be one of: ${TERMS.join(', ')}` });
@@ -5824,7 +6651,7 @@ app.post('/api/term/set', requireAuth, requireRole('admin_users'), async (req, r
 // current_term or term_start_date: the label everyone sees should read
 // "Closed · Semester 1", not silently reset to some other term. Re-opens
 // via POST /api/term/set (Start Semester) same as above.
-app.post('/api/term/close', requireAuth, requireRole('admin_users'), async (req, res) => {
+app.post('/api/term/close', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
     try {
         const term = await getCurrentTerm(req.user.school_id);
         await pool.query(
@@ -6071,7 +6898,9 @@ app.post('/api/login', async (req, res) => {
     const authSources = [
         { table: 'students', idCol: 'student_id' },
         { table: 'teachers', idCol: 'teacher_id' },
-        { table: 'admin_users', idCol: 'admin_id' },
+        { table: 'school_admins', idCol: 'admin_id' },
+        { table: 'zonal_admins', idCol: 'admin_id' },
+        { table: 'super_admins', idCol: 'admin_id' },
         { table: 'registrar_users', idCol: 'registrar_id' }
     ];
 
@@ -6102,19 +6931,29 @@ app.post('/api/login', async (req, res) => {
 
         // Look up the school this account belongs to, so the frontend can
         // display the correct school name immediately without a second
-        // round trip, and so we know what to put in the token.
+        // round trip, and so we know what to put in the token. Zonal
+        // admins with a real zone_id also get their zone's name, in
+        // addition to the existing free-text zone column.
         let school_name = null;
+        let zone_name = null;
         if (user.school_id) {
             const [schoolRows] = await pool.query('SELECT school_name FROM schools WHERE id = ?', [user.school_id]);
             if (schoolRows.length > 0) school_name = schoolRows[0].school_name;
+        }
+        if (userRole === 'zonal_admins' && user.zone_id) {
+            const [zoneRows] = await pool.query('SELECT zone_name FROM zones WHERE zone_id = ?', [user.zone_id]).catch(() => [[]]);
+            if (zoneRows && zoneRows.length > 0) zone_name = zoneRows[0].zone_name;
         }
 
         issueAuthToken(res, {
             user_id: id,
             role: userRole,
             school_id: user.school_id || null,
-            title: userRole === 'admin_users' ? (user.title || null) : null,
-            is_class_monitor: userRole === 'students' ? !!user.is_class_monitor : false
+            zone: user.zone || null,
+            zone_id: user.zone_id || null,
+            title: user.title || null,
+            is_class_monitor: userRole === 'students' ? !!user.is_class_monitor : false,
+            can_act_independently: userRole === 'zonal_admins' ? !!user.can_act_independently : false
         });
 
         // The token itself is httpOnly and never exposed to JS — this JSON
@@ -6125,6 +6964,11 @@ app.post('/api/login', async (req, res) => {
             role: userRole,
             id: id,
             school_id: user.school_id || null,
+            zone: user.zone || null,
+            zone_id: user.zone_id || null,
+            zone_name,
+            title: user.title || null,
+            can_act_independently: userRole === 'zonal_admins' ? !!user.can_act_independently : false,
             school_name
         });
     } catch (err) {
@@ -6153,6 +6997,12 @@ app.get('/api/me', requireAuth, async (req, res) => {
             }
         }
 
+        let zone_name = null;
+        if (req.user.role === 'zonal_admins' && req.user.zone_id) {
+            const [zoneRows] = await pool.query('SELECT zone_name FROM zones WHERE zone_id = ?', [req.user.zone_id]).catch(() => [[]]);
+            if (zoneRows && zoneRows.length > 0) zone_name = zoneRows[0].zone_name;
+        }
+
         let additional_role = null;
         if (req.user.role === 'teachers') {
             const [teacherRows] = await pool.query(
@@ -6166,6 +7016,11 @@ app.get('/api/me', requireAuth, async (req, res) => {
             user_id: req.user.user_id,
             role: req.user.role,
             school_id: req.user.school_id,
+            zone: req.user.zone || null,
+            zone_id: req.user.zone_id || null,
+            zone_name,
+            title: req.user.title || null,
+            can_act_independently: !!req.user.can_act_independently,
             school_name,
             moe_school_code,
             logo_url,

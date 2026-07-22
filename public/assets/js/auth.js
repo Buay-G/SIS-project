@@ -7,7 +7,9 @@
             const map = {
                 students:        '/students/',
                 teachers:        '/teachers/',
-                admin_users:     '/admin/',
+                school_admins:   '/school-admin/',
+                zonal_admins:    '/zonal-admin/',
+                super_admins:    '/super-admin/',
                 registrar_users: '/registrar/'
             };
             if (map[data.role]) window.location.href = map[data.role];
@@ -39,7 +41,9 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
             const redirectMap = {
                 students:        '/students/',
                 teachers:        '/teachers/',
-                admin_users:     '/admin/',
+                school_admins:   '/school-admin/',
+                zonal_admins:    '/zonal-admin/',
+                super_admins:    '/super-admin/',
                 registrar_users: '/registrar/'
             };
 

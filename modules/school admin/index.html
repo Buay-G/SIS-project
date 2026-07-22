@@ -1,90 +1,852 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>SIS Admin Dashboard</title>
-    <link rel="stylesheet" href="view.css">
-</head>
-<body>
-
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>School Admin Portal</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="/assets/js/i18n.js"></script>
+  </head>
+  <body>
     <div class="dashboard-container">
-        <nav id="sidebar">
-            <div class="logo-container">
-                <img src="/assets/images/Logo.png" alt="School Logo" style="width: 100px; display: block; margin: 0 auto 10px;">
-                <h3 style="text-align: center; color: white;">Newland High School</h3>
-            </div>
-            
-            <div class="nav-group">
-                <button class="menu-link" style="width: 100%; padding: 12px; background: #1abc9c; color: white; border: none; cursor: pointer; border-radius: 8px; margin-bottom: 20px;" 
-                        onclick="renderTable(null, null, null)">All Students</button>
-            </div>
+      <!-- ============ SIDEBAR ============ -->
+      <nav class="sidebar" id="sidebar" aria-label="Main navigation">
+        <div class="logo">
+          <div class="logo-badge">SA</div>
+          <div>
+            <span class="logo-text" data-i18n="sa_portal_title"
+              >School Admin</span
+            >
+            <span class="logo-sub" id="sa-school-name">—</span>
+          </div>
+        </div>
 
-            <div class="nav-group">
-                <button class="dropdown-btn" onclick="toggleDropdown('g9-menu')">Grade 9 ▼</button>
-                <div id="g9-menu" class="dropdown-content">
-                    <button onclick="renderTable(null, 9, 'A')">Section A</button>
-                    <button onclick="renderTable(null, 9, 'B')">Section B</button>
-                    <button onclick="renderTable(null, 9, 'C')">Section C</button>
-                    <button onclick="renderTable(null, 9, 'D')">Section D</button>
-                </div>
-            </div>
+        <ul class="nav-menu" id="sa-nav-menu">
+          <li>
+            <a
+              href="#"
+              class="nav-link active"
+              data-page="dashboard"
+              data-titles="Principal,Admin VP,Academic VP"
+            >
+              <span class="nav-icon">🏠</span
+              ><span data-i18n="sa_nav_dashboard">Dashboard</span></a
+            >
+          </li>
 
-            <div class="nav-group">
-                <button class="dropdown-btn" onclick="toggleDropdown('g10-menu')">Grade 10 ▼</button>
-                <div id="g10-menu" class="dropdown-content">
-                    <button onclick="renderTable(null, 10, 'A')">Section A</button>
-                    <button onclick="renderTable(null, 10, 'B')">Section B</button>
-                    <button onclick="renderTable(null, 10, 'C')">Section C</button>
-                    <button onclick="renderTable(null, 10, 'D')">Section D</button>
-                </div>
-            </div>
+          <li
+            class="nav-section-label"
+            data-titles="Admin VP,Principal"
+            data-i18n="sa_nav_section_admin"
+          >
+            Administration
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="teachers"
+              data-titles="Admin VP,Principal"
+            >
+              <span class="nav-icon">🧑‍🏫</span
+              ><span data-i18n="sa_nav_teachers"
+                >Teachers &amp; Attendance</span
+              ></a
+            >
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="textbooks"
+              data-titles="Admin VP,Principal"
+            >
+              <span class="nav-icon">📘</span
+              ><span data-i18n="sa_nav_textbooks">Textbooks</span></a
+            >
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="absence"
+              data-titles="Admin VP,Principal"
+            >
+              <span class="nav-icon">📝</span
+              ><span data-i18n="sa_nav_absence">Absence Requests</span></a
+            >
+          </li>
 
-            <div class="nav-group">
-                <button class="dropdown-btn" onclick="toggleDropdown('nat-menu')">Natural Science ▼</button>
-                <div id="nat-menu" class="dropdown-content">
-                    <button onclick="renderTable('Natural Science', 11, 'A')">Grade 11 - A</button>
-                    <button onclick="renderTable('Natural Science', 11, 'B')">Grade 11 - B</button>
-                    <button onclick="renderTable('Natural Science', 12, 'A')">Grade 12 - A</button>
-                    <button onclick="renderTable('Natural Science', 12, 'B')">Grade 12 - B</button>
-                </div>
-            </div>
+          <li
+            class="nav-section-label"
+            data-titles="Academic VP,Principal"
+            data-i18n="sa_nav_section_academic"
+          >
+            Academics
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="timetable"
+              data-titles="Academic VP,Principal"
+            >
+              <span class="nav-icon">🗓️</span
+              ><span data-i18n="sa_nav_timetable">Timetable</span></a
+            >
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="marks-review"
+              data-titles="Academic VP,Principal"
+            >
+              <span class="nav-icon">📊</span
+              ><span data-i18n="sa_nav_marks_review">Marks Review</span></a
+            >
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="semester"
+              data-titles="Academic VP,Principal"
+            >
+              <span class="nav-icon">🎓</span
+              ><span data-i18n="sa_nav_semester">Semester Control</span></a
+            >
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="conduct"
+              data-titles="Academic VP,Principal"
+            >
+              <span class="nav-icon">⚖️</span
+              ><span data-i18n="sa_nav_conduct">Student Conduct</span></a
+            >
+          </li>
 
-            <div class="nav-group">
-                <button class="dropdown-btn" onclick="toggleDropdown('soc-menu')">Social Science ▼</button>
-                <div id="soc-menu" class="dropdown-content">
-                    <button onclick="renderTable('Social Science', 11, 'A')">Grade 11 - A</button>
-                    <button onclick="renderTable('Social Science', 11, 'B')">Grade 11 - B</button>
-                    <button onclick="renderTable('Social Science', 12, 'A')">Grade 12 - A</button>
-                    <button onclick="renderTable('Social Science', 12, 'B')">Grade 12 - B</button>
-                </div>
-            </div>
-        </nav>
+          <li
+            class="nav-section-label"
+            data-titles="Principal"
+            data-i18n="sa_nav_section_principal"
+          >
+            Principal
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="escalated-absence"
+              data-titles="Principal"
+            >
+              <span class="nav-icon">🚨</span
+              ><span data-i18n="sa_nav_escalated_absence"
+                >Escalated Absences</span
+              ></a
+            >
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="disciplinary"
+              data-titles="Principal"
+            >
+              <span class="nav-icon">🛑</span
+              ><span data-i18n="sa_nav_disciplinary"
+                >Disciplinary Cases</span
+              ></a
+            >
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="document-approvals"
+              data-titles="Principal"
+            >
+              <span class="nav-icon">🖋️</span
+              ><span data-i18n="sa_nav_document_approvals"
+                >Document Approvals</span
+              ></a
+            >
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="recognition"
+              data-titles="Principal"
+            >
+              <span class="nav-icon">🏆</span
+              ><span data-i18n="sa_nav_recognition">Recognition Awards</span></a
+            >
+          </li>
 
-        <main id="content">
-            <div class="dashboard-card">
-                <div class="toolbar" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                    <input type="text" id="searchInput" placeholder="Search students..." onkeyup="filterStudents()" style="padding: 10px; width: 70%; border-radius: 20px; border: 1px solid #ccc;">
-                    <button id="exportBtn" onclick="exportTableToCSV('students_export.csv')" style="padding: 10px 20px; background: #27ae60; color: white; border: none; border-radius: 20px; cursor: pointer;">Export to Excel</button>
-                </div>
+          <li
+            class="nav-section-label"
+            data-titles="Principal,Admin VP,Academic VP"
+            data-i18n="sa_nav_section_general"
+          >
+            General
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="students"
+              data-titles="Principal,Admin VP,Academic VP"
+            >
+              <span class="nav-icon">🎒</span
+              ><span data-i18n="sa_nav_students">Students</span></a
+            >
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="profile"
+              data-titles="Principal,Admin VP,Academic VP"
+            >
+              <span class="nav-icon">👤</span
+              ><span data-i18n="sa_nav_profile">My Profile</span></a
+            >
+          </li>
+        </ul>
 
-                <table id="student-table">
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>Full Name</th>
-                            <th>Class</th>
-                            <th>Stream</th>
-                            <th>Section</th>
-                        </tr>
-                    </thead>
-                    <tbody id="student-table-body">
-                        </tbody>
-                </table>
+        <div class="sidebar-footer">
+          <div class="sidebar-title-badge">
+            🎖️ <span id="sa-title-badge">—</span>
+          </div>
+          <a href="#" class="logout-btn" id="sa-logout-btn"
+            >🚪 <span data-i18n="sa_logout">Logout</span></a
+          >
+        </div>
+      </nav>
+
+      <!-- ============ MAIN ============ -->
+      <div class="main-content">
+        <div class="top-bar">
+          <button
+            class="sidebar-toggle"
+            id="sidebar-toggle"
+            aria-label="Open navigation menu"
+          >
+            ☰
+          </button>
+          <h1
+            class="page-title-text"
+            id="sa-page-title"
+            data-i18n="sa_nav_dashboard"
+          >
+            Dashboard
+          </h1>
+          <div class="top-search">
+            <span>🔎</span>
+            <input
+              type="text"
+              id="sa-global-search"
+              data-i18n-placeholder="sa_search_placeholder"
+              placeholder="Search students or teachers..."
+            />
+          </div>
+          <div class="top-bar-right">
+            <div
+              class="lang-switch-group"
+              role="tablist"
+              aria-label="Language / ቋንቋ"
+            >
+              <button
+                type="button"
+                class="lang-switch-btn"
+                data-lang="en"
+                role="tab"
+                aria-selected="true"
+                onclick="setLang('en')"
+              >
+                EN
+              </button>
+              <button
+                type="button"
+                class="lang-switch-btn"
+                data-lang="am"
+                role="tab"
+                aria-selected="false"
+                onclick="setLang('am')"
+              >
+                አማ
+              </button>
             </div>
-        </main>
+            <button class="topbar-icon-btn" id="sa-alerts-btn" title="Alerts">
+              🔔<span
+                class="badge-dot"
+                id="sa-alerts-count"
+                style="display: none"
+                >0</span
+              >
+            </button>
+            <div class="topbar-profile">
+              <div class="topbar-profile-avatar" id="sa-avatar-initials">
+                --
+              </div>
+              <div>
+                <div class="topbar-profile-name" id="sa-profile-name">—</div>
+                <div class="topbar-profile-title" id="sa-profile-title">—</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===================== DASHBOARD ===================== -->
+        <section class="page-content active" id="page-dashboard">
+          <div class="dash-hero">
+            <h2 id="sa-hero-greeting" data-i18n="sa_hero_greeting">
+              Welcome back
+            </h2>
+            <p id="sa-hero-sub" data-i18n="sa_hero_sub">
+              Here's what needs your attention today.
+            </p>
+          </div>
+          <div class="stat-row" id="sa-dashboard-stats"></div>
+          <div class="widget-grid" id="sa-dashboard-widgets"></div>
+        </section>
+
+        <!-- ===================== TEACHERS & ATTENDANCE (Admin VP) ===================== -->
+        <section class="page-content" id="page-teachers">
+          <h2 data-i18n="sa_nav_teachers">Teachers &amp; Attendance</h2>
+          <p class="page-subtitle" data-i18n="sa_teachers_sub">
+            Mark daily attendance and review punctuality.
+          </p>
+
+          <div class="widget" style="margin-bottom: 18px">
+            <h3 data-i18n="sa_mark_attendance_heading">
+              Mark Today's Attendance
+            </h3>
+            <div class="form-row">
+              <div class="form-group">
+                <label data-i18n="sa_teacher_id_label">Teacher ID</label>
+                <input
+                  type="text"
+                  id="mark-attendance-teacher-id"
+                  placeholder="e.g. TCH0007"
+                />
+              </div>
+              <div class="form-group">
+                <label data-i18n="sa_status_label">Status</label>
+                <select id="mark-attendance-status">
+                  <option value="present" data-i18n="sa_present">
+                    Present
+                  </option>
+                  <option value="absent" data-i18n="sa_absent">Absent</option>
+                </select>
+              </div>
+            </div>
+            <button
+              class="btn btn-accent"
+              id="mark-attendance-btn"
+              data-i18n="sa_record"
+            >
+              Record
+            </button>
+          </div>
+
+          <div class="widget" style="margin-bottom: 18px">
+            <h3 data-i18n="sa_punctuality_heading">Punctuality Report</h3>
+            <div class="form-row">
+              <div class="form-group">
+                <label data-i18n="sa_teacher_id_label">Teacher ID</label>
+                <input
+                  type="text"
+                  id="punctuality-teacher-id"
+                  placeholder="e.g. TCH0007"
+                />
+              </div>
+              <div class="form-group" style="align-self: end">
+                <button
+                  class="btn btn-primary"
+                  id="punctuality-lookup-btn"
+                  data-i18n="sa_lookup"
+                >
+                  Look Up
+                </button>
+              </div>
+            </div>
+            <div id="punctuality-result"></div>
+          </div>
+
+          <div class="widget">
+            <h3 data-i18n="sa_grant_leave_heading">Grant Teacher Leave</h3>
+            <p class="form-hint" data-i18n="sa_grant_leave_hint">
+              For a direct conversation or a doctor's note handed in person —
+              this excuses the dates immediately, no request needed.
+            </p>
+            <div class="form-row">
+              <div class="form-group">
+                <label data-i18n="sa_teacher_id_label">Teacher ID</label>
+                <input
+                  type="text"
+                  id="leave-teacher-id"
+                  placeholder="e.g. TCH0007"
+                />
+              </div>
+              <div class="form-group">
+                <label data-i18n="sa_reason_label">Reason (optional)</label>
+                <input type="text" id="leave-reason" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label data-i18n="sa_from_label">From</label>
+                <input type="date" id="leave-date-from" />
+              </div>
+              <div class="form-group">
+                <label data-i18n="sa_to_label">To</label>
+                <input type="date" id="leave-date-to" />
+              </div>
+            </div>
+            <button
+              class="btn btn-accent"
+              id="grant-leave-btn"
+              data-i18n="sa_grant_leave_btn"
+            >
+              Grant Leave
+            </button>
+          </div>
+        </section>
+
+        <!-- ===================== TEXTBOOKS (Admin VP) ===================== -->
+        <section class="page-content" id="page-textbooks">
+          <h2 data-i18n="sa_nav_textbooks">Textbooks</h2>
+          <p class="page-subtitle" data-i18n="sa_textbooks_sub">
+            School-wide distribution log. Decide the penalty for any lost book.
+          </p>
+          <div
+            class="widget-grid"
+            style="margin-bottom: 18px"
+            id="sa-textbook-summary"
+          ></div>
+          <div class="data-table-wrap">
+            <table class="data-table" id="sa-textbook-table">
+              <thead>
+                <tr>
+                  <th data-i18n="sa_col_student">Student</th>
+                  <th data-i18n="sa_col_class">Class</th>
+                  <th data-i18n="sa_col_subject">Subject</th>
+                  <th data-i18n="sa_col_status">Status</th>
+                  <th data-i18n="sa_col_penalty">Penalty</th>
+                  <th data-i18n="sa_col_action">Action</th>
+                </tr>
+              </thead>
+              <tbody id="sa-textbook-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ===================== ABSENCE REQUESTS (Admin VP) ===================== -->
+        <section class="page-content" id="page-absence">
+          <h2 data-i18n="sa_nav_absence">Absence Requests</h2>
+          <p class="page-subtitle" data-i18n="sa_absence_sub">
+            Requests up to 5 days are yours to decide. Longer ones go straight
+            to the Principal.
+          </p>
+          <div class="tab-row">
+            <button
+              class="tab-btn active"
+              data-tab="teacher-absence"
+              data-i18n="sa_tab_teacher_requests"
+            >
+              Teacher Requests
+            </button>
+            <button
+              class="tab-btn"
+              data-tab="student-absence"
+              data-i18n="sa_tab_student_requests"
+            >
+              Student Escalations
+            </button>
+          </div>
+          <div id="tab-teacher-absence" class="tab-panel">
+            <div class="data-table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="sa_col_teacher">Teacher</th>
+                    <th data-i18n="sa_col_dates">Dates</th>
+                    <th data-i18n="sa_col_reason">Reason</th>
+                    <th data-i18n="sa_col_action">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="sa-teacher-absence-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+          <div id="tab-student-absence" class="tab-panel" style="display: none">
+            <div class="data-table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="sa_col_student">Student</th>
+                    <th data-i18n="sa_col_class">Class</th>
+                    <th data-i18n="sa_col_dates">Dates</th>
+                    <th data-i18n="sa_col_reason">Reason</th>
+                    <th data-i18n="sa_col_action">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="sa-student-absence-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================== TIMETABLE (Academic VP) ===================== -->
+        <section class="page-content" id="page-timetable">
+          <h2 data-i18n="sa_nav_timetable">Timetable</h2>
+          <p class="page-subtitle" data-i18n="sa_timetable_sub">
+            Build the weekly schedule for a class section.
+          </p>
+          <div class="widget" style="margin-bottom: 18px">
+            <div class="form-row">
+              <div class="form-group">
+                <label data-i18n="sa_class_level_label">Class Level</label
+                ><input type="text" id="tt-class-level" placeholder="10" />
+              </div>
+              <div class="form-group">
+                <label data-i18n="sa_section_label">Section</label
+                ><input type="text" id="tt-section" placeholder="A" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label data-i18n="sa_stream_label">Stream</label
+                ><input
+                  type="text"
+                  id="tt-stream"
+                  placeholder="Natural Science"
+                />
+              </div>
+              <div class="form-group" style="align-self: end">
+                <button
+                  class="btn btn-primary"
+                  id="tt-load-btn"
+                  data-i18n="sa_load"
+                >
+                  Load
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="widget" style="margin-bottom: 18px">
+            <h3 data-i18n="sa_add_slot_heading">Add a Slot</h3>
+            <div class="form-row">
+              <div class="form-group">
+                <label data-i18n="sa_day_label">Day</label>
+                <select id="tt-day">
+                  <option value="1" data-i18n="sa_monday">Monday</option>
+                  <option value="2" data-i18n="sa_tuesday">Tuesday</option>
+                  <option value="3" data-i18n="sa_wednesday">Wednesday</option>
+                  <option value="4" data-i18n="sa_thursday">Thursday</option>
+                  <option value="5" data-i18n="sa_friday">Friday</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label data-i18n="sa_subject_id_label">Subject ID</label
+                ><input type="text" id="tt-subject-id" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label data-i18n="sa_teacher_id_label"
+                  >Teacher ID (optional)</label
+                ><input type="text" id="tt-teacher-id" />
+              </div>
+              <div class="form-group"></div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label data-i18n="sa_start_time_label">Start Time</label
+                ><input type="time" id="tt-start-time" />
+              </div>
+              <div class="form-group">
+                <label data-i18n="sa_end_time_label">End Time</label
+                ><input type="time" id="tt-end-time" />
+              </div>
+            </div>
+            <button
+              class="btn btn-accent"
+              id="tt-add-btn"
+              data-i18n="sa_add_slot_btn"
+            >
+              Add Slot
+            </button>
+          </div>
+          <div class="data-table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th data-i18n="sa_col_day">Day</th>
+                  <th data-i18n="sa_col_time">Time</th>
+                  <th data-i18n="sa_col_subject">Subject</th>
+                  <th data-i18n="sa_col_teacher">Teacher</th>
+                  <th data-i18n="sa_col_action">Action</th>
+                </tr>
+              </thead>
+              <tbody id="sa-timetable-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ===================== MARKS REVIEW (Academic VP) ===================== -->
+        <section class="page-content" id="page-marks-review">
+          <h2 data-i18n="sa_nav_marks_review">Marks Review</h2>
+          <p class="page-subtitle" data-i18n="sa_marks_review_sub">
+            Every homeroom's push status for the current term.
+          </p>
+          <div class="data-table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th data-i18n="sa_col_homeroom_teacher">Homeroom Teacher</th>
+                  <th data-i18n="sa_col_class">Class</th>
+                  <th data-i18n="sa_col_status">Status</th>
+                  <th data-i18n="sa_col_pushed_at">Pushed At</th>
+                </tr>
+              </thead>
+              <tbody id="sa-marks-review-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ===================== SEMESTER CONTROL (Academic VP) ===================== -->
+        <section class="page-content" id="page-semester">
+          <h2 data-i18n="sa_nav_semester">Semester Control</h2>
+          <p class="page-subtitle" data-i18n="sa_semester_sub">
+            Open or close the current semester for the whole school.
+          </p>
+          <div class="widget" style="max-width: 480px">
+            <h3 data-i18n="sa_current_status_heading">Current Status</h3>
+            <p
+              id="sa-semester-current"
+              style="font-size: 0.95rem; font-weight: 700"
+            ></p>
+            <div class="form-group">
+              <label data-i18n="sa_term_label">Term</label>
+              <select id="semester-term-select">
+                <option value="Semester 1">Semester 1</option>
+                <option value="Semester 2">Semester 2</option>
+              </select>
+            </div>
+            <div class="form-actions">
+              <button
+                class="btn btn-accent"
+                id="semester-start-btn"
+                data-i18n="sa_start_semester"
+              >
+                Start / Switch Semester
+              </button>
+              <button
+                class="btn btn-danger"
+                id="semester-close-btn"
+                data-i18n="sa_close_semester"
+              >
+                Close Semester
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================== STUDENT CONDUCT (Academic VP) ===================== -->
+        <section class="page-content" id="page-conduct">
+          <h2 data-i18n="sa_nav_conduct">Student Conduct</h2>
+          <p class="page-subtitle" data-i18n="sa_conduct_sub">
+            A warning is yours to give directly. A termination-level case goes
+            to the Principal.
+          </p>
+          <div class="widget-grid">
+            <div class="widget">
+              <h3 data-i18n="sa_send_warning_heading">Send a Warning</h3>
+              <div class="form-group">
+                <label data-i18n="sa_student_id_label">Student ID</label
+                ><input type="text" id="warning-student-id" />
+              </div>
+              <div class="form-group">
+                <label data-i18n="sa_message_label">Message</label
+                ><textarea id="warning-message"></textarea>
+              </div>
+              <button
+                class="btn btn-accent"
+                id="send-warning-btn"
+                data-i18n="sa_send_warning_btn"
+              >
+                Send Warning
+              </button>
+            </div>
+            <div class="widget">
+              <h3 data-i18n="sa_open_case_heading">Open a Disciplinary Case</h3>
+              <p class="form-hint" data-i18n="sa_open_case_hint">
+                For termination-level conduct — the Principal decides, not you.
+              </p>
+              <div class="form-group">
+                <label data-i18n="sa_student_id_label">Student ID</label
+                ><input type="text" id="case-student-id" />
+              </div>
+              <div class="form-group">
+                <label data-i18n="sa_description_label">Description</label
+                ><textarea id="case-description"></textarea>
+              </div>
+              <button
+                class="btn btn-danger"
+                id="open-case-btn"
+                data-i18n="sa_open_case_btn"
+              >
+                Hand to Principal
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================== ESCALATED ABSENCES (Principal) ===================== -->
+        <section class="page-content" id="page-escalated-absence">
+          <h2 data-i18n="sa_nav_escalated_absence">Escalated Absences</h2>
+          <p class="page-subtitle" data-i18n="sa_escalated_absence_sub">
+            Requests over 5 days — outside Admin VP's authority to grant alone.
+          </p>
+          <div class="data-table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th data-i18n="sa_col_teacher">Teacher</th>
+                  <th data-i18n="sa_col_dates">Dates</th>
+                  <th data-i18n="sa_col_reason">Reason</th>
+                  <th data-i18n="sa_col_action">Action</th>
+                </tr>
+              </thead>
+              <tbody id="sa-escalated-absence-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ===================== DISCIPLINARY CASES (Principal) ===================== -->
+        <section class="page-content" id="page-disciplinary">
+          <h2 data-i18n="sa_nav_disciplinary">Disciplinary Cases</h2>
+          <p class="page-subtitle" data-i18n="sa_disciplinary_sub">
+            Raised by Academic VP. Dismiss it, or terminate the student's
+            enrollment.
+          </p>
+          <div class="data-table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th data-i18n="sa_col_student">Student</th>
+                  <th data-i18n="sa_col_class">Class</th>
+                  <th data-i18n="sa_col_description">Description</th>
+                  <th data-i18n="sa_col_action">Action</th>
+                </tr>
+              </thead>
+              <tbody id="sa-disciplinary-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ===================== DOCUMENT APPROVALS (Principal) ===================== -->
+        <section class="page-content" id="page-document-approvals">
+          <h2 data-i18n="sa_nav_document_approvals">Document Approvals</h2>
+          <p class="page-subtitle" data-i18n="sa_document_approvals_sub">
+            Teacher signatures and ID photos, pending your review.
+          </p>
+          <div class="data-table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th data-i18n="sa_col_teacher">Teacher</th>
+                  <th data-i18n="sa_col_doc_type">Type</th>
+                  <th data-i18n="sa_col_preview">Preview</th>
+                  <th data-i18n="sa_col_action">Action</th>
+                </tr>
+              </thead>
+              <tbody id="sa-document-approvals-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ===================== RECOGNITION AWARDS (Principal) ===================== -->
+        <section class="page-content" id="page-recognition">
+          <h2 data-i18n="sa_nav_recognition">Recognition Awards</h2>
+          <p class="page-subtitle" data-i18n="sa_recognition_sub">
+            School-wide top performers, by year average.
+          </p>
+          <div class="data-table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th data-i18n="sa_col_rank">Rank</th>
+                  <th data-i18n="sa_col_student">Student</th>
+                  <th data-i18n="sa_col_class">Class</th>
+                  <th data-i18n="sa_col_average">Average</th>
+                  <th data-i18n="sa_col_action">Action</th>
+                </tr>
+              </thead>
+              <tbody id="sa-recognition-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ===================== STUDENTS ===================== -->
+        <section class="page-content" id="page-students">
+          <h2 data-i18n="sa_nav_students">Students</h2>
+          <p class="page-subtitle" data-i18n="sa_students_sub">
+            School-wide roster.
+          </p>
+          <div class="form-group" style="max-width: 320px">
+            <input
+              type="text"
+              id="students-filter"
+              data-i18n-placeholder="sa_students_filter_placeholder"
+              placeholder="Filter by name or ID..."
+            />
+          </div>
+          <div class="data-table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th data-i18n="sa_col_student_id">ID</th>
+                  <th data-i18n="sa_col_name">Name</th>
+                  <th data-i18n="sa_col_class">Class</th>
+                  <th data-i18n="sa_col_status">Status</th>
+                </tr>
+              </thead>
+              <tbody id="sa-students-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ===================== PROFILE ===================== -->
+        <section class="page-content" id="page-profile">
+          <h2 data-i18n="sa_nav_profile">My Profile</h2>
+          <div class="widget" style="max-width: 420px">
+            <p>
+              <strong data-i18n="sa_profile_id_label">Admin ID:</strong>
+              <span id="profile-admin-id">—</span>
+            </p>
+            <p>
+              <strong data-i18n="sa_profile_title_label">Title:</strong>
+              <span id="profile-title">—</span>
+            </p>
+            <p>
+              <strong data-i18n="sa_profile_school_label">School:</strong>
+              <span id="profile-school-name">—</span>
+            </p>
+          </div>
+        </section>
+      </div>
     </div>
 
-    <script src="js/api.js"></script>
-    <script src="js/logic.js"></script>
-</body>
+    <div id="sa-toast-container"></div>
+
+    <script src="i18n.js"></script>
+    <script src="script.js"></script>
+  </body>
 </html>
