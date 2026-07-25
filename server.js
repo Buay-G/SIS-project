@@ -170,6 +170,103 @@ function requireAdminTitle(...allowedTitles) {
     };
 }
 
+// --- Registrar & Recorder ---
+// Registrar can happen two ways, both fully equivalent to every endpoint
+// below (see requireRegistrarOnly/requireRegistrarOrRecorder): (1) a
+// standalone `registrar_users` account (created outside this app), or
+// (2) a flag — teachers.is_registrar — an Academic VP grants straight
+// onto an existing teacher's own login via
+// POST /api/academic-vp/grant-registrar, no separate account needed.
+// A Recorder is always a regular `teachers` account additionally listed
+// in the `recorders` table below — up to 2 active per school, managed BY
+// the Registrar (whichever kind) via /api/registrar/recorders.
+//
+// ADD THESE if they don't exist yet:
+//   ALTER TABLE teachers
+//     ADD COLUMN is_registrar TINYINT(1) NOT NULL DEFAULT 0,
+//     ADD COLUMN registrar_assigned_by VARCHAR(50) NULL,
+//     ADD COLUMN registrar_assigned_at DATETIME NULL;
+//
+//   CREATE TABLE recorders (
+//     id INT AUTO_INCREMENT PRIMARY KEY,
+//     teacher_id VARCHAR(50) NOT NULL,
+//     school_id INT NOT NULL,
+//     assigned_by VARCHAR(50) NOT NULL, -- the assigning Registrar's user_id (registrar_users OR teachers)
+//     assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     UNIQUE KEY uniq_recorder_school (teacher_id, school_id)
+//   );
+//
+//   CREATE TABLE class_sections (
+//     id INT AUTO_INCREMENT PRIMARY KEY,
+//     school_id INT NOT NULL,
+//     class_level INT NOT NULL,
+//     stream VARCHAR(50) NOT NULL,
+//     section_name VARCHAR(5) NOT NULL,
+//     max_capacity INT NULL,
+//     is_active BOOLEAN NOT NULL DEFAULT TRUE,
+//     UNIQUE KEY uniq_section (school_id, class_level, stream, section_name)
+//   );
+//
+//   CREATE TABLE promotion_audit_log (
+//     id INT AUTO_INCREMENT PRIMARY KEY,
+//     student_id VARCHAR(50) NOT NULL,
+//     school_id INT NOT NULL,
+//     action ENUM('promote','retain') NOT NULL,
+//     from_class_level INT NOT NULL,
+//     to_class_level INT NULL,
+//     year_average DECIMAL(5,2) NULL,
+//     cutoff_mark DECIMAL(5,2) NULL,
+//     was_override BOOLEAN NOT NULL DEFAULT FALSE,
+//     override_reason TEXT NULL,
+//     decided_by VARCHAR(50) NOT NULL,
+//     decided_at DATETIME DEFAULT CURRENT_TIMESTAMP
+//   );
+//
+//   -- New registrations now sit unassigned until the Placement Wizard
+//   -- runs, so `section` must accept NULL:
+//   ALTER TABLE students MODIFY section VARCHAR(5) NULL;
+
+// Registration + routine profile updates are shared ground between the
+// Registrar and any assigned Recorder. Everything else (section setup,
+// placement, promotion, recorder management) stays Registrar-only via
+// requireRegistrarOnly below.
+async function requireRegistrarOrRecorder(req, res, next) {
+    if (!req.user) return res.status(401).json({ error: "Not logged in." });
+    if (req.user.role === 'registrar_users') return next();
+    if (req.user.role === 'teachers') {
+        try {
+            const [[teacherRows], [recorderRows]] = await Promise.all([
+                pool.query('SELECT is_registrar FROM teachers WHERE teacher_id = ? AND school_id = ?', [req.user.user_id, req.user.school_id]),
+                pool.query('SELECT id FROM recorders WHERE teacher_id = ? AND school_id = ?', [req.user.user_id, req.user.school_id])
+            ]);
+            if ((teacherRows.length > 0 && !!teacherRows[0].is_registrar) || recorderRows.length > 0) return next();
+        } catch (err) {
+            console.error("requireRegistrarOrRecorder lookup failed:", err);
+            return res.status(500).json({ error: "Could not verify permissions." });
+        }
+    }
+    return res.status(403).json({ error: "You don't have permission to do this." });
+}
+
+// A Registrar isn't only a standalone registrar_users account anymore —
+// it's also just a flag (teachers.is_registrar) an Academic VP can grant
+// straight onto an existing teacher's own login (see
+// POST /api/academic-vp/grant-registrar). Both paths land here.
+async function requireRegistrarOnly(req, res, next) {
+    if (!req.user) return res.status(403).json({ error: "This action is restricted to the Registrar." });
+    if (req.user.role === 'registrar_users') return next();
+    if (req.user.role === 'teachers') {
+        try {
+            const [rows] = await pool.query('SELECT is_registrar FROM teachers WHERE teacher_id = ? AND school_id = ?', [req.user.user_id, req.user.school_id]);
+            if (rows.length > 0 && !!rows[0].is_registrar) return next();
+        } catch (err) {
+            console.error("requireRegistrarOnly lookup failed:", err);
+            return res.status(500).json({ error: "Could not verify permissions." });
+        }
+    }
+    return res.status(403).json({ error: "This action is restricted to the Registrar." });
+}
+
 // --- Zonal admin & super admin ---
 // A "zone" isn't one flat admin role — it's three distinct positions,
 // all in the existing zonal_admins table (distinguished by `title`, same
@@ -431,21 +528,89 @@ async function createTeacherAccount({ school_id, first_name, middle_name, last_n
     return teacher_id;
 }
 
+// --- Teacher intake: Zonal push -> Principal accept -> Academic VP assign ---
+// A zonal admin no longer mints a live, loggable-in teacher account
+// directly at the school (that used to happen right here). Instead they
+// PUSH a candidate to a specific school; the account isn't real until
+// that school's Principal reviews it and accepts it (Stage 1 of the
+// Teacher Setup & Assignment workflow — see the EXECUTIVE SCHOOL
+// ADMINISTRATION SUITE block further down for the Principal-side
+// endpoints and Stage 2's Academic VP handoff). This is also why the
+// hire_teacher branch of /api/zonal/proposals/:id/approve below now
+// pushes instead of creating directly — a Head of Education approving a
+// Teamleader's hire proposal still isn't the school-level gate; the
+// Principal is.
+//
+// ADD THIS if it doesn't exist yet:
+//   CREATE TABLE incoming_teachers (
+//     incoming_id INT AUTO_INCREMENT PRIMARY KEY,
+//     school_id INT NOT NULL,
+//     pushed_by VARCHAR(20) NOT NULL, -- zonal_admins.admin_id (provenance for a proposal-approved push is in the linked zonal_proposals row)
+//     first_name VARCHAR(100) NOT NULL,
+//     middle_name VARCHAR(100) NULL,
+//     last_name VARCHAR(100) NOT NULL,
+//     contact_number VARCHAR(30) NULL,
+//     email VARCHAR(150) NULL,
+//     zonal_recruitment_code VARCHAR(50) NULL,
+//     status ENUM('pending','accepted','declined') NOT NULL DEFAULT 'pending',
+//     teacher_id VARCHAR(50) NULL, -- filled in once the Principal accepts and mints the real ID
+//     decided_by VARCHAR(50) NULL, -- school_admins.admin_id (the Principal) who accepted/declined
+//     decided_at DATETIME NULL,
+//     decline_reason VARCHAR(255) NULL,
+//     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     FOREIGN KEY (school_id) REFERENCES schools(id)
+//   );
+async function pushIncomingTeacher({ school_id, pushed_by, first_name, middle_name, last_name, contact_number, email, zonal_recruitment_code }) {
+    const [schoolRows] = await pool.query('SELECT id FROM schools WHERE id = ?', [school_id]);
+    if (schoolRows.length === 0) throw Object.assign(new Error("School not found."), { status: 404 });
+    const [result] = await pool.query(
+        `INSERT INTO incoming_teachers (school_id, pushed_by, first_name, middle_name, last_name, contact_number, email, zonal_recruitment_code)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [school_id, pushed_by, first_name, middle_name || null, last_name, contact_number || null, email || null, zonal_recruitment_code || null]
+    );
+    return result.insertId;
+}
+
 app.post('/api/zonal/teachers', requireAuth, requireCanActInZone, async (req, res) => {
-    const { school_id, first_name, middle_name, last_name, contact_number, email, password } = req.body;
-    if (!school_id || !first_name || !last_name || !password) {
-        return res.status(400).json({ error: "school_id, first_name, last_name, and password are required" });
+    const { school_id, first_name, middle_name, last_name, contact_number, email, zonal_recruitment_code } = req.body;
+    if (!school_id || !first_name || !last_name) {
+        return res.status(400).json({ error: "school_id, first_name, and last_name are required" });
     }
     try {
         const zoneSchoolIds = await getZonalSchoolIds(req);
         if (!zoneSchoolIds.includes(Number(school_id))) {
             return res.status(403).json({ error: "That school isn't in your zone." });
         }
-        const teacher_id = await createTeacherAccount({ school_id, first_name, middle_name, last_name, contact_number, email, password });
-        res.json({ message: "Teacher hired.", teacher_id });
+        const incoming_id = await pushIncomingTeacher({
+            school_id, pushed_by: req.user.user_id, first_name, middle_name, last_name, contact_number, email, zonal_recruitment_code
+        });
+        res.json({ message: "Teacher pushed to the school. Their Principal will review and accept before the account goes live.", incoming_id });
     } catch (err) {
         console.error("/api/zonal/teachers error:", err);
-        res.status(err.status || 500).json({ error: err.status ? err.message : "Could not hire teacher" });
+        res.status(err.status || 500).json({ error: err.status ? err.message : "Could not push teacher to school" });
+    }
+});
+
+// Lets the pushing zonal admin track what happened to what they sent
+// (still pending / accepted with a real teacher_id / declined with a
+// reason) without needing school-level access.
+app.get('/api/zonal/incoming-teachers', requireAuth, requireZonalAdmin, async (req, res) => {
+    try {
+        const schoolIds = await getZonalSchoolIds(req);
+        if (schoolIds.length === 0) return res.json([]);
+        const [rows] = await pool.query(
+            `SELECT it.incoming_id, it.school_id, s.school_name, it.first_name, it.middle_name, it.last_name,
+                    it.status, it.teacher_id, it.decline_reason, it.created_at, it.decided_at
+             FROM incoming_teachers it
+             JOIN schools s ON s.id = it.school_id
+             WHERE it.school_id IN (?) AND it.pushed_by = ?
+             ORDER BY it.created_at DESC`,
+            [schoolIds, req.user.user_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/zonal/incoming-teachers error:", err);
+        res.status(500).json({ error: "Could not load pushed teachers" });
     }
 });
 
@@ -514,18 +679,23 @@ app.post('/api/zonal/proposals/:id/approve', requireAuth, requireHeadOfEducation
         const proposal = rows[0];
         const payload = typeof proposal.payload === 'string' ? JSON.parse(proposal.payload) : proposal.payload;
 
-        let resultId;
+        let resultId, message;
         if (proposal.proposal_type === 'hire_teacher') {
-            resultId = await createTeacherAccount({ school_id: proposal.school_id, ...payload });
+            // Approval doesn't create a live teacher account anymore — it
+            // pushes the candidate to the school, same as a direct hire via
+            // /api/zonal/teachers. The Principal still has to accept it.
+            resultId = await pushIncomingTeacher({ school_id: proposal.school_id, pushed_by: proposal.proposed_by, ...payload });
+            message = "Proposal approved and pushed to the school. Their Principal will review and accept before the account goes live.";
         } else {
             resultId = await createSchoolAdminAccount({ school_id: proposal.school_id, ...payload });
+            message = "Proposal approved and account created.";
         }
 
         await pool.query(
             `UPDATE zonal_proposals SET status = 'approved', reviewed_by = ?, reviewed_at = NOW() WHERE proposal_id = ?`,
             [req.user.user_id, proposal.proposal_id]
         );
-        res.json({ message: "Proposal approved and account created.", id: resultId });
+        res.json({ message, id: resultId });
     } catch (err) {
         console.error("/api/zonal/proposals/:id/approve error:", err);
         res.status(err.status || 500).json({ error: err.status ? err.message : "Could not approve proposal" });
@@ -742,7 +912,7 @@ async function isPushedAndLocked(subject_id, class_level, section, stream, term,
 
 // --- API Endpoints ---
 
-app.post('/api/register', requireAuth, requireRole('registrar_users'), async (req, res) => {
+app.post('/api/register', requireAuth, requireRegistrarOrRecorder, async (req, res) => {
     // Each registration needs its own dedicated connection (not the shared
     // pool) so the transaction's lock and queries all happen on the same
     // underlying connection — required for FOR UPDATE row locking and
@@ -804,28 +974,16 @@ app.post('/api/register', requireAuth, requireRole('registrar_users'), async (re
         const assigned_pc = `PC-${Math.floor(Math.random() * 39) + 1}`;
         const status = (fayda_number && fayda_number.trim() !== '') ? 'Active' : 'Pending';
 
-        const gradeInt = parseInt(class_level);
-        const possibleSections = (gradeInt === 9) ? ['A', 'B', 'C'] : (gradeInt === 10) ? ['A', 'B', 'C', 'D'] : ['A', 'B'];
-
-        // Scoped by school_id too — otherwise two schools' Grade 9 headcounts
-        // would get mixed together when balancing which section a new
-        // student lands in.
-        const [stats] = await conn.query(
-            'SELECT section, COUNT(*) as count FROM students WHERE school_id = ? AND class_level = ? AND stream = ? GROUP BY section',
-            [school_id, class_level, stream]
-        );
-
-        let counts = {};
-        possibleSections.forEach(s => counts[s] = 0);
-        stats.forEach(stat => { if (counts.hasOwnProperty(stat.section)) counts[stat.section] = stat.count; });
-        let assignedSection = possibleSections.reduce((a, b) => counts[a] <= counts[b] ? a : b);
-
-        const sql = `INSERT INTO students (student_id, school_id, school_name, first_name, middle_name, last_name, sex, class_level, stream, section, phone_number, fayda_number, status, lms_username, email_address, assigned_computer, security_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-        await conn.query(sql, [student_id, school_id, school_name, first_name, middle_name, last_name, sex, class_level, stream, assignedSection, phone_number, fayda_number, status, lms_username, email_address, assigned_pc, security_password]);
+        // No section assigned at registration time anymore — the student
+        // sits in the unassigned queue (section IS NULL) until a Registrar
+        // runs the Placement Wizard for this grade/stream. See
+        // GET/POST /api/registrar/unassigned-queue and /trigger-placement.
+        const sql = `INSERT INTO students (student_id, school_id, school_name, first_name, middle_name, last_name, sex, class_level, stream, section, phone_number, fayda_number, status, lms_username, email_address, assigned_computer, security_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`;
+        await conn.query(sql, [student_id, school_id, school_name, first_name, middle_name, last_name, sex, class_level, stream, phone_number, fayda_number, status, lms_username, email_address, assigned_pc, security_password]);
 
         await conn.commit();
 
-        res.json({ message: "Registered!", student_id, assignedSection, assigned_pc, security_password: plain_password });
+        res.json({ message: "Registered!", student_id, assigned_pc, security_password: plain_password });
     } catch (err) {
         await conn.rollback();
         res.status(500).json({ error: "Registration failed: " + err.message });
@@ -3721,7 +3879,7 @@ app.post('/api/upload-marks', requireAuth, handleUploadError(upload.single('file
     }
 });
 
-app.put('/api/update/:id', requireAuth, requireRole('registrar_users'), async (req, res) => {
+app.put('/api/update/:id', requireAuth, requireRegistrarOrRecorder, async (req, res) => {
     try {
         const { first_name, middle_name, last_name, phone_number, fayda_number, sex, class_level, stream } = req.body;
         const finalStatus = (fayda_number && fayda_number.trim() !== '') ? 'Active' : 'Pending';
@@ -3736,19 +3894,1241 @@ app.put('/api/update/:id', requireAuth, requireRole('registrar_users'), async (r
     }
 });
 
-app.put('/api/promote/:id', requireAuth, requireRole('registrar_users'), async (req, res) => {
+// Shared by both the eligibility preview (GET, below) and the actual
+// decision (PUT, below) so they can never disagree with each other.
+async function computePromotionEligibility(student_id, school_id, class_level) {
+    const cutoff_mark = await getPassMarkCutoff(school_id);
+    const leaderboard = await getSchoolYearLeaderboard(school_id);
+    const entry = leaderboard.find(l => String(l.student_id) === String(student_id));
+    const year_average = entry ? entry.year_average : null;
+    let category;
+    if (Number(class_level) >= 12) category = 'Graduating — see graduation workflow';
+    else if (year_average === null) category = 'No marks on record yet';
+    else category = year_average >= cutoff_mark ? 'Eligible for Promotion' : 'Detained/Retained';
+    return { year_average, cutoff_mark, category };
+}
+
+app.get('/api/registrar/promotion-eligibility/:id', requireAuth, requireRegistrarOnly, async (req, res) => {
+    try {
+        const [rows] = await pool.query('SELECT class_level FROM students WHERE student_id = ? AND school_id = ?', [req.params.id, req.user.school_id]);
+        if (rows.length === 0) return res.status(404).json({ error: "Student not found in your school." });
+        res.json(await computePromotionEligibility(req.params.id, req.user.school_id, rows[0].class_level));
+    } catch (err) {
+        console.error("/api/registrar/promotion-eligibility error:", err);
+        res.status(500).json({ error: "Could not evaluate eligibility." });
+    }
+});
+
+app.put('/api/promote/:id', requireAuth, requireRegistrarOnly, async (req, res) => {
+    try {
+        const { action, class_level, stream, override_reason } = req.body;
+        if (action !== 'promote' && action !== 'retain') {
+            return res.status(400).json({ error: "action must be 'promote' or 'retain'." });
+        }
+
+        const [studentRows] = await pool.query('SELECT class_level FROM students WHERE student_id = ? AND school_id = ?', [req.params.id, req.user.school_id]);
+        if (studentRows.length === 0) return res.status(404).json({ error: "Student not found in your school." });
+        const currentGrade = studentRows[0].class_level;
+
+        const { year_average, cutoff_mark, category } = await computePromotionEligibility(req.params.id, req.user.school_id, currentGrade);
+        const expectedAction = category === 'Eligible for Promotion' ? 'promote' : category === 'Detained/Retained' ? 'retain' : null;
+        const was_override = !!expectedAction && expectedAction !== action;
+
+        // Disagreeing with the cutoff's own recommendation requires a
+        // written reason — enforced server-side too, not just in the UI,
+        // since this is what actually gets written to the audit log.
+        if (was_override && (!override_reason || !override_reason.trim())) {
+            return res.status(400).json({ error: "This decision disagrees with the cut-off. An override reason is required." });
+        }
+
+        if (action === 'promote') {
+            if (Number(currentGrade) >= 12) {
+                return res.status(400).json({ error: "Grade 12 students are promoted via the graduation workflow, not this form." });
+            }
+            const newGrade = class_level ? Number(class_level) : Number(currentGrade) + 1;
+            await pool.query(
+                'UPDATE students SET class_level = ?, stream = ?, section = NULL WHERE student_id = ? AND school_id = ?',
+                [newGrade, stream || 'General', req.params.id, req.user.school_id]
+            );
+        }
+        // Retain: class_level/stream/section stay exactly as they are —
+        // the student simply repeats the current grade.
+
+        await pool.query(
+            `INSERT INTO promotion_audit_log
+                (student_id, school_id, action, from_class_level, to_class_level, year_average, cutoff_mark, was_override, override_reason, decided_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [req.params.id, req.user.school_id, action, currentGrade, action === 'promote' ? (class_level || Number(currentGrade) + 1) : currentGrade,
+                year_average, cutoff_mark, was_override, override_reason || null, req.user.user_id]
+        ).catch(err => console.error("promotion_audit_log insert failed (non-blocking):", err));
+
+        res.json({
+            message: action === 'promote'
+                ? `Student promoted to Grade ${class_level || Number(currentGrade) + 1}${was_override ? ' (override)' : ''}.`
+                : `Student retained in Grade ${currentGrade}${was_override ? ' (override)' : ''}.`
+        });
+    } catch (err) {
+        console.error("/api/promote error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- Section Setup (Registrar only) ---
+
+app.get('/api/registrar/sections', requireAuth, requireRegistrarOnly, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            'SELECT id, class_level, stream, section_name, max_capacity, is_active FROM class_sections WHERE school_id = ? ORDER BY class_level, stream, section_name',
+            [req.user.school_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/registrar/sections GET error:", err);
+        res.status(500).json({ error: "Could not load sections." });
+    }
+});
+
+app.post('/api/registrar/sections', requireAuth, requireRegistrarOnly, async (req, res) => {
+    try {
+        const { class_level, stream, section_name, max_capacity } = req.body;
+        if (!class_level || !stream || !section_name) {
+            return res.status(400).json({ error: "Grade, stream, and section name are required." });
+        }
+        await pool.query(
+            'INSERT INTO class_sections (school_id, class_level, stream, section_name, max_capacity, is_active) VALUES (?, ?, ?, ?, ?, TRUE)',
+            [req.user.school_id, class_level, stream, section_name, max_capacity || null]
+        );
+        res.json({ message: "Section added." });
+    } catch (err) {
+        if (err.code === 'ER_DUP_ENTRY') {
+            return res.status(400).json({ error: "That section already exists for this grade and stream." });
+        }
+        console.error("/api/registrar/sections POST error:", err);
+        res.status(500).json({ error: "Could not create section." });
+    }
+});
+
+app.put('/api/registrar/sections/:id', requireAuth, requireRegistrarOnly, async (req, res) => {
+    try {
+        const { is_active, max_capacity } = req.body;
+        const fields = [];
+        const params = [];
+        if (is_active !== undefined) { fields.push('is_active = ?'); params.push(!!is_active); }
+        if (max_capacity !== undefined) { fields.push('max_capacity = ?'); params.push(max_capacity || null); }
+        if (fields.length === 0) return res.status(400).json({ error: "Nothing to update." });
+        params.push(req.params.id, req.user.school_id);
+        const [result] = await pool.query(`UPDATE class_sections SET ${fields.join(', ')} WHERE id = ? AND school_id = ?`, params);
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Section not found." });
+        res.json({ message: "Section updated." });
+    } catch (err) {
+        console.error("/api/registrar/sections PUT error:", err);
+        res.status(500).json({ error: "Could not update section." });
+    }
+});
+
+app.delete('/api/registrar/sections/:id', requireAuth, requireRegistrarOnly, async (req, res) => {
+    try {
+        // Students already placed in this section are left exactly as they
+        // are — deleting the section config only stops NEW placements into
+        // it, same as deactivating, just permanent.
+        const [result] = await pool.query('DELETE FROM class_sections WHERE id = ? AND school_id = ?', [req.params.id, req.user.school_id]);
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Section not found." });
+        res.json({ message: "Section deleted." });
+    } catch (err) {
+        console.error("/api/registrar/sections DELETE error:", err);
+        res.status(500).json({ error: "Could not delete section." });
+    }
+});
+
+// --- Automated Section Placement Wizard (Registrar only) ---
+
+async function getUnassignedBuckets(school_id) {
+    const [students] = await pool.query(
+        `SELECT student_id, first_name, last_name, class_level, stream FROM students
+         WHERE school_id = ? AND (section IS NULL OR section = '')`,
+        [school_id]
+    );
+    const [activeSections] = await pool.query(
+        'SELECT class_level, stream, COUNT(*) AS cnt FROM class_sections WHERE school_id = ? AND is_active = TRUE GROUP BY class_level, stream',
+        [school_id]
+    );
+    const activeCountByKey = new Map(activeSections.map(s => [`${s.class_level}|${s.stream}`, s.cnt]));
+
+    const byKey = new Map();
+    for (const s of students) {
+        const key = `${s.class_level}|${s.stream}`;
+        if (!byKey.has(key)) byKey.set(key, { class_level: s.class_level, stream: s.stream, students: [] });
+        byKey.get(key).students.push(s);
+    }
+    const buckets = [...byKey.values()].map(b => ({
+        ...b,
+        active_sections_configured: activeCountByKey.get(`${b.class_level}|${b.stream}`) || 0
+    }));
+    return { buckets, total_unassigned: students.length };
+}
+
+app.get('/api/registrar/unassigned-queue', requireAuth, requireRegistrarOnly, async (req, res) => {
+    try {
+        res.json(await getUnassignedBuckets(req.user.school_id));
+    } catch (err) {
+        console.error("/api/registrar/unassigned-queue error:", err);
+        res.status(500).json({ error: "Could not load the unassigned queue." });
+    }
+});
+
+// Randomly and as evenly as possible distributes unassigned students
+// across the active sections for a grade/stream. Body {} (no
+// class_level/stream) runs it across every waiting bucket at once.
+app.post('/api/registrar/trigger-placement', requireAuth, requireRegistrarOnly, async (req, res) => {
     try {
         const { class_level, stream } = req.body;
-        const [result] = await pool.query(
-            'UPDATE students SET class_level = ?, stream = ? WHERE student_id = ? AND school_id = ?',
-            [class_level, stream, req.params.id, req.user.school_id]
+        const { buckets } = await getUnassignedBuckets(req.user.school_id);
+        const targetBuckets = (class_level && stream)
+            ? buckets.filter(b => String(b.class_level) === String(class_level) && b.stream === stream)
+            : buckets;
+
+        let placedTotal = 0;
+        const shortfall = [];
+        const skipped_buckets = [];
+
+        for (const bucket of targetBuckets) {
+            const [sections] = await pool.query(
+                'SELECT id, section_name, max_capacity FROM class_sections WHERE school_id = ? AND class_level = ? AND stream = ? AND is_active = TRUE',
+                [req.user.school_id, bucket.class_level, bucket.stream]
+            );
+            if (sections.length === 0) {
+                skipped_buckets.push({ class_level: bucket.class_level, stream: bucket.stream });
+                continue;
+            }
+
+            // Start each section's running count from its CURRENT occupancy
+            // (not 0) so placement stays even across repeated runs, not
+            // just within a single run.
+            const [occRows] = await pool.query(
+                `SELECT section, COUNT(*) AS cnt FROM students
+                 WHERE school_id = ? AND class_level = ? AND stream = ? AND section IS NOT NULL
+                 GROUP BY section`,
+                [req.user.school_id, bucket.class_level, bucket.stream]
+            );
+            const occByName = new Map(occRows.map(r => [r.section, r.cnt]));
+            const running = sections.map(s => ({ ...s, count: occByName.get(s.section_name) || 0 }));
+
+            // Shuffle students so placement order isn't predictable/gameable.
+            const shuffled = [...bucket.students].sort(() => Math.random() - 0.5);
+
+            for (const student of shuffled) {
+                const eligible = running.filter(s => !s.max_capacity || s.count < s.max_capacity);
+                if (eligible.length === 0) {
+                    shortfall.push(student.student_id);
+                    continue;
+                }
+                const target = eligible.reduce((a, b) => a.count <= b.count ? a : b);
+                await pool.query('UPDATE students SET section = ? WHERE student_id = ? AND school_id = ?', [target.section_name, student.student_id, req.user.school_id]);
+                target.count++;
+                placedTotal++;
+            }
+        }
+
+        res.json({
+            message: `${placedTotal} student(s) placed.`,
+            shortfall,
+            skipped_buckets
+        });
+    } catch (err) {
+        console.error("/api/registrar/trigger-placement error:", err);
+        res.status(500).json({ error: "Placement failed." });
+    }
+});
+
+// --- Recorder Management (Registrar only) ---
+
+const MAX_RECORDERS = 2;
+
+app.get('/api/registrar/recorders', requireAuth, requireRegistrarOnly, async (req, res) => {
+    try {
+        const [recorders] = await pool.query(
+            `SELECT t.teacher_id, t.first_name, t.middle_name, t.last_name
+             FROM recorders r JOIN teachers t ON t.teacher_id = r.teacher_id AND t.school_id = r.school_id
+             WHERE r.school_id = ?`,
+            [req.user.school_id]
         );
-        if (result.affectedRows === 0) {
+        res.json({ recorders });
+    } catch (err) {
+        console.error("/api/registrar/recorders GET error:", err);
+        res.status(500).json({ error: "Could not load recorders." });
+    }
+});
+
+app.get('/api/registrar/eligible-recorders', requireAuth, requireRegistrarOnly, async (req, res) => {
+    try {
+        const [teachers] = await pool.query(
+            `SELECT t.teacher_id, t.first_name, t.middle_name, t.last_name FROM teachers t
+             WHERE t.school_id = ? AND t.teacher_id NOT IN (
+                 SELECT teacher_id FROM recorders WHERE school_id = ?
+             )`,
+            [req.user.school_id, req.user.school_id]
+        );
+        res.json(teachers);
+    } catch (err) {
+        console.error("/api/registrar/eligible-recorders error:", err);
+        res.status(500).json({ error: "Could not load eligible teachers." });
+    }
+});
+
+app.post('/api/registrar/recorders', requireAuth, requireRegistrarOnly, async (req, res) => {
+    try {
+        const { teacher_id } = req.body;
+        if (!teacher_id) return res.status(400).json({ error: "teacher_id is required." });
+
+        const [[{ cnt }]] = await pool.query('SELECT COUNT(*) AS cnt FROM recorders WHERE school_id = ?', [req.user.school_id]);
+        if (cnt >= MAX_RECORDERS) return res.status(400).json({ error: `Only ${MAX_RECORDERS} active Recorders are allowed at a time.` });
+
+        const [teacherRows] = await pool.query('SELECT teacher_id FROM teachers WHERE teacher_id = ? AND school_id = ?', [teacher_id, req.user.school_id]);
+        if (teacherRows.length === 0) return res.status(404).json({ error: "Teacher not found in your school." });
+
+        await pool.query('INSERT INTO recorders (teacher_id, school_id, assigned_by) VALUES (?, ?, ?)', [teacher_id, req.user.school_id, req.user.user_id]);
+        res.json({ message: "Teacher assigned as Recorder." });
+    } catch (err) {
+        if (err.code === 'ER_DUP_ENTRY') {
+            return res.status(400).json({ error: "That teacher is already a Recorder." });
+        }
+        console.error("/api/registrar/recorders POST error:", err);
+        res.status(500).json({ error: "Could not assign Recorder." });
+    }
+});
+
+app.delete('/api/registrar/recorders/:teacher_id', requireAuth, requireRegistrarOnly, async (req, res) => {
+    try {
+        const [result] = await pool.query('DELETE FROM recorders WHERE teacher_id = ? AND school_id = ?', [req.params.teacher_id, req.user.school_id]);
+        if (result.affectedRows === 0) return res.status(404).json({ error: "That teacher isn't a Recorder." });
+        res.json({ message: "Recorder access removed." });
+    } catch (err) {
+        console.error("/api/registrar/recorders DELETE error:", err);
+        res.status(500).json({ error: "Could not remove Recorder." });
+    }
+});
+
+// --- Transfer Navigation Hub (Registrar AND Recorder — see spec: Recorders
+// may manage incoming/outgoing transfer codes, just not sections/placement/
+// promotion/recorder-mgmt) ---
+//
+// ADD THIS if it doesn't exist yet:
+//   CREATE TABLE student_transfers (
+//     id INT AUTO_INCREMENT PRIMARY KEY,
+//     student_id VARCHAR(50) NOT NULL,          -- the ID at the SOURCE school
+//     from_school_id INT NULL,                  -- NULL for external (non-network) transfers-in
+//     to_school_id INT NULL,                    -- filled once completed
+//     transfer_code VARCHAR(20) NULL UNIQUE,     -- NULL for external manual entries
+//     status ENUM('pending','completed','cancelled') NOT NULL DEFAULT 'pending',
+//     is_external BOOLEAN NOT NULL DEFAULT FALSE,
+//     student_snapshot JSON NOT NULL,            -- captured record at time of transfer-out
+//     new_student_id VARCHAR(50) NULL,           -- the ID assigned at the RECEIVING school, once completed
+//     initiated_by VARCHAR(50) NOT NULL,
+//     initiated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     completed_by VARCHAR(50) NULL,
+//     completed_at DATETIME NULL
+//   );
+
+function generateTransferCode() {
+    return 'TRF-' + crypto.randomBytes(5).toString('hex').toUpperCase();
+}
+
+// Same fields carried over on every path into this school (network
+// transfer-in or external manual bypass) — kept in one place so both
+// paths build the new record identically.
+async function insertTransferredStudent(conn, school_id, fields) {
+    const { school_name, school_prefix } = (await conn.query(
+        'SELECT school_name, school_prefix FROM schools WHERE id = ? FOR UPDATE', [school_id]
+    ))[0][0] || {};
+    if (!school_prefix) throw new Error("Your school doesn't have a student ID prefix set yet. Contact an administrator.");
+
+    const [[{ studentCount }]] = await conn.query('SELECT COUNT(*) as studentCount FROM students WHERE school_id = ?', [school_id]);
+    const student_id = `${school_prefix}${String(studentCount + 1).padStart(5, '0')}`;
+    const lms_username = student_id;
+    const email_address = `${student_id}@${school_prefix.toLowerCase()}.edu`;
+    const security_password = await bcrypt.hash('1234', 10);
+    const assigned_pc = `PC-${Math.floor(Math.random() * 39) + 1}`;
+    const status = (fields.fayda_number && fields.fayda_number.trim() !== '') ? 'Active' : 'Pending';
+
+    // section is left NULL on purpose — transferred-in students wait for
+    // the Placement Wizard exactly like new registrations do.
+    await conn.query(
+        `INSERT INTO students (student_id, school_id, school_name, first_name, middle_name, last_name, sex, class_level, stream, section, phone_number, fayda_number, status, lms_username, email_address, assigned_computer, security_password)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
+        [student_id, school_id, school_name, fields.first_name, fields.middle_name, fields.last_name, fields.sex,
+            fields.class_level, fields.stream, fields.phone_number || null, fields.fayda_number || null, status,
+            lms_username, email_address, assigned_pc, security_password]
+    );
+    return { student_id, assigned_pc };
+}
+
+// --- Outgoing ---
+
+app.post('/api/registrar/transfers/outgoing', requireAuth, requireRegistrarOrRecorder, async (req, res) => {
+    const conn = await pool.getConnection();
+    try {
+        const { student_id } = req.body;
+        if (!student_id) return res.status(400).json({ error: "student_id is required." });
+
+        await conn.beginTransaction();
+        const [rows] = await conn.query('SELECT * FROM students WHERE student_id = ? AND school_id = ? FOR UPDATE', [student_id, req.user.school_id]);
+        if (rows.length === 0) {
+            await conn.rollback();
             return res.status(404).json({ error: "Student not found in your school." });
         }
-        res.json({ message: 'Student promoted successfully' });
+        const student = rows[0];
+        if (String(student.status || '').startsWith('Transferred')) {
+            await conn.rollback();
+            return res.status(400).json({ error: "This student already has a transfer in progress." });
+        }
+
+        let code;
+        for (let attempt = 0; attempt < 5; attempt++) {
+            code = generateTransferCode();
+            const [dupe] = await conn.query('SELECT id FROM student_transfers WHERE transfer_code = ?', [code]);
+            if (dupe.length === 0) break;
+            code = null;
+        }
+        if (!code) { await conn.rollback(); return res.status(500).json({ error: "Could not generate a unique transfer code — try again." }); }
+
+        const snapshot = {
+            first_name: student.first_name, middle_name: student.middle_name, last_name: student.last_name,
+            sex: student.sex, class_level: student.class_level, stream: student.stream,
+            phone_number: student.phone_number, fayda_number: student.fayda_number
+        };
+
+        await conn.query(
+            `INSERT INTO student_transfers (student_id, from_school_id, transfer_code, status, is_external, student_snapshot, initiated_by)
+             VALUES (?, ?, ?, 'pending', FALSE, ?, ?)`,
+            [student_id, req.user.school_id, code, JSON.stringify(snapshot), req.user.user_id]
+        );
+        await conn.query("UPDATE students SET status = 'Transferred - Pending' WHERE student_id = ? AND school_id = ?", [student_id, req.user.school_id]);
+
+        // If this student had a Principal-approved transfer request on
+        // file, this clears it out and links it to the transfer just
+        // created — closing the Student -> Principal -> Registrar loop.
+        const [transferRow] = await conn.query('SELECT id FROM student_transfers WHERE transfer_code = ?', [code]);
+        await conn.query(
+            `UPDATE student_transfer_requests SET status = 'cleared', transfer_id = ?
+             WHERE student_id = ? AND school_id = ? AND status = 'approved'`,
+            [transferRow[0]?.id || null, student_id, req.user.school_id]
+        );
+
+        await conn.commit();
+        res.json({ message: "Transfer code generated. Share it with the receiving school.", transfer_code: code });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        await conn.rollback();
+        console.error("/api/registrar/transfers/outgoing POST error:", err);
+        res.status(500).json({ error: "Could not start the transfer." });
+    } finally {
+        conn.release();
+    }
+});
+
+app.get('/api/registrar/transfers/outgoing', requireAuth, requireRegistrarOrRecorder, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT id, student_id, transfer_code, status, to_school_id, new_student_id, initiated_at, completed_at
+             FROM student_transfers WHERE from_school_id = ? ORDER BY initiated_at DESC`,
+            [req.user.school_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/registrar/transfers/outgoing GET error:", err);
+        res.status(500).json({ error: "Could not load outgoing transfers." });
+    }
+});
+
+app.post('/api/registrar/transfers/outgoing/:id/cancel', requireAuth, requireRegistrarOrRecorder, async (req, res) => {
+    try {
+        const [rows] = await pool.query('SELECT * FROM student_transfers WHERE id = ? AND from_school_id = ?', [req.params.id, req.user.school_id]);
+        if (rows.length === 0) return res.status(404).json({ error: "Transfer not found." });
+        if (rows[0].status !== 'pending') return res.status(400).json({ error: "Only a pending transfer can be cancelled." });
+
+        const [studentRows] = await pool.query('SELECT fayda_number FROM students WHERE student_id = ? AND school_id = ?', [rows[0].student_id, req.user.school_id]);
+        const restoredStatus = (studentRows[0]?.fayda_number && studentRows[0].fayda_number.trim() !== '') ? 'Active' : 'Pending';
+
+        await pool.query("UPDATE student_transfers SET status = 'cancelled' WHERE id = ?", [req.params.id]);
+        await pool.query('UPDATE students SET status = ? WHERE student_id = ? AND school_id = ?', [restoredStatus, rows[0].student_id, req.user.school_id]);
+
+        res.json({ message: "Transfer cancelled — student restored to your active roster." });
+    } catch (err) {
+        console.error("/api/registrar/transfers/outgoing cancel error:", err);
+        res.status(500).json({ error: "Could not cancel the transfer." });
+    }
+});
+
+// --- Incoming ---
+
+// Preview-only — does NOT commit anything, so the receiving Registrar/
+// Recorder can see who they're about to import before accepting.
+app.post('/api/registrar/transfers/incoming/lookup', requireAuth, requireRegistrarOrRecorder, async (req, res) => {
+    try {
+        const { transfer_code } = req.body;
+        if (!transfer_code) return res.status(400).json({ error: "transfer_code is required." });
+
+        const [rows] = await pool.query('SELECT * FROM student_transfers WHERE transfer_code = ?', [transfer_code.trim().toUpperCase()]);
+        if (rows.length === 0) return res.status(404).json({ error: "No transfer found for that code." });
+        const t = rows[0];
+        if (t.status !== 'pending') return res.status(400).json({ error: `This transfer is already ${t.status}.` });
+        if (t.from_school_id === req.user.school_id) return res.status(400).json({ error: "This transfer originated from your own school." });
+
+        res.json({ transfer_code: t.transfer_code, snapshot: typeof t.student_snapshot === 'string' ? JSON.parse(t.student_snapshot) : t.student_snapshot });
+    } catch (err) {
+        console.error("/api/registrar/transfers/incoming/lookup error:", err);
+        res.status(500).json({ error: "Could not look up that transfer code." });
+    }
+});
+
+app.post('/api/registrar/transfers/incoming/complete', requireAuth, requireRegistrarOrRecorder, async (req, res) => {
+    const conn = await pool.getConnection();
+    try {
+        const { transfer_code } = req.body;
+        if (!transfer_code) return res.status(400).json({ error: "transfer_code is required." });
+
+        await conn.beginTransaction();
+        const [rows] = await conn.query('SELECT * FROM student_transfers WHERE transfer_code = ? FOR UPDATE', [transfer_code.trim().toUpperCase()]);
+        if (rows.length === 0) { await conn.rollback(); return res.status(404).json({ error: "No transfer found for that code." }); }
+        const t = rows[0];
+        if (t.status !== 'pending') { await conn.rollback(); return res.status(400).json({ error: `This transfer is already ${t.status}.` }); }
+        if (t.from_school_id === req.user.school_id) { await conn.rollback(); return res.status(400).json({ error: "This transfer originated from your own school." }); }
+
+        const snapshot = typeof t.student_snapshot === 'string' ? JSON.parse(t.student_snapshot) : t.student_snapshot;
+        const { student_id, assigned_pc } = await insertTransferredStudent(conn, req.user.school_id, snapshot);
+
+        await conn.query(
+            `UPDATE student_transfers SET status = 'completed', to_school_id = ?, new_student_id = ?, completed_by = ?, completed_at = NOW() WHERE id = ?`,
+            [req.user.school_id, student_id, req.user.user_id, t.id]
+        );
+        // The old record stays in the source school for audit purposes —
+        // just relabeled so it reads as resolved, not still "pending".
+        await conn.query("UPDATE students SET status = 'Transferred - Completed' WHERE student_id = ? AND school_id = ?", [t.student_id, t.from_school_id]);
+
+        await conn.commit();
+        res.json({ message: `Student imported. New ID: ${student_id} — Awaiting Placement | PC: ${assigned_pc}`, student_id });
+    } catch (err) {
+        await conn.rollback();
+        console.error("/api/registrar/transfers/incoming/complete error:", err);
+        res.status(500).json({ error: "Could not complete the transfer: " + err.message });
+    } finally {
+        conn.release();
+    }
+});
+
+// External school transfer manual bypass ("Skip") — for students arriving
+// from a school outside this network, where there's no transfer code to
+// look up. Creates the student directly, same as a network transfer-in,
+// just without a source record on this platform.
+app.post('/api/registrar/transfers/incoming/manual', requireAuth, requireRegistrarOrRecorder, async (req, res) => {
+    const conn = await pool.getConnection();
+    try {
+        const { first_name, middle_name, last_name, sex, class_level, stream, phone_number, fayda_number } = req.body;
+        if (!first_name || !last_name || !sex || !class_level || !stream) {
+            return res.status(400).json({ error: "First name, last name, sex, grade, and stream are required." });
+        }
+
+        await conn.beginTransaction();
+        const { student_id, assigned_pc } = await insertTransferredStudent(conn, req.user.school_id,
+            { first_name, middle_name, last_name, sex, class_level, stream, phone_number, fayda_number });
+
+        await conn.query(
+            `INSERT INTO student_transfers (student_id, from_school_id, to_school_id, transfer_code, status, is_external, student_snapshot, new_student_id, initiated_by, completed_by, completed_at)
+             VALUES (?, NULL, ?, NULL, 'completed', TRUE, ?, ?, ?, ?, NOW())`,
+            [student_id, req.user.school_id, JSON.stringify({ first_name, middle_name, last_name, sex, class_level, stream, phone_number, fayda_number }),
+                student_id, req.user.user_id, req.user.user_id]
+        );
+
+        await conn.commit();
+        res.json({ message: `Student added via external transfer. ID: ${student_id} — Awaiting Placement | PC: ${assigned_pc}`, student_id });
+    } catch (err) {
+        await conn.rollback();
+        console.error("/api/registrar/transfers/incoming/manual error:", err);
+        res.status(500).json({ error: "Could not add this student: " + err.message });
+    } finally {
+        conn.release();
+    }
+});
+
+app.get('/api/registrar/transfers/incoming', requireAuth, requireRegistrarOrRecorder, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT id, student_id, from_school_id, is_external, new_student_id, status, completed_at
+             FROM student_transfers WHERE to_school_id = ? ORDER BY completed_at DESC`,
+            [req.user.school_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/registrar/transfers/incoming GET error:", err);
+        res.status(500).json({ error: "Could not load incoming transfers." });
+    }
+});
+
+// --- Student-initiated Transfer Requests: Student -> Principal -> Registrar ---
+// This is the gated front door onto the Transfer Navigation Hub above.
+// A student asks their own Principal for a transfer; the Principal is the
+// only one who can approve it; only once approved does it become
+// something a Registrar/Recorder can actually clear. Clearing itself
+// reuses the *existing* POST /api/registrar/transfers/outgoing endpoint
+// unchanged (same transfer-code generation Registrars already use) — see
+// the auto-link block inside that handler below, which closes this
+// request out once its transfer_code is generated. This means no new
+// Registrar-side screen is required for a Registrar to act; only the
+// Student- and Principal-side surfaces are new.
+//
+// ADD THIS if it doesn't exist yet:
+//   CREATE TABLE student_transfer_requests (
+//     request_id INT AUTO_INCREMENT PRIMARY KEY,
+//     school_id INT NOT NULL,
+//     student_id VARCHAR(50) NOT NULL,
+//     reason TEXT NULL,
+//     status ENUM('pending','approved','rejected','cleared') NOT NULL DEFAULT 'pending',
+//     requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     decided_by VARCHAR(50) NULL,
+//     decided_at DATETIME NULL,
+//     decline_reason VARCHAR(255) NULL,
+//     transfer_id INT NULL,          -- set once a Registrar clears it (FK to student_transfers.id)
+//     FOREIGN KEY (school_id) REFERENCES schools(id)
+//   );
+
+app.post('/api/student/transfer-request', requireAuth, async (req, res) => {
+    if (req.user.role !== 'students') return res.status(403).json({ error: "Only a student can submit their own transfer request." });
+    const { reason } = req.body;
+    try {
+        const [existing] = await pool.query(
+            `SELECT request_id FROM student_transfer_requests WHERE student_id = ? AND school_id = ? AND status IN ('pending','approved')`,
+            [req.user.user_id, req.user.school_id]
+        );
+        if (existing.length > 0) return res.status(409).json({ error: "You already have a transfer request in progress." });
+
+        const [result] = await pool.query(
+            `INSERT INTO student_transfer_requests (school_id, student_id, reason) VALUES (?, ?, ?)`,
+            [req.user.school_id, req.user.user_id, reason || null]
+        );
+        res.json({ message: "Transfer request sent to your Principal.", request_id: result.insertId });
+    } catch (err) {
+        console.error("/api/student/transfer-request POST error:", err);
+        res.status(500).json({ error: "Could not submit transfer request" });
+    }
+});
+
+app.get('/api/student/transfer-request', requireAuth, async (req, res) => {
+    if (req.user.role !== 'students') return res.status(403).json({ error: "Students only." });
+    try {
+        const [rows] = await pool.query(
+            `SELECT request_id, reason, status, requested_at, decline_reason
+             FROM student_transfer_requests WHERE student_id = ? AND school_id = ? ORDER BY requested_at DESC LIMIT 1`,
+            [req.user.user_id, req.user.school_id]
+        );
+        res.json(rows[0] || null);
+    } catch (err) {
+        console.error("/api/student/transfer-request GET error:", err);
+        res.status(500).json({ error: "Could not load your transfer request" });
+    }
+});
+
+app.get('/api/principal/transfer-requests', requireAuth, requirePrincipal, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT tr.request_id, tr.student_id, tr.reason, tr.status, tr.requested_at, tr.decline_reason,
+                    s.first_name, s.middle_name, s.last_name, s.sex, s.class_level, s.section
+             FROM student_transfer_requests tr
+             JOIN students s ON s.student_id = tr.student_id AND s.school_id = tr.school_id
+             WHERE tr.school_id = ?
+             ORDER BY (tr.status = 'pending') DESC, tr.requested_at DESC`,
+            [req.user.school_id]
+        );
+        res.json(rows.map(r => ({ ...r, full_name: [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' ') })));
+    } catch (err) {
+        console.error("/api/principal/transfer-requests GET error:", err);
+        res.status(500).json({ error: "Could not load transfer requests" });
+    }
+});
+
+app.post('/api/principal/transfer-requests/:id/approve', requireAuth, requirePrincipal, async (req, res) => {
+    try {
+        const [result] = await pool.query(
+            `UPDATE student_transfer_requests SET status = 'approved', decided_by = ?, decided_at = NOW()
+             WHERE request_id = ? AND school_id = ? AND status = 'pending'`,
+            [req.user.user_id, req.params.id, req.user.school_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Request not found or already decided." });
+        res.json({ message: "Approved. Sent to the Registrar to clear and issue the transfer code." });
+    } catch (err) {
+        console.error("/api/principal/transfer-requests/:id/approve error:", err);
+        res.status(500).json({ error: "Could not approve this request" });
+    }
+});
+
+app.post('/api/principal/transfer-requests/:id/reject', requireAuth, requirePrincipal, async (req, res) => {
+    const { reason } = req.body;
+    try {
+        const [result] = await pool.query(
+            `UPDATE student_transfer_requests SET status = 'rejected', decline_reason = ?, decided_by = ?, decided_at = NOW()
+             WHERE request_id = ? AND school_id = ? AND status = 'pending'`,
+            [reason || null, req.user.user_id, req.params.id, req.user.school_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Request not found or already decided." });
+        res.json({ message: "Transfer request rejected." });
+    } catch (err) {
+        console.error("/api/principal/transfer-requests/:id/reject error:", err);
+        res.status(500).json({ error: "Could not reject this request" });
+    }
+});
+
+// Read-only for the Principal — this year's students who actually went
+// through a completed-or-in-progress outgoing transfer at this school,
+// regardless of whether it started from an approved request above or a
+// Registrar-initiated one (a Registrar can still transfer someone out
+// directly, e.g. an administrative case with no student request on file).
+app.get('/api/principal/transferred-students', requireAuth, requirePrincipal, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT s.student_id, s.first_name, s.middle_name, s.last_name, s.sex, s.class_level, s.section,
+                    st.transfer_code, st.status AS transfer_status, st.initiated_at, st.completed_at
+             FROM student_transfers st
+             JOIN students s ON s.student_id = st.student_id AND s.school_id = st.from_school_id
+             WHERE st.from_school_id = ? AND YEAR(st.initiated_at) = YEAR(CURDATE()) AND st.status != 'cancelled'
+             ORDER BY st.initiated_at DESC`,
+            [req.user.school_id]
+        );
+        res.json(rows.map(r => ({ ...r, full_name: [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' ') })));
+    } catch (err) {
+        console.error("/api/principal/transferred-students error:", err);
+        res.status(500).json({ error: "Could not load transferred students" });
+    }
+});
+
+// --- Graduation workflow (Registrar presses it; Principal is read-only) ---
+// Referenced but not built until now (see the "Grade 12 students are
+// promoted via the graduation workflow, not this form" note on
+// PUT /api/promote/:id above). Registrar batches out this year's Grade 12
+// students under a batch label (e.g. "2018 G12 Batch" — Ethiopian
+// calendar, entered by the Registrar since that's a school calendar
+// decision, not something to hardcode here). Principal only ever reads
+// the result: who's in a batch and the male/female split.
+// ADD THIS if it doesn't exist yet — history needs a per-student
+// timestamp; graduation_batch alone (used by the Principal endpoints
+// below) doesn't tell us *when*:
+//   ALTER TABLE students ADD COLUMN graduated_at DATETIME NULL;
+app.get('/api/registrar/graduation/eligible', requireAuth, requireRegistrarOnly, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT student_id, first_name, middle_name, last_name, sex, class_level, section, stream
+             FROM students WHERE school_id = ? AND CAST(class_level AS UNSIGNED) >= 12 AND status = 'Active'
+             ORDER BY first_name, last_name`,
+            [req.user.school_id]
+        );
+        const cutoff_mark = await getPassMarkCutoff(req.user.school_id);
+        const leaderboard = await getSchoolYearLeaderboard(req.user.school_id);
+        const withCategory = rows.map(r => {
+            const entry = leaderboard.find(l => String(l.student_id) === String(r.student_id));
+            const year_average = entry ? entry.year_average : null;
+            const category = year_average === null ? 'No marks on record yet'
+                : year_average >= cutoff_mark ? 'Eligible for Promotion' : 'Detained/Retained';
+            return { ...r, full_name: [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' '), year_average, category };
+        });
+        res.json(withCategory);
+    } catch (err) {
+        console.error("/api/registrar/graduation/eligible error:", err);
+        res.status(500).json({ error: "Could not load graduation-eligible students" });
+    }
+});
+
+app.post('/api/registrar/graduation/process', requireAuth, requireRegistrarOnly, async (req, res) => {
+    const { student_ids, batch_tag, override_reason } = req.body;
+    if (!batch_tag || !Array.isArray(student_ids) || student_ids.length === 0) {
+        return res.status(400).json({ error: "batch_tag and at least one student_id are required" });
+    }
+    try {
+        const [studentRows] = await pool.query(
+            `SELECT student_id, class_level FROM students
+             WHERE school_id = ? AND status = 'Active' AND student_id IN (?)`,
+            [req.user.school_id, student_ids]
+        );
+        const cutoff_mark = await getPassMarkCutoff(req.user.school_id);
+        const leaderboard = await getSchoolYearLeaderboard(req.user.school_id);
+
+        // Same rule as regular promotion: below the cut-off needs a
+        // written override reason, checked server-side too since this
+        // is what actually gets committed.
+        const toGraduate = [];
+        const skipped = [];
+        for (const s of studentRows) {
+            const entry = leaderboard.find(l => String(l.student_id) === String(s.student_id));
+            const year_average = entry ? entry.year_average : null;
+            const eligible = year_average !== null && year_average >= cutoff_mark;
+            if (!eligible && (!override_reason || !override_reason.trim())) {
+                skipped.push({ student_id: s.student_id, reason: year_average === null ? "No marks on record yet" : "Below the pass-mark cut-off (override reason required)" });
+                continue;
+            }
+            toGraduate.push(s.student_id);
+        }
+
+        let graduated = 0;
+        if (toGraduate.length > 0) {
+            const [result] = await pool.query(
+                `UPDATE students SET status = 'Graduated', graduation_batch = ?, graduated_at = NOW()
+                 WHERE school_id = ? AND status = 'Active' AND student_id IN (?)`,
+                [batch_tag, req.user.school_id, toGraduate]
+            );
+            graduated = result.affectedRows;
+        }
+
+        res.json({
+            message: `${graduated} student(s) graduated under "${batch_tag}".${skipped.length ? ` ${skipped.length} skipped.` : ''}`,
+            graduated,
+            skipped
+        });
+    } catch (err) {
+        console.error("/api/registrar/graduation/process error:", err);
+        res.status(500).json({ error: "Could not graduate this batch" });
+    }
+});
+
+app.get('/api/registrar/graduation/history', requireAuth, requireRegistrarOnly, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT student_id, first_name, middle_name, last_name, graduation_batch AS batch_tag, graduated_at
+             FROM students WHERE school_id = ? AND status = 'Graduated'
+             ORDER BY graduated_at DESC, first_name, last_name`,
+            [req.user.school_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/registrar/graduation/history error:", err);
+        res.status(500).json({ error: "Could not load graduation history" });
+    }
+});
+
+app.get('/api/principal/graduation-batches', requireAuth, requirePrincipal, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT graduation_batch, COUNT(*) AS total,
+                    SUM(CASE WHEN sex = 'Male' THEN 1 ELSE 0 END) AS male,
+                    SUM(CASE WHEN sex = 'Female' THEN 1 ELSE 0 END) AS female
+             FROM students WHERE school_id = ? AND graduation_batch IS NOT NULL
+             GROUP BY graduation_batch ORDER BY graduation_batch DESC`,
+            [req.user.school_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/principal/graduation-batches error:", err);
+        res.status(500).json({ error: "Could not load graduation batches" });
+    }
+});
+
+app.get('/api/principal/graduation-batches/:batch', requireAuth, requirePrincipal, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT student_id, first_name, middle_name, last_name, sex, class_level, section
+             FROM students WHERE school_id = ? AND graduation_batch = ? ORDER BY first_name, last_name`,
+            [req.user.school_id, req.params.batch]
+        );
+        res.json(rows.map(r => ({ ...r, full_name: [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' ') })));
+    } catch (err) {
+        console.error("/api/principal/graduation-batches/:batch error:", err);
+        res.status(500).json({ error: "Could not load this batch" });
+    }
+});
+
+// --- Template Management Hub & Document Preview/Issuance Suite (Registrar only) ---
+// Spec calls these out as two sidebar views (a template gallery, and a
+// per-student issuance search) — implemented here as one set of
+// endpoints: every generator below works either with a real student_id
+// (Issuance Suite) or with the built-in SAMPLE_STUDENT placeholder
+// (Template Hub's "preview the blank template" view), so the exact same
+// tested rendering code produces both.
+//
+// ADD THIS if it doesn't exist yet:
+//   CREATE TABLE document_issuances (
+//     id INT AUTO_INCREMENT PRIMARY KEY,
+//     student_id VARCHAR(50) NOT NULL,
+//     school_id INT NOT NULL,
+//     doc_type ENUM('report_card','transcript','id_card') NOT NULL,
+//     verify_code VARCHAR(20) NOT NULL UNIQUE,
+//     issued_by VARCHAR(50) NOT NULL,
+//     issued_at DATETIME DEFAULT CURRENT_TIMESTAMP
+//   );
+
+const SAMPLE_STUDENT = {
+    student_id: 'SAMPLE-0001',
+    first_name: 'Sample', middle_name: 'A.', last_name: 'Student',
+    sex: 'Female', class_level: 10, section: 'A', stream: 'General',
+    phone_number: '0900000000', fayda_number: null, id_photo_url: null
+};
+
+function generateVerifyCode() {
+    return crypto.randomBytes(6).toString('hex').toUpperCase();
+}
+
+async function logDocumentIssuance(school_id, student_id, doc_type, issued_by) {
+    const code = generateVerifyCode();
+    try {
+        await pool.query(
+            'INSERT INTO document_issuances (student_id, school_id, doc_type, verify_code, issued_by) VALUES (?, ?, ?, ?, ?)',
+            [student_id, school_id, doc_type, code, issued_by]
+        );
+    } catch (err) {
+        console.error("logDocumentIssuance failed (non-blocking):", err);
+    }
+    return code;
+}
+
+// Same per-class-level subject/average/rank shape as
+// /api/homeroom/student-report/:student_id, but callable by the
+// Registrar for ANY student in their school (not just a homeroom
+// teacher's own section) — kept as a separate function rather than
+// reusing that route's handler so the homeroom-only access check there
+// is never at risk of being loosened by a change made here.
+async function computeReportCardData(student_id, school_id) {
+    const [rows] = await pool.query(
+        `SELECT s.subject_name, pr.class_level, pr.section, pr.stream, pr.term, prs.total_score
+         FROM pushed_report_scores prs
+         JOIN pushed_reports pr ON pr.push_id = prs.push_id AND pr.school_id = prs.school_id
+         JOIN subjects s ON s.subject_id = pr.subject_id AND s.school_id = pr.school_id
+         WHERE prs.student_id = ? AND prs.school_id = ?
+         ORDER BY pr.class_level, s.subject_name, pr.term`,
+        [student_id, school_id]
+    );
+
+    const byClassLevel = {};
+    rows.forEach(row => {
+        if (!byClassLevel[row.class_level]) byClassLevel[row.class_level] = { section: row.section, stream: row.stream, subjects: {} };
+        const bucket = byClassLevel[row.class_level].subjects;
+        if (!bucket[row.subject_name]) bucket[row.subject_name] = {};
+        bucket[row.subject_name][row.term] = Number(row.total_score);
+    });
+
+    return Object.keys(byClassLevel).sort().map(class_level => {
+        const { section, stream, subjects: subjectMap } = byClassLevel[class_level];
+        const subjects = Object.keys(subjectMap).sort().map(subject_name => {
+            const s1 = subjectMap[subject_name]['Semester 1'] ?? null;
+            const s2 = subjectMap[subject_name]['Semester 2'] ?? null;
+            return { subject_name, semester_1: s1, semester_2: s2, year_average: yearAverage(s1, s2) };
+        });
+        return {
+            class_level, section, stream, subjects,
+            semester_1_average: overallAverage(subjects.map(s => s.semester_1)),
+            semester_2_average: overallAverage(subjects.map(s => s.semester_2)),
+            year_average: overallAverage(subjects.map(s => s.year_average))
+        };
+    });
+}
+
+function renderReportCardHtml(student, reportData, verify_code) {
+    const fullName = escapeHtml([student.first_name, student.middle_name, student.last_name].filter(Boolean).join(' '));
+    const issuedDate = new Date().toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' });
+    const ecYear = approximateEthiopianYear(new Date());
+
+    const sections = reportData.length === 0
+        ? '<p style="color:#7f8c8d;">No marks have been pushed for this student yet.</p>'
+        : reportData.map(cl => `
+            <h3>Grade ${cl.class_level} — Section ${cl.section} (${cl.stream})</h3>
+            <table style="width:100%; border-collapse:collapse; margin-bottom:20px;">
+                <thead>
+                    <tr style="background:#2c3e50; color:white;">
+                        <th style="padding:8px; text-align:left; border:1px solid #ddd;">Subject | ትምህርት</th>
+                        <th style="padding:8px; border:1px solid #ddd;">Semester 1</th>
+                        <th style="padding:8px; border:1px solid #ddd;">Semester 2</th>
+                        <th style="padding:8px; border:1px solid #ddd;">Year Avg</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${cl.subjects.map(s => `
+                        <tr>
+                            <td style="padding:8px; border:1px solid #ddd;">${escapeHtml(s.subject_name)}</td>
+                            <td style="padding:8px; border:1px solid #ddd; text-align:center;">${s.semester_1 ?? '—'}</td>
+                            <td style="padding:8px; border:1px solid #ddd; text-align:center;">${s.semester_2 ?? '—'}</td>
+                            <td style="padding:8px; border:1px solid #ddd; text-align:center;">${s.year_average ?? '—'}</td>
+                        </tr>
+                    `).join('')}
+                    <tr style="font-weight:bold; background:#f8f9fa;">
+                        <td style="padding:8px; border:1px solid #ddd;">Overall Average</td>
+                        <td style="padding:8px; border:1px solid #ddd; text-align:center;">${cl.semester_1_average ?? '—'}</td>
+                        <td style="padding:8px; border:1px solid #ddd; text-align:center;">${cl.semester_2_average ?? '—'}</td>
+                        <td style="padding:8px; border:1px solid #ddd; text-align:center;">${cl.year_average ?? '—'}</td>
+                    </tr>
+                </tbody>
+            </table>
+        `).join('');
+
+    return `<!doctype html><html><head><meta charset="utf-8"><style>
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; padding: 40px; color: #2c3e50; }
+        h1 { text-align:center; color:#1e3a8a; margin-bottom:0; }
+        .sub { text-align:center; color:#666; margin-top:4px; }
+        .footer { margin-top: 30px; font-size: 12px; color: #888; border-top: 1px solid #ddd; padding-top: 10px; }
+    </style></head><body>
+        <h1>${escapeHtml(student.school_name || 'School')}</h1>
+        <p class="sub">Student Report Card | የተማሪ ውጤት ካርድ</p>
+        <p><strong>Name | ስም:</strong> ${fullName} &nbsp;&nbsp; <strong>ID:</strong> ${escapeHtml(student.student_id)}</p>
+        ${sections}
+        <div class="footer">
+            Issued ${issuedDate} (${ecYear} E.C.) by the Office of the Registrar.
+            Verification code: ${verify_code} — verify at /verify/document/${verify_code}
+        </div>
+    </body></html>`;
+}
+
+// GET report-card data as JSON (drives the in-app preview pane before
+// the Registrar commits to generating/printing the PDF).
+app.get('/api/registrar/documents/report-card/:student_id', requireAuth, requireRegistrarOnly, async (req, res) => {
+    try {
+        const isSample = req.params.student_id === SAMPLE_STUDENT.student_id;
+        let student;
+        if (isSample) {
+            student = { ...SAMPLE_STUDENT, school_name: 'Newland High School (Sample)' };
+        } else {
+            const [rows] = await pool.query('SELECT student_id, first_name, middle_name, last_name, school_name FROM students WHERE student_id = ? AND school_id = ?', [req.params.student_id, req.user.school_id]);
+            if (rows.length === 0) return res.status(404).json({ error: "Student not found in your school." });
+            student = rows[0];
+        }
+        const reportData = isSample
+            ? [{ class_level: 10, section: 'A', stream: 'General', subjects: [{ subject_name: 'Sample Subject', semester_1: 88, semester_2: 91, year_average: 89.5 }], semester_1_average: 88, semester_2_average: 91, year_average: 89.5 }]
+            : await computeReportCardData(req.params.student_id, req.user.school_id);
+        res.json({ student, report: reportData });
+    } catch (err) {
+        console.error("/api/registrar/documents/report-card GET error:", err);
+        res.status(500).json({ error: "Could not load report card data." });
+    }
+});
+
+app.get('/api/registrar/documents/report-card/:student_id/pdf', requireAuth, requireRegistrarOnly, async (req, res) => {
+    try {
+        const isSample = req.params.student_id === SAMPLE_STUDENT.student_id;
+        let student, reportData;
+        if (isSample) {
+            student = { ...SAMPLE_STUDENT, school_name: 'Newland High School (Sample)' };
+            reportData = [{ class_level: 10, section: 'A', stream: 'General', subjects: [{ subject_name: 'Sample Subject', semester_1: 88, semester_2: 91, year_average: 89.5 }], semester_1_average: 88, semester_2_average: 91, year_average: 89.5 }];
+        } else {
+            const [rows] = await pool.query('SELECT student_id, first_name, middle_name, last_name, school_name FROM students WHERE student_id = ? AND school_id = ?', [req.params.student_id, req.user.school_id]);
+            if (rows.length === 0) return res.status(404).json({ error: "Student not found in your school." });
+            student = rows[0];
+            reportData = await computeReportCardData(req.params.student_id, req.user.school_id);
+        }
+
+        const verify_code = isSample ? 'SAMPLE' : await logDocumentIssuance(req.user.school_id, req.params.student_id, 'report_card', req.user.user_id);
+        const html = renderReportCardHtml(student, reportData, verify_code);
+
+        const browser = await getBrowser();
+        const page = await browser.newPage();
+        try {
+            await page.setContent(html, { waitUntil: 'networkidle0' });
+            const pdfBuffer = await page.pdf({ printBackground: true, format: 'A4' });
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `attachment; filename="ReportCard-${req.params.student_id}.pdf"`);
+            res.send(pdfBuffer);
+        } finally {
+            await page.close();
+        }
+    } catch (err) {
+        console.error("/api/registrar/documents/report-card/pdf error:", err);
+        res.status(500).json({ error: "Could not generate the report card." });
+    }
+});
+
+// Official Transcript — reuses the exact same certificate template/
+// renderer the student self-service flow uses (renderCertificateHtml +
+// buildYearSummaries), just callable by the Registrar for any student
+// and without requiring the student to have separately requested +
+// received homeroom approval first, since the Registrar's own authority
+// to issue transcripts IS the approval. Each issuance is logged with its
+// own verify code (see /verify/document/:code) as the audit trail —
+// think of it as the "digital signature overlay": not a graphic
+// signature baked into the shared template file, but a per-issuance,
+// independently-verifiable record of who issued it and when.
+app.get('/api/registrar/documents/transcript/:student_id/pdf', requireAuth, requireRegistrarOnly, async (req, res) => {
+    try {
+        const isSample = req.params.student_id === SAMPLE_STUDENT.student_id;
+
+        let html, verify_code;
+        if (isSample) {
+            verify_code = 'SAMPLE';
+            html = renderCertificateHtml({
+                school_name: 'Newland High School (Sample)', region: 'Sample Region', zone: 'Sample Zone', woreda: 'Sample Woreda', town: 'Sample Town',
+                photo_html: buildPhotoHtml(null), student_id: SAMPLE_STUDENT.student_id,
+                student_name: 'Sample Student', sex: 'Female', grade: 10, section: 'A', stream: 'General',
+                academic_year: `${approximateEthiopianYear(new Date())} E.C.`, homeroom_teacher_name: 'Sample Teacher',
+                subjects: [{ en: 'Sample Subject', amh: null, s1: 88, s2: 91 }],
+                conduct: null, absent_days_s1: 0, absent_days_s2: 0, rank: 1, class_size: 30,
+                verify_url: `${req.protocol}://${req.get('host')}/verify/document/SAMPLE`
+            });
+        } else {
+            const terms = await getCertificateTerms(req.params.student_id, req.user.school_id);
+            if (!isCertificateReady(terms)) {
+                return res.status(400).json({ error: "This student's academic record isn't complete yet — every term needs to be synced first." });
+            }
+            const year_summary = await buildYearSummaries(req.params.student_id, req.user.school_id, terms);
+            if (year_summary.length === 0) return res.status(400).json({ error: "No completed academic year found for this student." });
+            const latest = year_summary[year_summary.length - 1];
+            const s1 = terms.find(t => t.class_level === latest.class_level && t.term === 'Semester 1');
+            const s2 = terms.find(t => t.class_level === latest.class_level && t.term === 'Semester 2');
+
+            const [studentRows] = await pool.query(
+                `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.sex, st.id_photo_url,
+                        sc.school_name, z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region
+                 FROM students st
+                 LEFT JOIN schools sc ON sc.id = st.school_id
+                 LEFT JOIN zone z ON z.zone_id = sc.zone_id
+                 LEFT JOIN woreda w ON w.woreda_id = sc.woreda_id
+                 LEFT JOIN region r ON r.region_id = sc.region_id
+                 WHERE st.student_id = ? AND st.school_id = ?`,
+                [req.params.student_id, req.user.school_id]
+            );
+            if (studentRows.length === 0) return res.status(404).json({ error: "Student not found in your school." });
+            const s = studentRows[0];
+
+            const [homeroomRows] = await pool.query(
+                `SELECT first_name, middle_name, last_name FROM teachers WHERE school_id = ? AND homeroom_class_level = ? AND homeroom_section = ? AND homeroom_stream = ?`,
+                [req.user.school_id, latest.class_level, s2.section, s2.stream]
+            );
+            const homeroomTeacherName = homeroomRows.length > 0
+                ? [homeroomRows[0].first_name, homeroomRows[0].middle_name, homeroomRows[0].last_name].filter(Boolean).join(' ') : '';
+
+            verify_code = await logDocumentIssuance(req.user.school_id, req.params.student_id, 'transcript', req.user.user_id);
+            html = renderCertificateHtml({
+                school_name: s.school_name, region: s.region, zone: s.zone, woreda: s.woreda, town: s.woreda,
+                photo_html: buildPhotoHtml(s.id_photo_url), student_id: s.student_id,
+                student_name: [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' '), sex: s.sex,
+                grade: latest.class_level, section: s2.section, stream: s2.stream,
+                academic_year: s2.synced_at ? `${approximateEthiopianYear(s2.synced_at)} E.C.` : null,
+                homeroom_teacher_name: homeroomTeacherName,
+                subjects: latest.subjects.map(sub => ({ en: sub.subject_name, amh: null, s1: sub.semester_1, s2: sub.semester_2 })),
+                conduct: null, absent_days_s1: s1 ? s1.days_absent : null, absent_days_s2: s2 ? s2.days_absent : null,
+                rank: latest.rank, class_size: latest.class_size,
+                verify_url: `${req.protocol}://${req.get('host')}/verify/document/${verify_code}`
+            });
+        }
+
+        const browser = await getBrowser();
+        const page = await browser.newPage();
+        try {
+            await page.setContent(html, { waitUntil: 'networkidle0' });
+            const pdfBuffer = await page.pdf({ printBackground: true, preferCSSPageSize: true });
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `attachment; filename="Transcript-${req.params.student_id}.pdf"`);
+            res.send(pdfBuffer);
+        } finally {
+            await page.close();
+        }
+    } catch (err) {
+        console.error("/api/registrar/documents/transcript/pdf error:", err);
+        res.status(500).json({ error: "Could not generate the transcript." });
+    }
+});
+
+// ID Card — same docx layout as the student self-service one
+// (docxFieldRow etc.), just Registrar-callable for any student.
+app.get('/api/registrar/documents/id-card/:student_id/docx', requireAuth, requireRegistrarOnly, async (req, res) => {
+    try {
+        const isSample = req.params.student_id === SAMPLE_STUDENT.student_id;
+        let s;
+        if (isSample) {
+            s = { ...SAMPLE_STUDENT, school_name: 'Newland High School (Sample)', created_at: new Date(), moe_school_code: 'SAMPLE-001' };
+        } else {
+            const [rows] = await pool.query(
+                `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.class_level, st.section, st.stream,
+                        st.school_name, st.phone_number, st.created_at, st.id_photo_url, sc.moe_school_code
+                 FROM students st LEFT JOIN schools sc ON sc.id = st.school_id
+                 WHERE st.student_id = ? AND st.school_id = ?`,
+                [req.params.student_id, req.user.school_id]
+            );
+            if (rows.length === 0) return res.status(404).json({ error: "Student not found in your school." });
+            s = rows[0];
+        }
+
+        const full = [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' ');
+        const issued = s.created_at ? new Date(s.created_at) : new Date();
+        const expires = new Date(issued);
+        expires.setFullYear(expires.getFullYear() + 1);
+        const fmt = d => d.toLocaleDateString('en-GB', { year: 'numeric', month: 'short', day: 'numeric' });
+
+        const fieldRows = [
+            docxFieldRow('የተማሪ መታወቂያ | Student ID', s.student_id),
+            docxFieldRow('ክፍል | Class', `Grade ${s.class_level} - ${s.section || 'Unassigned'}`),
+            docxFieldRow('ትምህርት ዘርፍ | Stream', s.stream),
+            docxFieldRow('ስልክ ቁጥር | Contact', s.phone_number || '—'),
+        ];
+        if (s.moe_school_code) fieldRows.push(docxFieldRow('የትምህርት ቤት ኮድ | School Code', s.moe_school_code));
+
+        const children = [
+            new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: (s.school_name || 'School').toUpperCase(), bold: true, size: 32, color: "1e3a8a" })] }),
+            new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: 'የተማሪ መታወቂያ ካርድ | Student Identity Card', size: 18, color: "666666" })] }),
+            new Paragraph({ text: "" }),
+        ];
+        if (!isSample && s.id_photo_url) {
+            try {
+                const photoPath = path.join(__dirname, 'uploads', path.basename(s.id_photo_url));
+                const photoBuf = fs.readFileSync(photoPath);
+                children.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new ImageRun({ data: photoBuf, transformation: { width: 100, height: 120 } })] }));
+                children.push(new Paragraph({ text: "" }));
+            } catch (photoErr) {
+                console.error("registrar id-card.docx: could not read photo file", photoErr);
+            }
+        }
+        children.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: full, bold: true, size: 28, color: "1e3a8a" })] }));
+        children.push(new Paragraph({ text: "" }));
+        children.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: fieldRows }));
+        children.push(new Paragraph({ text: "" }));
+        children.push(new Paragraph({ children: [new TextRun({ text: `የተሰጠበት | Issued: ${fmt(issued)}`, size: 18 })] }));
+        children.push(new Paragraph({ children: [new TextRun({ text: `እስከ | Valid until: ${fmt(expires)}`, size: 18, bold: true })] }));
+        children.push(new Paragraph({ text: "" }));
+        children.push(new Paragraph({ children: [new TextRun({ text: 'ርዕሰ መምህር | Principal: _______________________', size: 18 })] }));
+
+        if (!isSample) await logDocumentIssuance(req.user.school_id, req.params.student_id, 'id_card', req.user.user_id);
+
+        const doc = new Document({ sections: [{ children }] });
+        const buffer = await Packer.toBuffer(doc);
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+        res.setHeader('Content-Disposition', `attachment; filename="ID-Card-${s.student_id}.docx"`);
+        res.send(buffer);
+    } catch (err) {
+        console.error("/api/registrar/documents/id-card/docx error:", err);
+        res.status(500).json({ error: "Could not generate ID card document." });
+    }
+});
+
+app.get('/api/registrar/documents/issuance-log', requireAuth, requireRegistrarOnly, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            'SELECT id, student_id, doc_type, verify_code, issued_by, issued_at FROM document_issuances WHERE school_id = ? ORDER BY issued_at DESC LIMIT 100',
+            [req.user.school_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/registrar/documents/issuance-log error:", err);
+        res.status(500).json({ error: "Could not load the issuance log." });
+    }
+});
+
+// Public verification for any Registrar-issued document (report card,
+// transcript, or ID card) — mirrors the existing /verify/:student_id
+// pattern used for student self-service certificates, but keyed on the
+// per-issuance code instead so each printed copy verifies independently.
+app.get('/verify/document/:code', async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT di.doc_type, di.issued_at, st.first_name, st.middle_name, st.last_name, sc.school_name
+             FROM document_issuances di
+             JOIN students st ON st.student_id = di.student_id AND st.school_id = di.school_id
+             LEFT JOIN schools sc ON sc.id = di.school_id
+             WHERE di.verify_code = ?`,
+            [req.params.code]
+        );
+        if (rows.length === 0) {
+            return res.status(404).send('<!doctype html><html><body style="font-family:sans-serif;text-align:center;padding:60px;"><h2>Not found</h2><p>No document matches this verification code.</p></body></html>');
+        }
+        const d = rows[0];
+        const fullName = escapeHtml([d.first_name, d.middle_name, d.last_name].filter(Boolean).join(' '));
+        const docLabel = { report_card: 'Report Card', transcript: 'Official Transcript', id_card: 'Student ID Card' }[d.doc_type] || d.doc_type;
+        res.send(
+            '<!doctype html><html><body style="font-family:sans-serif;text-align:center;padding:60px;">' +
+            '<h2>&#10003; Document Verified</h2>' +
+            `<p>This <strong>${escapeHtml(docLabel)}</strong> was issued by <strong>${escapeHtml(d.school_name || 'the school')}</strong> to <strong>${fullName}</strong> on ${new Date(d.issued_at).toLocaleDateString()}.</p>` +
+            '</body></html>'
+        );
+    } catch (err) {
+        console.error("/verify/document error:", err);
+        res.status(500).send('Could not verify this document.');
     }
 });
 
@@ -3877,6 +5257,9 @@ app.get('/api/student-stats', requireAuth, async (req, res) => {
         } else {
             sql = `SELECT COUNT(*) as total, SUM(CASE WHEN sex = 'Female' THEN 1 ELSE 0 END) as female, SUM(CASE WHEN sex = 'Male' THEN 1 ELSE 0 END) as male FROM students WHERE school_id = ?`;
             params = [req.user.school_id];
+            if (class_level) { sql += ' AND class_level = ?'; params.push(class_level); }
+            if (section) { sql += ' AND section = ?'; params.push(section); }
+            if (stream) { sql += ' AND stream = ?'; params.push(stream); }
         }
 
         const [stats] = await pool.query(sql, params);
@@ -7004,13 +8387,30 @@ app.get('/api/me', requireAuth, async (req, res) => {
         }
 
         let additional_role = null;
+        let is_recorder = false;
+        let is_registrar_flag = false;
         if (req.user.role === 'teachers') {
             const [teacherRows] = await pool.query(
-                'SELECT additional_role FROM teachers WHERE teacher_id = ? AND school_id = ?',
+                'SELECT additional_role, is_registrar FROM teachers WHERE teacher_id = ? AND school_id = ?',
                 [req.user.user_id, req.user.school_id]
             );
-            if (teacherRows.length > 0) additional_role = teacherRows[0].additional_role || null;
+            if (teacherRows.length > 0) {
+                additional_role = teacherRows[0].additional_role || null;
+                is_registrar_flag = !!teacherRows[0].is_registrar;
+            }
+
+            const [recorderRows] = await pool.query(
+                'SELECT id FROM recorders WHERE teacher_id = ? AND school_id = ?',
+                [req.user.user_id, req.user.school_id]
+            ).catch(() => [[]]); // degrade gracefully if the recorders table hasn't been created yet
+            is_recorder = recorderRows.length > 0;
         }
+        // is_registrar drives app.js's full-admin nav (Section Setup,
+        // Placement Wizard, Manage Recorders). True either for a
+        // standalone registrar_users account, or a teacher an Academic VP
+        // has flagged as Registrar via /api/academic-vp/grant-registrar —
+        // both get the same access (see requireRegistrarOnly above).
+        const is_registrar = req.user.role === 'registrar_users' || is_registrar_flag;
 
         res.json({
             user_id: req.user.user_id,
@@ -7024,7 +8424,9 @@ app.get('/api/me', requireAuth, async (req, res) => {
             school_name,
             moe_school_code,
             logo_url,
-            additional_role
+            additional_role,
+            is_registrar,
+            is_recorder
         });
     } catch (err) {
         console.error("/api/me error:", err);
@@ -7194,6 +8596,747 @@ app.get('/api/teacher/student-performance', requireAuth, async (req, res) => {
     } catch (err) {
         console.error("student-performance error:", err);
         res.status(500).json({ error: "Could not load student performance" });
+    }
+});
+
+
+// =========================================================================
+// EXECUTIVE SCHOOL ADMINISTRATION SUITE — additions below
+// Five gaps closed against the spec: (1) Teacher Setup + Assignment
+// (Stage 1 Principal hire, Stage 2 Academic VP load assignment),
+// (2) Principal's Teacher Performance & Red-Flag Audit widget,
+// (3) school_admins' own Digital Signature/Stamp upload,
+// (4) Universal Contact & Messaging Hub, (5) Academic VP's Mark Cut-Off
+// Configuration. Each follows the existing file's conventions: a
+// migration comment where a new table/column is needed, requireAdminTitle
+// for RBAC, and school_id scoping on every query.
+// =========================================================================
+
+// --- (1) Teacher Setup, Stage 1a: incoming teachers pushed by Zonal ---
+// The zonal-recruitment-code path from the spec now works like this:
+// zonal registers the teacher on their end and pushes them to this
+// school (POST /api/zonal/teachers, or a Teamleader's proposal once Head
+// of Education approves it) — landing here as a pending row. Nothing in
+// `teachers` exists yet and nobody can log in yet; the Principal reviews
+// the queue and either accepts (which mints the real Teacher ID and sets
+// the login credentials, i.e. does the "core credentials" part of Stage
+// 1 from the spec) or declines (e.g. wrong school, duplicate, changed
+// mind). Only ever this school's own queue — school_id is always taken
+// from the Principal's own token, never from the request.
+app.get('/api/principal/incoming-teachers', requireAuth, requirePrincipal, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT incoming_id, first_name, middle_name, last_name, contact_number, email,
+                    zonal_recruitment_code, status, teacher_id, decline_reason, created_at
+             FROM incoming_teachers
+             WHERE school_id = ?
+             ORDER BY (status = 'pending') DESC, created_at DESC`,
+            [req.user.school_id]
+        );
+        res.json(rows.map(r => ({
+            ...r,
+            full_name: [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' ')
+        })));
+    } catch (err) {
+        console.error("/api/principal/incoming-teachers GET error:", err);
+        res.status(500).json({ error: "Could not load incoming teachers" });
+    }
+});
+
+app.post('/api/principal/incoming-teachers/:id/accept', requireAuth, requirePrincipal, async (req, res) => {
+    const { password, contact_number, email } = req.body;
+    if (!password) return res.status(400).json({ error: "A login password is required to activate this teacher's account." });
+    try {
+        const [rows] = await pool.query(
+            `SELECT * FROM incoming_teachers WHERE incoming_id = ? AND school_id = ? AND status = 'pending'`,
+            [req.params.id, req.user.school_id]
+        );
+        if (rows.length === 0) return res.status(404).json({ error: "Incoming teacher not found or already decided." });
+        const incoming = rows[0];
+
+        const teacher_id = await createTeacherAccount({
+            school_id: req.user.school_id,
+            first_name: incoming.first_name,
+            middle_name: incoming.middle_name,
+            last_name: incoming.last_name,
+            contact_number: contact_number || incoming.contact_number,
+            email: email || incoming.email,
+            password
+        });
+
+        await pool.query(
+            `UPDATE incoming_teachers SET status = 'accepted', teacher_id = ?, decided_by = ?, decided_at = NOW() WHERE incoming_id = ?`,
+            [teacher_id, req.user.user_id, incoming.incoming_id]
+        );
+        res.json({ message: "Teacher accepted and activated. Academic VP can now assign their teaching load.", teacher_id });
+    } catch (err) {
+        console.error("/api/principal/incoming-teachers/:id/accept error:", err);
+        res.status(err.status || 500).json({ error: err.status ? err.message : "Could not accept incoming teacher" });
+    }
+});
+
+app.post('/api/principal/incoming-teachers/:id/decline', requireAuth, requirePrincipal, async (req, res) => {
+    const { reason } = req.body;
+    try {
+        const [result] = await pool.query(
+            `UPDATE incoming_teachers SET status = 'declined', decline_reason = ?, decided_by = ?, decided_at = NOW()
+             WHERE incoming_id = ? AND school_id = ? AND status = 'pending'`,
+            [reason || null, req.user.user_id, req.params.id, req.user.school_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Incoming teacher not found or already decided." });
+        res.json({ message: "Incoming teacher declined." });
+    } catch (err) {
+        console.error("/api/principal/incoming-teachers/:id/decline error:", err);
+        res.status(500).json({ error: "Could not decline incoming teacher" });
+    }
+});
+
+// --- (1) Teacher Setup, Stage 1b: Principal direct local hire ---
+// Mirrors /api/zonal/teachers's OLD direct-creation behavior (same
+// createTeacherAccount helper, same shared TCH-style ID sequence via
+// getNextStaffId), just scoped to the Principal's own school instead of
+// zone-wide — this is the "direct local hire" path from the spec,
+// alongside the zonal-push-and-accept path above. Either way, no teacher
+// ever gets a live account at this school without the Principal's own
+// action creating or accepting it.
+app.post('/api/principal/teachers', requireAuth, requirePrincipal, async (req, res) => {
+    const { first_name, middle_name, last_name, contact_number, email, password } = req.body;
+    if (!first_name || !last_name || !password) {
+        return res.status(400).json({ error: "first_name, last_name, and password are required" });
+    }
+    try {
+        const teacher_id = await createTeacherAccount({
+            school_id: req.user.school_id, first_name, middle_name, last_name, contact_number, email, password
+        });
+        res.json({ message: "Teacher onboarded. Academic VP can now assign their teaching load.", teacher_id });
+    } catch (err) {
+        console.error("/api/principal/teachers error:", err);
+        res.status(err.status || 500).json({ error: err.status ? err.message : "Could not onboard teacher" });
+    }
+});
+
+// Shared roster view for both sides of the Stage 1 -> Stage 2 handoff:
+// Principal just finished onboarding, Academic VP is about to assign
+// teaching loads, Admin VP needs the same list for attendance/textbooks.
+// assignment_count / awaiting_assignment let the UI flag "still needs
+// Academic VP" without a second round trip.
+app.get('/api/admin/teachers', requireAuth, requireAdminTitle('Principal', 'Academic VP', 'Admin VP'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT t.teacher_id, t.first_name, t.middle_name, t.last_name, t.contact_number, t.email,
+                    t.homeroom_class_level, t.homeroom_section, t.homeroom_stream, t.is_registrar,
+                    COUNT(DISTINCT ta.subject_id, ta.class_level, ta.section) AS assignment_count
+             FROM teachers t
+             LEFT JOIN teacher_assignments ta ON ta.teacher_id = t.teacher_id AND ta.school_id = t.school_id
+             WHERE t.school_id = ?
+             GROUP BY t.teacher_id
+             ORDER BY t.first_name, t.last_name`,
+            [req.user.school_id]
+        );
+        res.json(rows.map(r => ({
+            teacher_id: r.teacher_id,
+            full_name: [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' '),
+            contact_number: r.contact_number,
+            email: r.email,
+            homeroom: r.homeroom_class_level ? { class_level: r.homeroom_class_level, section: r.homeroom_section, stream: r.homeroom_stream } : null,
+            assignment_count: Number(r.assignment_count),
+            awaiting_assignment: Number(r.assignment_count) === 0,
+            is_registrar: !!r.is_registrar
+        })));
+    } catch (err) {
+        console.error("/api/admin/teachers error:", err);
+        res.status(500).json({ error: "Could not load teacher roster" });
+    }
+});
+
+// --- (1) Teacher Setup, Stage 2: Academic VP teaching-load assignment ---
+// teacher_assignments already exists and is READ elsewhere in this file
+// (performance, timetable, marks-review) — this is the write side.
+// Requires this migration if the table doesn't already have these
+// columns:
+//   CREATE TABLE IF NOT EXISTS teacher_assignments (
+//     teacher_id VARCHAR(50) NOT NULL,
+//     school_id INT NOT NULL,
+//     class_level VARCHAR(20) NOT NULL,
+//     section VARCHAR(10) NOT NULL,
+//     stream VARCHAR(50) NULL,
+//     subject_id VARCHAR(50) NOT NULL,
+//     assigned_by VARCHAR(50) NULL,
+//     assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     UNIQUE KEY uq_teacher_assignment (teacher_id, school_id, class_level, section, subject_id)
+//   );
+// Deliberately not assuming a numeric primary key on this pre-existing
+// table (it's never inserted/deleted anywhere else in this file, so we
+// don't know if one exists) — delete below matches on the natural key
+// instead of an assignment_id.
+app.get('/api/academic-vp/teacher-assignments', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    const { teacher_id } = req.query;
+    try {
+        let query = `SELECT ta.teacher_id, ta.class_level, ta.section, ta.stream, ta.subject_id,
+                            s.subject_name, t.first_name, t.last_name
+                     FROM teacher_assignments ta
+                     JOIN subjects s ON s.subject_id = ta.subject_id AND s.school_id = ta.school_id
+                     JOIN teachers t ON t.teacher_id = ta.teacher_id AND t.school_id = ta.school_id
+                     WHERE ta.school_id = ?`;
+        const params = [req.user.school_id];
+        if (teacher_id) { query += ' AND ta.teacher_id = ?'; params.push(teacher_id); }
+        query += ' ORDER BY t.first_name, ta.class_level, ta.section';
+        const [rows] = await pool.query(query, params);
+        res.json(rows.map(r => ({
+            teacher_id: r.teacher_id,
+            teacher_name: [r.first_name, r.last_name].filter(Boolean).join(' '),
+            class_level: r.class_level,
+            section: r.section,
+            stream: r.stream,
+            subject_id: r.subject_id,
+            subject_name: r.subject_name
+        })));
+    } catch (err) {
+        console.error("/api/academic-vp/teacher-assignments GET error:", err);
+        res.status(500).json({ error: "Could not load teaching assignments" });
+    }
+});
+
+app.post('/api/academic-vp/teacher-assignments', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    const { teacher_id, class_level, section, stream, subject_id } = req.body;
+    if (!teacher_id || !class_level || !section || !subject_id) {
+        return res.status(400).json({ error: "teacher_id, class_level, section, and subject_id are required" });
+    }
+    try {
+        const [teacherRows] = await pool.query('SELECT teacher_id FROM teachers WHERE teacher_id = ? AND school_id = ?', [teacher_id, req.user.school_id]);
+        if (teacherRows.length === 0) return res.status(404).json({ error: "Teacher not found in your school." });
+
+        await pool.query(
+            `INSERT INTO teacher_assignments (teacher_id, school_id, class_level, section, stream, subject_id, assigned_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE stream = VALUES(stream), assigned_by = VALUES(assigned_by), assigned_at = NOW()`,
+            [teacher_id, req.user.school_id, class_level, section, stream || null, subject_id, req.user.user_id]
+        );
+        res.json({ message: "Teaching assignment saved." });
+    } catch (err) {
+        console.error("/api/academic-vp/teacher-assignments POST error:", err);
+        res.status(500).json({ error: "Could not save teaching assignment" });
+    }
+});
+
+app.delete('/api/academic-vp/teacher-assignments', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    const { teacher_id, class_level, section, subject_id } = req.body;
+    if (!teacher_id || !class_level || !section || !subject_id) {
+        return res.status(400).json({ error: "teacher_id, class_level, section, and subject_id are required" });
+    }
+    try {
+        const [result] = await pool.query(
+            `DELETE FROM teacher_assignments WHERE teacher_id = ? AND school_id = ? AND class_level = ? AND section = ? AND subject_id = ?`,
+            [teacher_id, req.user.school_id, class_level, section, subject_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Assignment not found." });
+        res.json({ message: "Assignment removed." });
+    } catch (err) {
+        console.error("/api/academic-vp/teacher-assignments DELETE error:", err);
+        res.status(500).json({ error: "Could not remove assignment" });
+    }
+});
+
+// --- (1) Teacher Setup, Stage 2b: Academic VP homeroom assignment ---
+// The other half of "instructional placement" the spec gives Academic
+// VP alongside subject/class assignments above: naming a teacher the
+// homeroom teacher for one class/section/stream. Writes straight to the
+// teachers row (homeroom_class_level/section/stream — already read
+// everywhere else in this file, e.g. getHomeroomSectionOrNull) rather
+// than a join table, since a teacher can only be homeroom for one
+// section at a time and a section can only have one homeroom teacher.
+app.post('/api/academic-vp/homeroom', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    const { teacher_id, class_level, section, stream } = req.body;
+    if (!teacher_id || !class_level || !section) {
+        return res.status(400).json({ error: "teacher_id, class_level, and section are required" });
+    }
+    try {
+        const [teacherRows] = await pool.query('SELECT teacher_id FROM teachers WHERE teacher_id = ? AND school_id = ?', [teacher_id, req.user.school_id]);
+        if (teacherRows.length === 0) return res.status(404).json({ error: "Teacher not found in your school." });
+
+        const [existingRows] = await pool.query(
+            `SELECT teacher_id FROM teachers
+             WHERE school_id = ? AND homeroom_class_level = ? AND homeroom_section = ? AND homeroom_stream <=> ? AND teacher_id != ?`,
+            [req.user.school_id, class_level, section, stream || null, teacher_id]
+        );
+        if (existingRows.length > 0) {
+            return res.status(409).json({ error: "This class/section already has a different homeroom teacher. Remove them first." });
+        }
+
+        await pool.query(
+            `UPDATE teachers SET homeroom_class_level = ?, homeroom_section = ?, homeroom_stream = ? WHERE teacher_id = ? AND school_id = ?`,
+            [class_level, section, stream || null, teacher_id, req.user.school_id]
+        );
+        res.json({ message: "Homeroom assigned." });
+    } catch (err) {
+        console.error("/api/academic-vp/homeroom POST error:", err);
+        res.status(500).json({ error: "Could not assign homeroom" });
+    }
+});
+
+app.delete('/api/academic-vp/homeroom', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    const { teacher_id } = req.body;
+    if (!teacher_id) return res.status(400).json({ error: "teacher_id is required" });
+    try {
+        const [result] = await pool.query(
+            `UPDATE teachers SET homeroom_class_level = NULL, homeroom_section = NULL, homeroom_stream = NULL
+             WHERE teacher_id = ? AND school_id = ?`,
+            [teacher_id, req.user.school_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Teacher not found in your school." });
+        res.json({ message: "Homeroom assignment removed." });
+    } catch (err) {
+        console.error("/api/academic-vp/homeroom DELETE error:", err);
+        res.status(500).json({ error: "Could not remove homeroom assignment" });
+    }
+});
+
+// --- (1) Teacher Setup, Stage 2c: Academic VP grants the additional Registrar role ---
+// Alongside a teaching load or a homeroom, the spec lets Academic VP
+// hand a teacher the additional Registrar role. This is a flag on the
+// teacher's OWN existing row (teachers.is_registrar) — same login, no
+// separate account or password — exactly like how a Recorder already
+// works via the `recorders` table (see requireRegistrarOrRecorder
+// above). requireRegistrarOnly/requireRegistrarOrRecorder both already
+// recognize this flag, so a flag-granted Registrar can immediately use
+// every existing Registrar-only screen (Recorder management, Transfer
+// Navigation Hub, textbooks, graduation, etc.) with no other change.
+//
+// ADD THESE if they don't exist yet:
+//   ALTER TABLE teachers
+//     ADD COLUMN is_registrar TINYINT(1) NOT NULL DEFAULT 0,
+//     ADD COLUMN registrar_assigned_by VARCHAR(50) NULL,
+//     ADD COLUMN registrar_assigned_at DATETIME NULL;
+app.post('/api/academic-vp/grant-registrar', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    const { teacher_id } = req.body;
+    if (!teacher_id) return res.status(400).json({ error: "teacher_id is required" });
+    try {
+        const [result] = await pool.query(
+            `UPDATE teachers SET is_registrar = 1, registrar_assigned_by = ?, registrar_assigned_at = NOW()
+             WHERE teacher_id = ? AND school_id = ? AND (is_registrar IS NULL OR is_registrar = 0)`,
+            [req.user.user_id, teacher_id, req.user.school_id]
+        );
+        if (result.affectedRows === 0) return res.status(409).json({ error: "Teacher not found in your school, or already a Registrar." });
+        res.json({ message: "Registrar role granted. They keep using their existing teacher login." });
+    } catch (err) {
+        console.error("/api/academic-vp/grant-registrar error:", err);
+        res.status(500).json({ error: "Could not grant Registrar role" });
+    }
+});
+
+app.delete('/api/academic-vp/grant-registrar', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    const { teacher_id } = req.body;
+    if (!teacher_id) return res.status(400).json({ error: "teacher_id is required" });
+    try {
+        const [result] = await pool.query(
+            `UPDATE teachers SET is_registrar = 0, registrar_assigned_by = NULL, registrar_assigned_at = NULL
+             WHERE teacher_id = ? AND school_id = ?`,
+            [teacher_id, req.user.school_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Teacher not found in your school." });
+        res.json({ message: "Registrar role removed." });
+    } catch (err) {
+        console.error("/api/academic-vp/grant-registrar DELETE error:", err);
+        res.status(500).json({ error: "Could not remove Registrar role" });
+    }
+});
+
+// --- (5) Academic VP: school-wide passing mark cut-off ---
+// Same school_settings key/value pattern as current_term/term_start_date
+// above. Read by Academic VP + Principal (below-cutoff review, red-flag
+// audit) and advisory-linked into the Registrar's promotion screen;
+// written only by Academic VP.
+async function getPassMarkCutoff(school_id) {
+    const [rows] = await pool.query(
+        "SELECT setting_value FROM school_settings WHERE setting_key = 'pass_mark_cutoff' AND school_id = ?",
+        [school_id]
+    );
+    return rows.length > 0 ? Number(rows[0].setting_value) : 50; // 50% default until Academic VP publishes one
+}
+
+app.get('/api/academic-vp/mark-cutoff', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    try {
+        res.json({ cutoff: await getPassMarkCutoff(req.user.school_id) });
+    } catch (err) {
+        console.error("/api/academic-vp/mark-cutoff GET error:", err);
+        res.status(500).json({ error: "Could not load the passing cut-off" });
+    }
+});
+
+app.post('/api/academic-vp/mark-cutoff', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    const value = Number(req.body.cutoff);
+    if (!Number.isFinite(value) || value < 0 || value > 100) {
+        return res.status(400).json({ error: "cutoff must be a number between 0 and 100" });
+    }
+    try {
+        await pool.query(
+            `INSERT INTO school_settings (setting_key, setting_value, school_id) VALUES ('pass_mark_cutoff', ?, ?)
+             ON DUPLICATE KEY UPDATE setting_value = ?`,
+            [String(value), req.user.school_id, String(value)]
+        );
+        res.json({ message: `Passing cut-off published at ${value}%.`, cutoff: value });
+    } catch (err) {
+        console.error("/api/academic-vp/mark-cutoff POST error:", err);
+        res.status(500).json({ error: "Could not publish the passing cut-off" });
+    }
+});
+
+// Every student's year average against the published cutoff, reusing
+// the exact same year_average computation the school leaderboard uses
+// (both semesters synced to the homeroom's pushed report). Advisory
+// only — doesn't move anyone's class_level; the Registrar still does
+// that via PUT /api/promote/:id (see the cutoff note added there).
+app.get('/api/academic-vp/below-cutoff', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    try {
+        const cutoff = await getPassMarkCutoff(req.user.school_id);
+        const leaderboard = await getSchoolYearLeaderboard(req.user.school_id);
+        const below = leaderboard.filter(l => l.year_average < cutoff);
+        if (below.length === 0) return res.json({ cutoff, students: [] });
+
+        const [studentRows] = await pool.query(
+            `SELECT student_id, first_name, middle_name, last_name FROM students WHERE school_id = ? AND student_id IN (?)`,
+            [req.user.school_id, below.map(b => b.student_id)]
+        );
+        const namesById = new Map(studentRows.map(s => [String(s.student_id), [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' ')]));
+
+        res.json({
+            cutoff,
+            students: below
+                .map(b => ({ ...b, full_name: namesById.get(String(b.student_id)) || null }))
+                .sort((a, b) => a.year_average - b.year_average)
+        });
+    } catch (err) {
+        console.error("/api/academic-vp/below-cutoff error:", err);
+        res.status(500).json({ error: "Could not load students below the cut-off" });
+    }
+});
+
+// --- (2) Principal: Teacher Performance & Red-Flag Audit ---
+// Flags a teacher if ANY of: excessive absences (teacher_attendance,
+// trailing 30 days), poor teaching-period punctuality
+// (period_attendance_log, trailing 30 days), or their students' average
+// score sits below the Academic VP's published cut-off for the current
+// term. Computed as a handful of GROUP BY aggregates rather than looping
+// per-teacher, since a school's whole staff is being scanned at once.
+const RED_FLAG_ABSENCE_DAYS = 3;      // >=3 absent days in the last 30 flags
+const RED_FLAG_PUNCTUALITY_PCT = 70;  // punctuality rate below this flags
+
+app.get('/api/principal/teacher-audit', requireAuth, requirePrincipal, async (req, res) => {
+    try {
+        const since = toDateOnly(new Date(Date.now() - 30 * 86400000));
+        const cutoff = await getPassMarkCutoff(req.user.school_id);
+        const currentTerm = await getCurrentTerm(req.user.school_id);
+
+        const [teachers] = await pool.query(
+            `SELECT teacher_id, first_name, last_name FROM teachers WHERE school_id = ?`,
+            [req.user.school_id]
+        );
+        if (teachers.length === 0) return res.json({ cutoff, current_term: currentTerm, teachers: [] });
+
+        const [absenceRows] = await pool.query(
+            `SELECT teacher_id, COUNT(*) AS absent_days FROM teacher_attendance
+             WHERE school_id = ? AND status = 'absent' AND attendance_date >= ?
+             GROUP BY teacher_id`,
+            [req.user.school_id, since]
+        );
+        const absenceByTeacher = new Map(absenceRows.map(r => [r.teacher_id, Number(r.absent_days)]));
+
+        const [punctualityRows] = await pool.query(
+            `SELECT ct.teacher_id,
+                    SUM(pal.teacher_present) AS present_count,
+                    COUNT(*) AS total_count
+             FROM period_attendance_log pal
+             JOIN class_timetable ct ON ct.timetable_id = pal.timetable_id
+             WHERE pal.school_id = ? AND pal.log_date >= ?
+             GROUP BY ct.teacher_id`,
+            [req.user.school_id, since]
+        );
+        const punctualityByTeacher = new Map(punctualityRows.map(r => [r.teacher_id, r.total_count ? Math.round((Number(r.present_count) / Number(r.total_count)) * 100) : null]));
+
+        const [scoreRows] = await pool.query(
+            `SELECT ta.teacher_id, AVG(m.score) AS avg_score
+             FROM teacher_assignments ta
+             JOIN marks m ON m.subject_id = ta.subject_id AND m.school_id = ta.school_id AND m.term = ?
+             WHERE ta.school_id = ?
+             GROUP BY ta.teacher_id`,
+            [currentTerm, req.user.school_id]
+        );
+        const scoreByTeacher = new Map(scoreRows.map(r => [r.teacher_id, Math.round(Number(r.avg_score) * 100) / 100]));
+
+        const audit = teachers.map(t => {
+            const absent_days_30d = absenceByTeacher.get(t.teacher_id) || 0;
+            const punctuality_rate = punctualityByTeacher.has(t.teacher_id) ? punctualityByTeacher.get(t.teacher_id) : null;
+            const avg_score = scoreByTeacher.has(t.teacher_id) ? scoreByTeacher.get(t.teacher_id) : null;
+
+            const flags = [];
+            if (absent_days_30d >= RED_FLAG_ABSENCE_DAYS) flags.push('excessive_absences');
+            if (punctuality_rate !== null && punctuality_rate < RED_FLAG_PUNCTUALITY_PCT) flags.push('teaching_discipline');
+            if (avg_score !== null && avg_score < cutoff) flags.push('low_performance');
+
+            return {
+                teacher_id: t.teacher_id,
+                full_name: [t.first_name, t.last_name].filter(Boolean).join(' '),
+                absent_days_30d,
+                punctuality_rate,
+                avg_score,
+                flagged: flags.length > 0,
+                flags
+            };
+        });
+
+        res.json({ cutoff, current_term: currentTerm, teachers: audit.sort((a, b) => b.flags.length - a.flags.length) });
+    } catch (err) {
+        console.error("/api/principal/teacher-audit error:", err);
+        res.status(500).json({ error: "Could not load the teacher audit" });
+    }
+});
+
+// Detail view for the audit widget's modal — full attendance log,
+// punctuality periods, and per-subject/per-term score breakdown, for one
+// teacher.
+app.get('/api/principal/teacher-audit/:teacher_id', requireAuth, requirePrincipal, async (req, res) => {
+    const { teacher_id } = req.params;
+    try {
+        const [teacherRows] = await pool.query('SELECT teacher_id, first_name, last_name FROM teachers WHERE teacher_id = ? AND school_id = ?', [teacher_id, req.user.school_id]);
+        if (teacherRows.length === 0) return res.status(404).json({ error: "Teacher not found in your school." });
+
+        const since = toDateOnly(new Date(Date.now() - 30 * 86400000));
+
+        const [attendance] = await pool.query(
+            `SELECT attendance_date, status FROM teacher_attendance
+             WHERE teacher_id = ? AND school_id = ? AND attendance_date >= ? ORDER BY attendance_date DESC`,
+            [teacher_id, req.user.school_id, since]
+        );
+
+        const [periods] = await pool.query(
+            `SELECT pal.log_date, pal.teacher_present, s.subject_name, ct.class_level, ct.section, ct.stream
+             FROM period_attendance_log pal
+             JOIN class_timetable ct ON ct.timetable_id = pal.timetable_id
+             JOIN subjects s ON s.subject_id = ct.subject_id AND s.school_id = ct.school_id
+             WHERE pal.school_id = ? AND ct.teacher_id = ? AND pal.log_date >= ?
+             ORDER BY pal.log_date DESC`,
+            [req.user.school_id, teacher_id, since]
+        );
+        const present_periods = periods.filter(p => p.teacher_present).length;
+
+        const [scores] = await pool.query(
+            `SELECT ta.subject_id, s.subject_name, m.term, AVG(m.score) AS avg_score
+             FROM teacher_assignments ta
+             JOIN subjects s ON s.subject_id = ta.subject_id AND s.school_id = ta.school_id
+             JOIN marks m ON m.subject_id = ta.subject_id AND m.school_id = ta.school_id
+             WHERE ta.teacher_id = ? AND ta.school_id = ?
+             GROUP BY ta.subject_id, m.term`,
+            [teacher_id, req.user.school_id]
+        );
+
+        res.json({
+            teacher_id,
+            full_name: [teacherRows[0].first_name, teacherRows[0].last_name].filter(Boolean).join(' '),
+            attendance_last_30d: attendance,
+            absent_days_30d: attendance.filter(a => a.status === 'absent').length,
+            punctuality: {
+                total_periods: periods.length,
+                present_periods,
+                rate: periods.length ? Math.round((present_periods / periods.length) * 100) : null,
+                periods
+            },
+            subject_scores: scores.map(s => ({ subject_id: s.subject_id, subject_name: s.subject_name, term: s.term, avg_score: Math.round(Number(s.avg_score) * 100) / 100 }))
+        });
+    } catch (err) {
+        console.error("/api/principal/teacher-audit/:teacher_id error:", err);
+        res.status(500).json({ error: "Could not load teacher detail" });
+    }
+});
+
+// --- (3) Digital Signature Suite: school_admins' own signature/stamp ---
+// Unlike a teacher's signature (which needs Principal approval — see
+// submitTeacherDocumentRequest above), a school_admins account IS the
+// approving authority, so this is a direct self-serve upload with no
+// review step — same pattern as /api/teacher/update-avatar.
+// Requires these columns if they don't exist yet:
+//   ALTER TABLE school_admins ADD COLUMN signature_url VARCHAR(255) NULL, ADD COLUMN stamp_url VARCHAR(255) NULL;
+async function uploadAdminDocument(req, res, column, fieldName) {
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+    if (!req.file.mimetype.startsWith('image/')) {
+        fs.unlink(req.file.path, () => { });
+        return res.status(400).json({ error: `${fieldName} must be an image file (JPEG or PNG).` });
+    }
+    const converted = await convertHeicIfNeeded(req.file);
+    if (converted) req.file = converted;
+
+    const filePath = `/uploads/${req.file.filename}`;
+    await pool.query(`UPDATE school_admins SET ${column} = ? WHERE admin_id = ? AND school_id = ?`, [filePath, req.user.user_id, req.user.school_id]);
+    res.json({ [column]: filePath });
+}
+
+app.post('/api/admin/upload-signature', requireAuth, requireRole('school_admins'), handleUploadError(upload.single('signature')), async (req, res) => {
+    try {
+        await uploadAdminDocument(req, res, 'signature_url', 'Signature');
+    } catch (err) {
+        console.error("/api/admin/upload-signature error:", err);
+        res.status(500).json({ error: "Could not upload signature" });
+    }
+});
+
+app.post('/api/admin/upload-stamp', requireAuth, requireRole('school_admins'), handleUploadError(upload.single('stamp')), async (req, res) => {
+    try {
+        await uploadAdminDocument(req, res, 'stamp_url', 'Stamp');
+    } catch (err) {
+        console.error("/api/admin/upload-stamp error:", err);
+        res.status(500).json({ error: "Could not upload stamp" });
+    }
+});
+
+app.get('/api/admin/document-status', requireAuth, requireRole('school_admins'), async (req, res) => {
+    try {
+        const [rows] = await pool.query('SELECT signature_url, stamp_url FROM school_admins WHERE admin_id = ? AND school_id = ?', [req.user.user_id, req.user.school_id]);
+        res.json({ signature_url: rows[0]?.signature_url || null, stamp_url: rows[0]?.stamp_url || null });
+    } catch (err) {
+        console.error("/api/admin/document-status error:", err);
+        res.status(500).json({ error: "Could not load document status" });
+    }
+});
+
+// --- (4) Universal Contact & Messaging Hub ---
+// One table covers all three tiers from the spec: Teacher Messaging
+// (school_admins <-> teachers), Zonal Admin Bridge (upward escalation to
+// Zonal Admin), and Inter-Admin routing (Principal <-> Admin VP <->
+// Academic VP within the same school). Scoped throughout by school_id so
+// one school's messages never leak into another's.
+//
+// Requires a new table if it doesn't exist yet:
+//   CREATE TABLE admin_messages (
+//     message_id INT AUTO_INCREMENT PRIMARY KEY,
+//     school_id INT NOT NULL,
+//     sender_type ENUM('school_admins','teachers','zonal_admins') NOT NULL,
+//     sender_id VARCHAR(50) NOT NULL,
+//     recipient_type ENUM('school_admins','teachers','zonal_admins') NOT NULL,
+//     recipient_id VARCHAR(50) NOT NULL,
+//     subject VARCHAR(150) NULL,
+//     body TEXT NOT NULL,
+//     is_read TINYINT(1) NOT NULL DEFAULT 0,
+//     sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     INDEX idx_recipient (school_id, recipient_type, recipient_id),
+//     INDEX idx_sender (school_id, sender_type, sender_id)
+//   );
+// Only the school_admins side (sender) is wired up here — a matching
+// inbox GET for teachers/zonal_admins would live in those portals' own
+// route files, but the schema is already shaped for it.
+
+// Recipients for the compose UI: every teacher and every other
+// school_admins account in this admin's own school, plus (if the school
+// is assigned to a zone) that zone's Head of Education as the standing
+// "Zonal Admin Bridge" contact.
+app.get('/api/admin/messages/recipients', requireAuth, requireRole('school_admins'), async (req, res) => {
+    try {
+        const [teachers] = await pool.query(
+            `SELECT teacher_id AS id, first_name, last_name FROM teachers WHERE school_id = ?`,
+            [req.user.school_id]
+        );
+        const [admins] = await pool.query(
+            `SELECT admin_id AS id, first_name, last_name, title FROM school_admins WHERE school_id = ? AND admin_id != ?`,
+            [req.user.school_id, req.user.user_id]
+        );
+        const [schoolRows] = await pool.query('SELECT zone_id FROM schools WHERE id = ?', [req.user.school_id]);
+        let zonal_contact = null;
+        if (schoolRows[0]?.zone_id) {
+            const [zonalRows] = await pool.query(
+                `SELECT admin_id AS id, first_name, last_name FROM zonal_admins WHERE zone_id = ? AND title = 'Head of Education' LIMIT 1`,
+                [schoolRows[0].zone_id]
+            );
+            if (zonalRows.length > 0) zonal_contact = { id: zonalRows[0].id, full_name: [zonalRows[0].first_name, zonalRows[0].last_name].filter(Boolean).join(' ') };
+        }
+
+        res.json({
+            teachers: teachers.map(t => ({ id: t.id, full_name: [t.first_name, t.last_name].filter(Boolean).join(' ') })),
+            admins: admins.map(a => ({ id: a.id, full_name: [a.first_name, a.last_name].filter(Boolean).join(' '), title: a.title })),
+            zonal_contact
+        });
+    } catch (err) {
+        console.error("/api/admin/messages/recipients error:", err);
+        res.status(500).json({ error: "Could not load recipients" });
+    }
+});
+
+app.post('/api/admin/messages', requireAuth, requireRole('school_admins'), async (req, res) => {
+    const { recipient_type, recipient_id, subject, body } = req.body;
+    if (!['school_admins', 'teachers', 'zonal_admins'].includes(recipient_type) || !body?.trim()) {
+        return res.status(400).json({ error: "recipient_type and body are required" });
+    }
+    try {
+        let finalRecipientId = recipient_id || null;
+
+        if (recipient_type === 'zonal_admins' && !finalRecipientId) {
+            // Zonal Admin Bridge with no specific recipient chosen — route
+            // to the zone's Head of Education by default.
+            const [schoolRows] = await pool.query('SELECT zone_id FROM schools WHERE id = ?', [req.user.school_id]);
+            if (!schoolRows[0]?.zone_id) return res.status(400).json({ error: "Your school isn't assigned to a zone yet, so there's no Zonal Admin to escalate to." });
+            const [zonalRows] = await pool.query(
+                `SELECT admin_id FROM zonal_admins WHERE zone_id = ? AND title = 'Head of Education' LIMIT 1`,
+                [schoolRows[0].zone_id]
+            );
+            if (zonalRows.length === 0) return res.status(400).json({ error: "No Head of Education is set up for your zone yet." });
+            finalRecipientId = zonalRows[0].admin_id;
+        } else if (recipient_type !== 'zonal_admins' && !finalRecipientId) {
+            return res.status(400).json({ error: "recipient_id is required for this recipient_type" });
+        }
+
+        // Confirm the recipient actually exists in-scope before writing —
+        // a teacher/admin recipient must be in this admin's own school; a
+        // zonal recipient just needs to exist (we already validated it
+        // above if it was auto-picked as the Head of Education).
+        if (recipient_type === 'teachers') {
+            const [r] = await pool.query('SELECT teacher_id FROM teachers WHERE teacher_id = ? AND school_id = ?', [finalRecipientId, req.user.school_id]);
+            if (r.length === 0) return res.status(404).json({ error: "Teacher not found in your school." });
+        } else if (recipient_type === 'school_admins') {
+            const [r] = await pool.query('SELECT admin_id FROM school_admins WHERE admin_id = ? AND school_id = ?', [finalRecipientId, req.user.school_id]);
+            if (r.length === 0) return res.status(404).json({ error: "Admin not found in your school." });
+        }
+
+        await pool.query(
+            `INSERT INTO admin_messages (school_id, sender_type, sender_id, recipient_type, recipient_id, subject, body)
+             VALUES (?, 'school_admins', ?, ?, ?, ?, ?)`,
+            [req.user.school_id, req.user.user_id, recipient_type, finalRecipientId, subject?.trim() || null, body.trim()]
+        );
+        res.json({ message: "Message sent." });
+    } catch (err) {
+        console.error("/api/admin/messages POST error:", err);
+        res.status(500).json({ error: "Could not send message" });
+    }
+});
+
+app.get('/api/admin/messages', requireAuth, requireRole('school_admins'), async (req, res) => {
+    const box = req.query.box === 'sent' ? 'sent' : 'inbox';
+    try {
+        const [rows] = box === 'sent'
+            ? await pool.query(
+                `SELECT message_id, recipient_type, recipient_id, subject, body, is_read, sent_at
+                 FROM admin_messages WHERE school_id = ? AND sender_type = 'school_admins' AND sender_id = ?
+                 ORDER BY sent_at DESC`,
+                [req.user.school_id, req.user.user_id])
+            : await pool.query(
+                `SELECT message_id, sender_type, sender_id, subject, body, is_read, sent_at
+                 FROM admin_messages WHERE school_id = ? AND recipient_type = 'school_admins' AND recipient_id = ?
+                 ORDER BY sent_at DESC`,
+                [req.user.school_id, req.user.user_id]);
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/admin/messages GET error:", err);
+        res.status(500).json({ error: "Could not load messages" });
+    }
+});
+
+app.post('/api/admin/messages/:id/read', requireAuth, requireRole('school_admins'), async (req, res) => {
+    try {
+        const [result] = await pool.query(
+            `UPDATE admin_messages SET is_read = 1 WHERE message_id = ? AND school_id = ? AND recipient_type = 'school_admins' AND recipient_id = ?`,
+            [req.params.id, req.user.school_id, req.user.user_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Message not found." });
+        res.json({ message: "Marked as read." });
+    } catch (err) {
+        console.error("/api/admin/messages/:id/read error:", err);
+        res.status(500).json({ error: "Could not update message" });
     }
 });
 

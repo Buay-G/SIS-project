@@ -1,120 +1,847 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="registrar.css">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="registrar.css" />
     <title>Registrar Portal | Newland High School</title>
     <script src="/assets/js/guard.js"></script>
-</head>
-<body>
+    <script src="/assets/js/i18n.js"></script>
+  </head>
+  <body>
     <div class="dashboard-container">
-        <nav id="sidebar">
-            <img src="/assets/images/Logo.png" alt="School Logo" style="width: 100px; display: block; margin: 0 auto 10px;">
-            <h3 style="text-align: center; color: white; margin: 5px 0;">Newland High School</h3>
-            <h4 style="text-align: center; color: #bdc3c7; margin-bottom: 20px;">Registrar Panel</h4>
-            
-            <button onclick="switchTab('new-entry')">New Entry Registration</button>
-            <button onclick="switchTab('update-info')">Information Update</button>
-            <button onclick="switchTab('promotion')">Promotion/Stream</button>
-        </nav>
+      <nav id="sidebar">
+        <img
+          src="/assets/images/Logo.png"
+          alt="School Logo"
+          style="width: 100px; display: block; margin: 0 auto 10px"
+        />
+        <h3 style="text-align: center; color: white; margin: 5px 0">
+          Newland High School
+        </h3>
+        <h4
+          data-i18n="reg_panel_label"
+          style="text-align: center; color: #bdc3c7; margin-bottom: 10px"
+        >
+          Registrar Panel
+        </h4>
+        <div style="text-align: center; margin-bottom: 15px">
+          <button
+            type="button"
+            class="lang-switch-btn"
+            data-lang="en"
+            onclick="setLang('en')"
+            style="
+              width: auto;
+              display: inline-block;
+              padding: 4px 10px;
+              margin: 0 4px;
+            "
+          >
+            EN
+          </button>
+          <button
+            type="button"
+            class="lang-switch-btn"
+            data-lang="am"
+            onclick="setLang('am')"
+            style="
+              width: auto;
+              display: inline-block;
+              padding: 4px 10px;
+              margin: 0 4px;
+            "
+          >
+            አማ
+          </button>
+        </div>
 
-        <main id="content">
-            <div id="new-entry" class="tab-content active">
-                <h1>New Student Registration</h1>
-                <form id="registration-form">
-                    <div class="form-grid">
-                        <input type="text" id="reg_fayda" placeholder="Fayda Number" required minlength="16" maxlength="16">
-                        <input type="text" id="reg_phone" placeholder="Phone Number" required minlength="10" maxlength="10">
-                        <input type="text" id="reg_first" placeholder="First Name" required>
-                    </div>
-                    <div class="form-grid">
-                        <input type="text" id="reg_middle" placeholder="Middle Name" required>
-                        <input type="text" id="reg_last" placeholder="Last Name" required>
-                        <select id="reg_grade" onchange="updateStreamOptions()" required>
-                            <option value="">Select Grade</option>
-                            <option value="9">Grade 9</option>
-                            <option value="10">Grade 10</option>
-                            <option value="11">Grade 11</option>
-                            <option value="12">Grade 12</option>
-                        </select>
-                    </div>
-                    <div class="form-grid">
-                        <select id="reg_sex" required>
-                            <option value="">Select Sex</option>
-                            <option value="Male">Male</option>
-                            <option value="Female">Female</option>
-                        </select>
-                        <select id="reg_stream" required>
-                            <option value="">Select Stream</option>
-                        </select>
-                    </div>
-                    <button type="button" onclick="submitRegistration()">Register Student</button>
-                </form>
+        <button data-i18n="reg_nav_new_entry" onclick="switchTab('new-entry')">
+          New Entry Registration
+        </button>
+        <button
+          data-i18n="reg_nav_update_info"
+          onclick="switchTab('update-info')"
+        >
+          Information Update
+        </button>
+        <button data-i18n="reg_nav_promotion" onclick="switchTab('promotion')">
+          Promotion/Stream
+        </button>
+        <button
+          id="nav-transfer-hub"
+          data-i18n="reg_nav_transfer_hub"
+          onclick="switchTab('transfer-hub')"
+          style="display: none"
+        >
+          Transfer Hub
+        </button>
+        <button
+          id="nav-documents"
+          data-i18n="reg_nav_documents"
+          onclick="switchTab('documents')"
+          style="display: none"
+        >
+          Documents
+        </button>
+        <button
+          id="nav-graduation-wizard"
+          data-i18n="reg_nav_graduation"
+          onclick="switchTab('graduation-wizard')"
+          style="display: none"
+        >
+          Graduation Wizard
+        </button>
+        <button
+          id="nav-section-setup"
+          data-i18n="reg_nav_section_setup"
+          onclick="switchTab('section-setup')"
+          style="display: none"
+        >
+          Section Setup
+        </button>
+        <button
+          id="nav-placement-wizard"
+          data-i18n="reg_nav_placement"
+          onclick="switchTab('placement-wizard')"
+          style="display: none"
+        >
+          Placement Wizard
+        </button>
+        <button
+          id="nav-recorder-mgmt"
+          data-i18n="reg_nav_recorders"
+          onclick="switchTab('recorder-mgmt')"
+          style="display: none"
+        >
+          Manage Recorders
+        </button>
+      </nav>
+
+      <main id="content">
+        <div id="new-entry" class="tab-content active">
+          <h1 data-i18n="reg_new_entry_heading">New Student Registration</h1>
+          <form id="registration-form">
+            <div class="form-grid">
+              <input
+                type="text"
+                id="reg_fayda"
+                placeholder="Fayda Number"
+                required
+                minlength="16"
+                maxlength="16"
+              />
+              <input
+                type="text"
+                id="reg_phone"
+                placeholder="Phone Number"
+                required
+                minlength="10"
+                maxlength="10"
+              />
+              <input
+                type="text"
+                id="reg_first"
+                placeholder="First Name"
+                required
+              />
+            </div>
+            <div class="form-grid">
+              <input
+                type="text"
+                id="reg_middle"
+                placeholder="Middle Name"
+                required
+              />
+              <input
+                type="text"
+                id="reg_last"
+                placeholder="Last Name"
+                required
+              />
+              <select id="reg_grade" onchange="updateStreamOptions()" required>
+                <option value="">Select Grade</option>
+                <option value="9">Grade 9</option>
+                <option value="10">Grade 10</option>
+                <option value="11">Grade 11</option>
+                <option value="12">Grade 12</option>
+              </select>
+            </div>
+            <div class="form-grid">
+              <select id="reg_sex" required>
+                <option value="">Select Sex</option>
+                <option value="Male">Male</option>
+                <option value="Female">Female</option>
+              </select>
+              <select id="reg_stream" required>
+                <option value="">Select Stream</option>
+              </select>
+            </div>
+            <button type="button" onclick="submitRegistration()">
+              <span data-i18n="reg_register_button">Register Student</span>
+            </button>
+          </form>
+        </div>
+
+        <div id="update-info" class="tab-content">
+          <h1 data-i18n="reg_update_heading">Information Update</h1>
+          <div class="search-box">
+            <input
+              type="text"
+              id="search-id"
+              data-i18n-placeholder="reg_search_placeholder"
+              placeholder="Enter Student ID..."
+            />
+            <button onclick="fetchStudent()">Search</button>
+          </div>
+          <form id="update-form">
+            <input type="hidden" id="upd_id" />
+            <div class="form-grid">
+              <input
+                type="text"
+                id="upd_first"
+                placeholder="First Name"
+                required
+              />
+              <input
+                type="text"
+                id="upd_middle"
+                placeholder="Middle Name"
+                required
+              />
+              <input
+                type="text"
+                id="upd_last"
+                placeholder="Last Name"
+                required
+              />
+              <input
+                type="text"
+                id="upd_class"
+                placeholder="Class Level (9-12)"
+                required
+              />
+              <input
+                type="text"
+                id="upd_section"
+                placeholder="Section"
+                required
+              />
+              <input
+                type="text"
+                id="upd_stream"
+                placeholder="Stream"
+                required
+              />
+            </div>
+            <div class="form-grid">
+              <input
+                type="text"
+                id="upd_phone"
+                placeholder="Phone Number"
+                minlength="10"
+                maxlength="10"
+              />
+              <input
+                type="text"
+                id="upd_fayda"
+                placeholder="Fayda Number"
+                minlength="16"
+                maxlength="16"
+              />
+              <select id="upd_sex" required>
+                <option value="">Select Sex</option>
+                <option value="Male">Male</option>
+                <option value="Female">Female</option>
+              </select>
+            </div>
+            <button
+              type="button"
+              onclick="submitUpdate()"
+              data-i18n="reg_save_changes"
+            >
+              Save Changes
+            </button>
+          </form>
+        </div>
+
+        <div id="promotion" class="tab-content">
+          <h1 data-i18n="reg_promotion_heading">Student Promotion</h1>
+          <div class="search-box">
+            <input
+              type="text"
+              id="promo-id"
+              placeholder="Enter Student ID to Promote..."
+            />
+            <button onclick="fetchForPromotion()">Search</button>
+          </div>
+
+          <div id="promo-form" style="display: none">
+            <h3>Student Profile</h3>
+            <p>
+              <strong>Name:</strong> <span id="student-name-display"></span>
+            </p>
+            <p>
+              <strong>Current Grade:</strong> <span id="current-grade"></span>
+            </p>
+
+            <div id="promo-eligibility" style="margin: 15px 0"></div>
+
+            <label>Decision:</label>
+            <label
+              style="
+                font-weight: normal;
+                display: inline-block;
+                margin-right: 20px;
+              "
+            >
+              <input
+                type="radio"
+                name="promo-action"
+                id="action-promote"
+                value="promote"
+                onchange="updateOverrideVisibility()"
+              />
+              Promote
+            </label>
+            <label style="font-weight: normal; display: inline-block">
+              <input
+                type="radio"
+                name="promo-action"
+                id="action-retain"
+                value="retain"
+                onchange="updateOverrideVisibility()"
+              />
+              Retain / Detain
+            </label>
+
+            <div id="promote-fields" style="margin-top: 15px">
+              <label>New Grade:</label>
+              <select id="new-grade" required></select>
+
+              <div id="stream-select-container" style="display: none">
+                <label id="stream-label">Select Stream:</label>
+                <select id="stream-select"></select>
+              </div>
             </div>
 
-            <div id="update-info" class="tab-content">
-                <h1>Information Update</h1>
-                <div class="search-box">
-                    <input type="text" id="search-id" placeholder="Enter Student ID...">
-                    <button onclick="fetchStudent()">Search</button>
-                </div>
-                <form id="update-form">
-                    <input type="hidden" id="upd_id">
-                    <div class="form-grid">
-                        <input type="text" id="upd_first" placeholder="First Name" required>
-                        <input type="text" id="upd_middle" placeholder="Middle Name" required>
-                        <input type="text" id="upd_last" placeholder="Last Name" required>
-                        <input type="text" id="upd_class" placeholder="Class Level (9-12)" required>
-                        <input type="text" id="upd_section" placeholder="Section" required>
-                        <input type="text" id="upd_stream" placeholder="Stream" required>
-                    </div>
-                    <div class="form-grid">
-                        <input type="text" id="upd_phone" placeholder="Phone Number" minlength="10" maxlength="10">
-                        <input type="text" id="upd_fayda" placeholder="Fayda Number" minlength="16" maxlength="16">
-                        <select id="upd_sex" required>
-                            <option value="">Select Sex</option>
-                            <option value="Male">Male</option>
-                            <option value="Female">Female</option>
-                        </select>
-                    </div>
-                    <button type="button" onclick="submitUpdate()">Save Changes</button>
-                </form>
+            <div
+              id="override-reason-box"
+              style="display: none; margin-top: 15px"
+            >
+              <label
+                >Override Reason (required — this decision disagrees with the
+                cutoff):</label
+              >
+              <textarea
+                id="override-reason"
+                rows="3"
+                style="
+                  width: 100%;
+                  padding: 10px;
+                  border: 1px solid #ced4da;
+                  border-radius: 5px;
+                "
+              ></textarea>
             </div>
 
-            <div id="promotion" class="tab-content">
-                <h1>Student Promotion</h1>
-                <div class="search-box">
-                    <input type="text" id="promo-id" placeholder="Enter Student ID to Promote...">
-                    <button onclick="fetchForPromotion()">Search</button>
-                </div>
-                
-                <div id="promo-form" style="display:none;">
-                    <h3>Student Profile</h3>
-                    <p><strong>Name:</strong> <span id="student-name-display"></span></p>
-                    <p><strong>Current Grade:</strong> <span id="current-grade"></span></p>
-                    
-                    <label>New Grade:</label>
-                    <select id="new-grade" required></select>
-                    
-                    <div id="stream-select-container" style="display:none;">
-                        <label id="stream-label">Select Stream:</label>
-                        <select id="stream-select"></select>
-                    </div>
-                    
-                    <button type="button" onclick="submitPromotion()">Promote Student</button>
-                </div>
+            <button
+              type="button"
+              onclick="submitPromotion()"
+              style="margin-top: 15px"
+            >
+              Submit Decision
+            </button>
+          </div>
+        </div>
+
+        <div id="transfer-hub" class="tab-content">
+          <h1 data-i18n="reg_transfer_heading">Transfer Navigation Hub</h1>
+
+          <div class="search-box" style="margin-bottom: 0">
+            <button
+              type="button"
+              onclick="showTransferPane('outgoing')"
+              id="btn-pane-outgoing"
+              data-i18n="reg_outgoing"
+            >
+              Outgoing
+            </button>
+            <button
+              type="button"
+              onclick="showTransferPane('incoming')"
+              id="btn-pane-incoming"
+              data-i18n="reg_incoming"
+            >
+              Incoming
+            </button>
+          </div>
+
+          <div id="transfer-outgoing-pane" style="margin-top: 20px">
+            <h3 data-i18n="reg_outgoing_start_heading">
+              Start an Outgoing Transfer
+            </h3>
+            <p class="muted">
+              Generates a secure Transfer Code to hand off to the receiving
+              school. The student is marked "Transferred - Pending" here until
+              the code is used or cancelled.
+            </p>
+            <div class="search-box">
+              <input
+                type="text"
+                id="out_student_id"
+                data-i18n-placeholder="reg_out_student_placeholder"
+                placeholder="Student ID to transfer out..."
+              />
+              <button
+                type="button"
+                onclick="startOutgoingTransfer()"
+                data-i18n="reg_generate_code"
+              >
+                Generate Transfer Code
+              </button>
             </div>
-        </main>
+            <div id="outgoing-code-result"></div>
+
+            <h3 data-i18n="reg_outgoing_list_heading">Outgoing Transfers</h3>
+            <div id="outgoing-transfers-list">
+              <p class="muted">Loading...</p>
+            </div>
+          </div>
+
+          <div
+            id="transfer-incoming-pane"
+            style="margin-top: 20px; display: none"
+          >
+            <h3 data-i18n="reg_import_via_code_heading">
+              Import via Transfer Code
+            </h3>
+            <div class="search-box">
+              <input
+                type="text"
+                id="in_transfer_code"
+                data-i18n-placeholder="reg_transfer_code_placeholder"
+                placeholder="Enter Transfer Code (e.g. TRF-A1B2C3D4E5)..."
+              />
+              <button
+                type="button"
+                onclick="lookupIncomingTransfer()"
+                data-i18n="reg_lookup"
+              >
+                Look Up
+              </button>
+            </div>
+            <div id="incoming-preview"></div>
+
+            <h3 style="margin-top: 25px">
+              External Transfer
+              <span class="muted" style="font-weight: normal"
+                >(no code — school outside our network)</span
+              >
+            </h3>
+            <button
+              type="button"
+              onclick="toggleExternalTransferForm()"
+              id="btn-toggle-external"
+              data-i18n="reg_skip_external"
+            >
+              Skip — Add External Transfer Manually
+            </button>
+            <div
+              id="external-transfer-form"
+              style="display: none; margin-top: 15px"
+            >
+              <div class="form-grid">
+                <input
+                  type="text"
+                  id="ext_first"
+                  placeholder="First Name"
+                  required
+                />
+                <input type="text" id="ext_middle" placeholder="Middle Name" />
+                <input
+                  type="text"
+                  id="ext_last"
+                  placeholder="Last Name"
+                  required
+                />
+                <select
+                  id="ext_grade"
+                  onchange="updateExternalStreamOptions()"
+                  required
+                >
+                  <option value="">Select Grade</option>
+                  <option value="9">Grade 9</option>
+                  <option value="10">Grade 10</option>
+                  <option value="11">Grade 11</option>
+                  <option value="12">Grade 12</option>
+                </select>
+              </div>
+              <div class="form-grid">
+                <select id="ext_sex" required>
+                  <option value="">Select Sex</option>
+                  <option value="Male">Male</option>
+                  <option value="Female">Female</option>
+                </select>
+                <select id="ext_stream" required>
+                  <option value="">Select Stream</option>
+                </select>
+                <input
+                  type="text"
+                  id="ext_phone"
+                  placeholder="Phone Number (optional)"
+                  minlength="10"
+                  maxlength="10"
+                />
+              </div>
+              <input
+                type="text"
+                id="ext_fayda"
+                placeholder="Fayda Number (optional)"
+                minlength="16"
+                maxlength="16"
+                style="max-width: 300px; margin-bottom: 15px"
+              />
+              <button
+                type="button"
+                onclick="submitExternalTransfer()"
+                data-i18n="reg_add_student"
+              >
+                Add Student
+              </button>
+            </div>
+
+            <h3 style="margin-top: 25px" data-i18n="reg_incoming_list_heading">
+              Incoming Transfers
+            </h3>
+            <div id="incoming-transfers-list">
+              <p class="muted">Loading...</p>
+            </div>
+          </div>
+        </div>
+
+        <div id="documents" class="tab-content">
+          <h1 data-i18n="reg_documents_heading">Documents</h1>
+          <p class="muted" data-i18n="reg_documents_sub">
+            Search a student to preview or issue their Report Card, Official
+            Transcript, or ID Card — or preview a blank sample template below.
+          </p>
+
+          <div class="search-box">
+            <input
+              type="text"
+              id="doc_student_id"
+              data-i18n-placeholder="reg_student_id_placeholder"
+              placeholder="Enter Student ID..."
+            />
+            <button
+              type="button"
+              onclick="loadDocumentStudent()"
+              data-i18n="reg_load"
+            >
+              Load
+            </button>
+          </div>
+          <div id="doc-student-info"></div>
+          <div
+            id="doc-student-actions"
+            style="display: none"
+            class="search-box"
+          >
+            <button
+              type="button"
+              onclick="previewReportCard(currentDocStudentId)"
+              data-i18n="reg_preview_report_card"
+            >
+              Preview Report Card
+            </button>
+            <button
+              type="button"
+              onclick="previewTranscript(currentDocStudentId)"
+              data-i18n="reg_preview_transcript"
+            >
+              Preview / Issue Transcript
+            </button>
+            <button
+              type="button"
+              onclick="downloadIdCard(currentDocStudentId)"
+              data-i18n="reg_download_id_card"
+            >
+              Download ID Card
+            </button>
+          </div>
+          <div id="doc-report-card-preview"></div>
+
+          <h3 data-i18n="reg_templates_heading" style="margin-top: 30px">
+            School Templates (Sample Preview)
+          </h3>
+          <p class="muted" data-i18n="reg_templates_sub">
+            No student needed — see what each document looks like before issuing
+            one for real.
+          </p>
+          <div class="search-box">
+            <button
+              type="button"
+              onclick="previewReportCard('SAMPLE-0001')"
+              data-i18n="reg_sample_report_card"
+            >
+              Sample Report Card
+            </button>
+            <button
+              type="button"
+              onclick="previewTranscript('SAMPLE-0001')"
+              data-i18n="reg_sample_transcript"
+            >
+              Sample Transcript
+            </button>
+            <button
+              type="button"
+              onclick="downloadIdCard('SAMPLE-0001')"
+              data-i18n="reg_sample_id_card"
+            >
+              Sample ID Card
+            </button>
+          </div>
+
+          <h3 data-i18n="reg_issuance_log_heading" style="margin-top: 30px">
+            Recent Issuances
+          </h3>
+          <div id="issuance-log-list">
+            <p class="muted">Loading...</p>
+          </div>
+        </div>
+
+        <div id="graduation-wizard" class="tab-content">
+          <h1 data-i18n="reg_graduation_heading">G12 Graduation Wizard</h1>
+          <p class="muted" data-i18n="reg_graduation_sub">
+            Select Grade 12 students to graduate into a named batch. Students
+            below the cut-off need an override reason.
+          </p>
+
+          <div class="search-box" style="flex-wrap: wrap">
+            <input
+              type="text"
+              id="grad_batch_tag"
+              data-i18n-placeholder="reg_batch_tag_placeholder"
+              placeholder='Batch name (e.g. "Class of 2026")...'
+              style="flex-basis: 260px"
+            />
+            <input
+              type="text"
+              id="grad_override_reason"
+              data-i18n-placeholder="reg_override_reason_placeholder"
+              placeholder="Override reason (required for any student below the cut-off)..."
+              style="flex-grow: 1"
+            />
+            <button
+              type="button"
+              onclick="processGraduation()"
+              data-i18n="reg_process_graduation"
+            >
+              Graduate Selected Students
+            </button>
+          </div>
+
+          <div id="graduation-eligible-list">
+            <p class="muted">Loading...</p>
+          </div>
+
+          <h3
+            data-i18n="reg_graduation_history_heading"
+            style="margin-top: 30px"
+          >
+            Graduation History
+          </h3>
+          <div id="graduation-history-list">
+            <p class="muted">Loading...</p>
+          </div>
+        </div>
+
+        <div id="section-setup" class="tab-content">
+          <h1 data-i18n="reg_section_setup_heading">Section Setup</h1>
+          <p>
+            Define which sections are active per grade and stream. Only active
+            sections receive new students from the Placement Wizard — deactivate
+            a section to stop new placements into it without disturbing students
+            already there.
+          </p>
+
+          <div class="search-box">
+            <select id="sec_grade" onchange="updateSectionSetupStreamOptions()">
+              <option value="">Select Grade</option>
+              <option value="9">Grade 9</option>
+              <option value="10">Grade 10</option>
+              <option value="11">Grade 11</option>
+              <option value="12">Grade 12</option>
+            </select>
+            <select id="sec_stream">
+              <option value="">Select Stream</option>
+            </select>
+            <input
+              type="text"
+              id="sec_name"
+              placeholder="Section (e.g. A)"
+              maxlength="5"
+              style="max-width: 140px"
+            />
+            <input
+              type="number"
+              id="sec_capacity"
+              placeholder="Max capacity (optional)"
+              min="1"
+              style="max-width: 200px"
+            />
+            <button
+              type="button"
+              onclick="addSection()"
+              data-i18n="reg_add_section"
+            >
+              Add Section
+            </button>
+          </div>
+
+          <h3 data-i18n="reg_configured_sections">Configured Sections</h3>
+          <div id="sections-list">
+            <p class="muted">Loading...</p>
+          </div>
+        </div>
+
+        <div id="placement-wizard" class="tab-content">
+          <h1 data-i18n="reg_placement_heading">
+            Automated Section Placement Wizard
+          </h1>
+          <p>
+            New registrations and transfers wait here until placed. Placement is
+            random and as even as possible across whichever sections are active
+            for that grade and stream.
+          </p>
+          <p>
+            <strong><span id="placement-total">0</span></strong> student(s)
+            waiting for placement across all grades.
+            <button
+              type="button"
+              onclick="runPlacementAll()"
+              style="margin-left: 15px"
+            >
+              <span data-i18n="reg_run_placement_all"
+                >Run Placement for All</span
+              >
+            </button>
+          </p>
+
+          <div id="placement-queue">
+            <p class="muted">Loading...</p>
+          </div>
+        </div>
+
+        <div id="recorder-mgmt" class="tab-content">
+          <h1 data-i18n="reg_recorders_heading">Manage Recorders</h1>
+          <p>
+            You can deputize up to <strong>2 active teachers</strong> as
+            Recorders. Recorders can handle new registrations and routine
+            information updates, but cannot access promotion, section setup, or
+            other Registrar-only tools.
+          </p>
+
+          <h3 data-i18n="reg_current_recorders">Current Recorders</h3>
+          <div id="current-recorders-list">
+            <p class="muted">Loading...</p>
+          </div>
+
+          <div id="add-recorder-box" style="margin-top: 20px">
+            <h3 data-i18n="reg_assign_recorder_heading">
+              Assign a New Recorder
+            </h3>
+            <div class="search-box">
+              <select id="eligible-teacher-select" style="flex-grow: 1">
+                <option value="">Loading eligible teachers...</option>
+              </select>
+              <button type="button" onclick="assignRecorder()">
+                <span data-i18n="reg_assign_recorder_button"
+                  >Assign as Recorder</span
+                >
+              </button>
+            </div>
+          </div>
+        </div>
+      </main>
     </div>
 
-    <div id="success-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(255,255,255,0.9); z-index:1000; text-align:center; padding-top:100px;">
-        <div style="font-size: 80px; color: #3498db; margin-bottom: 20px;">&#9313;</div>
-        <h2>Success!</h2>
-        <p>The record has been updated successfully.</p>
-        <button onclick="closeSuccess()" style="padding: 10px 25px; background: #3498db; color: white; border: none; border-radius: 5px; cursor: pointer; margin-top: 20px;">Return</button>
+    <div
+      id="success-modal"
+      style="
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(255, 255, 255, 0.9);
+        z-index: 1000;
+        text-align: center;
+        padding-top: 100px;
+      "
+    >
+      <div style="font-size: 80px; color: #3498db; margin-bottom: 20px">
+        &#9313;
+      </div>
+      <h2>Success!</h2>
+      <p>The record has been updated successfully.</p>
+      <button
+        onclick="closeSuccess()"
+        style="
+          padding: 10px 25px;
+          background: #3498db;
+          color: white;
+          border: none;
+          border-radius: 5px;
+          cursor: pointer;
+          margin-top: 20px;
+        "
+      >
+        Return
+      </button>
+    </div>
+
+    <div
+      id="recorder-intercept-modal"
+      style="
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(44, 62, 80, 0.92);
+        z-index: 1100;
+        text-align: center;
+        padding-top: 100px;
+        color: white;
+      "
+    >
+      <div style="font-size: 60px; margin-bottom: 10px">&#128274;</div>
+      <h2>You're a Recorder</h2>
+      <p style="max-width: 420px; margin: 10px auto 0">
+        This section is part of the full Registrar admin tools and isn't
+        available to Recorders. You can still handle new registrations and
+        routine updates from your portal.
+      </p>
+      <button
+        onclick="closeRecorderIntercept()"
+        style="
+          padding: 10px 25px;
+          background: #3498db;
+          color: white;
+          border: none;
+          border-radius: 5px;
+          cursor: pointer;
+          margin-top: 25px;
+        "
+      >
+        Back to Portal
+      </button>
     </div>
 
     <script src="app.js"></script>
-</body>
+  </body>
 </html>

@@ -80,7 +80,7 @@ async function checkAuthAndInit() {
             }
         }
 
-        if (data.additional_role === 'registrar') {
+        if (data.is_registrar) {
             const item = document.getElementById('nav-registrar-item');
             if (item) item.style.display = 'block';
         }

@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>School Admin Portal</title>
     <link rel="stylesheet" href="styles.css" />
-    <script src="/assets/js/i18n.js"></script>
   </head>
   <body>
     <div class="dashboard-container">
@@ -36,7 +35,7 @@
 
           <li
             class="nav-section-label"
-            data-titles="Admin VP,Principal"
+            data-titles="Admin VP"
             data-i18n="sa_nav_section_admin"
           >
             Administration
@@ -45,8 +44,21 @@
             <a
               href="#"
               class="nav-link"
+              data-page="teacher-setup"
+              data-titles="Principal"
+            >
+              <span class="nav-icon">🧑‍💼</span
+              ><span data-i18n="sa_nav_teacher_setup"
+                >Teacher Onboarding</span
+              ></a
+            >
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
               data-page="teachers"
-              data-titles="Admin VP,Principal"
+              data-titles="Admin VP"
             >
               <span class="nav-icon">🧑‍🏫</span
               ><span data-i18n="sa_nav_teachers"
@@ -59,7 +71,7 @@
               href="#"
               class="nav-link"
               data-page="textbooks"
-              data-titles="Admin VP,Principal"
+              data-titles="Admin VP"
             >
               <span class="nav-icon">📘</span
               ><span data-i18n="sa_nav_textbooks">Textbooks</span></a
@@ -70,7 +82,7 @@
               href="#"
               class="nav-link"
               data-page="absence"
-              data-titles="Admin VP,Principal"
+              data-titles="Admin VP"
             >
               <span class="nav-icon">📝</span
               ><span data-i18n="sa_nav_absence">Absence Requests</span></a
@@ -79,7 +91,7 @@
 
           <li
             class="nav-section-label"
-            data-titles="Academic VP,Principal"
+            data-titles="Academic VP"
             data-i18n="sa_nav_section_academic"
           >
             Academics
@@ -89,7 +101,7 @@
               href="#"
               class="nav-link"
               data-page="timetable"
-              data-titles="Academic VP,Principal"
+              data-titles="Academic VP"
             >
               <span class="nav-icon">🗓️</span
               ><span data-i18n="sa_nav_timetable">Timetable</span></a
@@ -99,8 +111,21 @@
             <a
               href="#"
               class="nav-link"
+              data-page="teacher-assignments"
+              data-titles="Academic VP"
+            >
+              <span class="nav-icon">📋</span
+              ><span data-i18n="sa_nav_teacher_assignments"
+                >Teaching Assignments</span
+              ></a
+            >
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
               data-page="marks-review"
-              data-titles="Academic VP,Principal"
+              data-titles="Academic VP"
             >
               <span class="nav-icon">📊</span
               ><span data-i18n="sa_nav_marks_review">Marks Review</span></a
@@ -110,8 +135,19 @@
             <a
               href="#"
               class="nav-link"
+              data-page="mark-cutoff"
+              data-titles="Academic VP"
+            >
+              <span class="nav-icon">🎯</span
+              ><span data-i18n="sa_nav_mark_cutoff">Mark Cut-Off</span></a
+            >
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
               data-page="semester"
-              data-titles="Academic VP,Principal"
+              data-titles="Academic VP"
             >
               <span class="nav-icon">🎓</span
               ><span data-i18n="sa_nav_semester">Semester Control</span></a
@@ -122,7 +158,7 @@
               href="#"
               class="nav-link"
               data-page="conduct"
-              data-titles="Academic VP,Principal"
+              data-titles="Academic VP"
             >
               <span class="nav-icon">⚖️</span
               ><span data-i18n="sa_nav_conduct">Student Conduct</span></a
@@ -160,6 +196,17 @@
               ><span data-i18n="sa_nav_disciplinary"
                 >Disciplinary Cases</span
               ></a
+            >
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="teacher-audit"
+              data-titles="Principal"
+            >
+              <span class="nav-icon">🚩</span
+              ><span data-i18n="sa_nav_teacher_audit">Teacher Audit</span></a
             >
           </li>
           <li>
@@ -204,6 +251,22 @@
               <span class="nav-icon">🎒</span
               ><span data-i18n="sa_nav_students">Students</span></a
             >
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="messages"
+              data-titles="Principal,Admin VP,Academic VP"
+            >
+              <span class="nav-icon">💬</span
+              ><span data-i18n="sa_nav_messages">Messages</span
+              ><span
+                class="badge-dot"
+                id="sa-messages-badge"
+                style="display: none; position: static; margin-left: auto"
+              ></span
+            ></a>
           </li>
           <li>
             <a
@@ -313,6 +376,124 @@
           </div>
           <div class="stat-row" id="sa-dashboard-stats"></div>
           <div class="widget-grid" id="sa-dashboard-widgets"></div>
+        </section>
+
+        <!-- ===================== TEACHER ONBOARDING, Stage 1 (Principal) ===================== -->
+        <section class="page-content" id="page-teacher-setup">
+          <h2 data-i18n="sa_nav_teacher_setup">Teacher Onboarding</h2>
+          <p class="page-subtitle" data-i18n="sa_teacher_setup_sub">
+            Stage 1 of 2: accept a teacher pushed by Zonal, or hire one
+            directly, and mint their school Teacher ID. Academic VP takes it
+            from here to assign the teaching load.
+          </p>
+
+          <div class="tab-row">
+            <button
+              class="tab-btn active"
+              data-tab="incoming-teachers"
+              data-i18n="sa_tab_incoming_teachers"
+            >
+              Incoming from Zonal
+            </button>
+            <button
+              class="tab-btn"
+              data-tab="direct-hire"
+              data-i18n="sa_tab_direct_hire"
+            >
+              Direct Local Hire
+            </button>
+          </div>
+
+          <div id="tab-incoming-teachers" class="tab-panel">
+            <p class="page-subtitle" data-i18n="sa_incoming_teachers_sub">
+              Teachers a Zonal Admin has registered and sent to your school.
+              Accept to mint their Teacher ID and set their login, or decline if
+              this isn't the right school.
+            </p>
+            <div class="widget">
+              <div class="data-table-wrap">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th data-i18n="sa_col_name">Name</th>
+                      <th data-i18n="sa_col_contact">Contact</th>
+                      <th data-i18n="sa_col_status">Status</th>
+                      <th data-i18n="sa_col_action">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="sa-incoming-teachers-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div id="tab-direct-hire" class="tab-panel" style="display: none">
+            <div class="widget" style="margin-bottom: 18px; max-width: 640px">
+              <h3 data-i18n="sa_teacher_setup_heading">Onboard a Teacher</h3>
+              <div class="form-row">
+                <div class="form-group">
+                  <label data-i18n="sa_first_name_label">First Name</label>
+                  <input type="text" id="ts-first-name" />
+                </div>
+                <div class="form-group">
+                  <label data-i18n="sa_last_name_label">Last Name</label>
+                  <input type="text" id="ts-last-name" />
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label data-i18n="sa_middle_name_label"
+                    >Middle Name (optional)</label
+                  >
+                  <input type="text" id="ts-middle-name" />
+                </div>
+                <div class="form-group">
+                  <label data-i18n="sa_contact_number_label"
+                    >Contact Number</label
+                  >
+                  <input type="text" id="ts-contact-number" />
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label data-i18n="sa_email_label">Email (optional)</label>
+                  <input type="email" id="ts-email" />
+                </div>
+                <div class="form-group">
+                  <label data-i18n="sa_temp_password_label"
+                    >Temporary Password</label
+                  >
+                  <input type="text" id="ts-password" />
+                </div>
+              </div>
+              <button
+                class="btn btn-accent"
+                id="teacher-setup-btn"
+                data-i18n="sa_onboard_btn"
+              >
+                Onboard Teacher
+              </button>
+            </div>
+          </div>
+
+          <div class="widget">
+            <h3 data-i18n="sa_teacher_setup_roster_heading">
+              School Teacher Roster
+            </h3>
+            <div class="data-table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="sa_col_teacher_id">Teacher ID</th>
+                    <th data-i18n="sa_col_name">Name</th>
+                    <th data-i18n="sa_col_contact">Contact</th>
+                    <th data-i18n="sa_col_status">Teaching Load</th>
+                  </tr>
+                </thead>
+                <tbody id="sa-teacher-setup-tbody"></tbody>
+              </table>
+            </div>
+          </div>
         </section>
 
         <!-- ===================== TEACHERS & ATTENDANCE (Admin VP) ===================== -->
@@ -599,6 +780,180 @@
           </div>
         </section>
 
+        <!-- ===================== TEACHING ASSIGNMENTS, Stage 2 (Academic VP) ===================== -->
+        <section class="page-content" id="page-teacher-assignments">
+          <h2 data-i18n="sa_nav_teacher_assignments">Teaching Assignments</h2>
+          <p class="page-subtitle" data-i18n="sa_teacher_assignments_sub">
+            Stage 2 of 2: map each onboarded teacher onto subjects, classes, and
+            sections.
+          </p>
+
+          <div
+            class="widget"
+            id="ta-assign-form"
+            style="margin-bottom: 18px; max-width: 640px"
+          >
+            <h3 data-i18n="sa_ta_assign_heading">Assign Teaching Load</h3>
+            <div class="form-row">
+              <div class="form-group">
+                <label data-i18n="sa_teacher_label">Teacher</label>
+                <select id="ta-teacher-select"></select>
+              </div>
+              <div class="form-group">
+                <label data-i18n="sa_subject_label">Subject</label>
+                <select id="ta-subject-select"></select>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label data-i18n="sa_class_level_label">Class Level</label>
+                <input type="text" id="ta-class-level" placeholder="e.g. 9" />
+              </div>
+              <div class="form-group">
+                <label data-i18n="sa_section_label">Section</label>
+                <input type="text" id="ta-section" placeholder="e.g. A" />
+              </div>
+            </div>
+            <div class="form-group">
+              <label data-i18n="sa_stream_label">Stream (optional)</label>
+              <input type="text" id="ta-stream" />
+            </div>
+            <button
+              class="btn btn-accent"
+              id="teacher-assignment-btn"
+              data-i18n="sa_ta_assign_btn"
+            >
+              Assign
+            </button>
+          </div>
+
+          <div class="widget">
+            <h3 data-i18n="sa_ta_current_heading">Current Assignments</h3>
+            <div class="form-group" style="max-width: 320px">
+              <select id="ta-filter-teacher">
+                <option value="" data-i18n="sa_ta_all_teachers">
+                  All teachers
+                </option>
+              </select>
+            </div>
+            <div class="data-table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="sa_col_teacher">Teacher</th>
+                    <th data-i18n="sa_col_subject">Subject</th>
+                    <th data-i18n="sa_col_class">Class</th>
+                    <th data-i18n="sa_col_action">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="sa-teacher-assignments-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div
+            class="widget"
+            id="hr-assign-form"
+            style="margin-top: 18px; margin-bottom: 18px; max-width: 640px"
+          >
+            <h3 data-i18n="sa_hr_assign_heading">Assign Homeroom</h3>
+            <div class="form-row">
+              <div class="form-group">
+                <label data-i18n="sa_teacher_label">Teacher</label>
+                <select id="hr-teacher-select"></select>
+              </div>
+              <div class="form-group">
+                <label data-i18n="sa_class_level_label">Class Level</label>
+                <input type="text" id="hr-class-level" placeholder="e.g. 9" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label data-i18n="sa_section_label">Section</label>
+                <input type="text" id="hr-section" placeholder="e.g. A" />
+              </div>
+              <div class="form-group">
+                <label data-i18n="sa_stream_label">Stream (optional)</label>
+                <input type="text" id="hr-stream" />
+              </div>
+            </div>
+            <button
+              class="btn btn-accent"
+              id="hr-assign-btn"
+              data-i18n="sa_hr_assign_btn"
+            >
+              Assign Homeroom
+            </button>
+          </div>
+
+          <div class="widget" id="ta-roles-widget">
+            <h3 data-i18n="sa_ta_roles_heading">
+              Homeroom &amp; Additional Roles
+            </h3>
+            <div class="data-table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="sa_col_teacher">Teacher</th>
+                    <th data-i18n="sa_col_homeroom">Homeroom</th>
+                    <th data-i18n="sa_col_registrar">Registrar Role</th>
+                    <th data-i18n="sa_col_action">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="sa-teacher-roles-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================== MARK CUT-OFF (Academic VP) ===================== -->
+        <section class="page-content" id="page-mark-cutoff">
+          <h2 data-i18n="sa_nav_mark_cutoff">Mark Cut-Off</h2>
+          <p class="page-subtitle" data-i18n="sa_mark_cutoff_sub">
+            Publish the official school-wide passing mark for the academic year.
+          </p>
+
+          <div
+            class="widget"
+            id="mc-publish-form"
+            style="margin-bottom: 18px; max-width: 420px"
+          >
+            <h3 data-i18n="sa_mc_publish_heading">Passing Cut-Off</h3>
+            <div class="form-row">
+              <div class="form-group">
+                <label data-i18n="sa_mc_cutoff_label">Cut-off (%)</label>
+                <input type="number" id="mc-cutoff-input" min="0" max="100" />
+              </div>
+              <div class="form-group" style="align-self: end">
+                <button
+                  class="btn btn-accent"
+                  id="mc-publish-btn"
+                  data-i18n="sa_mc_publish_btn"
+                >
+                  Publish
+                </button>
+              </div>
+            </div>
+            <p class="form-hint" id="mc-current-hint"></p>
+          </div>
+
+          <div class="widget">
+            <h3 data-i18n="sa_mc_below_heading">Students Below the Cut-Off</h3>
+            <div class="data-table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="sa_col_student">Student</th>
+                    <th data-i18n="sa_col_class">Class</th>
+                    <th data-i18n="sa_col_year_average">Year Average</th>
+                  </tr>
+                </thead>
+                <tbody id="sa-below-cutoff-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
         <!-- ===================== MARKS REVIEW (Academic VP) ===================== -->
         <section class="page-content" id="page-marks-review">
           <h2 data-i18n="sa_nav_marks_review">Marks Review</h2>
@@ -751,6 +1106,30 @@
           </div>
         </section>
 
+        <!-- ===================== TEACHER PERFORMANCE & RED-FLAG AUDIT (Principal) ===================== -->
+        <section class="page-content" id="page-teacher-audit">
+          <h2 data-i18n="sa_nav_teacher_audit">Teacher Audit</h2>
+          <p class="page-subtitle" data-i18n="sa_teacher_audit_sub">
+            Teachers flagged for excessive absences, low teaching-period
+            punctuality, or student performance below the passing cut-off. Click
+            a row for the full picture.
+          </p>
+          <div class="data-table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th data-i18n="sa_col_teacher">Teacher</th>
+                  <th data-i18n="sa_col_absences_30d">Absences (30d)</th>
+                  <th data-i18n="sa_col_punctuality">Punctuality</th>
+                  <th data-i18n="sa_col_avg_score">Avg. Score</th>
+                  <th data-i18n="sa_col_flags">Flags</th>
+                </tr>
+              </thead>
+              <tbody id="sa-teacher-audit-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
         <!-- ===================== DOCUMENT APPROVALS (Principal) ===================== -->
         <section class="page-content" id="page-document-approvals">
           <h2 data-i18n="sa_nav_document_approvals">Document Approvals</h2>
@@ -800,33 +1179,240 @@
           <p class="page-subtitle" data-i18n="sa_students_sub">
             School-wide roster.
           </p>
-          <div class="form-group" style="max-width: 320px">
-            <input
-              type="text"
-              id="students-filter"
-              data-i18n-placeholder="sa_students_filter_placeholder"
-              placeholder="Filter by name or ID..."
-            />
+
+          <div class="stat-row" id="sa-students-stat-row"></div>
+
+          <div class="tab-row">
+            <button
+              class="tab-btn active"
+              data-tab="students-roster"
+              data-i18n="sa_tab_students_roster"
+            >
+              Roster
+            </button>
+            <button
+              class="tab-btn"
+              data-tab="students-transfer-requests"
+              data-i18n="sa_tab_transfer_requests"
+            >
+              Transfer Requests
+            </button>
+            <button
+              class="tab-btn"
+              data-tab="students-transferred"
+              data-i18n="sa_tab_transferred"
+            >
+              Transferred This Year
+            </button>
+            <button
+              class="tab-btn"
+              data-tab="students-batches"
+              data-i18n="sa_tab_graduation_batches"
+            >
+              Graduation Batches
+            </button>
           </div>
-          <div class="data-table-wrap">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th data-i18n="sa_col_student_id">ID</th>
-                  <th data-i18n="sa_col_name">Name</th>
-                  <th data-i18n="sa_col_class">Class</th>
-                  <th data-i18n="sa_col_status">Status</th>
-                </tr>
-              </thead>
-              <tbody id="sa-students-tbody"></tbody>
-            </table>
+
+          <div id="tab-students-roster" class="tab-panel">
+            <div class="form-row" style="max-width: 760px">
+              <div class="form-group">
+                <input
+                  type="text"
+                  id="students-filter"
+                  data-i18n-placeholder="sa_students_filter_placeholder"
+                  placeholder="Filter by name or ID..."
+                />
+              </div>
+              <div class="form-group">
+                <select id="students-class-filter">
+                  <option value="" data-i18n="sa_all_classes">
+                    All Classes
+                  </option>
+                </select>
+              </div>
+              <div class="form-group">
+                <select id="students-section-filter">
+                  <option value="" data-i18n="sa_all_sections">
+                    All Sections
+                  </option>
+                </select>
+              </div>
+              <div class="form-group">
+                <select id="students-stream-filter">
+                  <option value="" data-i18n="sa_all_streams">
+                    All Streams
+                  </option>
+                </select>
+              </div>
+            </div>
+            <div class="data-table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="sa_col_student_id">ID</th>
+                    <th data-i18n="sa_col_name">Name</th>
+                    <th data-i18n="sa_col_class">Class</th>
+                    <th data-i18n="sa_col_status">Status</th>
+                  </tr>
+                </thead>
+                <tbody id="sa-students-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div
+            id="tab-students-transfer-requests"
+            class="tab-panel"
+            style="display: none"
+          >
+            <p class="page-subtitle" data-i18n="sa_transfer_requests_sub">
+              Students who've asked to transfer out. Approve to send this to the
+              Registrar to clear and issue a transfer code, or reject.
+            </p>
+            <div class="data-table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="sa_col_name">Name</th>
+                    <th data-i18n="sa_col_class">Class</th>
+                    <th data-i18n="sa_col_reason">Reason</th>
+                    <th data-i18n="sa_col_status">Status</th>
+                    <th data-i18n="sa_col_action">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="sa-transfer-requests-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div
+            id="tab-students-transferred"
+            class="tab-panel"
+            style="display: none"
+          >
+            <p class="page-subtitle" data-i18n="sa_transferred_sub">
+              Students transferred out of your school so far this year.
+            </p>
+            <div class="data-table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="sa_col_name">Name</th>
+                    <th data-i18n="sa_col_class">Class</th>
+                    <th data-i18n="sa_col_transfer_code">Transfer Code</th>
+                    <th data-i18n="sa_col_status">Status</th>
+                    <th data-i18n="sa_col_date">Date</th>
+                  </tr>
+                </thead>
+                <tbody id="sa-transferred-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div
+            id="tab-students-batches"
+            class="tab-panel"
+            style="display: none"
+          >
+            <p class="page-subtitle" data-i18n="sa_batches_sub">
+              This year's graduation batches, published by the Registrar. Click
+              a batch to see its students.
+            </p>
+            <div class="data-table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="sa_col_batch">Batch</th>
+                    <th data-i18n="sa_col_total">Total</th>
+                    <th data-i18n="sa_col_male">Male</th>
+                    <th data-i18n="sa_col_female">Female</th>
+                  </tr>
+                </thead>
+                <tbody id="sa-batches-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================== MESSAGES (Universal Contact & Messaging Hub) ===================== -->
+        <section class="page-content" id="page-messages">
+          <h2 data-i18n="sa_nav_messages">Messages</h2>
+          <p class="page-subtitle" data-i18n="sa_messages_sub">
+            Message teachers, fellow admins in your school, or escalate to your
+            Zonal Admin.
+          </p>
+
+          <div class="widget" style="margin-bottom: 18px; max-width: 640px">
+            <h3 data-i18n="sa_compose_heading">Compose</h3>
+            <div class="form-row">
+              <div class="form-group">
+                <label data-i18n="sa_recipient_type_label">Send To</label>
+                <select id="msg-recipient-type">
+                  <option value="teachers" data-i18n="sa_recipient_teacher">
+                    A Teacher
+                  </option>
+                  <option value="school_admins" data-i18n="sa_recipient_admin">
+                    Another Admin
+                  </option>
+                  <option value="zonal_admins" data-i18n="sa_recipient_zonal">
+                    Zonal Admin Bridge
+                  </option>
+                </select>
+              </div>
+              <div class="form-group" id="msg-recipient-picker-wrap">
+                <label data-i18n="sa_recipient_label">Recipient</label>
+                <select id="msg-recipient-select"></select>
+              </div>
+            </div>
+            <div class="form-group">
+              <label data-i18n="sa_subject_label">Subject (optional)</label>
+              <input type="text" id="msg-subject" />
+            </div>
+            <div class="form-group">
+              <label data-i18n="sa_message_label">Message</label>
+              <textarea id="msg-body"></textarea>
+            </div>
+            <button
+              class="btn btn-accent"
+              id="msg-send-btn"
+              data-i18n="sa_send_btn"
+            >
+              Send
+            </button>
+          </div>
+
+          <div class="widget">
+            <div
+              style="
+                display: flex;
+                gap: 8px;
+                margin-bottom: 14px;
+                align-items: center;
+              "
+            >
+              <button
+                class="btn btn-primary btn-sm"
+                id="msg-box-inbox-btn"
+                data-i18n="sa_inbox_btn"
+              >
+                Inbox
+              </button>
+              <button
+                class="btn btn-ghost btn-sm"
+                id="msg-box-sent-btn"
+                data-i18n="sa_sent_btn"
+              >
+                Sent
+              </button>
+            </div>
+            <div id="sa-messages-list"></div>
           </div>
         </section>
 
         <!-- ===================== PROFILE ===================== -->
         <section class="page-content" id="page-profile">
           <h2 data-i18n="sa_nav_profile">My Profile</h2>
-          <div class="widget" style="max-width: 420px">
+          <div class="widget" style="max-width: 420px; margin-bottom: 18px">
             <p>
               <strong data-i18n="sa_profile_id_label">Admin ID:</strong>
               <span id="profile-admin-id">—</span>
@@ -840,13 +1426,61 @@
               <span id="profile-school-name">—</span>
             </p>
           </div>
+
+          <div class="widget" style="max-width: 420px">
+            <h3 data-i18n="sa_signature_suite_heading">
+              Digital Signature Suite
+            </h3>
+            <p class="form-hint" data-i18n="sa_signature_suite_hint">
+              Upload your official signature and stamp to digitally sign
+              administrative documents, letters, and certificates.
+            </p>
+            <div class="form-group">
+              <label data-i18n="sa_signature_label">Signature</label>
+              <div style="display: flex; align-items: center; gap: 10px">
+                <img
+                  id="profile-signature-preview"
+                  style="
+                    display: none;
+                    max-height: 48px;
+                    border: 1px solid var(--border);
+                    border-radius: 6px;
+                    background: #fff;
+                  "
+                />
+                <input
+                  type="file"
+                  id="profile-signature-file"
+                  accept="image/*"
+                />
+              </div>
+            </div>
+            <div class="form-group">
+              <label data-i18n="sa_stamp_label">Stamp</label>
+              <div style="display: flex; align-items: center; gap: 10px">
+                <img
+                  id="profile-stamp-preview"
+                  style="
+                    display: none;
+                    max-height: 48px;
+                    border: 1px solid var(--border);
+                    border-radius: 6px;
+                    background: #fff;
+                  "
+                />
+                <input type="file" id="profile-stamp-file" accept="image/*" />
+              </div>
+            </div>
+          </div>
         </section>
       </div>
     </div>
 
+    <div id="sa-audit-modal-root"></div>
+
     <div id="sa-toast-container"></div>
 
-    <script src="i18n.js"></script>
+    <script src="/assets/js/i18n.js"></script>
     <script src="script.js"></script>
   </body>
 </html>
