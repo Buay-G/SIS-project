@@ -423,23 +423,11 @@ qrcodegen.render(
   qrcodegen.Ecc.MEDIUM
 );
 
-/* ===================== Per-page print/PDF buttons =====================
-   Browsers only let you pick one page size/orientation per print job,
-   so printing "both pages at once" only works cleanly when every page
-   shares one orientation — which is exactly why both pages are now
-   landscape. These buttons still print one page at a time (via a body
-   class that hides the other page for the duration of the print job),
-   so each button reliably produces a single clean page instead of a
-   combined job with an unwanted second page. */
-function printPage(pageNumber) {
-  const cssClass = pageNumber === 1 ? 'print-only-1' : 'print-only-2';
-  document.body.classList.add(cssClass);
-
-  const cleanup = () => {
-    document.body.classList.remove('print-only-1', 'print-only-2');
-    window.removeEventListener('afterprint', cleanup);
-  };
-  window.addEventListener('afterprint', cleanup);
-
+/* ===================== Print/PDF button =====================
+   certificate.html now contains only the marks-sheet page (the
+   recommendation page lives in its own recommendation.html), so
+   printing no longer needs to hide a sibling page — a plain
+   window.print() produces exactly one clean landscape page. */
+function printPage() {
   window.print();
 }

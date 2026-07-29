@@ -1,193 +1,250 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>__SCHOOL_NAME__ — Student's Report Card</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+Ethiopic:wght@400;500;600;700&family=Noto+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="certificate.css">
-</head>
-<body>
-
-<div class="toolbar">
-  <span class="hint">Both pages print landscape · use one button per page for a clean single-page PDF each</span>
-  <span class="toolbar-actions">
-    <button onclick="printPage(1)">Print / Save Page 1 — Marks Sheet</button>
-    <button onclick="printPage(2)">Print / Save Page 2 — Recommendation</button>
-  </span>
-</div>
-
-<!-- ============================ PAGE 1 (LANDSCAPE) ============================ -->
-<section class="sheet" id="page-1">
-  <header class="head">
-    <div class="emblem">
-      <svg width="64" height="64" viewBox="0 0 66 66" role="img" aria-label="School seal">
-        <circle cx="33" cy="33" r="31" fill="none" stroke="var(--seal)" stroke-width="1.5"/>
-        <circle cx="33" cy="33" r="26" fill="none" stroke="var(--seal)" stroke-width="0.75"/>
-        <path id="ring" d="M33 9 a24 24 0 1 1 -0.01 0" fill="none"/>
-        <text font-family="Noto Sans" font-size="5.4" font-weight="700" fill="var(--seal-deep)" letter-spacing="0.6">
-          <textPath href="#ring" startOffset="2%">NEWLAND SECONDARY SCHOOL • GAMBELLA •</textPath>
-        </text>
-        <path d="M33 22 l3.4 6.9 7.6 1.1 -5.5 5.4 1.3 7.6 -6.8 -3.6 -6.8 3.6 1.3 -7.6 -5.5 -5.4 7.6 -1.1z" fill="var(--seal)"/>
-      </svg>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>__SCHOOL_NAME__ — Student's Report Card</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Serif+Ethiopic:wght@400;500;600;700&family=Noto+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="certificate.css" />
+  </head>
+  <body>
+    <div class="toolbar">
+      <span class="hint"
+        >Portrait A4 · this is the Marks Sheet — see recommendation.html for the
+        School's Recommendation page</span
+      >
+      <span class="toolbar-actions">
+        <button onclick="printPage()">Print / Save — Marks Sheet</button>
+      </span>
     </div>
-    <div class="head-text">
-      <div class="region-amh amh">__REGION_AMH__</div>
-      <div class="region">__REGION__ People's National Regional State</div>
-      <div class="school-amh amh">__SCHOOL_NAME_AMH__</div>
-      <div class="school">__SCHOOL_NAME__</div>
-      <div class="doctype"><span class="amh">የተማሪ ውጤት ካርድ</span> · Student's Report Card</div>
-    </div>
-    <div></div>
-  </header>
 
-  <div class="body-land">
-    <div class="bio-left">
-      <div class="photo-row">
-        __PHOTO_HTML__
-        <div class="id-block">
-          <div class="id-chip">Student ID <strong>__STUDENT_ID__</strong></div>
-          <div class="field">
-            <label>Name of Student <span class="amh">/ የተማሪ ስም</span></label>
-            <div class="val">__STUDENT_NAME__</div>
+    <!-- ============================ MARKS SHEET (PORTRAIT) ============================ -->
+    <section class="sheet" id="page-1">
+      <header class="head">
+        <div class="emblem">
+          <svg
+            width="64"
+            height="64"
+            viewBox="0 0 66 66"
+            role="img"
+            aria-label="School seal"
+          >
+            <circle
+              cx="33"
+              cy="33"
+              r="31"
+              fill="none"
+              stroke="var(--seal)"
+              stroke-width="1.5"
+            />
+            <circle
+              cx="33"
+              cy="33"
+              r="26"
+              fill="none"
+              stroke="var(--seal)"
+              stroke-width="0.75"
+            />
+            <path id="ring" d="M33 9 a24 24 0 1 1 -0.01 0" fill="none" />
+            <text
+              font-family="Noto Sans"
+              font-size="5.4"
+              font-weight="700"
+              fill="var(--seal-deep)"
+              letter-spacing="0.6"
+            >
+              <textPath href="#ring" startOffset="2%">
+                NEWLAND SECONDARY SCHOOL • GAMBELLA •
+              </textPath>
+            </text>
+            <path
+              d="M33 22 l3.4 6.9 7.6 1.1 -5.5 5.4 1.3 7.6 -6.8 -3.6 -6.8 3.6 1.3 -7.6 -5.5 -5.4 7.6 -1.1z"
+              fill="var(--seal)"
+            />
+          </svg>
+        </div>
+        <div class="head-text">
+          <div class="region-amh amh">__REGION_AMH__</div>
+          <div class="region">__REGION__ People's National Regional State</div>
+          <div class="school-amh amh">__SCHOOL_NAME_AMH__</div>
+          <div class="school">__SCHOOL_NAME__</div>
+          <div class="doctype">
+            <span class="amh">የተማሪ ውጤት ካርድ</span> · Student's Report Card
+          </div>
+        </div>
+        <div></div>
+      </header>
+
+      <div class="body-land">
+        <div class="bio-left">
+          <div class="photo-row">
+            __PHOTO_HTML__
+            <div class="id-block">
+              <div class="id-chip">
+                Student ID <strong>__STUDENT_ID__</strong>
+              </div>
+              <div class="field">
+                <label
+                  >Name of Student <span class="amh">/ የተማሪ ስም</span></label
+                >
+                <div class="val">__STUDENT_NAME__</div>
+              </div>
+            </div>
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label>Sex <span class="amh">/ ጾታ</span></label>
+              <div class="val">__SEX__</div>
+            </div>
+            <div class="field">
+              <label>Grade / Class <span class="amh">/ ክፍል</span></label>
+              <div class="val">Grade __GRADE__</div>
+            </div>
+            <div class="field">
+              <label>Section <span class="amh">/ ሴክሽን</span></label>
+              <div class="val">__SECTION__</div>
+            </div>
+            <div class="field">
+              <label>Stream <span class="amh">/ የትምህርት ዘርፍ</span></label>
+              <div class="val">__STREAM__</div>
+            </div>
+            <div class="field wide">
+              <label>Academic Year <span class="amh">/ የትምህርት ዘመን</span></label>
+              <div class="val">__ACADEMIC_YEAR__</div>
+            </div>
+            <div class="field">
+              <label>Region <span class="amh">/ ክልል</span></label>
+              <div class="val">__REGION__</div>
+            </div>
+            <div class="field">
+              <label>Zone <span class="amh">/ ዞን</span></label>
+              <div class="val">__ZONE__</div>
+            </div>
+            <div class="field">
+              <label>Woreda <span class="amh">/ ወረዳ</span></label>
+              <div class="val">__WOREDA__</div>
+            </div>
+            <div class="field">
+              <label>Address Town <span class="amh">/ ከተማ</span></label>
+              <div class="val">__TOWN__</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="marks">
+            <thead>
+              <tr>
+                <th class="subject-col">
+                  Subjects <span class="amh">የትምህርት ዓይነት</span>
+                </th>
+                <th>1st Semester <span class="amh">1ኛ መንፈቀ ዓመት</span></th>
+                <th>2nd Semester <span class="amh">2ኛ መንፈቀ ዓመት</span></th>
+                <th>Average <span class="amh">አማካይ</span></th>
+                <th class="rating-col">
+                  Rating <span class="amh">የብቃት ደረጃ</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody id="marks-body">
+              <!-- filled by JS -->
+            </tbody>
+          </table>
+        </div>
+
+        <div class="qr-cell">
+          <div id="cert-qr" class="qr-box"></div>
+          <div class="qr-meta">
+            <span class="qr-title">Scan to verify</span>
+            <span class="qr-sub"
+              >Confirms this report card is authentic and issued by
+              __SCHOOL_NAME__.</span
+            >
           </div>
         </div>
       </div>
-      <div class="field-grid">
-        <div class="field"><label>Sex <span class="amh">/ ጾታ</span></label><div class="val">__SEX__</div></div>
-        <div class="field"><label>Grade / Class <span class="amh">/ ክፍል</span></label><div class="val">Grade __GRADE__</div></div>
-        <div class="field"><label>Section <span class="amh">/ ሴክሽን</span></label><div class="val">__SECTION__</div></div>
-        <div class="field"><label>Stream <span class="amh">/ የትምህርት ዘርፍ</span></label><div class="val">__STREAM__</div></div>
-        <div class="field wide"><label>Academic Year <span class="amh">/ የትምህርት ዘመን</span></label><div class="val">__ACADEMIC_YEAR__</div></div>
-        <div class="field"><label>Region <span class="amh">/ ክልል</span></label><div class="val">__REGION__</div></div>
-        <div class="field"><label>Zone <span class="amh">/ ዞን</span></label><div class="val">__ZONE__</div></div>
-        <div class="field"><label>Woreda <span class="amh">/ ወረዳ</span></label><div class="val">__WOREDA__</div></div>
-        <div class="field"><label>Address Town <span class="amh">/ ከተማ</span></label><div class="val">__TOWN__</div></div>
-      </div>
 
-      <div class="qr-cell">
-        <div id="cert-qr" class="qr-box"></div>
-        <div class="qr-meta">
-          <span class="qr-title">Scan to verify</span>
-          <span class="qr-sub">Confirms this report card is authentic and issued by __SCHOOL_NAME__.</span>
+      <div class="foot">
+        <div class="panel">
+          <div class="panel-title">
+            Method of Marking <span class="amh">የውጤት አሰጣጥ ስልት</span>
+          </div>
+          <div class="legend">
+            <span class="rng">90–100%</span
+            ><span class="lbl"
+              >Excellent <span class="amh">እጅግ በጣም ጥሩ</span></span
+            >
+            <span class="rng">80–89%</span
+            ><span class="lbl">Very Good <span class="amh">በጣም ጥሩ</span></span>
+            <span class="rng">60–79%</span
+            ><span class="lbl">Satisfactory <span class="amh">ጥሩ</span></span>
+            <span class="rng">50–59%</span
+            ><span class="lbl">Fair <span class="amh">አጥጋቢ</span></span>
+            <span class="rng">&lt; 50%</span
+            ><span class="lbl">Poor <span class="amh">ደካማ</span></span>
+            <p class="note">
+              A student absent from class for a whole period, whose work cannot
+              be made up, is marked <strong>"AB"</strong> for Absent.
+            </p>
+          </div>
+        </div>
+
+        <div class="result-side">
+          <div class="panel-title">Result <span class="amh">ውጤት</span></div>
+          <div class="result-row">
+            <div class="verdict on">
+              <span class="box"></span>Promoted <span class="amh">/ አልፏል</span>
+            </div>
+            <div class="verdict">
+              <span class="box"></span>Detained <span class="amh">/ ቀርቷል</span>
+            </div>
+          </div>
+          <div class="promoted-to">
+            <span class="cap"
+              >Promoted to (Class) Grade
+              <span class="amh">/ ወደ የደረሰበት ክፍል</span></span
+            >
+            <span class="val">Grade 12</span>
+          </div>
         </div>
       </div>
-    </div>
 
-    <div class="table-wrap">
-      <table class="marks">
-        <thead>
-          <tr>
-            <th class="subject-col">Subjects <span class="amh">የትምህርት ዓይነት</span></th>
-            <th>1st Semester <span class="amh">1ኛ መንፈቀ ዓመት</span></th>
-            <th>2nd Semester <span class="amh">2ኛ መንፈቀ ዓመት</span></th>
-            <th>Average <span class="amh">አማካይ</span></th>
-            <th class="rating-col">Rating <span class="amh">የብቃት ደረጃ</span></th>
-          </tr>
-        </thead>
-        <tbody id="marks-body"><!-- filled by JS --></tbody>
-      </table>
-    </div>
-  </div>
+      <div class="sign-strip">
+        <div class="slot">
+          <div class="role-head">
+            Home-Room Teacher <span class="amh">የክፍል መምህር</span>
+          </div>
+          <div class="sig-name">__HOMEROOM_TEACHER_NAME__</div>
+          <div class="sig-field">
+            <div class="rule"></div>
+            <div class="cap">Signature <span class="amh">/ ፊርማ</span></div>
+          </div>
+        </div>
 
-  <div class="foot">
-    <div class="panel">
-      <div class="panel-title">Method of Marking <span class="amh">የውጤት አሰጣጥ ስልት</span></div>
-      <div class="legend">
-        <span class="rng">90–100%</span><span class="lbl">Excellent <span class="amh">እጅግ በጣም ጥሩ</span></span>
-        <span class="rng">80–89%</span><span class="lbl">Very Good <span class="amh">በጣም ጥሩ</span></span>
-        <span class="rng">60–79%</span><span class="lbl">Satisfactory <span class="amh">ጥሩ</span></span>
-        <span class="rng">50–59%</span><span class="lbl">Fair <span class="amh">አጥጋቢ</span></span>
-        <span class="rng">&lt; 50%</span><span class="lbl">Poor <span class="amh">ደካማ</span></span>
-        <p class="note">A student absent from class for a whole period, whose work cannot be made up, is marked <strong>"AB"</strong> for Absent.</p>
+        <div class="seal-slot">
+          <div class="seal-ring">School<br />Seal</div>
+        </div>
+
+        <div class="slot">
+          <div class="role-head">
+            Principal <span class="amh">ርዕሰ መምህር</span>
+          </div>
+          <div class="sig-name">&nbsp;</div>
+          <div class="sig-field">
+            <div class="rule"></div>
+            <div class="cap">Signature <span class="amh">/ ፊርማ</span></div>
+          </div>
+        </div>
       </div>
-    </div>
+    </section>
 
-    <div class="result-side">
-      <div class="panel-title">Result <span class="amh">ውጤት</span></div>
-      <div class="result-row">
-        <div class="verdict on"><span class="box"></span>Promoted <span class="amh">/ አልፏል</span></div>
-        <div class="verdict"><span class="box"></span>Detained <span class="amh">/ ቀርቷል</span></div>
-      </div>
-      <div class="promoted-to">
-        <span class="cap">Promoted to (Class) Grade <span class="amh">/ ወደ የደረሰበት ክፍል</span></span>
-        <span class="val">Grade 12</span>
-      </div>
-    </div>
-  </div>
-
-  <div class="sign-strip">
-    <div class="slot">
-      <div class="role-head">Home-Room Teacher <span class="amh">የክፍል መምህር</span></div>
-      <div class="sig-name">__HOMEROOM_TEACHER_NAME__</div>
-      <div class="sig-field">
-        <div class="rule"></div>
-        <div class="cap">Signature <span class="amh">/ ፊርማ</span></div>
-      </div>
-    </div>
-
-    <div class="seal-slot">
-      <div class="seal-ring">School<br>Seal</div>
-    </div>
-
-    <div class="slot">
-      <div class="role-head">Principal <span class="amh">ርዕሰ መምህር</span></div>
-      <div class="sig-name">&nbsp;</div>
-      <div class="sig-field">
-        <div class="rule"></div>
-        <div class="cap">Signature <span class="amh">/ ፊርማ</span></div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ============================ PAGE 2 (LANDSCAPE — recommendation) ============================ -->
-<section class="sheet" id="page-2">
-  <header class="rec-head">
-    <div class="amh">የትምህርት ቤቱ አስተያየት</div>
-    <div class="en">School's Recommendation</div>
-    <div class="rec-sub">__STUDENT_NAME__ · Grade __GRADE__ (__SECTION__) · Student ID __STUDENT_ID__ · __ACADEMIC_YEAR__</div>
-  </header>
-
-  <div class="semester-block">
-    <span class="sem-label">First Semester <span class="amh">አንደኛ መንፈቀ ዓመት</span></span>
-    <div class="rec-lines">
-      <div class="rline"></div><div class="rline"></div><div class="rline"></div>
-    </div>
-    <div class="rec-signrow">
-      <div class="slot"><div class="rule"></div><div class="cap">Name of Home-Room Teacher <span class="amh">የክፍል መምህር ስም</span></div></div>
-      <div class="slot"><div class="rule"></div><div class="cap">Signature of Parent or Guardian <span class="amh">የወላጅ ወይም አሳዳጊ ፊርማ</span></div></div>
-    </div>
-  </div>
-
-  <div class="semester-block">
-    <span class="sem-label">Second Semester <span class="amh">ሁለተኛ መንፈቀ ዓመት</span></span>
-    <div class="rec-lines">
-      <div class="rline"></div><div class="rline"></div><div class="rline"></div>
-    </div>
-    <div class="rec-signrow">
-      <div class="slot"><div class="rule"></div><div class="cap">Name of Home-Room Teacher <span class="amh">የክፍል መምህር ስም</span></div></div>
-      <div class="slot"><div class="rule"></div><div class="cap">Signature of Parent or Guardian <span class="amh">የወላጅ ወይም አሳዳጊ ፊርማ</span></div></div>
-    </div>
-  </div>
-
-  <div class="director-strip">
-    <div class="slot" style="text-align:center;">
-      <div class="sig-name" style="padding-bottom:6px;">&nbsp;</div>
-      <div class="cap" style="font-size:var(--xs); color:var(--ink-faint); font-weight:600;">Principal's Signature <span class="amh" style="display:block; color:var(--ink-soft); font-weight:500;">የርዕሰ መምህር ፊርማ</span></div>
-    </div>
-    <div class="seal-slot"><div class="seal-ring">School<br>Seal</div></div>
-    <div class="slot" style="text-align:center;">
-      <div class="rule" style="border-bottom:1px solid var(--ink-soft); height:2em; margin-bottom:5px;"></div>
-      <div class="cap" style="font-size:var(--xs); color:var(--ink-faint); font-weight:600;">Date <span class="amh" style="display:block; color:var(--ink-soft); font-weight:500;">ቀን</span></div>
-    </div>
-  </div>
-</section>
-
-<script>
-  /* ===================== Report card data =====================
+    <script>
+      /* ===================== Report card data =====================
      Injected by the server (see renderCertificateHtml in server.js) —
      this one token is the ONLY thing that changes per request. Every
      calculation (totals, per-subject average, ratings, etc.) still runs
@@ -199,8 +256,96 @@
      server's templating hook, and must stay in the HTML shell so the
      string-replace in renderCertificateHtml has `__CERT_DATA_JSON__`
      to find. Everything that reads DATA lives in certificate.js. */
-  const DATA = __CERT_DATA_JSON__;
-</script>
-<script src="certificate.js"></script>
-</body>
+      const DATA =
+        typeof __CERT_DATA_JSON__ !== "undefined"
+          ? __CERT_DATA_JSON__
+          : {
+              subjects: [
+                { en: "Nuer/Dha-Anywaa", s1: 81, s2: 83 },
+                { en: "Federal language", s1: 79, s2: 85 },
+                { en: "English", s1: 82, s2: 85 },
+                { en: "Mathematics", s1: 88, s2: 91 },
+                { en: "Physics", s1: 87, s2: 89 },
+                { en: "Chemistry", s1: 84, s2: 86 },
+                { en: "Biology", s1: 79, s2: 84 },
+                { en: "Economics", s1: 85, s2: 87 },
+                { en: "Geography", s1: 83, s2: 86 },
+                { en: "History", s1: 90, s2: 88 },
+                { en: "Citizenship", s1: 86, s2: 88 },
+                { en: "Agriculture", s1: 80, s2: 82 },
+                { en: "IT", s1: 90, s2: 92 },
+                { en: "HPE", s1: 88, s2: 90 },
+              ],
+              conduct: "Very Good",
+              absent_days_s1: 2,
+              absent_days_s2: 1,
+              rank: 5,
+              class_size: 32,
+            };
+
+      const fallbackData = {
+        __REGION_AMH__: "አማራ ክልል",
+        __REGION__: "Amhara",
+        __SCHOOL_NAME_AMH__: "ኔውላንድ ሁለተኛ ደረጃ ትምህርት ቤት",
+        __SCHOOL_NAME__: "Newland Secondary School",
+        __STUDENT_ID__: "S1234567",
+        __STUDENT_NAME__: "Samuel Bekele",
+        __SEX__: "Male",
+        __GRADE__: "10",
+        __SECTION__: "A",
+        __STREAM__: "Natural Science",
+        __ACADEMIC_YEAR__: "2025–2026",
+        __ZONE__: "Bahir Dar Zone",
+        __WOREDA__: "Arada",
+        __TOWN__: "Bahir Dar",
+        __HOMEROOM_TEACHER_NAME__: "Mr. Alemu",
+      };
+
+      function replaceTextPlaceholder(needle, html) {
+        const walker = document.createTreeWalker(
+          document.body,
+          NodeFilter.SHOW_TEXT,
+          null,
+        );
+        const matches = [];
+        while (walker.nextNode()) {
+          if (walker.currentNode.nodeValue.trim() === needle) {
+            matches.push(walker.currentNode);
+          }
+        }
+        matches.forEach((node) => {
+          const wrapper = document.createElement("span");
+          wrapper.innerHTML = html;
+          node.parentNode.replaceChild(wrapper, node);
+        });
+      }
+
+      document.addEventListener("DOMContentLoaded", () => {
+        Object.entries(fallbackData).forEach(([placeholder, value]) => {
+          document.querySelectorAll("body *").forEach((el) => {
+            if (
+              el.children.length === 0 &&
+              el.textContent.trim() === placeholder
+            ) {
+              el.textContent = value;
+            }
+          });
+        });
+
+        replaceTextPlaceholder(
+          "__PHOTO_HTML__",
+          `
+            <div class="photo">
+              <svg viewBox="0 0 88 104" width="88" height="104" aria-hidden="true">
+                <rect x="0" y="0" width="88" height="104" rx="6" ry="6" fill="#e8f0e8" />
+                <circle cx="44" cy="34" r="18" fill="#d1e0d1" />
+                <path d="M22 90c4-12 14-18 22-18s18 6 22 18" stroke="#a3b7a3" stroke-width="4" fill="none" stroke-linecap="round" />
+              </svg>
+            </div>
+          `,
+        );
+      });
+    </script>
+    <script src="certificate.js"></script>
+  </body>
 </html>

@@ -6,6 +6,7 @@
 
 const API_BASE = 'http://localhost:3001';
 let CURRENT_TITLE = null;
+let STUDENTS_ON_LEAVE_CACHE = [];
 let CURRENT_ADMIN = null;
 
 function apiFetch(url, options = {}) {
@@ -43,24 +44,69 @@ async function checkAuthAndInit() {
 
         CURRENT_ADMIN = data;
         CURRENT_TITLE = data.title || 'Admin VP';
+        const displayName = data.admin_full_name || data.user_id || 'Admin';
 
         document.getElementById('sa-school-name').textContent = data.school_name || '—';
         document.getElementById('sa-title-badge').textContent = CURRENT_TITLE;
+        document.getElementById('sa-nav-admin-id').textContent = data.user_id || '—';
         document.getElementById('profile-admin-id').textContent = data.user_id || '—';
+        document.getElementById('profile-admin-id-2').textContent = data.user_id || '—';
         document.getElementById('profile-title').textContent = CURRENT_TITLE;
         document.getElementById('profile-school-name').textContent = data.school_name || '—';
+        document.getElementById('profile-header-name').textContent = displayName;
+        document.getElementById('profile-header-title').textContent = CURRENT_TITLE;
 
-        const initials = CURRENT_TITLE.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
-        document.getElementById('sa-avatar-initials').textContent = initials;
-        document.getElementById('sa-profile-name').textContent = data.user_id || 'Admin';
+        document.getElementById('topbar-school-name').textContent = data.school_name || '—';
+        document.getElementById('topbar-moe-code').textContent = data.moe_school_code ? `MOE ${data.moe_school_code}` : 'MOE —';
+
+        // Name-based initials (e.g. "Abebe Kebede" -> "AK") when we have a
+        // real name; otherwise fall back to the title ("Admin VP" -> "AV").
+        const initialsSource = data.admin_full_name ? data.admin_full_name.split(' ').filter(Boolean) : CURRENT_TITLE.split(' ');
+        const initials = initialsSource.map(w => w[0]).join('').slice(0, 2).toUpperCase();
+        document.getElementById('sa-avatar-initials-text').textContent = initials;
+        document.getElementById('profile-avatar-initials-text').textContent = initials;
+        document.getElementById('sa-profile-name').textContent = displayName;
         document.getElementById('sa-profile-title').textContent = CURRENT_TITLE;
+
+        if (data.avatar_url) {
+            const fullUrl = API_BASE + data.avatar_url;
+            const topbarImg = document.getElementById('sa-avatar-img');
+            topbarImg.src = fullUrl; topbarImg.style.display = '';
+            document.getElementById('sa-avatar-initials-text').style.display = 'none';
+            const profileImg = document.getElementById('profile-avatar-img');
+            profileImg.src = fullUrl; profileImg.style.display = '';
+            document.getElementById('profile-avatar-initials-text').style.display = 'none';
+        }
 
         filterNavByTitle(CURRENT_TITLE);
         loadDashboard();
+        loadTopbarSemester();
         refreshUnreadMessagesBadge();
     } catch (err) {
         console.error('checkAuthAndInit error:', err);
         window.location.href = '/login.html';
+    }
+}
+
+// The top-bar's "Semester: Open/Closed" chip — a lightweight read of the
+// same /api/term/current endpoint the Semester Control page uses, so it's
+// visible from anywhere in the portal, not just the Semester page. Kept
+// separate from loadSemesterStatus() (which also needs to fill in the
+// Semester page's own term-select dropdown when that page is open).
+async function loadTopbarSemester() {
+    const chip = document.getElementById('topbar-semester-chip');
+    if (!chip) return;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/term/current`);
+        if (!res.ok) throw new Error('term/current failed');
+        const data = await res.json();
+        const isOpen = data.semester_status === 'open';
+        chip.textContent = `${data.current_term} · ${isOpen ? t('sa_semester_open_label') : t('sa_semester_closed_label')}`;
+        chip.classList.toggle('is-open', isOpen);
+        chip.classList.toggle('is-closed', !isOpen);
+    } catch (err) {
+        console.error('loadTopbarSemester error:', err);
+        chip.textContent = '—';
     }
 }
 
@@ -94,6 +140,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 teachers: () => {},
                 textbooks: loadTextbooks,
                 absence: loadAbsenceTabs,
+                'student-absence-escalations': loadStudentAbsenceEscalations,
                 timetable: () => {},
                 'teacher-assignments': loadTeacherAssignments,
                 'marks-review': loadMarksReview,
@@ -106,8 +153,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 'document-approvals': loadDocumentApprovals,
                 recognition: loadRecognition,
                 students: loadStudents,
-                messages: () => loadMessages('inbox'),
-                profile: loadDocumentStatus
+                messages: () => switchMessageBox('inbox'),
+                profile: loadDocumentStatus,
+                'id-card': loadAdminIdCard
             };
             if (loaders[page]) loaders[page]();
 
@@ -131,6 +179,18 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('grant-leave-btn')?.addEventListener('click', grantTeacherLeave);
     document.getElementById('tt-load-btn')?.addEventListener('click', loadTimetable);
     document.getElementById('tt-add-btn')?.addEventListener('click', addTimetableSlot);
+    document.getElementById('tt-class-level')?.addEventListener('change', (e) =>
+        updateStreamOptionsForLevel(document.getElementById('tt-stream'), e.target.value));
+    document.getElementById('ta-class-level')?.addEventListener('change', (e) => {
+        updateStreamOptionsForLevel(document.getElementById('ta-stream'), e.target.value);
+        refreshAssignmentSubjectOptions();
+    });
+    document.getElementById('ta-stream')?.addEventListener('change', refreshAssignmentSubjectOptions);
+    document.getElementById('hr-class-level')?.addEventListener('change', (e) =>
+        updateStreamOptionsForLevel(document.getElementById('hr-stream'), e.target.value));
+    wireTeacherSearch('ta-teacher-search', 'ta-teacher-search-btn', 'ta-teacher-search-results', 'ta-teacher-select');
+    wireTeacherSearch('hr-teacher-search', 'hr-teacher-search-btn', 'hr-teacher-search-results', 'hr-teacher-select');
+    document.getElementById('subj-add-btn')?.addEventListener('click', addSubjectConfig);
     document.getElementById('semester-start-btn')?.addEventListener('click', startSemester);
     document.getElementById('semester-close-btn')?.addEventListener('click', closeSemester);
     document.getElementById('send-warning-btn')?.addEventListener('click', sendConductWarning);
@@ -140,7 +200,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('students-section-filter')?.addEventListener('change', filterStudentsTable);
     document.getElementById('students-stream-filter')?.addEventListener('change', filterStudentsTable);
 
-    document.getElementById('teacher-setup-btn')?.addEventListener('click', onboardTeacher);
+    document.getElementById('direct-transfer-btn')?.addEventListener('click', initiateDirectTransfer);
     document.getElementById('teacher-assignment-btn')?.addEventListener('click', saveTeacherAssignment);
     document.getElementById('hr-assign-btn')?.addEventListener('click', saveHomeroom);
     document.getElementById('ta-filter-teacher')?.addEventListener('change', (e) => loadTeacherAssignments(e.target.value));
@@ -151,6 +211,8 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('msg-box-sent-btn')?.addEventListener('click', () => switchMessageBox('sent'));
     document.getElementById('profile-signature-file')?.addEventListener('change', (e) => uploadAdminDocument(e, 'signature'));
     document.getElementById('profile-stamp-file')?.addEventListener('change', (e) => uploadAdminDocument(e, 'stamp'));
+    document.getElementById('profile-avatar-file')?.addEventListener('change', uploadAdminAvatar);
+    document.getElementById('msg-box-teachers-btn')?.addEventListener('click', () => switchMessageBox('teachers'));
 
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -164,6 +226,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // re-render dynamic (JS-built) content when the language toggle is used
 window.onSisLangChange = () => {
+    loadTopbarSemester(); // topbar chip lives outside any single page, so refresh it unconditionally
     const active = document.querySelector('.page-content.active');
     if (active) {
         const page = active.id.replace('page-', '');
@@ -174,7 +237,8 @@ window.onSisLangChange = () => {
             'escalated-absence': loadEscalatedAbsence, disciplinary: loadDisciplinaryCases,
             'teacher-audit': loadTeacherAudit,
             'document-approvals': loadDocumentApprovals, recognition: loadRecognition, students: loadStudents,
-            messages: () => loadMessages(CURRENT_MESSAGE_BOX || 'inbox')
+            messages: () => (CURRENT_MESSAGE_BOX === 'teachers' ? loadContactThreads() : loadMessages(CURRENT_MESSAGE_BOX || 'inbox')),
+            'id-card': () => (adminIdCardData ? renderAdminIdCard(adminIdCardData) : loadAdminIdCard())
         };
         if (loaders[page]) loaders[page]();
     }
@@ -197,7 +261,8 @@ async function loadDashboard() {
         const studentStatsRes = await apiFetch(`${API_BASE}/api/student-stats`);
         if (studentStatsRes.ok) {
             const s = await studentStatsRes.json();
-            stats.push(statCard('🎒', t('sa_stat_total_students'), s.total, ''));
+            const sub = `<span class="stat-sub-item">👦 ${s.male || 0}</span><span class="stat-sub-item">👧 ${s.female || 0}</span>`;
+            stats.push(statCard('🎒', t('sa_stat_total_students'), s.total, '', null, sub));
         }
 
         if (CURRENT_TITLE === 'Admin VP') {
@@ -227,23 +292,72 @@ async function loadDashboard() {
         }
 
         if (CURRENT_TITLE === 'Principal') {
-            const [escalatedRes, casesRes, docsRes] = await Promise.all([
+            const [escalatedRes, casesRes, docsRes, leaveRes, perfRes] = await Promise.all([
                 apiFetch(`${API_BASE}/api/principal/teacher-absence-requests`),
                 apiFetch(`${API_BASE}/api/principal/disciplinary-cases`),
-                apiFetch(`${API_BASE}/api/principal/teacher-document-requests`)
+                apiFetch(`${API_BASE}/api/principal/teacher-document-requests`),
+                apiFetch(`${API_BASE}/api/principal/students-on-leave`),
+                apiFetch(`${API_BASE}/api/principal/school-performance`)
             ]);
             const escalated = escalatedRes.ok ? await escalatedRes.json() : [];
             const cases = casesRes.ok ? await casesRes.json() : [];
             const docs = docsRes.ok ? await docsRes.json() : [];
+            const onLeave = leaveRes.ok ? await leaveRes.json() : [];
+            const performance = perfRes.ok ? await perfRes.json() : null;
+            STUDENTS_ON_LEAVE_CACHE = onLeave;
+
+            const currentlyOnLeave = onLeave.filter(r => r.currently_on_leave).length;
 
             stats.push(statCard('🚨', t('sa_stat_escalated_absence'), escalated.length, escalated.length > 0 ? 'danger' : ''));
             stats.push(statCard('🛑', t('sa_stat_pending_cases'), cases.length, cases.length > 0 ? 'danger' : ''));
             stats.push(statCard('🖋️', t('sa_stat_pending_documents'), docs.length, docs.length > 0 ? 'warning' : ''));
+            stats.push(statCard('🌴', t('sa_stat_students_on_leave'), currentlyOnLeave, '', 'openStudentsOnLeaveModal()'));
 
             const alertsCount = escalated.length + cases.length + docs.length;
             const alertsBadge = document.getElementById('sa-alerts-count');
             if (alertsCount > 0) { alertsBadge.style.display = 'flex'; alertsBadge.textContent = alertsCount; }
             else alertsBadge.style.display = 'none';
+
+            // School Performance — four angles: academic marks, student
+            // attendance (present/excused/unexcused), teacher attendance
+            // (same split), and teacher class coverage (periods actually
+            // taught vs missed) — all over the trailing 30 school days.
+            if (performance) {
+                const chartBlock = (heading, hint, slices, total) => total > 0 ? `
+                    <div class="widget chart-widget">
+                        <h3>${heading}</h3>
+                        ${hint ? `<p class="form-hint" style="margin-top:-8px;">${hint}</p>` : ''}
+                        ${renderPieChart(slices, 150)}
+                    </div>` : '';
+
+                const a = performance.academic || {};
+                widgets.push(chartBlock(t('sa_widget_school_performance'), null, [
+                    { label: t('sa_perf_good'), value: a.good, color: 'var(--success)' },
+                    { label: t('sa_perf_average'), value: a.average, color: 'var(--warning)' },
+                    { label: t('sa_perf_poor'), value: a.poor, color: 'var(--danger)' },
+                    { label: t('sa_perf_none'), value: a.none, color: 'var(--muted)' }
+                ], a.total));
+
+                const sa = performance.student_attendance || {};
+                widgets.push(chartBlock(t('sa_widget_student_attendance'), t('sa_perf_window_hint'), [
+                    { label: t('sa_att_present'), value: sa.present, color: 'var(--success)' },
+                    { label: t('sa_att_excused'), value: sa.excused, color: 'var(--info)' },
+                    { label: t('sa_att_unexcused'), value: sa.unexcused, color: 'var(--danger)' }
+                ], (sa.present || 0) + (sa.excused || 0) + (sa.unexcused || 0)));
+
+                const ta = performance.teacher_attendance || {};
+                widgets.push(chartBlock(t('sa_widget_teacher_attendance'), t('sa_perf_window_hint'), [
+                    { label: t('sa_att_present'), value: ta.present, color: 'var(--success)' },
+                    { label: t('sa_att_excused'), value: ta.excused, color: 'var(--info)' },
+                    { label: t('sa_att_unexcused'), value: ta.unexcused, color: 'var(--danger)' }
+                ], (ta.present || 0) + (ta.excused || 0) + (ta.unexcused || 0)));
+
+                const cc = performance.class_coverage || {};
+                widgets.push(chartBlock(t('sa_widget_class_coverage'), t('sa_perf_window_hint'), [
+                    { label: t('sa_coverage_taught'), value: cc.taught, color: 'var(--success)' },
+                    { label: t('sa_coverage_missed'), value: cc.missed, color: 'var(--danger)' }
+                ], (cc.taught || 0) + (cc.missed || 0)));
+            }
 
             // Teacher Performance & Red-Flag Audit widget
             const auditRes = await apiFetch(`${API_BASE}/api/principal/teacher-audit`);
@@ -275,11 +389,103 @@ async function loadDashboard() {
     }
 }
 
-function statCard(icon, label, value, tone) {
-    return `<div class="stat-card ${tone ? 'stat-' + tone : ''}">
+function statCard(icon, label, value, tone, onclick, sub) {
+    return `<div class="stat-card ${tone ? 'stat-' + tone : ''}" ${onclick ? `style="cursor:pointer" onclick="${onclick}"` : ''}>
         <div class="stat-icon">${icon}</div>
-        <div><div class="stat-label">${label}</div><div class="stat-value">${value}</div></div>
+        <div>
+            <div class="stat-label">${label}</div>
+            <div class="stat-value">${value}</div>
+            ${sub ? `<div class="stat-sub-row">${sub}</div>` : ''}
+        </div>
     </div>`;
+}
+
+// Small dependency-free donut chart: layers one <circle> per slice on the
+// same radius, each rotated to where the previous slice left off, using
+// stroke-dasharray/offset to draw just its share of the circumference.
+// No charting library needed for a handful of slices like this.
+function renderPieChart(slices, size = 140) {
+    const total = slices.reduce((sum, s) => sum + (s.value || 0), 0);
+    const strokeWidth = Math.round(size * 0.15);
+    const radius = size / 2 - strokeWidth / 2 - 4;
+    const circumference = 2 * Math.PI * radius;
+    const center = size / 2;
+    // A small visual gap between slices so they read as distinct
+    // segments instead of one solid ring when several are non-zero.
+    const gapCount = slices.filter(s => s.value > 0).length;
+    const gap = gapCount > 1 ? 5 : 0;
+    let offsetSoFar = 0;
+
+    const arcs = total === 0 ? '' : slices.filter(s => s.value > 0).map(s => {
+        const fraction = s.value / total;
+        const rawDash = fraction * circumference;
+        const dash = Math.max(rawDash - gap, 0);
+        const pct = Math.round(fraction * 100);
+        const circle = `<circle cx="${center}" cy="${center}" r="${radius}" fill="none" stroke="${s.color}"
+            stroke-width="${strokeWidth}" stroke-linecap="round"
+            stroke-dasharray="${dash} ${circumference - dash}"
+            stroke-dashoffset="${-offsetSoFar}" transform="rotate(-90 ${center} ${center})"
+            class="donut-slice"><title>${escapeHtml(s.label)}: ${s.value} (${pct}%)</title></circle>`;
+        offsetSoFar += rawDash;
+        return circle;
+    }).join('');
+
+    const legend = slices.map(s => {
+        const pct = total > 0 ? Math.round(((s.value || 0) / total) * 100) : 0;
+        return `
+        <div class="chart-legend-row">
+            <span class="chart-legend-dot" style="background:${s.color};"></span>
+            <span class="chart-legend-label">${escapeHtml(s.label)}</span>
+            <span class="chart-legend-value">${s.value ?? 0}</span>
+            <span class="chart-legend-pct">${pct}%</span>
+        </div>`;
+    }).join('');
+
+    return `
+        <div class="chart-flex">
+            <div class="donut-wrap" style="width:${size}px; height:${size}px;">
+                <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" class="donut-svg">
+                    <circle cx="${center}" cy="${center}" r="${radius}" fill="none" stroke="var(--bg)" stroke-width="${strokeWidth}"></circle>
+                    ${total === 0 ? '' : arcs}
+                </svg>
+                <div class="donut-center-label">
+                    <div class="donut-center-value">${total}</div>
+                    <div class="donut-center-caption">${t('sa_chart_total_label')}</div>
+                </div>
+            </div>
+            <div class="chart-legend">${legend}</div>
+        </div>`;
+}
+
+// Principal's "students currently/recently on leave" dashboard modal —
+// school-wide, covering both homeroom-approved and Academic-VP-escalated
+// approvals alike (see /api/principal/students-on-leave).
+function openStudentsOnLeaveModal() {
+    const rows = STUDENTS_ON_LEAVE_CACHE || [];
+    const rowsHtml = rows.length === 0
+        ? `<div class="widget-empty">${t('sa_no_data')}</div>`
+        : `<div class="data-table-wrap"><table class="data-table">
+            <thead><tr>
+                <th>${t('sa_col_student')}</th>
+                <th>${t('sa_col_class')}</th>
+                <th>${t('sa_col_dates')}</th>
+                <th>${t('sa_col_status')}</th>
+            </tr></thead>
+            <tbody>${rows.map(r => `
+                <tr>
+                    <td>${escapeHtml([r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' '))} (${r.student_id})</td>
+                    <td>${escapeHtml(r.class_level)}-${escapeHtml(r.section)}${r.stream ? ' (' + escapeHtml(r.stream) + ')' : ''}</td>
+                    <td>${r.date_from} &rarr; ${r.date_to}</td>
+                    <td><span class="badge ${r.currently_on_leave ? 'badge-pending' : 'badge-none'}">${r.currently_on_leave ? t('sa_currently_on_leave') : t('sa_leave_completed')}</span></td>
+                </tr>`).join('')}</tbody>
+        </table></div>`;
+
+    openModal(`
+        <h3>${t('sa_students_on_leave_heading')}</h3>
+        <p class="form-hint">${t('sa_students_on_leave_hint')}</p>
+        ${rowsHtml}
+        <div class="form-actions"><button class="btn btn-ghost" onclick="closeModal()">${t('sa_close')}</button></div>
+    `);
 }
 
 // ==========================================================
@@ -378,11 +584,11 @@ async function decidePenalty(student_id, subject_id) {
 }
 
 // ==========================================================
-// ABSENCE REQUESTS (Admin VP)
+// ABSENCE REQUESTS (Admin VP: teacher only — student escalations moved to
+// Academic VP, see loadStudentAbsenceEscalations below)
 // ==========================================================
 function loadAbsenceTabs() {
     loadTeacherAbsenceRequests();
-    loadStudentAbsenceEscalations();
 }
 
 async function loadTeacherAbsenceRequests() {
@@ -404,6 +610,10 @@ async function loadTeacherAbsenceRequests() {
         </tr>`).join('');
 }
 
+// Escalated student absence requests (Academic VP) — a homeroom teacher's
+// approval authority is capped; anything longer lands here instead.
+// Approving here surfaces the student on the Principal's "students on
+// leave" dashboard widget for the duration of the approved dates.
 async function loadStudentAbsenceEscalations() {
     const tbody = document.getElementById('sa-student-absence-tbody');
     tbody.innerHTML = `<tr><td colspan="5">${t('sa_loading')}</td></tr>`;
@@ -541,12 +751,14 @@ async function startSemester() {
     });
     await handleJsonResponse(res, t('sa_semester_started'));
     loadSemesterStatus();
+    loadTopbarSemester();
 }
 
 async function closeSemester() {
     const res = await apiFetch(`${API_BASE}/api/term/close`, { method: 'POST' });
     await handleJsonResponse(res, t('sa_semester_closed'));
     loadSemesterStatus();
+    loadTopbarSemester();
 }
 
 // ==========================================================
@@ -704,14 +916,14 @@ const GRADUATED_OR_TRANSFERRED = s => s.status === 'Graduated' || String(s.statu
 
 async function loadStudents() {
     const tbody = document.getElementById('sa-students-tbody');
-    tbody.innerHTML = `<tr><td colspan="4">${t('sa_loading')}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6">${t('sa_loading')}</td></tr>`;
     const res = await apiFetch(`${API_BASE}/api/students`);
     if (res.ok) {
         ALL_STUDENTS = await res.json();
         populateStudentFilterOptions();
         filterStudentsTable();
     } else {
-        tbody.innerHTML = `<tr><td colspan="4">${t('sa_load_error')}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="6">${t('sa_load_error')}</td></tr>`;
     }
 
     // The extra tabs (approve/reject, batches, this-year transfers) are
@@ -734,7 +946,8 @@ function populateStudentFilterOptions() {
     const sectionSel = document.getElementById('students-section-filter');
     const streamSel = document.getElementById('students-stream-filter');
     if (!classSel) return;
-    const uniq = key => [...new Set(ALL_STUDENTS.map(s => s[key]).filter(Boolean))].sort();
+    const uniq = key => [...new Set(ALL_STUDENTS.map(s => s[key]).filter(Boolean))]
+        .sort((a, b) => (isNaN(a) || isNaN(b)) ? String(a).localeCompare(String(b)) : a - b);
     const buildOptions = (sel, values, allLabelKey) => {
         const current = sel.value;
         sel.innerHTML = `<option value="">${t(allLabelKey)}</option>` + values.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
@@ -758,12 +971,14 @@ function renderStudentsTable(list) {
             statCard('👧', t('sa_stat_female_students'), female, '')
         ].join('');
     }
-    if (list.length === 0) { tbody.innerHTML = `<tr><td colspan="4">${t('sa_no_data')}</td></tr>`; return; }
+    if (list.length === 0) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_no_data')}</td></tr>`; return; }
     tbody.innerHTML = list.map(s => `
         <tr>
             <td>${s.student_id}</td>
             <td>${escapeHtml([s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' '))}</td>
-            <td>${s.class_level}-${s.section}</td>
+            <td>${escapeHtml(s.class_level ?? '—')}</td>
+            <td>${escapeHtml(s.section ?? '—')}</td>
+            <td>${escapeHtml(s.stream ?? '—')}</td>
             <td>${escapeHtml(s.status || '—')}</td>
         </tr>`).join('');
 }
@@ -782,9 +997,9 @@ function filterStudentsTable() {
             s.student_id.toLowerCase().includes(q) ||
             [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' ').toLowerCase().includes(q));
     }
-    if (classVal) list = list.filter(s => s.class_level === classVal);
-    if (sectionVal) list = list.filter(s => s.section === sectionVal);
-    if (streamVal) list = list.filter(s => s.stream === streamVal);
+    if (classVal) list = list.filter(s => String(s.class_level) === String(classVal));
+    if (sectionVal) list = list.filter(s => String(s.section) === String(sectionVal));
+    if (streamVal) list = list.filter(s => String(s.stream) === String(streamVal));
     renderStudentsTable(list);
 }
 
@@ -808,6 +1023,25 @@ async function loadTransferRequests() {
                    <button class="btn btn-sm btn-danger" onclick="rejectTransferRequest(${r.request_id})">${t('sa_reject')}</button>`
                 : '—'}</td>
         </tr>`).join('');
+}
+
+// Principal enters a student ID and transfers them out directly — no
+// student-submitted request needed. Skips straight to 'approved' so it
+// shows up ready for the Registrar to clear and issue a transfer code.
+async function initiateDirectTransfer() {
+    const input = document.getElementById('direct-transfer-student-id');
+    const student_id = input.value.trim();
+    if (!student_id) return showToast(t('sa_err_student_id_required'), 'error');
+
+    const res = await apiFetch(`${API_BASE}/api/principal/transfer-requests/direct`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ student_id })
+    });
+    const data = await handleJsonResponse(res, t('sa_transfer_initiated'));
+    if (!data) return;
+    input.value = '';
+    loadTransferRequests();
+    loadStudents();
 }
 
 function transferRequestStatusBadge(r) {
@@ -880,11 +1114,76 @@ async function openBatchModal(batch) {
     body.innerHTML = `
         <div class="data-table-wrap">
             <table class="data-table">
-                <thead><tr><th>${t('sa_col_student_id')}</th><th>${t('sa_col_name')}</th><th>${t('sa_col_class')}</th></tr></thead>
+                <thead><tr><th>${t('sa_col_student_id')}</th><th>${t('sa_col_name')}</th><th>${t('sa_col_class')}</th><th>${t('sa_col_stream')}</th></tr></thead>
                 <tbody>${students.map(s => `
-                    <tr><td>${s.student_id}</td><td>${escapeHtml(s.full_name)}</td><td>${s.class_level}-${s.section}</td></tr>
+                    <tr><td>${s.student_id}</td><td>${escapeHtml(s.full_name)}</td><td>${s.class_level}-${s.section}</td><td>${escapeHtml(s.stream ?? '—')}</td></tr>
                 `).join('')}</tbody>
             </table>
+        </div>`;
+}
+
+// ---------- Shared: class level -> stream dependency ----------
+// Grade 9 & 10 only ever run "General" (no stream split yet); Grade 11 &
+// 12 split into Natural or Social Science. Used by the Timetable form and
+// the Subject & Teaching Assignment / Homeroom forms alike.
+function updateStreamOptionsForLevel(streamSelect, level) {
+    if (!streamSelect) return;
+    if (level === '9' || level === '10') {
+        streamSelect.innerHTML = `<option value="General">${t('sa_stream_general')}</option>`;
+        streamSelect.value = 'General';
+        streamSelect.disabled = true;
+    } else if (level === '11' || level === '12') {
+        streamSelect.innerHTML = `
+            <option value="">${t('sa_select_stream')}</option>
+            <option value="Natural">${t('sa_stream_natural')}</option>
+            <option value="Social">${t('sa_stream_social')}</option>`;
+        streamSelect.disabled = false;
+    } else {
+        streamSelect.innerHTML = `<option value="">${t('sa_select_class_level')}</option>`;
+        streamSelect.value = '';
+        streamSelect.disabled = true;
+    }
+}
+
+// ---------- Shared: search-and-pick a teacher by ID or name ----------
+// Backs the "Teacher ID" lookup boxes in Subject & Teaching Assignment and
+// Assign Homeroom — type or search, click a match, it's selected. Reads
+// from TA_TEACHERS_CACHE (populated by loadTeacherAssignments) so it works
+// offline of any extra network round-trip.
+function wireTeacherSearch(inputId, btnId, resultsId, hiddenId) {
+    const input = document.getElementById(inputId);
+    const btn = document.getElementById(btnId);
+    const results = document.getElementById(resultsId);
+    const hidden = document.getElementById(hiddenId);
+    if (!input || !results || !hidden) return;
+
+    const runSearch = () => {
+        const q = input.value.trim().toLowerCase();
+        hidden.value = '';
+        if (!q) { results.innerHTML = ''; return; }
+        const matches = (TA_TEACHERS_CACHE || []).filter(tr =>
+            tr.teacher_id.toLowerCase().includes(q) || tr.full_name.toLowerCase().includes(q));
+        if (matches.length === 0) {
+            results.innerHTML = `<div class="form-hint">${t('sa_teacher_search_no_match')}</div>`;
+            return;
+        }
+        results.innerHTML = matches.slice(0, 8).map(tr => `
+            <div class="badge badge-none" style="cursor:pointer; margin:2px 4px 2px 0; display:inline-block;"
+                 onclick="selectTeacherFromSearch('${inputId}','${resultsId}','${hiddenId}','${tr.teacher_id}', ${JSON.stringify(tr.full_name)})">
+                ${escapeHtml(tr.full_name)} (${tr.teacher_id})
+            </div>`).join('');
+    };
+
+    btn?.addEventListener('click', runSearch);
+    input.addEventListener('input', runSearch);
+}
+
+function selectTeacherFromSearch(inputId, resultsId, hiddenId, teacher_id, full_name) {
+    document.getElementById(hiddenId).value = teacher_id;
+    document.getElementById(inputId).value = '';
+    document.getElementById(resultsId).innerHTML = `
+        <div class="form-hint">${t('sa_teacher_selected_prefix')} ${escapeHtml(full_name)} (${teacher_id})
+            <button type="button" class="btn btn-sm btn-ghost" onclick="document.getElementById('${hiddenId}').value=''; document.getElementById('${resultsId}').innerHTML='';">${t('sa_teacher_change')}</button>
         </div>`;
 }
 
@@ -978,31 +1277,11 @@ async function declineIncomingTeacher(incoming_id) {
     loadIncomingTeachers();
 }
 
-async function onboardTeacher() {
-    const first_name = document.getElementById('ts-first-name').value.trim();
-    const middle_name = document.getElementById('ts-middle-name').value.trim();
-    const last_name = document.getElementById('ts-last-name').value.trim();
-    const contact_number = document.getElementById('ts-contact-number').value.trim();
-    const email = document.getElementById('ts-email').value.trim();
-    const password = document.getElementById('ts-password').value.trim();
-    if (!first_name || !last_name || !password) return showToast(t('sa_err_teacher_setup_required'), 'error');
-
-    const res = await apiFetch(`${API_BASE}/api/principal/teachers`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ first_name, middle_name, last_name, contact_number, email, password })
-    });
-    const data = await handleJsonResponse(res, t('sa_teacher_onboarded'));
-    if (!data) return;
-    ['ts-first-name', 'ts-middle-name', 'ts-last-name', 'ts-contact-number', 'ts-email', 'ts-password'].forEach(id => {
-        document.getElementById(id).value = '';
-    });
-    loadTeacherSetup();
-}
-
 // ==========================================================
 // TEACHING ASSIGNMENTS, Stage 2 (Academic VP)
 // ==========================================================
 let TA_TEACHERS_CACHE = [];
+let TA_SUBJECTS_CACHE = [];
 
 async function loadTeacherAssignments(filterTeacherId) {
     const canAssign = CURRENT_TITLE === 'Academic VP';
@@ -1016,15 +1295,21 @@ async function loadTeacherAssignments(filterTeacherId) {
     ]);
     const teachers = teachersRes.ok ? await teachersRes.json() : [];
     TA_TEACHERS_CACHE = teachers;
-    const subjects = subjectsRes.ok ? await subjectsRes.json() : [];
+    TA_SUBJECTS_CACHE = subjectsRes.ok ? await subjectsRes.json() : [];
 
-    const teacherSelect = document.getElementById('ta-teacher-select');
-    const subjectSelect = document.getElementById('ta-subject-select');
+    // Teacher pickers are now search-and-select (by Teacher ID or name)
+    // rather than a plain dropdown — see wireTeacherSearch(). Just make
+    // sure a stale selection from a teacher no longer in this school's
+    // roster gets cleared.
+    ['ta-teacher-select', 'hr-teacher-select'].forEach(id => {
+        const hidden = document.getElementById(id);
+        if (hidden && hidden.value && !teachers.some(tr => tr.teacher_id === hidden.value)) hidden.value = '';
+    });
+
+    refreshAssignmentSubjectOptions();
+    if (canAssign) loadSubjectConfig();
+
     const filterSelect = document.getElementById('ta-filter-teacher');
-    const hrTeacherSelect = document.getElementById('hr-teacher-select');
-    if (teacherSelect) teacherSelect.innerHTML = teachers.map(tr => `<option value="${tr.teacher_id}">${escapeHtml(tr.full_name)} (${tr.teacher_id})</option>`).join('');
-    if (hrTeacherSelect) hrTeacherSelect.innerHTML = teachers.map(tr => `<option value="${tr.teacher_id}">${escapeHtml(tr.full_name)} (${tr.teacher_id})</option>`).join('');
-    if (subjectSelect) subjectSelect.innerHTML = subjects.map(s => `<option value="${s.subject_id}">${escapeHtml(s.subject_name)}</option>`).join('');
     if (filterSelect) {
         const currentValue = filterTeacherId || filterSelect.value || '';
         filterSelect.innerHTML = `<option value="">${t('sa_ta_all_teachers')}</option>` +
@@ -1033,20 +1318,22 @@ async function loadTeacherAssignments(filterTeacherId) {
     }
 
     const tbody = document.getElementById('sa-teacher-assignments-tbody');
-    tbody.innerHTML = `<tr><td colspan="4">${t('sa_loading')}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6">${t('sa_loading')}</td></tr>`;
     const teacherIdFilter = filterTeacherId || filterSelect?.value || '';
     const url = teacherIdFilter
         ? `${API_BASE}/api/academic-vp/teacher-assignments?teacher_id=${encodeURIComponent(teacherIdFilter)}`
         : `${API_BASE}/api/academic-vp/teacher-assignments`;
     const res = await apiFetch(url);
-    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="4">${t('sa_load_error')}</td></tr>`; return; }
+    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_load_error')}</td></tr>`; return; }
     const rows = await res.json();
-    if (rows.length === 0) { tbody.innerHTML = `<tr><td colspan="4">${t('sa_no_data')}</td></tr>`; return; }
+    if (rows.length === 0) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_no_data')}</td></tr>`; return; }
     tbody.innerHTML = rows.map(r => `
         <tr>
             <td>${escapeHtml(r.teacher_name)}</td>
             <td>${escapeHtml(r.subject_name)}</td>
-            <td>${r.class_level}-${r.section}${r.stream ? ' (' + escapeHtml(r.stream) + ')' : ''}</td>
+            <td>${escapeHtml(r.class_level)}</td>
+            <td>${escapeHtml(r.section)}</td>
+            <td>${escapeHtml(r.stream ?? '—')}</td>
             <td>${canAssign
                 ? `<button class="btn btn-sm btn-danger" onclick="removeTeacherAssignment('${r.teacher_id}','${r.class_level}','${r.section}','${r.subject_id}')">${t('sa_remove')}</button>`
                 : '—'}</td>
@@ -1085,16 +1372,20 @@ async function saveHomeroom() {
     const class_level = document.getElementById('hr-class-level').value.trim();
     const section = document.getElementById('hr-section').value.trim();
     const stream = document.getElementById('hr-stream').value.trim();
-    if (!teacher_id || !class_level || !section) return showToast(t('sa_err_assignment_required'), 'error');
+    if (!teacher_id) return showToast(t('sa_err_teacher_not_selected'), 'error');
+    if (!class_level || !section) return showToast(t('sa_err_assignment_required'), 'error');
 
     const res = await apiFetch(`${API_BASE}/api/academic-vp/homeroom`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ teacher_id, class_level, section, stream: stream || null })
     });
-    await handleJsonResponse(res, t('sa_homeroom_assigned'));
+    const data = await handleJsonResponse(res, t('sa_homeroom_assigned'));
+    if (!data) return;
+    document.getElementById('hr-teacher-select').value = '';
+    document.getElementById('hr-teacher-search-results').innerHTML = '';
     document.getElementById('hr-class-level').value = '';
     document.getElementById('hr-section').value = '';
-    document.getElementById('hr-stream').value = '';
+    updateStreamOptionsForLevel(document.getElementById('hr-stream'), '');
     loadTeacherAssignments();
 }
 
@@ -1130,23 +1421,94 @@ async function revokeRegistrar(teacher_id) {
     loadTeacherAssignments();
 }
 
+// Subjects narrow to whatever the currently-selected stream can teach:
+// a subject configured for "All Streams" (stream = null) always shows, on
+// top of whichever specific stream (General/Natural/Social) is chosen.
+function refreshAssignmentSubjectOptions() {
+    const subjectSelect = document.getElementById('ta-subject-select');
+    if (!subjectSelect) return;
+    const stream = document.getElementById('ta-stream')?.value || '';
+    const list = stream
+        ? TA_SUBJECTS_CACHE.filter(s => !s.stream || s.stream === stream)
+        : TA_SUBJECTS_CACHE;
+    const current = subjectSelect.value;
+    subjectSelect.innerHTML = list.map(s => `<option value="${s.subject_id}">${escapeHtml(s.subject_name)}${s.stream ? ' (' + escapeHtml(s.stream) + ')' : ''}</option>`).join('')
+        || `<option value="">${t('sa_no_subject')}</option>`;
+    if (list.some(s => s.subject_id === current)) subjectSelect.value = current;
+}
+
 async function saveTeacherAssignment() {
     const teacher_id = document.getElementById('ta-teacher-select').value;
     const subject_id = document.getElementById('ta-subject-select').value;
     const class_level = document.getElementById('ta-class-level').value.trim();
     const section = document.getElementById('ta-section').value.trim();
     const stream = document.getElementById('ta-stream').value.trim();
-    if (!teacher_id || !subject_id || !class_level || !section) return showToast(t('sa_err_assignment_required'), 'error');
+    if (!teacher_id) return showToast(t('sa_err_teacher_not_selected'), 'error');
+    if (!subject_id || !class_level || !section) return showToast(t('sa_err_assignment_required'), 'error');
 
     const res = await apiFetch(`${API_BASE}/api/academic-vp/teacher-assignments`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ teacher_id, subject_id, class_level, section, stream: stream || null })
     });
-    await handleJsonResponse(res, t('sa_assignment_saved'));
+    const data = await handleJsonResponse(res, t('sa_assignment_saved'));
+    if (!data) return;
+    document.getElementById('ta-teacher-select').value = '';
+    document.getElementById('ta-teacher-search-results').innerHTML = '';
     document.getElementById('ta-class-level').value = '';
     document.getElementById('ta-section').value = '';
-    document.getElementById('ta-stream').value = '';
+    updateStreamOptionsForLevel(document.getElementById('ta-stream'), '');
     loadTeacherAssignments();
+}
+
+// ==========================================================
+// SUBJECT CONFIGURATION (Academic VP) — which subjects this school
+// actually teaches, tagged by stream, so they surface in the Subject &
+// Teaching Assignment form and the Timetable builder.
+// ==========================================================
+async function loadSubjectConfig() {
+    const tbody = document.getElementById('sa-subject-config-tbody');
+    if (!tbody) return;
+    tbody.innerHTML = `<tr><td colspan="3">${t('sa_loading')}</td></tr>`;
+    const res = await apiFetch(`${API_BASE}/api/academic-vp/subjects`);
+    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="3">${t('sa_load_error')}</td></tr>`; return; }
+    const subjects = await res.json();
+    TA_SUBJECTS_CACHE = subjects;
+    refreshAssignmentSubjectOptions();
+    if (subjects.length === 0) { tbody.innerHTML = `<tr><td colspan="3">${t('sa_no_data')}</td></tr>`; return; }
+    const streamLabel = s => s.stream === 'General' ? t('sa_stream_general')
+        : s.stream === 'Natural' ? t('sa_stream_natural')
+        : s.stream === 'Social' ? t('sa_stream_social')
+        : t('sa_stream_all');
+    tbody.innerHTML = subjects.map(s => `
+        <tr>
+            <td>${escapeHtml(s.subject_name)}</td>
+            <td>${streamLabel(s)}</td>
+            <td><button class="btn btn-sm btn-danger" onclick="deleteSubjectConfig('${s.subject_id}')">${t('sa_remove')}</button></td>
+        </tr>`).join('');
+}
+
+async function addSubjectConfig() {
+    const subject_name = document.getElementById('subj-name').value.trim();
+    const streamRaw = document.getElementById('subj-stream').value;
+    if (!subject_name || !streamRaw) return showToast(t('sa_err_subject_fields_required'), 'error');
+    const stream = streamRaw === 'ALL' ? null : streamRaw;
+
+    const res = await apiFetch(`${API_BASE}/api/academic-vp/subjects`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subject_name, stream })
+    });
+    const data = await handleJsonResponse(res, t('sa_subject_added'));
+    if (!data) return;
+    document.getElementById('subj-name').value = '';
+    document.getElementById('subj-stream').value = '';
+    loadSubjectConfig();
+}
+
+async function deleteSubjectConfig(subject_id) {
+    if (!confirm(t('sa_confirm_remove_subject'))) return;
+    const res = await apiFetch(`${API_BASE}/api/academic-vp/subjects/${encodeURIComponent(subject_id)}`, { method: 'DELETE' });
+    await handleJsonResponse(res, t('sa_subject_removed'));
+    loadSubjectConfig();
 }
 
 async function removeTeacherAssignment(teacher_id, class_level, section, subject_id) {
@@ -1325,7 +1687,9 @@ function switchMessageBox(box) {
     CURRENT_MESSAGE_BOX = box;
     document.getElementById('msg-box-inbox-btn').className = box === 'inbox' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
     document.getElementById('msg-box-sent-btn').className = box === 'sent' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
-    loadMessages(box);
+    document.getElementById('msg-box-teachers-btn').className = box === 'teachers' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
+    if (box === 'teachers') loadContactThreads();
+    else loadMessages(box);
 }
 
 async function loadMessages(box) {
@@ -1345,8 +1709,117 @@ async function loadMessages(box) {
             </div>
             <div class="form-hint">${box === 'inbox' ? escapeHtml(m.sender_type) : escapeHtml(m.recipient_type)}</div>
             <div>${escapeHtml(m.body)}</div>
-            ${!m.is_read && box === 'inbox' ? `<button class="btn btn-sm btn-ghost" onclick="markMessageRead(${m.message_id})">${t('sa_mark_read')}</button>` : ''}
+            <div style="margin-top:6px; display:flex; gap:8px;">
+                ${!m.is_read && box === 'inbox' ? `<button class="btn btn-sm btn-ghost" onclick="markMessageRead(${m.message_id})">${t('sa_mark_read')}</button>` : ''}
+                ${box === 'inbox' ? `<button class="btn btn-sm btn-primary" onclick="replyToMessage('${m.sender_type}', '${m.sender_id}', ${JSON.stringify(m.subject || '').replace(/"/g, '&quot;')})">${t('sa_reply_btn')}</button>` : ''}
+            </div>
         </div>`).join('');
+}
+
+// ---------- "From Teachers" — the Contact School threads teachers send
+// to a management role (Principal / Admin VP / Academic VP), addressed
+// to this admin's title or cc'ing it ----------
+async function loadContactThreads() {
+    const listEl = document.getElementById('sa-messages-list');
+    listEl.innerHTML = `<div class="widget-loading">${t('sa_loading')}</div>`;
+    const res = await apiFetch(`${API_BASE}/api/admin/contact-threads`);
+    if (!res.ok) { listEl.innerHTML = `<div class="widget-empty">${t('sa_load_error')}</div>`; return; }
+    const rows = await res.json();
+    if (rows.length === 0) { listEl.innerHTML = `<div class="widget-empty">${t('sa_no_data')}</div>`; return; }
+    listEl.innerHTML = rows.map(th => `
+        <div style="padding:12px 4px; border-bottom:1px solid var(--border); cursor:pointer; ${th.unread_count > 0 ? 'font-weight:700;' : ''}" onclick="openContactThreadModal(${th.thread_id})">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span>${escapeHtml(th.subject)} ${th.unread_count > 0 ? `<span class="badge badge-rejected">${th.unread_count}</span>` : ''}</span>
+                <span class="form-hint">${new Date(th.updated_at).toLocaleString()}</span>
+            </div>
+            <div class="form-hint">${escapeHtml(th.teacher_name)} · ${escapeHtml(th.category)}
+                <span class="badge ${th.status === 'Resolved' ? 'badge-closed' : 'badge-open'}">${escapeHtml(th.status)}</span>
+            </div>
+        </div>`).join('');
+    refreshUnreadMessagesBadge();
+}
+
+async function openContactThreadModal(thread_id) {
+    openModal(`<h3>${t('sa_thread_heading')}</h3><div id="contact-thread-modal-body">${t('sa_loading')}</div>
+        <div class="form-actions"><button class="btn btn-ghost" onclick="closeModal()">${t('sa_close')}</button></div>`);
+    const res = await apiFetch(`${API_BASE}/api/admin/contact-threads/${thread_id}`);
+    const body = document.getElementById('contact-thread-modal-body');
+    if (!body) return;
+    if (!res.ok) { body.innerHTML = t('sa_load_error'); return; }
+    const { thread, messages } = await res.json();
+    body.innerHTML = `
+        <p class="form-hint">${escapeHtml(thread.category)} — ${t('sa_thread_addressed_to')} ${escapeHtml(thread.recipient_role)}${thread.cc_roles.length ? ` (cc: ${thread.cc_roles.map(escapeHtml).join(', ')})` : ''}</p>
+        <div style="max-height:280px; overflow-y:auto; margin-bottom:12px;">
+            ${messages.map(m => `
+                <div style="padding:8px 10px; margin-bottom:6px; border-radius:8px; background:${m.sender_role === 'teacher' ? '#f7faf8' : 'var(--info-bg)'};">
+                    <div class="form-hint">${m.sender_role === 'teacher' ? escapeHtml(thread.teacher_id) : t('sa_you_label')} · ${new Date(m.sent_at).toLocaleString()}</div>
+                    <div>${escapeHtml(m.body)}</div>
+                </div>`).join('')}
+        </div>
+        <div class="form-group">
+            <label data-i18n="sa_message_label">${t('sa_message_label')}</label>
+            <textarea id="contact-thread-reply-body"></textarea>
+        </div>
+        <div class="form-actions" style="margin-top:0;">
+            <button class="btn btn-accent btn-sm" onclick="replyToContactThread(${thread_id})">${t('sa_reply_btn')}</button>
+            <button class="btn ${thread.status === 'Resolved' ? 'btn-ghost' : 'btn-success'} btn-sm" onclick="toggleContactThreadStatus(${thread_id}, '${thread.status === 'Resolved' ? 'Open' : 'Resolved'}')">
+                ${thread.status === 'Resolved' ? t('sa_reopen_thread') : t('sa_resolve_thread')}
+            </button>
+        </div>`;
+}
+
+async function replyToContactThread(thread_id) {
+    const textarea = document.getElementById('contact-thread-reply-body');
+    const body = textarea.value.trim();
+    if (!body) return showToast(t('sa_err_message_body_required'), 'error');
+    const res = await apiFetch(`${API_BASE}/api/admin/contact-threads/${thread_id}/reply`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body })
+    });
+    const data = await handleJsonResponse(res, t('sa_reply_sent'));
+    if (!data) return;
+    openContactThreadModal(thread_id);
+    loadContactThreads();
+}
+
+async function toggleContactThreadStatus(thread_id, status) {
+    const res = await apiFetch(`${API_BASE}/api/contact/thread/${thread_id}/status`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status })
+    });
+    const data = await handleJsonResponse(res);
+    if (!data) return;
+    closeModal();
+    loadContactThreads();
+}
+
+// Anyone can reply to a message sent to them: this pre-fills the existing
+// compose widget with the original sender as the recipient (works for a
+// teacher, another school admin, or a zonal admin) and scrolls to it.
+async function replyToMessage(sender_type, sender_id, original_subject) {
+    if (!MESSAGE_RECIPIENTS_CACHE) await loadMessageRecipients();
+
+    const typeSelect = document.getElementById('msg-recipient-type');
+    typeSelect.value = sender_type;
+    await loadMessageRecipients();
+
+    const recipientSelect = document.getElementById('msg-recipient-select');
+    // Make sure the actual sender is selectable even if they aren't the
+    // zone's default "Zonal Admin Bridge" contact (e.g. a different
+    // zonal admin replied) or otherwise weren't already in the list.
+    if (![...recipientSelect.options].some(o => o.value === String(sender_id))) {
+        const opt = document.createElement('option');
+        opt.value = sender_id;
+        opt.textContent = sender_id;
+        recipientSelect.appendChild(opt);
+    }
+    recipientSelect.value = sender_id;
+
+    const subjectInput = document.getElementById('msg-subject');
+    subjectInput.value = original_subject ? `${t('sa_reply_subject_prefix')}${original_subject}` : '';
+
+    const bodyInput = document.getElementById('msg-body');
+    bodyInput.value = '';
+    bodyInput.focus();
+    bodyInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 async function markMessageRead(message_id) {
@@ -1356,12 +1829,25 @@ async function markMessageRead(message_id) {
 }
 
 async function refreshUnreadMessagesBadge() {
-    const res = await apiFetch(`${API_BASE}/api/admin/messages?box=inbox`);
     const badge = document.getElementById('sa-messages-badge');
-    if (!res.ok || !badge) return;
-    const rows = await res.json();
-    const unread = rows.filter(m => !m.is_read).length;
-    if (unread > 0) { badge.style.display = 'inline-flex'; badge.textContent = unread; }
+    const teacherBadge = document.getElementById('sa-teacher-threads-badge');
+
+    let inboxUnread = 0;
+    const res = await apiFetch(`${API_BASE}/api/admin/messages?box=inbox`);
+    if (res.ok) inboxUnread = (await res.json()).filter(m => !m.is_read).length;
+
+    let threadsUnread = 0;
+    const threadsRes = await apiFetch(`${API_BASE}/api/admin/contact-threads`);
+    if (threadsRes.ok) threadsUnread = (await threadsRes.json()).reduce((sum, th) => sum + Number(th.unread_count || 0), 0);
+
+    if (teacherBadge) {
+        if (threadsUnread > 0) { teacherBadge.style.display = 'inline-flex'; teacherBadge.textContent = threadsUnread; }
+        else teacherBadge.style.display = 'none';
+    }
+
+    if (!badge) return;
+    const total = inboxUnread + threadsUnread;
+    if (total > 0) { badge.style.display = 'inline-flex'; badge.textContent = total; }
     else badge.style.display = 'none';
 }
 
@@ -1374,8 +1860,23 @@ async function loadDocumentStatus() {
     const data = await res.json();
     const sigPreview = document.getElementById('profile-signature-preview');
     const stampPreview = document.getElementById('profile-stamp-preview');
-    if (data.signature_url) { sigPreview.src = API_BASE + data.signature_url; sigPreview.style.display = ''; }
-    if (data.stamp_url) { stampPreview.src = API_BASE + data.stamp_url; stampPreview.style.display = ''; }
+    if (data.signature_url) {
+        sigPreview.src = API_BASE + data.signature_url; sigPreview.style.display = '';
+        document.getElementById('profile-signature-placeholder').style.display = 'none';
+    }
+    if (data.stamp_url) {
+        stampPreview.src = API_BASE + data.stamp_url; stampPreview.style.display = '';
+        document.getElementById('profile-stamp-placeholder').style.display = 'none';
+    }
+    if (data.avatar_url) {
+        const fullUrl = API_BASE + data.avatar_url;
+        const profileImg = document.getElementById('profile-avatar-img');
+        profileImg.src = fullUrl; profileImg.style.display = '';
+        document.getElementById('profile-avatar-initials-text').style.display = 'none';
+        const topbarImg = document.getElementById('sa-avatar-img');
+        topbarImg.src = fullUrl; topbarImg.style.display = '';
+        document.getElementById('sa-avatar-initials-text').style.display = 'none';
+    }
 }
 
 async function uploadAdminDocument(event, kind) {
@@ -1388,5 +1889,136 @@ async function uploadAdminDocument(event, kind) {
     if (!data) return;
     const preview = document.getElementById(`profile-${kind}-preview`);
     const url = data.signature_url || data.stamp_url;
-    if (url) { preview.src = API_BASE + url; preview.style.display = ''; }
+    if (url) {
+        preview.src = API_BASE + url; preview.style.display = '';
+        document.getElementById(`profile-${kind}-placeholder`).style.display = 'none';
+    }
 }
+
+// Profile picture — updates both the profile-page circle and the
+// top-bar avatar together so they never fall out of sync. The ID card
+// fetches its own copy of avatar_url (see loadAdminIdCard), so clearing
+// its cache here just means the next visit to that page picks up the
+// new photo instead of showing a stale one.
+async function uploadAdminAvatar(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('avatar', file);
+    const res = await apiFetch(`${API_BASE}/api/admin/upload-avatar`, { method: 'POST', body: formData });
+    const data = await handleJsonResponse(res, t('sa_avatar_uploaded'));
+    if (!data?.avatar_url) return;
+    const fullUrl = API_BASE + data.avatar_url;
+    const profileImg = document.getElementById('profile-avatar-img');
+    profileImg.src = fullUrl; profileImg.style.display = '';
+    document.getElementById('profile-avatar-initials-text').style.display = 'none';
+    const topbarImg = document.getElementById('sa-avatar-img');
+    topbarImg.src = fullUrl; topbarImg.style.display = '';
+    document.getElementById('sa-avatar-initials-text').style.display = 'none';
+    adminIdCardData = null;
+}
+
+// ==========================================================
+// MY ID CARD — mirrors the teacher portal's flip-card design
+// (purple/gold, front+back, printable, QR-verified) 1:1, just backed by
+// /api/admin/id-card instead of /api/teacher/id-card. Fetched once per
+// page visit and re-rendered (not re-fetched) on language switch, since
+// only the static labels change, not the underlying data.
+// ==========================================================
+let adminIdCardData = null;
+
+async function loadAdminIdCard() {
+    const errorEl = document.getElementById('idcard-error');
+    const wrap = document.getElementById('idcard-wrap');
+    const actions = document.getElementById('idcard-actions');
+    if (!wrap) return;
+
+    if (adminIdCardData) {
+        renderAdminIdCard(adminIdCardData);
+        return;
+    }
+
+    try {
+        const res = await apiFetch(`${API_BASE}/api/admin/id-card`);
+        if (!res.ok) throw new Error("Could not load ID card");
+        const data = await res.json();
+        adminIdCardData = data;
+        renderAdminIdCard(data);
+    } catch (err) {
+        console.error("ID card load error:", err);
+        if (errorEl) {
+            errorEl.textContent = t('sa_idcard_could_not_load');
+            errorEl.style.display = 'block';
+        }
+        if (wrap) wrap.style.display = 'none';
+        if (actions) actions.style.display = 'none';
+    }
+}
+
+function renderAdminIdCard(data) {
+    const wrap = document.getElementById('idcard-wrap');
+    const actions = document.getElementById('idcard-actions');
+    const errorEl = document.getElementById('idcard-error');
+    if (!wrap) return;
+
+    if (errorEl) errorEl.style.display = 'none';
+    wrap.style.display = 'flex';
+    if (actions) actions.style.display = 'flex';
+
+    // Bilingual (English + Amharic together) regardless of the site-wide
+    // language switch — this is a printable credential, not a page that
+    // should change depending on which tab was last clicked.
+    const setText = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
+    const zoneLabel = data.zone ? data.zone.toUpperCase() : '—';
+    const woredaLabel = data.woreda || '—';
+    setText('idcard-zone-front', zoneLabel);
+    setText('idcard-zone-back', zoneLabel);
+    setText('idcard-woreda-front', woredaLabel);
+    setText('idcard-woreda-back', woredaLabel);
+    setText('idcard-school-name-front', data.school_name || '—');
+    setText('idcard-name', data.full_name || '—');
+    setText('idcard-admin-id', data.admin_id || '—');
+    setText('idcard-title-row', data.title || '—');
+    setText('idcard-valid-until', data.valid_until || '—');
+    setText('idcard-phone', data.contact_number || '—');
+    setText('idcard-email', data.email || '—');
+    setText('idcard-address', data.school_address || 'Not set / አልተመዘገበም');
+
+    const photo = document.getElementById('idcard-photo');
+    const placeholder = document.getElementById('idcard-photo-placeholder');
+    if (data.avatar_url && photo) {
+        photo.src = API_BASE + data.avatar_url;
+        photo.alt = data.full_name ? `Photo of ${data.full_name}` : 'Admin photo';
+        photo.style.display = 'block';
+        if (placeholder) placeholder.style.display = 'none';
+    } else {
+        if (photo) photo.style.display = 'none';
+        if (placeholder) placeholder.style.display = 'flex';
+    }
+
+    renderIdCardQrCode(data.qr_payload || data.admin_id || '');
+}
+
+// Real, scannable QR code encoding the server-signed "<admin_id>.<signature>"
+// payload (signQrPayload/verifyQrPayload on the server), same scheme as the
+// teacher and student ID/QR flows.
+function renderIdCardQrCode(payload) {
+    const container = document.getElementById('idcard-qrcode');
+    if (!container) return;
+    container.innerHTML = '';
+    if (typeof qrcode !== 'function' || !payload) return;
+
+    const qr = qrcode(4, 'M');
+    qr.addData(String(payload));
+    qr.make();
+    container.innerHTML = qr.createSvgTag(4, 2);
+}
+
+window.flipIdCard = () => {
+    const flipper = document.getElementById('idcard-flipper');
+    if (flipper) flipper.classList.toggle('idcard-flipped');
+};
+
+window.printIdCard = () => {
+    window.print();
+};

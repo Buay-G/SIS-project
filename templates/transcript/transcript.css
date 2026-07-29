@@ -1,0 +1,92 @@
+/* Adapted design from certificate/styles for transcript */
+:root{
+  --ink:        oklch(0.26 0.012 250);
+  --ink-soft:   oklch(0.44 0.012 250);
+  --ink-faint:  oklch(0.60 0.010 250);
+  --paper:      oklch(0.985 0.006 95);
+  --paper-2:    oklch(0.965 0.008 95);
+  --line:       oklch(0.80 0.010 250);
+  --line-soft:  oklch(0.88 0.008 250);
+  --seal:       oklch(0.42 0.10 156);
+  --seal-deep:  oklch(0.34 0.09 156);
+  --accent-bg:  oklch(0.95 0.02 156);
+
+  --xs: 0.72rem; --sm: 0.82rem; --base: 0.94rem; --lg: 1.15rem;
+  --s1: 4px; --s2:8px; --s3:12px; --s4:16px; --s6:24px;
+}
+
+*{ box-sizing:border-box; }
+html,body{ margin:0; padding:0; }
+
+body{
+  background: oklch(0.62 0.010 250);
+  font-size:0.92rem;
+  font-family:"Noto Sans","Noto Serif Ethiopic",system-ui,sans-serif;
+  color:var(--ink);
+  -webkit-font-smoothing:antialiased;
+  padding: var(--s6) var(--s4);
+}
+
+.amh{ font-family:"Noto Serif Ethiopic",serif; }
+
+/* Page */
+.page{
+  margin:0 auto var(--s8);
+  background:var(--paper);
+  color:var(--ink);
+  box-shadow: 0 1px 2px oklch(0 0 0 / 0.16), 0 12px 40px oklch(0 0 0 / 0.28);
+  width:100%; max-width:210mm; min-height:297mm; padding:9mm 7mm 7mm; position:relative;
+}
+
+/* Header */
+.header{ display:grid; grid-template-columns:56px 1fr 56px; gap:var(--s3); align-items:center; padding-bottom:var(--s1); border-bottom:2px solid var(--seal); }
+.flag-box{ width:56px; height:44px; display:flex; align-items:center; justify-content:center; color:var(--ink-faint); border-radius:4px; }
+.header-center{ text-align:center; }
+.header-center h3{ font-family:"Noto Serif Ethiopic",serif; font-size:0.78rem; color:var(--ink-soft); margin:2px 0; }
+.header-center h2{ font-size:1.08rem; font-weight:700; color:var(--ink); margin:2px 0; }
+
+/* Sub header */
+.sub-header{ display:flex; justify-content:space-between; font-size:0.85rem; margin-top:6px; margin-bottom:10px; border-bottom:1px solid var(--line); padding-bottom:6px; }
+
+.doc-title{ text-align:center; text-decoration:underline; font-size:1.02rem; font-weight:700; margin:12px 0; }
+
+/* Info */
+.info-section{ font-size:0.9rem; line-height:1.4; margin-bottom:12px; }
+.underline-field{ display:inline-block; border-bottom:1px solid var(--line); min-width:120px; height:18px; }
+.long-field{ min-width:380px; }
+
+/* Photo + ID */
+.photo-wrap{ position:absolute; top:110px; right:18mm; width:140px; display:flex; flex-direction:column; align-items:center; gap:8px; }
+.photo-box{ width:86px; height:100px; border:1.5px solid var(--line); background:var(--paper-2); display:flex; align-items:center; justify-content:center; color:var(--ink-faint); }
+.id-block{ display:flex; flex-direction:column; align-items:center; gap:6px; }
+.id-chip{ font-size:0.78rem; color:var(--ink-soft); display:flex; align-items:center; gap:8px; }
+.id-chip strong{ color:var(--ink); font-weight:700; }
+
+/* Table styling like certificate */
+table{ width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; font-size:0.9rem; margin-top:8px; }
+th, td{ border:1px solid var(--line); padding:6px 8px; text-align:center; }
+thead th{ background:var(--seal); color:var(--paper); font-weight:700; padding:8px; }
+th.subject-col, td.subject-col{ text-align:left; padding-left:10px; width:20%; }
+tbody tr:nth-child(even) td{ background:oklch(0.975 0.006 95); }
+
+.note{ font-size:0.82rem; color:var(--ink-faint); margin-top:12px; margin-bottom:12px; }
+
+/* Signatures: three-column */
+.signatures{ display:grid; grid-template-columns:1fr 120px 1fr; gap:16px; align-items:start; margin-top:8px; }
+.sig-left, .sig-right{ display:flex; flex-direction:column; gap:6px; }
+.seal-slot{ display:flex; align-items:center; justify-content:center; }
+.seal-area{ width:80px; height:80px; border:1.5px dashed var(--line); border-radius:50%; display:flex; align-items:center; justify-content:center; color:var(--ink-faint); font-weight:700; }
+
+/* Responsive small screens */
+@media (max-width:900px){ body{ padding:var(--s4); } .page{ padding:12mm; } .header{ grid-template-columns:48px 1fr 48px; } .signatures{ grid-template-columns:1fr; } }
+
+/* Print rules */
+@page{ size:A4 portrait; margin:4mm; }
+@media print{
+  html,body{ background:none; padding:0; margin:0; }
+  .page{ box-shadow:none; width:calc(100% - 8mm); max-width:calc(210mm - 8mm); padding:8mm; }
+  .photo-box{ display:none; }
+  table{ font-size:0.85rem; }
+  th,td{ padding:4px 6px; }
+  .signatures{ gap:8px; }
+}

@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>__SCHOOL_NAME__ — School's Recommendation</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Serif+Ethiopic:wght@400;500;600;700&family=Noto+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="recommendation.css" />
+  </head>
+  <body>
+    <div class="toolbar">
+      <span class="hint"
+        >Landscape A4 · this is the School's Recommendation — see
+        certificate.html for the Marks Sheet</span
+      >
+      <span class="toolbar-actions">
+        <button onclick="window.print()">Print / Save — Recommendation</button>
+      </span>
+    </div>
+
+    <!-- ============================ SCHOOL'S RECOMMENDATION (LANDSCAPE) ============================ -->
+    <section class="sheet" id="page-2">
+      <header class="rec-head">
+        <div class="amh">የትምህርት ቤቱ አስተያየት</div>
+        <div class="en">School's Recommendation</div>
+        <div class="rec-sub">
+          <span id="student-line">
+            __STUDENT_NAME__ · Grade __GRADE__ (__SECTION__) · Student ID
+            __STUDENT_ID__ · __ACADEMIC_YEAR__
+          </span>
+        </div>
+      </header>
+
+      <div class="semester-block">
+        <span class="sem-label"
+          >First Semester <span class="amh">አንደኛ መንፈቀ ዓመት</span></span
+        >
+        <div class="rec-comment" id="first-semester">
+          __FIRST_SEMESTER_COMMENT__
+        </div>
+        <div class="rec-lines">
+          <div class="rline"></div>
+          <div class="rline"></div>
+          <div class="rline"></div>
+        </div>
+        <div class="rec-signrow">
+          <div class="slot">
+            <div class="rule"></div>
+            <div class="sig-name" id="first-homeroom-name">
+              __FIRST_HOMEROOM_TEACHER_NAME__
+            </div>
+            <div class="cap">
+              Name of Home-Room Teacher <span class="amh">የክፍል መምህር ስም</span>
+            </div>
+          </div>
+          <div class="slot">
+            <div class="rule"></div>
+            <div class="sig-name" id="first-parent-name">
+              __FIRST_PARENT_NAME__
+            </div>
+            <div class="cap">
+              Signature of Parent or Guardian
+              <span class="amh">የወላጅ ወይም አሳዳጊ ፊርማ</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="semester-block">
+        <span class="sem-label"
+          >Second Semester <span class="amh">ሁለተኛ መንፈቀ ዓመት</span></span
+        >
+        <div class="rec-comment" id="second-semester">
+          __SECOND_SEMESTER_COMMENT__
+        </div>
+        <div class="rec-lines">
+          <div class="rline"></div>
+          <div class="rline"></div>
+          <div class="rline"></div>
+        </div>
+        <div class="rec-signrow">
+          <div class="slot">
+            <div class="rule"></div>
+            <div class="sig-name" id="second-homeroom-name">
+              __SECOND_HOMEROOM_TEACHER_NAME__
+            </div>
+            <div class="cap">
+              Name of Home-Room Teacher <span class="amh">የክፍል መምህር ስም</span>
+            </div>
+          </div>
+          <div class="slot">
+            <div class="rule"></div>
+            <div class="sig-name" id="second-parent-name">
+              __SECOND_PARENT_NAME__
+            </div>
+            <div class="cap">
+              Signature of Parent or Guardian
+              <span class="amh">የወላጅ ወይም አሳዳጊ ፊርማ</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="qr-section">
+        <div class="qr-title">Scan to verify</div>
+        <div class="qr-box" id="rec-qr"></div>
+      </div>
+
+      <div class="director-strip">
+        <div class="slot" style="text-align: center">
+          <div class="sig-name" id="principal-name" style="padding-bottom: 6px">
+            &nbsp;
+          </div>
+          <div
+            class="cap"
+            style="
+              font-size: var(--xs);
+              color: var(--ink-faint);
+              font-weight: 600;
+            "
+          >
+            Principal's Signature
+            <span
+              class="amh"
+              style="display: block; color: var(--ink-soft); font-weight: 500"
+              >የርዕሰ መምህር ፊርማ</span
+            >
+          </div>
+        </div>
+        <div class="seal-slot">
+          <div class="seal-plate">
+            <div class="seal-label">School Seal</div>
+          </div>
+        </div>
+        <div class="slot" style="text-align: center">
+          <div
+            class="rule"
+            style="
+              border-bottom: 1px solid var(--ink-soft);
+              height: 2em;
+              margin-bottom: 5px;
+            "
+          ></div>
+          <div
+            class="cap"
+            style="
+              font-size: var(--xs);
+              color: var(--ink-faint);
+              font-weight: 600;
+            "
+          >
+            Date
+            <span
+              class="amh"
+              style="display: block; color: var(--ink-soft); font-weight: 500"
+              >ቀን</span
+            >
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <script>
+      const DATA = __RECOMMENDATION_DATA__;
+    </script>
+    <script src="recommedation.js"></script>
+  </body>
+</html>

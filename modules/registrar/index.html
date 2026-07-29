@@ -9,117 +9,298 @@
     <script src="/assets/js/i18n.js"></script>
   </head>
   <body>
+    <a href="#content" class="skip-link" data-i18n="reg_skip_to_content"
+      >Skip to main content</a
+    >
     <div class="dashboard-container">
-      <nav id="sidebar">
-        <img
-          src="/assets/images/Logo.png"
-          alt="School Logo"
-          style="width: 100px; display: block; margin: 0 auto 10px"
-        />
-        <h3 style="text-align: center; color: white; margin: 5px 0">
-          Newland High School
-        </h3>
-        <h4
-          data-i18n="reg_panel_label"
-          style="text-align: center; color: #bdc3c7; margin-bottom: 10px"
-        >
-          Registrar Panel
-        </h4>
-        <div style="text-align: center; margin-bottom: 15px">
-          <button
-            type="button"
-            class="lang-switch-btn"
-            data-lang="en"
-            onclick="setLang('en')"
+      <nav id="sidebar" aria-label="Registrar navigation">
+        <div class="sidebar-header">
+          <img
+            id="sidebar-school-logo"
+            src="/assets/images/Logo.png"
+            alt="School Logo"
+            width="80"
+            height="80"
+            decoding="async"
             style="
-              width: auto;
-              display: inline-block;
-              padding: 4px 10px;
-              margin: 0 4px;
+              width: 80px;
+              height: 80px;
+              display: block;
+              margin: 0 auto 10px;
+              border-radius: 6px;
+              background: rgba(255, 255, 255, 0.9);
+              padding: 4px;
+              object-fit: contain;
             "
+          />
+          <h3
+            id="sidebar-school-name"
+            style="text-align: center; color: white; margin: 5px 0"
           >
-            EN
+            —
+          </h3>
+          <h4
+            data-i18n="reg_panel_label"
+            style="text-align: center; color: #bdc3c7; margin-bottom: 0"
+          >
+            Registrar Panel
+          </h4>
+        </div>
+
+        <div class="sidebar-nav">
+          <button
+            data-i18n="reg_nav_dashboard"
+            onclick="switchTab('dashboard')"
+          >
+            Dashboard
           </button>
           <button
-            type="button"
-            class="lang-switch-btn"
-            data-lang="am"
-            onclick="setLang('am')"
-            style="
-              width: auto;
-              display: inline-block;
-              padding: 4px 10px;
-              margin: 0 4px;
-            "
+            data-i18n="reg_nav_new_entry"
+            onclick="switchTab('new-entry')"
           >
-            አማ
+            New Entry Registration
+          </button>
+          <button
+            data-i18n="reg_nav_update_info"
+            onclick="switchTab('update-info')"
+          >
+            Information Update
+          </button>
+          <button
+            data-i18n="reg_nav_promotion"
+            onclick="switchTab('promotion')"
+          >
+            Promotion/Stream
+          </button>
+          <button
+            id="nav-students"
+            onclick="switchTab('students')"
+            style="display: none"
+          >
+            <span data-i18n="reg_nav_students">Students</span>
+          </button>
+          <button
+            id="nav-transfer-hub"
+            onclick="switchTab('transfer-hub')"
+            style="display: none"
+          >
+            <span data-i18n="reg_nav_transfer_hub">Transfer Hub</span>
+            <span
+              id="nav-transfer-hub-badge"
+              class="notif-badge"
+              style="display: none"
+            ></span>
+          </button>
+          <button
+            id="nav-documents"
+            onclick="switchTab('documents')"
+            style="display: none"
+          >
+            <span data-i18n="reg_nav_documents">Documents</span>
+            <span
+              id="nav-documents-badge"
+              class="notif-badge"
+              style="display: none"
+            ></span>
+          </button>
+          <button
+            id="nav-graduation-wizard"
+            data-i18n="reg_nav_graduation"
+            onclick="switchTab('graduation-wizard')"
+            style="display: none"
+          >
+            Graduation Wizard
+          </button>
+          <button
+            id="nav-section-setup"
+            data-i18n="reg_nav_section_setup"
+            onclick="switchTab('section-setup')"
+            style="display: none"
+          >
+            Section Setup
+          </button>
+          <button
+            id="nav-placement-wizard"
+            data-i18n="reg_nav_placement"
+            onclick="switchTab('placement-wizard')"
+            style="display: none"
+          >
+            Placement Wizard
+          </button>
+          <button
+            id="nav-recorder-mgmt"
+            data-i18n="reg_nav_recorders"
+            onclick="switchTab('recorder-mgmt')"
+            style="display: none"
+          >
+            Manage Recorders
           </button>
         </div>
 
-        <button data-i18n="reg_nav_new_entry" onclick="switchTab('new-entry')">
-          New Entry Registration
-        </button>
-        <button
-          data-i18n="reg_nav_update_info"
-          onclick="switchTab('update-info')"
-        >
-          Information Update
-        </button>
-        <button data-i18n="reg_nav_promotion" onclick="switchTab('promotion')">
-          Promotion/Stream
-        </button>
-        <button
-          id="nav-transfer-hub"
-          data-i18n="reg_nav_transfer_hub"
-          onclick="switchTab('transfer-hub')"
-          style="display: none"
-        >
-          Transfer Hub
-        </button>
-        <button
-          id="nav-documents"
-          data-i18n="reg_nav_documents"
-          onclick="switchTab('documents')"
-          style="display: none"
-        >
-          Documents
-        </button>
-        <button
-          id="nav-graduation-wizard"
-          data-i18n="reg_nav_graduation"
-          onclick="switchTab('graduation-wizard')"
-          style="display: none"
-        >
-          Graduation Wizard
-        </button>
-        <button
-          id="nav-section-setup"
-          data-i18n="reg_nav_section_setup"
-          onclick="switchTab('section-setup')"
-          style="display: none"
-        >
-          Section Setup
-        </button>
-        <button
-          id="nav-placement-wizard"
-          data-i18n="reg_nav_placement"
-          onclick="switchTab('placement-wizard')"
-          style="display: none"
-        >
-          Placement Wizard
-        </button>
-        <button
-          id="nav-recorder-mgmt"
-          data-i18n="reg_nav_recorders"
-          onclick="switchTab('recorder-mgmt')"
-          style="display: none"
-        >
-          Manage Recorders
-        </button>
+        <div class="sidebar-footer">
+          <div id="sidebar-role-badge" class="sidebar-role-badge">—</div>
+          <a
+            href="#"
+            class="return-to-portal-btn"
+            onclick="
+              returnToPortal();
+              return false;
+            "
+            >Return to Portal</a
+          >
+          <a
+            href="#"
+            class="sidebar-logout-btn"
+            onclick="
+              registrarLogout();
+              return false;
+            "
+            >Logout</a
+          >
+        </div>
       </nav>
 
       <main id="content">
-        <div id="new-entry" class="tab-content active">
+        <header class="top-bar">
+          <div class="top-bar-left">
+            <span id="topbar-school-name" class="topbar-school-name">—</span>
+            <span id="topbar-moe-code" class="topbar-chip" hidden></span>
+            <span
+              id="topbar-semester"
+              class="topbar-chip topbar-chip-accent"
+              hidden
+            ></span>
+          </div>
+          <div class="user-actions">
+            <div
+              class="lang-switch-group"
+              role="tablist"
+              data-i18n-aria="reg_lang_switch_label"
+              aria-label="Change language"
+            >
+              <button
+                type="button"
+                class="lang-switch-btn"
+                data-lang="en"
+                onclick="setLang('en')"
+                role="tab"
+                aria-selected="false"
+              >
+                EN
+              </button>
+              <button
+                type="button"
+                class="lang-switch-btn"
+                data-lang="am"
+                onclick="setLang('am')"
+                role="tab"
+                aria-selected="false"
+              >
+                አማ
+              </button>
+            </div>
+            <div class="notification-wrapper">
+              <button
+                class="notification-btn"
+                data-i18n-aria="reg_notifications_aria"
+                aria-label="Notifications"
+                aria-haspopup="true"
+                aria-expanded="false"
+                onclick="toggleNotificationPanel()"
+              >
+                <span aria-hidden="true">🔔</span
+                ><span
+                  id="notif-badge"
+                  class="notif-badge"
+                  style="display: none"
+                ></span>
+              </button>
+              <div
+                id="notification-panel"
+                class="notification-panel"
+                role="region"
+                data-i18n-aria="reg_notifications_aria"
+                aria-label="Notifications"
+                style="display: none"
+              >
+                <div class="notification-panel-header">
+                  <strong data-i18n="reg_notifications_heading"
+                    >Notifications</strong
+                  >
+                </div>
+                <div id="notification-list">
+                  <p class="notif-empty" data-i18n="reg_no_notifications">
+                    No new notifications
+                  </p>
+                </div>
+              </div>
+            </div>
+            <button
+              class="settings-btn"
+              data-i18n-aria="reg_profile_settings_aria"
+              aria-label="Profile Settings"
+              onclick="openProfileSettings()"
+            >
+              <span aria-hidden="true">⚙️</span>
+            </button>
+            <img
+              id="topbar-avatar"
+              class="topbar-avatar"
+              src=""
+              alt="Profile"
+              width="36"
+              height="36"
+              decoding="async"
+              style="display: none"
+              onclick="openProfileSettings()"
+              tabindex="0"
+              role="button"
+              data-i18n-aria="reg_profile_settings_aria"
+              aria-label="Profile Settings"
+              onkeydown="
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  openProfileSettings();
+                }
+              "
+            />
+          </div>
+        </header>
+
+        <div id="dashboard" class="tab-content active">
+          <h1 data-i18n="reg_dashboard_heading">Dashboard</h1>
+          <div class="dashboard-stats-grid">
+            <div class="stat-card">
+              <span class="stat-value" id="stat-total-students">—</span>
+              <span class="stat-label">Total Students</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-value" id="stat-male">—</span>
+              <span class="stat-label">Male</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-value" id="stat-female">—</span>
+              <span class="stat-label">Female</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-value" id="stat-total-transfers">—</span>
+              <span class="stat-label">Total Transfers</span>
+            </div>
+          </div>
+          <div
+            class="search-box"
+            style="justify-content: space-between; align-items: center"
+          >
+            <span
+              >Browse every registered and existing student at the school.</span
+            >
+            <button type="button" onclick="switchTab('update-info')">
+              View All Students
+            </button>
+          </div>
+        </div>
+
+        <div id="new-entry" class="tab-content">
           <h1 data-i18n="reg_new_entry_heading">New Student Registration</h1>
           <form id="registration-form">
             <div class="form-grid">
@@ -355,6 +536,62 @@
           </div>
         </div>
 
+        <div id="students" class="tab-content">
+          <h1 data-i18n="reg_students_heading">Student Records</h1>
+          <p class="muted" data-i18n="reg_students_sub">
+            Every student enrolled here, labeled with the year they enrolled —
+            and, once they've left, the year they left. Dates lead with the
+            Ethiopian calendar, Gregorian in brackets.
+          </p>
+
+          <div class="search-box" style="flex-wrap: wrap">
+            <input
+              type="text"
+              id="student_registry_search"
+              data-i18n-placeholder="reg_students_search_placeholder"
+              placeholder="Search by name or Student ID..."
+              onkeyup="if (event.key === 'Enter') loadStudentRegistry();"
+              style="flex-grow: 1; min-width: 200px"
+            />
+            <select
+              id="student_registry_status"
+              onchange="loadStudentRegistry()"
+            >
+              <option value="" data-i18n="reg_students_filter_all">
+                All Statuses
+              </option>
+              <option value="Active">Active</option>
+              <option value="Pending">Pending</option>
+              <option value="Graduated">Graduated</option>
+              <option value="Transferred - Pending">
+                Transferred - Pending
+              </option>
+              <option value="Transferred - Completed">
+                Transferred - Completed
+              </option>
+            </select>
+            <select
+              id="student_registry_grade"
+              onchange="loadStudentRegistry()"
+            >
+              <option value="" data-i18n="reg_students_filter_all_grades">
+                All Grades
+              </option>
+              <option value="9">Grade 9</option>
+              <option value="10">Grade 10</option>
+              <option value="11">Grade 11</option>
+              <option value="12">Grade 12</option>
+            </select>
+            <button type="button" onclick="loadStudentRegistry()">
+              <span data-i18n="reg_search_button">Search</span>
+            </button>
+          </div>
+
+          <div id="student-registry-list">
+            <p class="muted">Loading...</p>
+          </div>
+        </div>
+
         <div id="transfer-hub" class="tab-content">
           <h1 data-i18n="reg_transfer_heading">Transfer Navigation Hub</h1>
 
@@ -379,27 +616,15 @@
 
           <div id="transfer-outgoing-pane" style="margin-top: 20px">
             <h3 data-i18n="reg_outgoing_start_heading">
-              Start an Outgoing Transfer
+              Approved Transfers Waiting to Clear
             </h3>
-            <p class="muted">
-              Generates a secure Transfer Code to hand off to the receiving
-              school. The student is marked "Transferred - Pending" here until
-              the code is used or cancelled.
+            <p class="muted" data-i18n="reg_outgoing_start_desc">
+              Only students with a Principal-approved transfer request appear
+              here. Generating a code marks the student "Transferred" until the
+              receiving school uses it, or you cancel it below.
             </p>
-            <div class="search-box">
-              <input
-                type="text"
-                id="out_student_id"
-                data-i18n-placeholder="reg_out_student_placeholder"
-                placeholder="Student ID to transfer out..."
-              />
-              <button
-                type="button"
-                onclick="startOutgoingTransfer()"
-                data-i18n="reg_generate_code"
-              >
-                Generate Transfer Code
-              </button>
+            <div id="approved-transfer-requests-list">
+              <p class="muted" data-i18n="reg_loading">Loading...</p>
             </div>
             <div id="outgoing-code-result"></div>
 
@@ -543,6 +768,7 @@
             </button>
           </div>
           <div id="doc-student-info"></div>
+          <div id="doc-grade-history"></div>
           <div
             id="doc-student-actions"
             style="display: none"
@@ -715,7 +941,25 @@
             random and as even as possible across whichever sections are active
             for that grade and stream.
           </p>
-          <p>
+
+          <h3 data-i18n="reg_placement_registered_heading">
+            Registered So Far
+          </h3>
+          <div id="placement-registered-list">
+            <p class="muted">Loading...</p>
+          </div>
+
+          <h3
+            data-i18n="reg_placement_promoted_heading"
+            style="margin-top: 20px"
+          >
+            Promoted Students
+          </h3>
+          <div id="placement-promoted-list">
+            <p class="muted">Loading...</p>
+          </div>
+
+          <p style="margin-top: 20px">
             <strong><span id="placement-total">0</span></strong> student(s)
             waiting for placement across all grades.
             <button
@@ -840,6 +1084,164 @@
       >
         Back to Portal
       </button>
+    </div>
+
+    <div id="student-history-modal" class="modal-overlay" style="display: none">
+      <div
+        class="modal-box"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="student-history-heading"
+      >
+        <button
+          class="modal-close-btn"
+          data-i18n-aria="reg_close_aria"
+          aria-label="Close"
+          onclick="closeStudentHistory()"
+        >
+          &times;
+        </button>
+        <h2 id="student-history-heading" data-i18n="reg_history_heading">
+          Student History
+        </h2>
+        <div id="student-history-body">
+          <p class="muted">Loading...</p>
+        </div>
+      </div>
+    </div>
+
+    <div
+      id="profile-settings-modal"
+      class="modal-overlay"
+      style="display: none"
+    >
+      <div
+        class="modal-box"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="profile-settings-heading"
+      >
+        <button
+          class="modal-close-btn"
+          data-i18n-aria="reg_close_aria"
+          aria-label="Close"
+          onclick="closeProfileSettings()"
+        >
+          &times;
+        </button>
+        <h2
+          id="profile-settings-heading"
+          data-i18n="reg_profile_settings_heading"
+        >
+          Profile Settings
+        </h2>
+
+        <div class="profile-settings-section">
+          <h3 data-i18n="reg_profile_picture_heading">Profile Picture</h3>
+          <img
+            id="settings-avatar-preview"
+            class="settings-avatar-preview"
+            src=""
+            alt="Profile picture"
+            width="140"
+            height="140"
+            decoding="async"
+          />
+          <div class="file-upload-row">
+            <label class="file-upload-btn" for="settings-avatar-input">
+              <span aria-hidden="true">📷</span>
+              <span data-i18n="reg_choose_photo">Choose Photo</span>
+            </label>
+            <span
+              id="settings-avatar-filename"
+              class="file-upload-filename"
+              data-i18n="reg_no_file_chosen"
+              >No file chosen</span
+            >
+            <input
+              type="file"
+              id="settings-avatar-input"
+              class="file-upload-input"
+              accept="image/*"
+              onchange="uploadRegistrarAvatar(this)"
+            />
+          </div>
+        </div>
+
+        <div class="profile-settings-section">
+          <h3 data-i18n="reg_signature_heading">Registrar Signature</h3>
+          <p class="muted" data-i18n="reg_signature_note">
+            Used on documents you issue as Registrar — kept separate from any
+            homeroom teacher signature, since the two serve different documents.
+          </p>
+          <img
+            id="settings-signature-preview"
+            class="settings-signature-preview"
+            src=""
+            alt="Registrar signature"
+            width="140"
+            height="140"
+            decoding="async"
+            style="display: none"
+          />
+          <p id="settings-signature-status" class="muted"></p>
+          <div class="file-upload-row">
+            <label class="file-upload-btn" for="settings-signature-input">
+              <span aria-hidden="true">✍️</span>
+              <span data-i18n="reg_choose_file">Choose File</span>
+            </label>
+            <span
+              id="settings-signature-filename"
+              class="file-upload-filename"
+              data-i18n="reg_no_file_chosen"
+              >No file chosen</span
+            >
+            <input
+              type="file"
+              id="settings-signature-input"
+              class="file-upload-input"
+              accept="image/*"
+              onchange="uploadRegistrarSignature(this)"
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div
+      id="toast-container"
+      class="toast-container"
+      aria-live="polite"
+      aria-atomic="true"
+    ></div>
+
+    <div id="confirm-modal" class="modal-overlay" style="display: none">
+      <div
+        class="modal-box confirm-box"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="confirm-modal-message"
+      >
+        <p id="confirm-modal-message" class="confirm-message"></p>
+        <div class="confirm-actions">
+          <button
+            type="button"
+            id="confirm-modal-cancel"
+            class="confirm-btn confirm-btn-secondary"
+            data-i18n="reg_confirm_cancel"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            id="confirm-modal-ok"
+            class="confirm-btn confirm-btn-danger"
+            data-i18n="reg_confirm_yes"
+          >
+            Yes, Continue
+          </button>
+        </div>
+      </div>
     </div>
 
     <script src="app.js"></script>

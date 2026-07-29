@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>School Admin Portal</title>
     <link rel="stylesheet" href="styles.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.0.3/qrcode.min.js"></script>
   </head>
   <body>
     <div class="dashboard-container">
@@ -95,6 +96,19 @@
             data-i18n="sa_nav_section_academic"
           >
             Academics
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="student-absence-escalations"
+              data-titles="Academic VP"
+            >
+              <span class="nav-icon">📝</span
+              ><span data-i18n="sa_nav_student_absence_escalations"
+                >Escalated Student Absences</span
+              ></a
+            >
           </li>
           <li>
             <a
@@ -279,11 +293,28 @@
               ><span data-i18n="sa_nav_profile">My Profile</span></a
             >
           </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="id-card"
+              data-titles="Principal,Admin VP,Academic VP"
+            >
+              <span class="nav-icon">🪪</span
+              ><span data-i18n="sa_nav_id_card">My ID Card</span></a
+            >
+          </li>
         </ul>
 
         <div class="sidebar-footer">
-          <div class="sidebar-title-badge">
-            🎖️ <span id="sa-title-badge">—</span>
+          <div class="sidebar-account-badge">
+            <div class="sidebar-account-title">
+              🎖️ <span id="sa-title-badge">—</span>
+            </div>
+            <div class="sidebar-account-id">
+              <span data-i18n="sa_nav_id_label">ID</span>
+              <span id="sa-nav-admin-id">—</span>
+            </div>
           </div>
           <a href="#" class="logout-btn" id="sa-logout-btn"
             >🚪 <span data-i18n="sa_logout">Logout</span></a
@@ -301,13 +332,28 @@
           >
             ☰
           </button>
-          <h1
-            class="page-title-text"
-            id="sa-page-title"
-            data-i18n="sa_nav_dashboard"
-          >
-            Dashboard
-          </h1>
+          <div class="top-bar-titlegroup">
+            <h1
+              class="page-title-text"
+              id="sa-page-title"
+              data-i18n="sa_nav_dashboard"
+            >
+              Dashboard
+            </h1>
+            <div class="topbar-school-meta">
+              <span class="topbar-meta-chip" id="topbar-school-name">—</span>
+              <span
+                class="topbar-meta-chip topbar-meta-chip-moe"
+                id="topbar-moe-code"
+                >MOE —</span
+              >
+              <span
+                class="topbar-meta-chip topbar-semester-chip"
+                id="topbar-semester-chip"
+                >—</span
+              >
+            </div>
+          </div>
           <div class="top-search">
             <span>🔎</span>
             <input
@@ -354,7 +400,8 @@
             </button>
             <div class="topbar-profile">
               <div class="topbar-profile-avatar" id="sa-avatar-initials">
-                --
+                <span id="sa-avatar-initials-text">--</span>
+                <img id="sa-avatar-img" style="display: none" alt="" />
               </div>
               <div>
                 <div class="topbar-profile-name" id="sa-profile-name">—</div>
@@ -387,92 +434,24 @@
             from here to assign the teaching load.
           </p>
 
-          <div class="tab-row">
-            <button
-              class="tab-btn active"
-              data-tab="incoming-teachers"
-              data-i18n="sa_tab_incoming_teachers"
-            >
-              Incoming from Zonal
-            </button>
-            <button
-              class="tab-btn"
-              data-tab="direct-hire"
-              data-i18n="sa_tab_direct_hire"
-            >
-              Direct Local Hire
-            </button>
-          </div>
-
-          <div id="tab-incoming-teachers" class="tab-panel">
-            <p class="page-subtitle" data-i18n="sa_incoming_teachers_sub">
-              Teachers a Zonal Admin has registered and sent to your school.
-              Accept to mint their Teacher ID and set their login, or decline if
-              this isn't the right school.
-            </p>
-            <div class="widget">
-              <div class="data-table-wrap">
-                <table class="data-table">
-                  <thead>
-                    <tr>
-                      <th data-i18n="sa_col_name">Name</th>
-                      <th data-i18n="sa_col_contact">Contact</th>
-                      <th data-i18n="sa_col_status">Status</th>
-                      <th data-i18n="sa_col_action">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody id="sa-incoming-teachers-tbody"></tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-
-          <div id="tab-direct-hire" class="tab-panel" style="display: none">
-            <div class="widget" style="margin-bottom: 18px; max-width: 640px">
-              <h3 data-i18n="sa_teacher_setup_heading">Onboard a Teacher</h3>
-              <div class="form-row">
-                <div class="form-group">
-                  <label data-i18n="sa_first_name_label">First Name</label>
-                  <input type="text" id="ts-first-name" />
-                </div>
-                <div class="form-group">
-                  <label data-i18n="sa_last_name_label">Last Name</label>
-                  <input type="text" id="ts-last-name" />
-                </div>
-              </div>
-              <div class="form-row">
-                <div class="form-group">
-                  <label data-i18n="sa_middle_name_label"
-                    >Middle Name (optional)</label
-                  >
-                  <input type="text" id="ts-middle-name" />
-                </div>
-                <div class="form-group">
-                  <label data-i18n="sa_contact_number_label"
-                    >Contact Number</label
-                  >
-                  <input type="text" id="ts-contact-number" />
-                </div>
-              </div>
-              <div class="form-row">
-                <div class="form-group">
-                  <label data-i18n="sa_email_label">Email (optional)</label>
-                  <input type="email" id="ts-email" />
-                </div>
-                <div class="form-group">
-                  <label data-i18n="sa_temp_password_label"
-                    >Temporary Password</label
-                  >
-                  <input type="text" id="ts-password" />
-                </div>
-              </div>
-              <button
-                class="btn btn-accent"
-                id="teacher-setup-btn"
-                data-i18n="sa_onboard_btn"
-              >
-                Onboard Teacher
-              </button>
+          <p class="page-subtitle" data-i18n="sa_incoming_teachers_sub">
+            Teachers a Zonal Admin has registered and sent to your school.
+            Accept to mint their Teacher ID and set their login, or decline if
+            this isn't the right school.
+          </p>
+          <div class="widget" style="margin-bottom: 18px">
+            <div class="data-table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="sa_col_name">Name</th>
+                    <th data-i18n="sa_col_contact">Contact</th>
+                    <th data-i18n="sa_col_status">Status</th>
+                    <th data-i18n="sa_col_action">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="sa-incoming-teachers-tbody"></tbody>
+              </table>
             </div>
           </div>
 
@@ -630,56 +609,51 @@
         <!-- ===================== ABSENCE REQUESTS (Admin VP) ===================== -->
         <section class="page-content" id="page-absence">
           <h2 data-i18n="sa_nav_absence">Absence Requests</h2>
-          <p class="page-subtitle" data-i18n="sa_absence_sub">
-            Requests up to 5 days are yours to decide. Longer ones go straight
-            to the Principal.
+          <p class="page-subtitle" data-i18n="sa_absence_sub_admin">
+            Teacher absence requests beyond a homeroom's own authority.
           </p>
-          <div class="tab-row">
-            <button
-              class="tab-btn active"
-              data-tab="teacher-absence"
-              data-i18n="sa_tab_teacher_requests"
-            >
-              Teacher Requests
-            </button>
-            <button
-              class="tab-btn"
-              data-tab="student-absence"
-              data-i18n="sa_tab_student_requests"
-            >
-              Student Escalations
-            </button>
+          <div class="data-table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th data-i18n="sa_col_teacher">Teacher</th>
+                  <th data-i18n="sa_col_dates">Dates</th>
+                  <th data-i18n="sa_col_reason">Reason</th>
+                  <th data-i18n="sa_col_action">Action</th>
+                </tr>
+              </thead>
+              <tbody id="sa-teacher-absence-tbody"></tbody>
+            </table>
           </div>
-          <div id="tab-teacher-absence" class="tab-panel">
-            <div class="data-table-wrap">
-              <table class="data-table">
-                <thead>
-                  <tr>
-                    <th data-i18n="sa_col_teacher">Teacher</th>
-                    <th data-i18n="sa_col_dates">Dates</th>
-                    <th data-i18n="sa_col_reason">Reason</th>
-                    <th data-i18n="sa_col_action">Action</th>
-                  </tr>
-                </thead>
-                <tbody id="sa-teacher-absence-tbody"></tbody>
-              </table>
-            </div>
-          </div>
-          <div id="tab-student-absence" class="tab-panel" style="display: none">
-            <div class="data-table-wrap">
-              <table class="data-table">
-                <thead>
-                  <tr>
-                    <th data-i18n="sa_col_student">Student</th>
-                    <th data-i18n="sa_col_class">Class</th>
-                    <th data-i18n="sa_col_dates">Dates</th>
-                    <th data-i18n="sa_col_reason">Reason</th>
-                    <th data-i18n="sa_col_action">Action</th>
-                  </tr>
-                </thead>
-                <tbody id="sa-student-absence-tbody"></tbody>
-              </table>
-            </div>
+        </section>
+
+        <!-- ===================== ESCALATED STUDENT ABSENCES (Academic VP) ===================== -->
+        <section class="page-content" id="page-student-absence-escalations">
+          <h2 data-i18n="sa_nav_student_absence_escalations">
+            Escalated Student Absences
+          </h2>
+          <p
+            class="page-subtitle"
+            data-i18n="sa_student_absence_escalations_sub"
+          >
+            Student absence requests a homeroom teacher couldn't approve on
+            their own (longer than their authority allows). Approving here means
+            it won't count against the student's attendance record and will show
+            up on the Principal's dashboard as a student on leave.
+          </p>
+          <div class="data-table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th data-i18n="sa_col_student">Student</th>
+                  <th data-i18n="sa_col_class">Class</th>
+                  <th data-i18n="sa_col_dates">Dates</th>
+                  <th data-i18n="sa_col_reason">Reason</th>
+                  <th data-i18n="sa_col_action">Action</th>
+                </tr>
+              </thead>
+              <tbody id="sa-student-absence-tbody"></tbody>
+            </table>
           </div>
         </section>
 
@@ -692,22 +666,38 @@
           <div class="widget" style="margin-bottom: 18px">
             <div class="form-row">
               <div class="form-group">
-                <label data-i18n="sa_class_level_label">Class Level</label
-                ><input type="text" id="tt-class-level" placeholder="10" />
+                <label data-i18n="sa_class_level_label">Class Level</label>
+                <select id="tt-class-level">
+                  <option value="" data-i18n="sa_select_class_level">
+                    Select class level...
+                  </option>
+                  <option value="9">9</option>
+                  <option value="10">10</option>
+                  <option value="11">11</option>
+                  <option value="12">12</option>
+                </select>
               </div>
               <div class="form-group">
-                <label data-i18n="sa_section_label">Section</label
-                ><input type="text" id="tt-section" placeholder="A" />
+                <label data-i18n="sa_section_label">Section</label>
+                <select id="tt-section">
+                  <option value="" data-i18n="sa_select_section">
+                    Select section...
+                  </option>
+                  <option value="A">A</option>
+                  <option value="B">B</option>
+                  <option value="C">C</option>
+                  <option value="D">D</option>
+                </select>
               </div>
             </div>
             <div class="form-row">
               <div class="form-group">
-                <label data-i18n="sa_stream_label">Stream</label
-                ><input
-                  type="text"
-                  id="tt-stream"
-                  placeholder="Natural Science"
-                />
+                <label data-i18n="sa_stream_label">Stream</label>
+                <select id="tt-stream" disabled>
+                  <option value="" data-i18n="sa_select_class_level">
+                    Select class level...
+                  </option>
+                </select>
               </div>
               <div class="form-group" style="align-self: end">
                 <button
@@ -780,9 +770,11 @@
           </div>
         </section>
 
-        <!-- ===================== TEACHING ASSIGNMENTS, Stage 2 (Academic VP) ===================== -->
+        <!-- ===================== SUBJECT & TEACHING ASSIGNMENT, Stage 2 (Academic VP) ===================== -->
         <section class="page-content" id="page-teacher-assignments">
-          <h2 data-i18n="sa_nav_teacher_assignments">Teaching Assignments</h2>
+          <h2 data-i18n="sa_nav_teacher_assignments">
+            Subject &amp; Teaching Assignment
+          </h2>
           <p class="page-subtitle" data-i18n="sa_teacher_assignments_sub">
             Stage 2 of 2: map each onboarded teacher onto subjects, classes, and
             sections.
@@ -794,29 +786,66 @@
             style="margin-bottom: 18px; max-width: 640px"
           >
             <h3 data-i18n="sa_ta_assign_heading">Assign Teaching Load</h3>
+            <div class="form-group">
+              <label data-i18n="sa_teacher_search_label">Teacher ID</label>
+              <div style="display: flex; gap: 6px">
+                <input
+                  type="text"
+                  id="ta-teacher-search"
+                  data-i18n-placeholder="sa_teacher_search_placeholder"
+                  placeholder="Type or search Teacher ID..."
+                />
+                <button
+                  type="button"
+                  class="btn btn-ghost btn-sm"
+                  id="ta-teacher-search-btn"
+                  data-i18n="sa_teacher_search_btn"
+                >
+                  Find
+                </button>
+              </div>
+              <div id="ta-teacher-search-results"></div>
+              <input type="hidden" id="ta-teacher-select" />
+            </div>
             <div class="form-row">
               <div class="form-group">
-                <label data-i18n="sa_teacher_label">Teacher</label>
-                <select id="ta-teacher-select"></select>
+                <label data-i18n="sa_class_level_label">Class Level</label>
+                <select id="ta-class-level">
+                  <option value="" data-i18n="sa_select_class_level">
+                    Select class level...
+                  </option>
+                  <option value="9">9</option>
+                  <option value="10">10</option>
+                  <option value="11">11</option>
+                  <option value="12">12</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label data-i18n="sa_section_label">Section</label>
+                <select id="ta-section">
+                  <option value="" data-i18n="sa_select_section">
+                    Select section...
+                  </option>
+                  <option value="A">A</option>
+                  <option value="B">B</option>
+                  <option value="C">C</option>
+                  <option value="D">D</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label data-i18n="sa_stream_label">Stream</label>
+                <select id="ta-stream" disabled>
+                  <option value="" data-i18n="sa_select_class_level">
+                    Select class level...
+                  </option>
+                </select>
               </div>
               <div class="form-group">
                 <label data-i18n="sa_subject_label">Subject</label>
                 <select id="ta-subject-select"></select>
               </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
-                <label data-i18n="sa_class_level_label">Class Level</label>
-                <input type="text" id="ta-class-level" placeholder="e.g. 9" />
-              </div>
-              <div class="form-group">
-                <label data-i18n="sa_section_label">Section</label>
-                <input type="text" id="ta-section" placeholder="e.g. A" />
-              </div>
-            </div>
-            <div class="form-group">
-              <label data-i18n="sa_stream_label">Stream (optional)</label>
-              <input type="text" id="ta-stream" />
             </div>
             <button
               class="btn btn-accent"
@@ -843,6 +872,8 @@
                     <th data-i18n="sa_col_teacher">Teacher</th>
                     <th data-i18n="sa_col_subject">Subject</th>
                     <th data-i18n="sa_col_class">Class</th>
+                    <th data-i18n="sa_col_section">Section</th>
+                    <th data-i18n="sa_col_stream">Stream</th>
                     <th data-i18n="sa_col_action">Action</th>
                   </tr>
                 </thead>
@@ -853,29 +884,123 @@
 
           <div
             class="widget"
+            id="subject-config-widget"
+            style="margin-top: 18px; max-width: 640px"
+          >
+            <h3 data-i18n="sa_subject_config_heading">Subject Configuration</h3>
+            <p class="form-hint" data-i18n="sa_subject_config_hint">
+              Register the subjects this school actually teaches, tagged by
+              stream, so they show up when assigning teaching load or building
+              the timetable. Not every school teaches every subject — configure
+              only what applies here.
+            </p>
+            <div class="form-row">
+              <div class="form-group">
+                <label data-i18n="sa_subject_name_label">Subject Name</label>
+                <input type="text" id="subj-name" />
+              </div>
+              <div class="form-group">
+                <label data-i18n="sa_stream_label">Stream</label>
+                <select id="subj-stream">
+                  <option value="" data-i18n="sa_select_stream">
+                    Select stream...
+                  </option>
+                  <option value="General" data-i18n="sa_stream_general">
+                    General
+                  </option>
+                  <option value="Natural" data-i18n="sa_stream_natural">
+                    Natural Science
+                  </option>
+                  <option value="Social" data-i18n="sa_stream_social">
+                    Social Science
+                  </option>
+                  <option value="ALL" data-i18n="sa_stream_all">
+                    All Streams
+                  </option>
+                </select>
+              </div>
+            </div>
+            <button
+              class="btn btn-accent"
+              id="subj-add-btn"
+              data-i18n="sa_add_subject_btn"
+            >
+              Add Subject
+            </button>
+            <div class="data-table-wrap" style="margin-top: 14px">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="sa_col_subject">Subject</th>
+                    <th data-i18n="sa_col_stream">Stream</th>
+                    <th data-i18n="sa_col_action">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="sa-subject-config-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div
+            class="widget"
             id="hr-assign-form"
             style="margin-top: 18px; margin-bottom: 18px; max-width: 640px"
           >
             <h3 data-i18n="sa_hr_assign_heading">Assign Homeroom</h3>
-            <div class="form-row">
-              <div class="form-group">
-                <label data-i18n="sa_teacher_label">Teacher</label>
-                <select id="hr-teacher-select"></select>
+            <div class="form-group">
+              <label data-i18n="sa_teacher_search_label">Teacher ID</label>
+              <div style="display: flex; gap: 6px">
+                <input
+                  type="text"
+                  id="hr-teacher-search"
+                  data-i18n-placeholder="sa_teacher_search_placeholder"
+                  placeholder="Type or search Teacher ID..."
+                />
+                <button
+                  type="button"
+                  class="btn btn-ghost btn-sm"
+                  id="hr-teacher-search-btn"
+                  data-i18n="sa_teacher_search_btn"
+                >
+                  Find
+                </button>
               </div>
-              <div class="form-group">
-                <label data-i18n="sa_class_level_label">Class Level</label>
-                <input type="text" id="hr-class-level" placeholder="e.g. 9" />
-              </div>
+              <div id="hr-teacher-search-results"></div>
+              <input type="hidden" id="hr-teacher-select" />
             </div>
             <div class="form-row">
               <div class="form-group">
-                <label data-i18n="sa_section_label">Section</label>
-                <input type="text" id="hr-section" placeholder="e.g. A" />
+                <label data-i18n="sa_class_level_label">Class Level</label>
+                <select id="hr-class-level">
+                  <option value="" data-i18n="sa_select_class_level">
+                    Select class level...
+                  </option>
+                  <option value="9">9</option>
+                  <option value="10">10</option>
+                  <option value="11">11</option>
+                  <option value="12">12</option>
+                </select>
               </div>
               <div class="form-group">
-                <label data-i18n="sa_stream_label">Stream (optional)</label>
-                <input type="text" id="hr-stream" />
+                <label data-i18n="sa_section_label">Section</label>
+                <select id="hr-section">
+                  <option value="" data-i18n="sa_select_section">
+                    Select section...
+                  </option>
+                  <option value="A">A</option>
+                  <option value="B">B</option>
+                  <option value="C">C</option>
+                  <option value="D">D</option>
+                </select>
               </div>
+            </div>
+            <div class="form-group">
+              <label data-i18n="sa_stream_label">Stream</label>
+              <select id="hr-stream" disabled>
+                <option value="" data-i18n="sa_select_class_level">
+                  Select class level...
+                </option>
+              </select>
             </div>
             <button
               class="btn btn-accent"
@@ -1252,6 +1377,8 @@
                     <th data-i18n="sa_col_student_id">ID</th>
                     <th data-i18n="sa_col_name">Name</th>
                     <th data-i18n="sa_col_class">Class</th>
+                    <th data-i18n="sa_col_section">Section</th>
+                    <th data-i18n="sa_col_stream">Stream</th>
                     <th data-i18n="sa_col_status">Status</th>
                   </tr>
                 </thead>
@@ -1269,6 +1396,37 @@
               Students who've asked to transfer out. Approve to send this to the
               Registrar to clear and issue a transfer code, or reject.
             </p>
+
+            <div class="widget" style="margin-bottom: 18px; max-width: 560px">
+              <h3 data-i18n="sa_initiate_transfer_heading">
+                Initiate Transfer
+              </h3>
+              <p class="form-hint" data-i18n="sa_initiate_transfer_hint">
+                Enter a student ID to transfer them out directly — this skips
+                the request step and goes straight to the Registrar to clear and
+                issue a transfer code.
+              </p>
+              <div class="form-row">
+                <div class="form-group">
+                  <label data-i18n="sa_student_id_label">Student ID</label>
+                  <input
+                    type="text"
+                    id="direct-transfer-student-id"
+                    placeholder="e.g. STU00042"
+                  />
+                </div>
+                <div class="form-group" style="align-self: end">
+                  <button
+                    class="btn btn-accent"
+                    id="direct-transfer-btn"
+                    data-i18n="sa_transfer_btn"
+                  >
+                    Transfer
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <div class="data-table-wrap">
               <table class="data-table">
                 <thead>
@@ -1339,7 +1497,8 @@
           <h2 data-i18n="sa_nav_messages">Messages</h2>
           <p class="page-subtitle" data-i18n="sa_messages_sub">
             Message teachers, fellow admins in your school, or escalate to your
-            Zonal Admin.
+            Zonal Admin. Messages teachers send to your role show up under "From
+            Teachers".
           </p>
 
           <div class="widget" style="margin-bottom: 18px; max-width: 640px">
@@ -1404,6 +1563,18 @@
               >
                 Sent
               </button>
+              <button
+                class="btn btn-ghost btn-sm"
+                id="msg-box-teachers-btn"
+                data-i18n="sa_teacher_requests_btn"
+              >
+                From Teachers
+                <span
+                  class="badge-dot"
+                  id="sa-teacher-threads-badge"
+                  style="display: none; position: static; margin-left: 6px"
+                ></span>
+              </button>
             </div>
             <div id="sa-messages-list"></div>
           </div>
@@ -1412,65 +1583,325 @@
         <!-- ===================== PROFILE ===================== -->
         <section class="page-content" id="page-profile">
           <h2 data-i18n="sa_nav_profile">My Profile</h2>
-          <div class="widget" style="max-width: 420px; margin-bottom: 18px">
-            <p>
-              <strong data-i18n="sa_profile_id_label">Admin ID:</strong>
-              <span id="profile-admin-id">—</span>
-            </p>
-            <p>
-              <strong data-i18n="sa_profile_title_label">Title:</strong>
-              <span id="profile-title">—</span>
-            </p>
-            <p>
-              <strong data-i18n="sa_profile_school_label">School:</strong>
-              <span id="profile-school-name">—</span>
-            </p>
+
+          <div class="profile-header-card">
+            <div class="profile-avatar-wrap">
+              <div class="profile-avatar-circle" id="profile-avatar-circle">
+                <span id="profile-avatar-initials-text">--</span>
+                <img id="profile-avatar-img" style="display: none" alt="" />
+              </div>
+              <label class="profile-avatar-edit-btn" for="profile-avatar-file"
+                >📷</label
+              >
+              <input
+                type="file"
+                id="profile-avatar-file"
+                accept="image/*"
+                style="display: none"
+              />
+            </div>
+            <div class="profile-header-info">
+              <div class="profile-header-name" id="profile-header-name">—</div>
+              <div class="profile-header-title" id="profile-header-title">
+                —
+              </div>
+              <div class="profile-id-chip">
+                <span data-i18n="sa_profile_id_label">Admin ID:</span>
+                <strong id="profile-admin-id">—</strong>
+              </div>
+            </div>
           </div>
 
-          <div class="widget" style="max-width: 420px">
-            <h3 data-i18n="sa_signature_suite_heading">
-              Digital Signature Suite
-            </h3>
-            <p class="form-hint" data-i18n="sa_signature_suite_hint">
-              Upload your official signature and stamp to digitally sign
-              administrative documents, letters, and certificates.
-            </p>
-            <div class="form-group">
-              <label data-i18n="sa_signature_label">Signature</label>
-              <div style="display: flex; align-items: center; gap: 10px">
-                <img
-                  id="profile-signature-preview"
-                  style="
-                    display: none;
-                    max-height: 48px;
-                    border: 1px solid var(--border);
-                    border-radius: 6px;
-                    background: #fff;
-                  "
-                />
-                <input
-                  type="file"
-                  id="profile-signature-file"
-                  accept="image/*"
-                />
+          <div class="widget-grid" style="margin-bottom: 18px">
+            <div class="widget">
+              <h3 data-i18n="sa_profile_details_heading">Account Details</h3>
+              <p>
+                <strong data-i18n="sa_profile_id_label">Admin ID:</strong>
+                <span id="profile-admin-id-2">—</span>
+              </p>
+              <p>
+                <strong data-i18n="sa_profile_title_label">Title:</strong>
+                <span id="profile-title">—</span>
+              </p>
+              <p>
+                <strong data-i18n="sa_profile_school_label">School:</strong>
+                <span id="profile-school-name">—</span>
+              </p>
+            </div>
+
+            <div class="widget">
+              <h3 data-i18n="sa_signature_suite_heading">
+                Digital Signature Suite
+              </h3>
+              <p class="form-hint" data-i18n="sa_signature_suite_hint">
+                Upload your official signature and stamp to digitally sign
+                administrative documents, letters, and certificates.
+              </p>
+              <div class="doc-upload-grid">
+                <div class="doc-upload-card">
+                  <label
+                    class="doc-upload-dropzone"
+                    for="profile-signature-file"
+                  >
+                    <img
+                      id="profile-signature-preview"
+                      class="doc-preview-img"
+                      style="display: none"
+                    />
+                    <span
+                      class="doc-upload-placeholder"
+                      id="profile-signature-placeholder"
+                    >
+                      <span class="doc-upload-icon">✍️</span>
+                      <span data-i18n="sa_upload_click_hint"
+                        >Click to upload</span
+                      >
+                    </span>
+                  </label>
+                  <div class="doc-upload-caption">
+                    <span data-i18n="sa_signature_label">Signature</span>
+                    <button
+                      type="button"
+                      class="btn btn-ghost btn-sm"
+                      onclick="
+                        document
+                          .getElementById('profile-signature-file')
+                          .click()
+                      "
+                      data-i18n="sa_upload_change_btn"
+                    >
+                      Change
+                    </button>
+                  </div>
+                  <input
+                    type="file"
+                    id="profile-signature-file"
+                    accept="image/*"
+                    style="display: none"
+                  />
+                </div>
+
+                <div class="doc-upload-card">
+                  <label class="doc-upload-dropzone" for="profile-stamp-file">
+                    <img
+                      id="profile-stamp-preview"
+                      class="doc-preview-img"
+                      style="display: none"
+                    />
+                    <span
+                      class="doc-upload-placeholder"
+                      id="profile-stamp-placeholder"
+                    >
+                      <span class="doc-upload-icon">🔖</span>
+                      <span data-i18n="sa_upload_click_hint"
+                        >Click to upload</span
+                      >
+                    </span>
+                  </label>
+                  <div class="doc-upload-caption">
+                    <span data-i18n="sa_stamp_label">Stamp</span>
+                    <button
+                      type="button"
+                      class="btn btn-ghost btn-sm"
+                      onclick="
+                        document.getElementById('profile-stamp-file').click()
+                      "
+                      data-i18n="sa_upload_change_btn"
+                    >
+                      Change
+                    </button>
+                  </div>
+                  <input
+                    type="file"
+                    id="profile-stamp-file"
+                    accept="image/*"
+                    style="display: none"
+                  />
+                </div>
               </div>
             </div>
-            <div class="form-group">
-              <label data-i18n="sa_stamp_label">Stamp</label>
-              <div style="display: flex; align-items: center; gap: 10px">
-                <img
-                  id="profile-stamp-preview"
-                  style="
-                    display: none;
-                    max-height: 48px;
-                    border: 1px solid var(--border);
-                    border-radius: 6px;
-                    background: #fff;
-                  "
-                />
-                <input type="file" id="profile-stamp-file" accept="image/*" />
+          </div>
+        </section>
+
+        <!-- ===================== ID CARD (mirrors the teacher portal's "My ID" design) ===================== -->
+        <section class="page-content" id="page-id-card">
+          <h2 data-i18n="sa_nav_id_card">My ID Card</h2>
+          <p class="page-subtitle" data-i18n="sa_id_card_sub">
+            Present this alongside a physical copy if required by school policy.
+          </p>
+
+          <div
+            id="idcard-error"
+            style="
+              display: none;
+              color: var(--danger);
+              font-size: 0.9rem;
+              margin-bottom: 16px;
+            "
+          ></div>
+
+          <div class="idcard-wrap" id="idcard-wrap" style="display: none">
+            <div class="idcard-scene">
+              <div class="idcard-flipper" id="idcard-flipper">
+                <div class="idcard-face idcard-front">
+                  <div class="idcard-front-top">
+                    <div class="idcard-front-top-content">
+                      <div class="idcard-logo-badge">
+                        <img src="/assets/images/gflag.jpg" alt="" />
+                      </div>
+                      <div class="idcard-brand-text">
+                        <div class="idcard-zone-line" id="idcard-zone-front">
+                          —
+                        </div>
+                        <div
+                          class="idcard-brand-school"
+                          id="idcard-woreda-front"
+                        >
+                          —
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="idcard-photo-ring">
+                    <img
+                      id="idcard-photo"
+                      src=""
+                      alt=""
+                      style="display: none"
+                      onerror="
+                        this.style.display = 'none';
+                        document.getElementById(
+                          'idcard-photo-placeholder',
+                        ).style.display = 'flex';
+                      "
+                    />
+                    <div
+                      id="idcard-photo-placeholder"
+                      class="idcard-photo-placeholder"
+                      aria-hidden="true"
+                    >
+                      <svg
+                        width="46"
+                        height="46"
+                        viewBox="0 0 24 24"
+                        fill="#8a6d8a"
+                      >
+                        <circle cx="12" cy="8" r="4" />
+                        <path d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7" />
+                      </svg>
+                    </div>
+                  </div>
+                  <div class="idcard-front-bottom">
+                    <div class="idcard-name" id="idcard-name">—</div>
+                    <div class="idcard-role">
+                      SCHOOL ADMINISTRATOR
+                      <span class="idcard-am">/ የትምህርት ቤት አስተዳዳሪ</span>
+                    </div>
+                    <div class="idcard-detail-rows">
+                      <div class="idcard-detail-row">
+                        <span class="idcard-detail-label"
+                          >ADMIN ID
+                          <span class="idcard-am">/ የአስተዳዳሪ መታወቂያ</span></span
+                        ><span id="idcard-admin-id">—</span>
+                      </div>
+                      <div class="idcard-detail-row">
+                        <span class="idcard-detail-label"
+                          >TITLE <span class="idcard-am">/ ማዕረግ</span></span
+                        ><span id="idcard-title-row">—</span>
+                      </div>
+                      <div class="idcard-detail-row">
+                        <span class="idcard-detail-label"
+                          >SCHOOL
+                          <span class="idcard-am">/ ትምህርት ቤት</span></span
+                        ><span id="idcard-school-name-front">—</span>
+                      </div>
+                      <div class="idcard-detail-row">
+                        <span class="idcard-detail-label"
+                          >VALID UNTIL
+                          <span class="idcard-am">/ የሚያገለግልበት</span></span
+                        ><span id="idcard-valid-until">—</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="idcard-face idcard-back">
+                  <div class="idcard-back-header">
+                    <div class="idcard-back-header-content">
+                      <div class="idcard-logo-badge">
+                        <img src="/assets/images/gflag.jpg" alt="" />
+                      </div>
+                      <div class="idcard-brand-text idcard-brand-text-dark">
+                        <div class="idcard-zone-line" id="idcard-zone-back">
+                          —
+                        </div>
+                        <div
+                          class="idcard-brand-school"
+                          id="idcard-woreda-back"
+                        >
+                          —
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="idcard-back-body">
+                    <div class="idcard-contact-title">
+                      CONTACT INFORMATION
+                      <span class="idcard-am">/ የመገኛ አድራሻ መረጃ</span>
+                    </div>
+                    <div class="idcard-contact-row">
+                      <span class="idcard-contact-label"
+                        >PHONE <span class="idcard-am">/ ስልክ</span></span
+                      ><span id="idcard-phone">—</span>
+                    </div>
+                    <div class="idcard-contact-row">
+                      <span class="idcard-contact-label"
+                        >EMAIL <span class="idcard-am">/ ኢሜይል</span></span
+                      ><span id="idcard-email">—</span>
+                    </div>
+                    <div class="idcard-contact-row">
+                      <span class="idcard-contact-label"
+                        >SCHOOL ADDRESS
+                        <span class="idcard-am">/ የትምህርት ቤት አድራሻ</span></span
+                      ><span id="idcard-address">—</span>
+                    </div>
+
+                    <div
+                      class="idcard-qrcode"
+                      id="idcard-qrcode"
+                      aria-hidden="true"
+                    ></div>
+
+                    <div class="idcard-signature">
+                      <div class="idcard-signature-line"></div>
+                      <div class="idcard-signature-label">
+                        HEAD OF EDUCATION
+                        <span class="idcard-am">/ የትምህርት ኃላፊ</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
+          </div>
+
+          <div class="idcard-actions" id="idcard-actions" style="display: none">
+            <button
+              type="button"
+              class="btn btn-primary"
+              onclick="flipIdCard()"
+              data-i18n="sa_idcard_flip"
+            >
+              Flip Card
+            </button>
+            <button
+              type="button"
+              class="btn btn-accent"
+              onclick="printIdCard()"
+              data-i18n="sa_idcard_print"
+            >
+              Print ID Card
+            </button>
           </div>
         </section>
       </div>

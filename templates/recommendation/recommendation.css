@@ -1,0 +1,456 @@
+/* Recommendation page styling */
+
+@page {
+  size: auto portrait;
+  margin: 0;
+}
+
+@media print {
+  @page {
+    size: auto portrait;
+    margin: 0;
+  }
+
+  html,
+  body {
+    width: 100%;
+    min-height: 100%;
+    margin: 0;
+    padding: 0;
+    background: white;
+    color: var(--ink);
+  }
+
+  body {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  .toolbar,
+  footer {
+    display: none !important;
+  }
+
+  .sheet {
+    width: 100%;
+    max-width: 100%;
+    margin: 0;
+    padding: 8mm 10mm;
+    background: white;
+    box-shadow: none;
+    page-break-after: avoid;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  .rec-head,
+  .semester-block,
+  .director-strip,
+  .rec-signrow,
+  .rec-lines {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  .rec-head {
+    padding-bottom: 0.4rem;
+  }
+
+  .rec-head .en {
+    font-size: 1.1rem;
+  }
+
+  .rec-sub,
+  .cap,
+  .sem-label .amh {
+    font-size: 0.7rem;
+    line-height: 1.25;
+  }
+
+  .semester-block {
+    margin-top: 0.55rem;
+    padding: 0.7rem 0.75rem;
+  }
+
+  .rec-lines {
+    margin: 0.6rem 0;
+    gap: 0.45rem;
+  }
+
+  .rline {
+    height: 1px;
+  }
+
+  .rule {
+    min-height: 1.35rem;
+  }
+
+  .seal-ring {
+    width: 64px;
+    min-height: 64px;
+    font-size: 0.86rem;
+  }
+}
+
+:root {
+  --ink:        oklch(0.26 0.012 250);
+  --ink-soft:   oklch(0.44 0.012 250);
+  --ink-faint:  oklch(0.60 0.010 250);
+  --paper:      oklch(0.985 0.006 95);
+  --paper-2:    oklch(0.965 0.008 95);
+  --line:       oklch(0.80 0.010 250);
+  --line-soft:  oklch(0.88 0.008 250);
+  --seal:       oklch(0.42 0.10 156);
+  --seal-deep:  oklch(0.34 0.09 156);
+  --accent-bg:  oklch(0.95 0.02 156);
+
+  --xs: 0.72rem;
+  --sm: 0.82rem;
+  --base: 0.94rem;
+  --lg: 1.15rem;
+
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s6: 24px;
+  --s8: 32px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: oklch(0.62 0.010 250);
+  font-family: "Noto Sans", "Noto Serif Ethiopic", system-ui, sans-serif;
+  color: var(--ink);
+  font-optical-sizing: auto;
+  -webkit-font-smoothing: antialiased;
+  padding: var(--s8) var(--s4);
+  line-height: 1.45;
+}
+
+.amh {
+  font-family: "Noto Serif Ethiopic", serif;
+}
+
+.toolbar {
+  max-width: 210mm;
+  margin: 0 auto var(--s6);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+}
+
+.hint {
+  font-size: var(--sm);
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+
+.toolbar-actions button {
+  border: none;
+  border-radius: 999px;
+  padding: 0.9rem 1.2rem;
+  background: var(--seal);
+  color: var(--paper);
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 8px 20px oklch(0 0 0 / 0.12);
+}
+
+.toolbar-actions button:hover {
+  background: oklch(0.39 0.10 156);
+}
+
+@media print {
+  @page {
+    size: auto portrait;
+    margin: 0;
+  }
+
+  html,
+  body {
+    width: 100% !important;
+    min-height: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: white !important;
+    color: var(--ink) !important;
+  }
+
+  body {
+    print-color-adjust: exact !important;
+    -webkit-print-color-adjust: exact !important;
+  }
+
+  .toolbar,
+  footer {
+    display: none !important;
+  }
+
+  .sheet {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-height: auto !important;
+    margin: 0 !important;
+    padding: 8mm 10mm !important;
+    background: white !important;
+    color: var(--ink) !important;
+    box-shadow: none !important;
+    page-break-after: avoid !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  .rec-head,
+  .semester-block,
+  .director-strip,
+  .rec-signrow,
+  .rec-lines {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  .rec-head {
+    padding-bottom: 0.4rem !important;
+  }
+
+  .rec-head .en {
+    font-size: 1.1rem !important;
+  }
+
+  .rec-sub,
+  .cap,
+  .sem-label .amh {
+    font-size: 0.7rem !important;
+    line-height: 1.25 !important;
+  }
+
+  .semester-block {
+    margin-top: 0.55rem !important;
+    padding: 0.7rem 0.75rem !important;
+  }
+
+  .rec-lines {
+    margin: 0.6rem 0 !important;
+    gap: 0.45rem !important;
+  }
+
+  .rline {
+    height: 1px !important;
+  }
+
+  .rule {
+    min-height: 1.35rem !important;
+  }
+
+  .seal-ring {
+    width: 64px !important;
+    min-height: 64px !important;
+    font-size: 0.86rem !important;
+  }
+}
+
+.sheet {
+  margin: 0 auto var(--s8);
+  width: 210mm;
+  min-height: 297mm;
+  padding: 11mm 12mm 10mm;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 0 1px 2px oklch(0 0 0 / 0.16), 0 12px 40px oklch(0 0 0 / 0.28);
+  display: flex;
+  flex-direction: column;
+}
+
+.rec-head {
+  text-align: center;
+  padding-bottom: var(--s4);
+  border-bottom: 1px solid var(--line-soft);
+  display: grid;
+  gap: var(--s1);
+}
+
+.rec-head .amh {
+  font-size: 1.18rem;
+  font-weight: 700;
+  color: var(--seal-deep);
+}
+
+.rec-head .en {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--ink);
+  letter-spacing: 0.02em;
+}
+
+.rec-sub {
+  margin-top: var(--s1);
+  font-size: var(--sm);
+  color: var(--ink-soft);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.semester-block {
+  margin-top: var(--s6);
+  padding: var(--s4);
+  border: 1px solid var(--line-soft);
+  border-radius: 18px;
+  background: var(--paper-2);
+}
+
+.semester-block + .semester-block {
+  margin-top: var(--s4);
+}
+
+.sem-label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  font-size: var(--base);
+  font-weight: 700;
+  color: var(--seal-deep);
+}
+
+.sem-label .amh {
+  font-size: var(--xs);
+  font-weight: 500;
+  color: var(--ink-soft);
+}
+
+.rec-lines {
+  display: grid;
+  gap: var(--s3);
+  margin: var(--s4) 0;
+}
+
+.rline {
+  height: 1px;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.rec-signrow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s4);
+}
+
+.slot {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.rule {
+  min-height: 2.4rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.cap {
+  font-size: var(--xs);
+  color: var(--ink-soft);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.cap .amh {
+  display: block;
+  font-size: 0.82rem;
+  color: var(--ink-faint);
+  font-weight: 500;
+  margin-top: 0.2rem;
+}
+
+.director-strip {
+  margin-top: var(--s8);
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: var(--s4);
+  align-items: center;
+}
+
+.director-strip .slot {
+  text-align: center;
+}
+
+.sig-name {
+  min-height: 1.7rem;
+}
+
+.seal-slot {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.seal-plate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem;
+  background: oklch(0.95 0.01 250);
+  border-radius: 14px;
+}
+
+.qr-box {
+  width: 86px;
+  height: 86px;
+  background: white;
+  border: 1px solid var(--line-soft);
+  padding: 6px;
+  display: grid;
+  place-items: center;
+}
+
+.seal-label {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.qr-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: var(--s4);
+  padding: var(--s3);
+  background: oklch(0.98 0.005 250);
+  border-radius: 14px;
+}
+
+.qr-section .qr-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+
+.director-strip .rule {
+  border-bottom-color: var(--ink-soft);
+  min-height: 2.6rem;
+}
+
+.director-strip .cap {
+  font-size: var(--xs);
+  color: var(--ink-faint);
+}
+
+.director-strip .cap .amh {
+  color: var(--ink-soft);
+  font-weight: 500;
+}
