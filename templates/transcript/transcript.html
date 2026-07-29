@@ -24,14 +24,15 @@
 
       <!-- Photo + Student ID -->
       <div class="photo-wrap">
-        <div class="photo-box">Photo</div>
+        <div class="photo-box" id="photo-box">Photo</div>
         <div class="id-block">
           <div class="id-chip">
             <strong>Student ID:</strong>
-            <div
+            <span
+              id="f-student-id"
               class="underline-field"
               style="min-width: 120px; display: inline-block; margin-left: 8px"
-            ></div>
+            ></span>
           </div>
         </div>
       </div>
@@ -43,27 +44,47 @@
       <div class="info-section">
         <div>
           <strong>Student's Full Name:</strong>
-          <span class="underline-field long-field"></span>
+          <span id="f-student-name" class="underline-field long-field"></span>
         </div>
         <div>
           <strong>Stream:</strong>
-          <span class="underline-field" style="min-width: 160px"></span>
+          <span
+            id="f-stream"
+            class="underline-field"
+            style="min-width: 160px"
+          ></span>
         </div>
         <div>
           <strong>Sex:</strong>
-          <span class="underline-field" style="min-width: 80px"></span>
+          <span
+            id="f-sex"
+            class="underline-field"
+            style="min-width: 80px"
+          ></span>
           &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
           <strong>Age:</strong>
-          <span class="underline-field" style="min-width: 80px"></span>
+          <span
+            id="f-age"
+            class="underline-field"
+            style="min-width: 80px"
+          ></span>
           &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
           <strong>Program:</strong> <u>Regular</u>
         </div>
         <div>
           <strong>Date of Admission:</strong>
-          <span class="underline-field" style="min-width: 180px"></span>
+          <span
+            id="f-date-admission"
+            class="underline-field"
+            style="min-width: 180px"
+          ></span>
           &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
           <strong>Date of Leaving:</strong>
-          <span class="underline-field" style="min-width: 180px"></span>
+          <span
+            id="f-date-leaving"
+            class="underline-field"
+            style="min-width: 180px"
+          ></span>
         </div>
       </div>
 
@@ -76,10 +97,10 @@
             <th rowspan="3">Remark</th>
           </tr>
           <tr>
-            <td colspan="3">20___ E.C</td>
-            <td colspan="3">20___ E.C</td>
-            <td colspan="3">20___ E.C</td>
-            <td colspan="3">20___ E.C</td>
+            <td colspan="3" id="yr-header-9">20___ E.C</td>
+            <td colspan="3" id="yr-header-10">20___ E.C</td>
+            <td colspan="3" id="yr-header-11">20___ E.C</td>
+            <td colspan="3" id="yr-header-12">20___ E.C</td>
           </tr>
           <tr>
             <!-- 9th -->
@@ -112,311 +133,8 @@
             <th></th>
           </tr>
         </thead>
-        <tbody>
-          <tr>
-            <td class="subject-col">Nuer/Dha-Anywaa</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
-          <tr>
-            <td class="subject-col">Federal language</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
-          <tr>
-            <td class="subject-col">English</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
-          <tr>
-            <td class="subject-col">Mathematics</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
-          <tr>
-            <td class="subject-col">Physics</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
-          <tr>
-            <td class="subject-col">Chemistry</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
-          <tr>
-            <td class="subject-col">Biology</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
-          <tr>
-            <td class="subject-col">Economics</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
-          <tr>
-            <td class="subject-col">Geography</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
-          <tr>
-            <td class="subject-col">History</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
-          <tr>
-            <td class="subject-col">citizenship</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
-          <tr>
-            <td class="subject-col">Agriculture</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
-          <tr>
-            <td class="subject-col">ICT</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
-          <tr>
-            <td class="subject-col">Physical Education</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
-          <tr>
-            <td class="subject-col">Absent</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
-          <tr>
-            <td class="subject-col">conduct</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
-          <tr>
-            <td class="subject-col">Total</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
-          <tr>
-            <td class="subject-col">Average</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
-          <tr>
-            <td class="subject-col">Rank</td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-          </tr>
+        <tbody id="transcript-body">
+          <!-- filled by transcript.js -->
         </tbody>
       </table>
 
@@ -432,7 +150,11 @@
         <div class="sig-left">
           <div>
             <strong>Registrar</strong>
-            <span class="underline-field" style="min-width: 180px"></span>
+            <span
+              id="f-registrar-name"
+              class="underline-field"
+              style="min-width: 180px"
+            ></span>
           </div>
           <div>
             <strong>Sign</strong>
@@ -440,7 +162,11 @@
           </div>
           <div>
             <strong>Date</strong>
-            <span class="underline-field" style="min-width: 140px"></span>
+            <span
+              id="f-issue-date"
+              class="underline-field"
+              style="min-width: 140px"
+            ></span>
           </div>
         </div>
 
@@ -464,5 +190,9 @@
         </div>
       </div>
     </div>
+    <script>
+      const DATA = __TRANSCRIPT_DATA_JSON__;
+    </script>
+    <script src="transcript.js"></script>
   </body>
 </html>

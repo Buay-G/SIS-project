@@ -3,7 +3,7 @@
 // them shows the security intercept instead of opening the tab.
 // TODO: if the recorder/registrar split later covers more tabs (section
 // setup, transfers, template hub, etc.), add their tab IDs here.
-const REGISTRAR_ONLY_TABS = ['promotion', 'recorder-mgmt', 'section-setup', 'placement-wizard', 'documents', 'graduation-wizard'];
+const REGISTRAR_ONLY_TABS = ['promotion', 'recorder-mgmt', 'section-setup', 'placement-wizard', 'documents', 'templates', 'graduation-wizard'];
 
 let currentUser = null;
 
@@ -145,6 +145,10 @@ function applyRolePermissions() {
     const documentsNav = document.getElementById('nav-documents');
     if (documentsNav) {
         documentsNav.style.display = currentUser.is_registrar ? 'block' : 'none';
+    }
+    const templatesNav = document.getElementById('nav-templates');
+    if (templatesNav) {
+        templatesNav.style.display = currentUser.is_registrar ? 'block' : 'none';
     }
     // Student Registry — shared ground like Transfer Hub: a Recorder
     // handles day-to-day registration, so they can look students up too,
@@ -1004,7 +1008,7 @@ async function viewStudentHistory(student_id) {
     const body = document.getElementById('student-history-body');
     if (!modal || !body) return;
     body.innerHTML = '<p class="muted">Loading...</p>';
-    modal.style.display = 'block';
+    modal.style.display = 'flex';
     try {
         const res = await fetch(`http://localhost:3001/api/registrar/students/${encodeURIComponent(student_id)}/history`, { credentials: 'include' });
         const result = await res.json();
@@ -1343,8 +1347,8 @@ async function loadDocumentHistory(student_id) {
     }
 }
 
-async function previewReportCard(student_id) {
-    const preview = document.getElementById('doc-report-card-preview');
+async function previewReportCard(student_id, targetId) {
+    const preview = document.getElementById(targetId || 'doc-report-card-preview');
     preview.innerHTML = '<p class="muted">Loading...</p>';
     try {
         const res = await fetch(`http://localhost:3001/api/registrar/documents/report-card/${encodeURIComponent(student_id)}`, { credentials: 'include' });
@@ -1390,9 +1394,9 @@ function downloadReportCard(student_id) {
 }
 
 function previewTranscript(student_id) {
-    // The transcript is a rich, multi-page certificate rendered
-    // server-side (same generator the student self-service flow uses) —
-    // opened directly rather than re-rendered in a preview pane.
+    // The Grade 9-12 transcript is a rich, multi-page document rendered
+    // server-side from templates/transcript.html — opened directly
+    // rather than re-rendered in a preview pane.
     window.open(`http://localhost:3001/api/registrar/documents/transcript/${encodeURIComponent(student_id)}/pdf`, '_blank');
     setTimeout(loadIssuanceLog, 1500);
     setTimeout(() => loadDocumentHistory(student_id), 1500);
@@ -1402,6 +1406,26 @@ function downloadIdCard(student_id) {
     window.open(`http://localhost:3001/api/registrar/documents/id-card/${encodeURIComponent(student_id)}/docx`, '_blank');
     setTimeout(loadIssuanceLog, 1500);
     setTimeout(() => loadDocumentHistory(student_id), 1500);
+}
+
+// The design is real and renders server-side from
+// templates/recommendation.html — but there's no comment-capture
+// feature yet to source real per-student data from, so only the
+// sample ID has anything to show (the server returns a clear message
+// for any other student_id rather than a fake letter).
+async function previewRecommendationLetter(student_id) {
+    try {
+        const res = await fetch(`http://localhost:3001/api/registrar/documents/recommendation/${encodeURIComponent(student_id)}/preview`, { credentials: 'include' });
+        if (!res.ok) {
+            const result = await res.json().catch(() => ({}));
+            showAlert(result.error || t('reg_recommendation_coming_soon'));
+            return;
+        }
+        window.open(`http://localhost:3001/api/registrar/documents/recommendation/${encodeURIComponent(student_id)}/preview`, '_blank');
+    } catch (err) {
+        console.error(err);
+        showAlert(t('reg_server_error'));
+    }
 }
 
 async function loadIssuanceLog() {
@@ -1641,9 +1665,6 @@ document.addEventListener('click', (event) => {
 // their side) — this just displays whatever they've set.
 function applyProfileChrome() {
     if (!currentUser) return;
-
-    const schoolLogo = document.getElementById('sidebar-school-logo');
-    if (schoolLogo && currentUser.logo_url) schoolLogo.src = currentUser.logo_url;
 
     const schoolName = document.getElementById('sidebar-school-name');
     if (schoolName) schoolName.textContent = currentUser.school_name || '—';

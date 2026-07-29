@@ -2668,6 +2668,8 @@ app.get('/api/student/my-class-attendance', requireAuth, requireClassMonitor, as
 
 // --- Certificate PDF generation ---
 const CERTIFICATE_TEMPLATE_PATH = path.join(__dirname, 'templates', 'certificate.html');
+const TRANSCRIPT_TEMPLATE_PATH = path.join(__dirname, 'templates', 'transcript.html');
+const RECOMMENDATION_TEMPLATE_PATH = path.join(__dirname, 'templates', 'recommendation.html');
 
 // Approximate Ethiopian calendar year for display (e.g. "2017 E.C."),
 // derived from a Gregorian date. Ethiopian New Year falls around Sept
@@ -2747,6 +2749,63 @@ function renderCertificateHtml(data) {
     }).replace(/</g, '\\u003c');
     html = html.replace('__CERT_DATA_JSON__', dataJson);
 
+    return html;
+}
+
+// Inlines a template's own stylesheet as a <style> block in place of its
+// relative <link>, so page.setContent() (which has no base URL to
+// resolve a relative href against) still renders it styled.
+function inlineStylesheet(html, cssFilename, cssPath) {
+    const css = fs.readFileSync(cssPath, 'utf8');
+    const linkRe = new RegExp(`<link[^>]*href=["']${cssFilename}["'][^>]*>`);
+    return html.replace(linkRe, `<style>${css}</style>`);
+}
+
+// Same problem, same fix, for a template's own <script src="...">.
+function inlineScript(html, jsFilename, jsPath) {
+    const js = fs.readFileSync(jsPath, 'utf8');
+    const scriptRe = new RegExp(`<script[^>]*src=["']${jsFilename}["'][^>]*></script>`);
+    return html.replace(scriptRe, `<script>${js}</script>`);
+}
+
+// Fills templates/transcript.html — the 4-year (Grade 9-12) grid, as
+// opposed to certificate.html's single-year marks sheet. All row
+// building happens client-side in transcript.js; this just ships the
+// one JSON blob it reads from.
+function renderTranscriptHtml(data) {
+    let html = fs.readFileSync(TRANSCRIPT_TEMPLATE_PATH, 'utf8');
+    html = inlineStylesheet(html, 'transcript.css', path.join(__dirname, 'templates', 'transcript.css'));
+    const dataJson = JSON.stringify(data).replace(/</g, '\\u003c');
+    html = html.replace('__TRANSCRIPT_DATA_JSON__', dataJson);
+    html = inlineScript(html, 'transcript.js', path.join(__dirname, 'templates', 'transcript.js'));
+    return html;
+}
+
+// Fills templates/recommendation.html — the School's Recommendation
+// letter (principal sign-off + per-semester homeroom/parent comments).
+function renderRecommendationHtml(data) {
+    let html = fs.readFileSync(RECOMMENDATION_TEMPLATE_PATH, 'utf8');
+    html = inlineStylesheet(html, 'recommendation.css', path.join(__dirname, 'templates', 'recommendation.css'));
+    const tokens = {
+        __SCHOOL_NAME__: escapeHtml(data.school_name || 'School'),
+        __STUDENT_NAME__: escapeHtml(data.student_name),
+        __GRADE__: escapeHtml(data.grade),
+        __SECTION__: escapeHtml(data.section),
+        __STUDENT_ID__: escapeHtml(data.student_id),
+        __ACADEMIC_YEAR__: escapeHtml(data.academic_year || '—'),
+        __FIRST_SEMESTER_COMMENT__: escapeHtml(data.recommendation.first_semester_comment || ''),
+        __FIRST_HOMEROOM_TEACHER_NAME__: escapeHtml(data.recommendation.first_semester_home_room_teacher || ''),
+        __FIRST_PARENT_NAME__: escapeHtml(data.recommendation.first_semester_parent_name || ''),
+        __SECOND_SEMESTER_COMMENT__: escapeHtml(data.recommendation.second_semester_comment || ''),
+        __SECOND_HOMEROOM_TEACHER_NAME__: escapeHtml(data.recommendation.second_semester_home_room_teacher || ''),
+        __SECOND_PARENT_NAME__: escapeHtml(data.recommendation.second_semester_parent_name || '')
+    };
+    for (const [token, value] of Object.entries(tokens)) {
+        html = html.split(token).join(value);
+    }
+    const dataJson = JSON.stringify(data).replace(/</g, '\\u003c');
+    html = html.replace('__RECOMMENDATION_DATA__', dataJson);
+    html = inlineScript(html, 'recommedation.js', path.join(__dirname, 'templates', 'recommedation.js'));
     return html;
 }
 
@@ -5574,52 +5633,13 @@ app.get('/api/registrar/documents/history/:student_id', requireAuth, requireRegi
     }
 });
 
+// Report Card — a single grade/year's marks sheet, rendered from
+// templates/certificate.html (that template's own title is "Student's
+// Report Card"). Uses the latest COMPLETE year on file (both semesters
+// synced), same "latest" logic the Transcript route used to use before
+// the two were split apart — a report card for an in-progress year
+// isn't ready to issue until both semesters exist.
 app.get('/api/registrar/documents/report-card/:student_id/pdf', requireAuth, requireRegistrarOnly, async (req, res) => {
-    try {
-        const isSample = req.params.student_id === SAMPLE_STUDENT.student_id;
-        let student, reportData;
-        if (isSample) {
-            student = { ...SAMPLE_STUDENT, school_name: 'Newland High School (Sample)' };
-            reportData = [{ class_level: 10, section: 'A', stream: 'General', subjects: [{ subject_name: 'Sample Subject', semester_1: 88, semester_2: 91, year_average: 89.5 }], semester_1_average: 88, semester_2_average: 91, year_average: 89.5 }];
-        } else {
-            const [rows] = await pool.query('SELECT student_id, first_name, middle_name, last_name, school_name FROM students WHERE student_id = ? AND school_id = ?', [req.params.student_id, req.user.school_id]);
-            if (rows.length === 0) return res.status(404).json({ error: "Student not found in your school." });
-            student = rows[0];
-            reportData = await computeReportCardData(req.params.student_id, req.user.school_id);
-        }
-
-        const latestClassLevel = reportData.length > 0 ? reportData[reportData.length - 1].class_level : null;
-        const verify_code = isSample ? 'SAMPLE' : await logDocumentIssuance(req.user.school_id, req.params.student_id, 'report_card', req.user.user_id, latestClassLevel);
-        const html = renderReportCardHtml(student, reportData, verify_code);
-
-        const browser = await getBrowser();
-        const page = await browser.newPage();
-        try {
-            await page.setContent(html, { waitUntil: 'networkidle0' });
-            const pdfBuffer = await page.pdf({ printBackground: true, format: 'A4' });
-            res.setHeader('Content-Type', 'application/pdf');
-            res.setHeader('Content-Disposition', `attachment; filename="ReportCard-${req.params.student_id}.pdf"`);
-            res.send(pdfBuffer);
-        } finally {
-            await page.close();
-        }
-    } catch (err) {
-        console.error("/api/registrar/documents/report-card/pdf error:", err);
-        res.status(500).json({ error: "Could not generate the report card." });
-    }
-});
-
-// Official Transcript — reuses the exact same certificate template/
-// renderer the student self-service flow uses (renderCertificateHtml +
-// buildYearSummaries), just callable by the Registrar for any student
-// and without requiring the student to have separately requested +
-// received homeroom approval first, since the Registrar's own authority
-// to issue transcripts IS the approval. Each issuance is logged with its
-// own verify code (see /verify/document/:code) as the audit trail —
-// think of it as the "digital signature overlay": not a graphic
-// signature baked into the shared template file, but a per-issuance,
-// independently-verifiable record of who issued it and when.
-app.get('/api/registrar/documents/transcript/:student_id/pdf', requireAuth, requireRegistrarOnly, async (req, res) => {
     try {
         const isSample = req.params.student_id === SAMPLE_STUDENT.student_id;
 
@@ -5667,7 +5687,7 @@ app.get('/api/registrar/documents/transcript/:student_id/pdf', requireAuth, requ
             const homeroomTeacherName = homeroomRows.length > 0
                 ? [homeroomRows[0].first_name, homeroomRows[0].middle_name, homeroomRows[0].last_name].filter(Boolean).join(' ') : '';
 
-            verify_code = await logDocumentIssuance(req.user.school_id, req.params.student_id, 'transcript', req.user.user_id, latest.class_level);
+            verify_code = await logDocumentIssuance(req.user.school_id, req.params.student_id, 'report_card', req.user.user_id, latest.class_level);
             html = renderCertificateHtml({
                 school_name: s.school_name, region: s.region, zone: s.zone, woreda: s.woreda, town: s.woreda,
                 photo_html: buildPhotoHtml(s.id_photo_url), student_id: s.student_id,
@@ -5678,6 +5698,97 @@ app.get('/api/registrar/documents/transcript/:student_id/pdf', requireAuth, requ
                 subjects: latest.subjects.map(sub => ({ en: sub.subject_name, amh: null, s1: sub.semester_1, s2: sub.semester_2 })),
                 conduct: null, absent_days_s1: s1 ? s1.days_absent : null, absent_days_s2: s2 ? s2.days_absent : null,
                 rank: latest.rank, class_size: latest.class_size,
+                verify_url: `${req.protocol}://${req.get('host')}/verify/document/${verify_code}`
+            });
+        }
+
+        const browser = await getBrowser();
+        const page = await browser.newPage();
+        try {
+            await page.setContent(html, { waitUntil: 'networkidle0' });
+            const pdfBuffer = await page.pdf({ printBackground: true, preferCSSPageSize: true });
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `attachment; filename="ReportCard-${req.params.student_id}.pdf"`);
+            res.send(pdfBuffer);
+        } finally {
+            await page.close();
+        }
+    } catch (err) {
+        console.error("/api/registrar/documents/report-card/pdf error:", err);
+        res.status(500).json({ error: "Could not generate the report card." });
+    }
+});
+
+// Official Transcript — the full Grade 9-12 academic record, rendered
+// from templates/transcript.html (the four-year grid), as opposed to
+// Report Card above which is one year's marks sheet from
+// templates/certificate.html. Every COMPLETE year on file (both
+// semesters synced) gets a column; an in-progress year is left off
+// rather than shown half-filled. Each issuance is logged with its own
+// verify code (see /verify/document/:code) as the audit trail.
+app.get('/api/registrar/documents/transcript/:student_id/pdf', requireAuth, requireRegistrarOnly, async (req, res) => {
+    try {
+        const isSample = req.params.student_id === SAMPLE_STUDENT.student_id;
+
+        let html, verify_code;
+        if (isSample) {
+            verify_code = 'SAMPLE';
+            html = renderTranscriptHtml({
+                student_id: SAMPLE_STUDENT.student_id, student_name: 'Sample Student', sex: 'Female', stream: 'General',
+                age: '17', date_of_admission: '—', date_of_leaving: '—',
+                registrar_name: [req.user.first_name, req.user.last_name].filter(Boolean).join(' ') || 'Registrar',
+                issue_date: new Date().toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' }),
+                years: [
+                    { class_level: 9, ec_year: String(approximateEthiopianYear(new Date()) - 3), subjects: [{ name: 'English', s1: 82, s2: 85 }, { name: 'Mathematics', s1: 88, s2: 91 }], total_s1: 170, total_s2: 176, avg_s1: 85, avg_s2: 88, avg_year: 86.5, days_absent_s1: 1, days_absent_s2: 0, rank: 4, class_size: 30 },
+                    { class_level: 10, ec_year: String(approximateEthiopianYear(new Date()) - 2), subjects: [{ name: 'English', s1: 84, s2: 87 }, { name: 'Mathematics', s1: 90, s2: 92 }], total_s1: 174, total_s2: 179, avg_s1: 87, avg_s2: 89.5, avg_year: 88.25, days_absent_s1: 0, days_absent_s2: 1, rank: 3, class_size: 30 }
+                ],
+                verify_url: `${req.protocol}://${req.get('host')}/verify/document/SAMPLE`
+            });
+        } else {
+            const terms = await getCertificateTerms(req.params.student_id, req.user.school_id);
+            const year_summary = await buildYearSummaries(req.params.student_id, req.user.school_id, terms);
+            if (year_summary.length === 0) return res.status(400).json({ error: "No completed academic year found for this student." });
+
+            const [studentRows] = await pool.query(
+                `SELECT student_id, first_name, middle_name, last_name, sex, created_at, status, graduated_at,
+                        (SELECT st.initiated_at FROM student_transfers st
+                           WHERE st.from_school_id = students.school_id AND st.student_id = students.student_id
+                           ORDER BY st.initiated_at DESC LIMIT 1) AS transfer_out_at
+                 FROM students WHERE student_id = ? AND school_id = ?`,
+                [req.params.student_id, req.user.school_id]
+            );
+            if (studentRows.length === 0) return res.status(404).json({ error: "Student not found in your school." });
+            const s = studentRows[0];
+            let left_at = null;
+            if (s.status === 'Graduated') left_at = s.graduated_at;
+            else if (String(s.status || '').startsWith('Transferred')) left_at = s.transfer_out_at;
+
+            const latest = year_summary[year_summary.length - 1];
+            const latestTerm = terms.find(t => t.class_level === latest.class_level && t.term === 'Semester 2');
+
+            const years = year_summary.map(y => {
+                const s1 = terms.find(t => t.class_level === y.class_level && t.term === 'Semester 1');
+                const s2 = terms.find(t => t.class_level === y.class_level && t.term === 'Semester 2');
+                return {
+                    class_level: y.class_level,
+                    ec_year: s2 && s2.synced_at ? String(approximateEthiopianYear(s2.synced_at)) : null,
+                    subjects: y.subjects.map(sub => ({ name: sub.subject_name, s1: sub.semester_1, s2: sub.semester_2 })),
+                    total_s1: s1 ? s1.term_total : null, total_s2: s2 ? s2.term_total : null,
+                    avg_s1: s1 ? s1.term_average : null, avg_s2: s2 ? s2.term_average : null, avg_year: y.year_average,
+                    days_absent_s1: s1 ? s1.days_absent : null, days_absent_s2: s2 ? s2.days_absent : null,
+                    rank: y.rank, class_size: y.class_size
+                };
+            });
+
+            verify_code = await logDocumentIssuance(req.user.school_id, req.params.student_id, 'transcript', req.user.user_id, latest.class_level);
+            html = renderTranscriptHtml({
+                student_id: s.student_id, student_name: [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' '),
+                sex: s.sex, stream: latestTerm ? latestTerm.stream : null, age: null,
+                date_of_admission: s.created_at ? new Date(s.created_at).toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' }) : null,
+                date_of_leaving: left_at ? new Date(left_at).toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' }) : null,
+                registrar_name: [req.user.first_name, req.user.last_name].filter(Boolean).join(' ') || null,
+                issue_date: new Date().toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' }),
+                years,
                 verify_url: `${req.protocol}://${req.get('host')}/verify/document/${verify_code}`
             });
         }
@@ -5767,6 +5878,41 @@ app.get('/api/registrar/documents/id-card/:student_id/docx', requireAuth, requir
     } catch (err) {
         console.error("/api/registrar/documents/id-card/docx error:", err);
         res.status(500).json({ error: "Could not generate ID card document." });
+    }
+});
+
+// School Recommendation Letter — renders templates/recommendation.html.
+// SAMPLE DATA ONLY for now: there's no per-student table yet to hold
+// homeroom-teacher / parent comments or the principal's sign-off text,
+// so a real student_id has nothing to pull from. Wiring this up for
+// real students needs a comments-capture flow (likely a small new
+// table + a UI for homeroom teachers to enter each semester's remark)
+// before this can generate a real letter rather than the sample design.
+app.get('/api/registrar/documents/recommendation/:student_id/preview', requireAuth, requireRegistrarOnly, async (req, res) => {
+    if (req.params.student_id !== SAMPLE_STUDENT.student_id) {
+        return res.status(501).json({ error: "School Recommendation Letters aren't wired to real student data yet — only the sample design preview is available today." });
+    }
+    try {
+        const html = renderRecommendationHtml({
+            school_name: 'Newland High School (Sample)', student_id: SAMPLE_STUDENT.student_id,
+            student_name: 'Sample Student', grade: 10, section: 'A', academic_year: `${approximateEthiopianYear(new Date())} E.C.`,
+            recommendation: {
+                principal_name: [req.user.first_name, req.user.last_name].filter(Boolean).join(' ') || 'Principal',
+                date: new Date().toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' }),
+                first_semester_comment: 'A conscientious student who participates actively in class and works well with peers.',
+                first_semester_home_room_teacher: 'Sample Teacher',
+                first_semester_parent_name: 'Sample Parent',
+                second_semester_comment: 'Continued strong effort through the second semester, with noticeable improvement in written work.',
+                second_semester_home_room_teacher: 'Sample Teacher',
+                second_semester_parent_name: 'Sample Parent'
+            },
+            verify_url: `${req.protocol}://${req.get('host')}/verify/document/SAMPLE`
+        });
+        res.setHeader('Content-Type', 'text/html');
+        res.send(html);
+    } catch (err) {
+        console.error("/api/registrar/documents/recommendation/preview error:", err);
+        res.status(500).json({ error: "Could not render the recommendation letter preview." });
     }
 });
 
