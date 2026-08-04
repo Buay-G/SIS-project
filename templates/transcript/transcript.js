@@ -1,19 +1,18 @@
 /* Fills the Grade 9-12 transcript grid from DATA (injected by the server —
-   see renderTranscriptHtml in server.js). Unlike certificate.js (one
-   grade/year per page), this template shows up to four grade levels
-   side by side, so the row layout is built entirely here rather than
-   templated per-token. */
+   see renderTranscriptHtml/buildYearSummaries in server.js). Unlike
+   certificate.js (one grade/year per page), this template shows up to
+   four grade levels side by side, so the row layout is built entirely
+   here rather than templated per-token.
 
-// Canonical subject order matches the school's fixed curriculum list —
-// real subject names from the database are matched against this
-// (case-insensitively) so scores land in the right row regardless of
-// exact capitalization on file. Anything in the data that doesn't
-// match gets appended as an extra row rather than silently dropped.
-const CANONICAL_SUBJECTS = [
-  "Nuer/Dha-Anywaa", "Federal language", "English", "Mathematics", "Physics",
-  "Chemistry", "Biology", "Economics", "Geography", "History",
-  "Citizenship", "Agriculture", "ICT", "Physical Education"
-];
+   Subject rows come entirely from DATA — the school's own Subject
+   Configuration (same source the report card reads), not a fixed
+   hardcoded curriculum list. A subject's row spans all four years; each
+   year's own three columns (S1/S2/AV) get struck through independently
+   when that subject doesn't apply to that particular year's stream
+   (DATA.years[].subjects[].applicable === false) — a row can be a mix
+   of real scores in one year and a struck-through gap in another, since
+   a student's stream can change year to year (e.g. General in Grade
+   9/10, Natural Science from Grade 11 on). */
 
 const GRADE_LEVELS = [9, 10, 11, 12];
 
@@ -59,38 +58,53 @@ if (DATA.photo_data_uri) {
 }
 
 // --- Subject rows ---
+// The row set is the union of subject names across every year present,
+// sorted alphabetically (matching Subject Configuration's own
+// ordering) — a subject configured for only one year's stream still
+// gets its own row spanning the whole table, blank/struck-through in
+// the years it doesn't apply to.
+const subjectNames = [...new Set(
+  (DATA.years || []).flatMap(y => (y.subjects || []).map(s => s.name))
+)].sort((a, b) => a.localeCompare(b));
+
+// applicable === false -> struck through, blank cells (configured, but
+// not for this year's stream). applicable === true, or missing
+// entirely for backward compatibility with data that predates this
+// flag -> a normal cell. Not found in that year at all (the subject
+// didn't exist in configuration then) -> a plain blank cell, no
+// strikethrough, since that's simply not information we have.
 function subjectScoresForLevel(y, subjectName) {
-  if (!y) return { s1: "", s2: "", avg: "" };
+  if (!y) return { s1: "", s2: "", avg: "", applicable: null };
   const found = (y.subjects || []).find(s => norm(s.name) === norm(subjectName));
-  if (!found) return { s1: "", s2: "", avg: "" };
-  const avg = (found.s1 != null && found.s2 != null) ? round1((found.s1 + found.s2) / 2) : "";
-  return { s1: fmt(found.s1), s2: fmt(found.s2), avg };
+  if (!found) return { s1: "", s2: "", avg: "", applicable: null };
+  const applicable = found.applicable !== false;
+  const avg = (applicable && found.s1 != null && found.s2 != null) ? round1((found.s1 + found.s2) / 2) : "";
+  return {
+    s1: applicable ? fmt(found.s1) : "",
+    s2: applicable ? fmt(found.s2) : "",
+    avg,
+    applicable
+  };
 }
 
 function buildDataRow(label, cellsForLevel, remark) {
   const cells = GRADE_LEVELS.map(level => {
-    const c = cellsForLevel(level) || { s1: "", s2: "", avg: "" };
-    return `<td>${fmt(c.s1)}</td><td>${fmt(c.s2)}</td><td>${fmt(c.avg)}</td>`;
+    const c = cellsForLevel(level) || { s1: "", s2: "", avg: "", applicable: null };
+    const notApplicable = c.applicable === false;
+    const cls = notApplicable ? ' class="not-applicable"' : "";
+    // A plain empty <td> has no text for text-decoration:line-through to
+    // strike through, so a not-applicable cell and a not-yet-graded one
+    // were rendering identically (both just blank). A visible dash gives
+    // the strikethrough something to draw through and makes the two
+    // states distinguishable at a glance.
+    return `<td${cls}>${notApplicable ? "—" : fmt(c.s1)}</td><td${cls}>${notApplicable ? "—" : fmt(c.s2)}</td><td${cls}>${notApplicable ? "—" : fmt(c.avg)}</td>`;
   }).join("");
   return `<tr><td class="subject-col">${label}</td>${cells}<td>${remark || ""}</td></tr>`;
 }
 
 const rows = [];
 
-CANONICAL_SUBJECTS.forEach(name => {
-  rows.push(buildDataRow(name, level => subjectScoresForLevel(yearByLevel[level], name)));
-});
-
-// Any real subject names in the data that don't match the canonical
-// list (e.g. an elective specific to this school) still get a row,
-// appended after the standard curriculum rows, rather than being
-// dropped from the printed transcript.
-const seenNames = new Set(CANONICAL_SUBJECTS.map(norm));
-const extraNames = new Set();
-(DATA.years || []).forEach(y => (y.subjects || []).forEach(s => {
-  if (!seenNames.has(norm(s.name))) extraNames.add(s.name);
-}));
-extraNames.forEach(name => {
+subjectNames.forEach(name => {
   rows.push(buildDataRow(name, level => subjectScoresForLevel(yearByLevel[level], name)));
 });
 

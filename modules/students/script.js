@@ -585,7 +585,7 @@ function renderIDCard(data, container) {
     // field (like a national ID card), regardless of the site-wide EN/አማ
     // toggle elsewhere — it's a document, not just UI chrome, so it
     // doesn't make sense for it to switch away from Amharic entirely.
-    const fmt = d => d.toLocaleDateString('en-GB', { year: 'numeric', month: 'short', day: 'numeric' });
+    const fmt = d => formatDualDate(d);
 
     // Ethiopian administrative address: woreda, zone, region — there's no
     // street-address field in this schema, so this is what "school address"
@@ -620,7 +620,7 @@ function renderIDCard(data, container) {
                 </div>
                 <div class="id-card-footer">
                     <div class="id-card-signature">
-                        <img src="/assets/images/principal-signature.png" alt="Principal's signature" onerror="this.style.display='none'">
+                        ${data.principal_signature_url ? `<img src="${data.principal_signature_url}" alt="Principal's signature" onerror="this.style.display='none'">` : ''}
                         <div class="id-card-signature-line">ርዕሰ መምህር | Principal</div>
                     </div>
                     <div class="id-card-validity">
@@ -985,9 +985,9 @@ function renderTextbooks(books, container) {
                     ${books.map(b => `<tr>
                         <td>${b.subject_name}</td>
                         <td>${statusBadge[b.status] || b.status}</td>
-                        <td>${b.issued_at ? new Date(b.issued_at).toLocaleDateString() : '—'}</td>
-                        <td>${b.returned_at ? new Date(b.returned_at).toLocaleDateString() :
-                              b.lost_at    ? new Date(b.lost_at).toLocaleDateString() : '—'}</td>
+                        <td>${b.issued_at ? formatDualDate(b.issued_at) : '—'}</td>
+                        <td>${b.returned_at ? formatDualDate(b.returned_at) :
+                              b.lost_at    ? formatDualDate(b.lost_at) : '—'}</td>
                     </tr>`).join('')}
                 </tbody>
             </table>
@@ -1336,7 +1336,7 @@ function renderAbsenceHistory(requests, container) {
         rejected:  `<span class="badge badge-lost">${t('badge_rejected')}</span>`,
         escalated: `<span class="badge badge-escalated">${t('badge_escalated')}</span>`
     };
-    const fmt = d => new Date(d).toLocaleDateString();
+    const fmt = d => formatDualDate(d);
     container.innerHTML = requests.map(r => `
         <div class="widget" style="margin-bottom:12px;">
             <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;">
@@ -1396,7 +1396,7 @@ function renderNotifications(notifs, container) {
                 ${n.is_read ? '' : '<span class="notif-dot" aria-label="Unread"></span>'}
             </div>
             <p class="notif-body">${escapeHtml(n.message)}</p>
-            <p class="notif-meta muted">${new Date(n.sent_at).toLocaleDateString()}</p>
+            <p class="notif-meta muted">${formatDualDate(n.sent_at)}</p>
         </div>`).join('');
 }
 
@@ -1503,7 +1503,7 @@ async function loadRecognitionAward() {
         const data = await res.json();
         if (!data.awarded) { banner.style.display = 'none'; return; }
 
-        const dateStr = new Date(data.awarded_at).toLocaleDateString();
+        const dateStr = formatDualDate(data.awarded_at);
         textEl.innerHTML = `
             <strong style="font-size:1.05rem;">🏆 ${t('recognition_award_title')}</strong>
             <p style="margin-top:6px;">${t('recognition_award_body', { level: data.class_level, average: data.year_average, date: dateStr })}</p>`;
@@ -1575,6 +1575,18 @@ function toEthiopianDate(dateInput) {
 function formatEthiopianDate(dateInput) {
     const e = toEthiopianDate(dateInput);
     return `${e.day} ${e.monthName} ${e.year} E.C.`;
+}
+
+// Portal-wide date display standard: Ethiopian calendar first, Gregorian
+// in brackets — e.g. "12 Meskerem 2018 E.C. (22 Sep 2025 GC)". Used
+// anywhere a plain date is shown to the student (ID card, library,
+// absence requests, notifications, awards). Reuses formatEthiopianDate
+// above rather than a second conversion, so there's one source of truth
+// for the EC math.
+function formatDualDate(dateInput) {
+    const d = new Date(dateInput);
+    const gc = d.toLocaleDateString('en-GB', { year: 'numeric', month: 'short', day: 'numeric' });
+    return `<span style="white-space:nowrap;">${formatEthiopianDate(d)}</span> <span class="muted" style="white-space:nowrap; font-size:0.85em;">(${gc} GC)</span>`;
 }
 
 // ---- ATTENDANCE HEATMAP CALENDAR ----

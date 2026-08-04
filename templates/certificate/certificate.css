@@ -62,6 +62,17 @@ body{
   border-bottom:2px solid var(--seal);
 }
 .head .emblem{ justify-self:center; }
+.head .emblem-right{ justify-self:center; }
+.flag-img{
+  display:block;
+  width:48px;
+  height:auto;
+  aspect-ratio:3/2;
+  object-fit:cover;
+  border-radius:2px;
+  border:1px solid rgba(0,0,0,0.18);
+  box-shadow:0 0.5px 1.5px rgba(0,0,0,0.15);
+}
 .head-text{ text-align:center; }
 .head-text .region-amh{
   font-family:"Noto Serif Ethiopic",serif;
@@ -85,21 +96,25 @@ body{
   background:var(--seal); padding:2px 10px; border-radius:2px;
 }
 .head-text .doctype .amh{ letter-spacing:0.03em; font-weight:600; }
-.emblem svg{ display:block; width:52px; height:52px; }
 
 /* ================= PORTRAIT BODY ================= */
 .body-land{
   display:grid;
   grid-template-columns: minmax(200px, 280px) 1fr;
-  grid-template-areas:
-    "details table"
-    "qr table";
+  grid-template-areas: "details table";
   gap:var(--s4) var(--s4);
   margin-top:var(--s3);
   align-items:start;
   min-width:0;
 }
 
+/* bio fields + QR now live together in one flex column (grid-area:
+   details) instead of the QR block being a separate grid row. A
+   two-row area ("details table" / "qr table") forces the browser to
+   stretch the qr row to match however tall the table's spanned rows
+   need to be — on a full subject list that leaves a large blank gap
+   under the QR block, right before the footer. Keeping them in a
+   single column sized by their own content avoids that entirely. */
 .bio-left{ display:flex; flex-direction:column; gap:var(--s3); min-width:0; grid-area:details; }
 .table-wrap{ grid-area:table; min-width:0; overflow-x:visible; align-self:start; width:100%; }
 .photo-row{ display:flex; flex-wrap:wrap; gap:var(--s3); align-items:flex-start; }
@@ -154,15 +169,14 @@ body{
   word-break:break-word;
 }
 
-/* QR sits in the left column, between the bio fields (Woreda) and the
-   Method of Marking panel below it. */
+/* QR now sits inside .bio-left, right after the field-grid, as a
+   normal flex child — not its own grid row (see .body-land above). */
 .qr-cell{
   display:flex;
   flex-direction:column;
   align-items:flex-start;
   gap:var(--s3);
   padding:var(--s3) 0 var(--s1);
-  grid-area:qr;
 }
 .qr-box{ width:100px; height:100px; flex:none; margin-bottom:var(--s1); }
 .qr-box svg{ display:block; border:1px solid var(--line-soft); border-radius:3px; }
@@ -191,6 +205,12 @@ table.marks tbody tr:nth-child(even) td{ background:oklch(0.975 0.006 95); }
 tr.summary td{ background:var(--accent-bg) !important; font-weight:700; color:var(--seal-deep); }
 tr.summary td.subject{ color:var(--seal-deep); }
 tr.summary td.rating{ color:var(--seal-deep); font-weight:700; }
+/* A subject not offered in this student's stream (e.g. a Social Science
+   subject on a Natural Science student's sheet) — kept visible on the
+   full sheet for context, but struck through and greyed so it reads as
+   "not taken" rather than "no score recorded yet". */
+tr.not-applicable td{ text-decoration:line-through; color:var(--ink-faint); opacity:0.65; }
+tr.not-applicable td.subject .en, tr.not-applicable td.subject .amh{ color:inherit; }
 tr.rank td{ background:oklch(0.93 0.03 78) !important; color:oklch(0.36 0.07 60); font-weight:700; }
 tr.rank td.subject{ color:oklch(0.36 0.07 60); }
 
@@ -250,6 +270,7 @@ tr.rank td.subject{ color:oklch(0.36 0.07 60); }
   text-align:center; font-size:0.88rem; font-weight:700; color:var(--ink); padding:1px 0 0;
 }
 .sig-field{ display:flex; flex-direction:column; align-items:center; gap:2px; margin-top:1px; }
+.sig-field .sig-img{ height:32px; max-width:120px; object-fit:contain; margin-bottom:-8px; }
 .sig-field .rule{ border-bottom:1px solid var(--ink-soft); height:1.3em; width:120px; }
 .sig-field .cap{ font-size:0.72rem; color:var(--ink-faint); font-weight:600; text-align:center; }
 .sig-field .cap .amh{ color:var(--ink-soft); font-weight:500; }
@@ -357,9 +378,7 @@ tr.rank td.subject{ color:oklch(0.36 0.07 60); }
   .body-land{
     display:grid;
     grid-template-columns: minmax(180px, 280px) 1fr;
-    grid-template-areas:
-      "details table"
-      "qr table";
+    grid-template-areas: "details table";
     gap:4px 8px;
     min-width:0;
   }
@@ -384,10 +403,8 @@ tr.rank td.subject{ color:oklch(0.36 0.07 60); }
     min-width:0;
   }
 
-  /* Hide QR block in print to recover vertical space */
-  .qr-cell{ display:none !important; }
-
-  .qr-box{ width:70px; height:70px; }
+  .qr-cell{ padding:2px 0 0; gap:6px; }
+  .qr-box{ width:62px; height:62px; }
   .qr-meta .qr-title{ font-size:0.78rem; }
   .qr-meta .qr-sub{ font-size:0.68rem; line-height:1.15; }
 

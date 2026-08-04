@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "archiver": "^8.0.0",
     "bcrypt": "^6.0.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
@@ -21,6 +22,7 @@
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.2.0",
     "mysql2": "^3.22.5",
+    "pdf-lib": "^1.17.1",
     "puppeteer": "^25.3.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",

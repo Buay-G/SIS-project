@@ -7,6 +7,7 @@
     <title>Registrar Portal | Newland High School</title>
     <script src="/assets/js/guard.js"></script>
     <script src="/assets/js/i18n.js"></script>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
   </head>
   <body>
     <a href="#content" class="skip-link" data-i18n="reg_skip_to_content"
@@ -30,35 +31,28 @@
         </div>
 
         <div class="sidebar-nav">
-          <button
-            data-i18n="reg_nav_dashboard"
-            onclick="switchTab('dashboard')"
-          >
-            Dashboard
+          <button onclick="switchTab('dashboard')">
+            <i data-lucide="layout-dashboard" aria-hidden="true"></i>
+            <span data-i18n="reg_nav_dashboard">Dashboard</span>
           </button>
-          <button
-            data-i18n="reg_nav_new_entry"
-            onclick="switchTab('new-entry')"
-          >
-            New Entry Registration
+          <button onclick="switchTab('new-entry')">
+            <i data-lucide="user-plus" aria-hidden="true"></i>
+            <span data-i18n="reg_nav_new_entry">New Entry Registration</span>
           </button>
-          <button
-            data-i18n="reg_nav_update_info"
-            onclick="switchTab('update-info')"
-          >
-            Information Update
+          <button onclick="switchTab('update-info')">
+            <i data-lucide="user-cog" aria-hidden="true"></i>
+            <span data-i18n="reg_nav_update_info">Information Update</span>
           </button>
-          <button
-            data-i18n="reg_nav_promotion"
-            onclick="switchTab('promotion')"
-          >
-            Promotion/Stream
+          <button onclick="switchTab('promotion')">
+            <i data-lucide="trending-up" aria-hidden="true"></i>
+            <span data-i18n="reg_nav_promotion">Promotion/Stream</span>
           </button>
           <button
             id="nav-students"
             onclick="switchTab('students')"
             style="display: none"
           >
+            <i data-lucide="users" aria-hidden="true"></i>
             <span data-i18n="reg_nav_students">Students</span>
           </button>
           <button
@@ -66,6 +60,7 @@
             onclick="switchTab('transfer-hub')"
             style="display: none"
           >
+            <i data-lucide="arrow-left-right" aria-hidden="true"></i>
             <span data-i18n="reg_nav_transfer_hub">Transfer Hub</span>
             <span
               id="nav-transfer-hub-badge"
@@ -78,6 +73,7 @@
             onclick="switchTab('documents')"
             style="display: none"
           >
+            <i data-lucide="folder-open" aria-hidden="true"></i>
             <span data-i18n="reg_nav_documents">Documents</span>
             <span
               id="nav-documents-badge"
@@ -90,39 +86,40 @@
             onclick="switchTab('templates')"
             style="display: none"
           >
+            <i data-lucide="layout-template" aria-hidden="true"></i>
             <span data-i18n="reg_nav_templates">Templates</span>
           </button>
           <button
             id="nav-graduation-wizard"
-            data-i18n="reg_nav_graduation"
             onclick="switchTab('graduation-wizard')"
             style="display: none"
           >
-            Graduation Wizard
+            <i data-lucide="graduation-cap" aria-hidden="true"></i>
+            <span data-i18n="reg_nav_graduation">Graduation Wizard</span>
           </button>
           <button
             id="nav-section-setup"
-            data-i18n="reg_nav_section_setup"
             onclick="switchTab('section-setup')"
             style="display: none"
           >
-            Section Setup
+            <i data-lucide="grid-2x2" aria-hidden="true"></i>
+            <span data-i18n="reg_nav_section_setup">Section Setup</span>
           </button>
           <button
             id="nav-placement-wizard"
-            data-i18n="reg_nav_placement"
             onclick="switchTab('placement-wizard')"
             style="display: none"
           >
-            Placement Wizard
+            <i data-lucide="wand-2" aria-hidden="true"></i>
+            <span data-i18n="reg_nav_placement">Placement Wizard</span>
           </button>
           <button
             id="nav-recorder-mgmt"
-            data-i18n="reg_nav_recorders"
             onclick="switchTab('recorder-mgmt')"
             style="display: none"
           >
-            Manage Recorders
+            <i data-lucide="user-check" aria-hidden="true"></i>
+            <span data-i18n="reg_nav_recorders">Manage Recorders</span>
           </button>
         </div>
 
@@ -135,7 +132,8 @@
               returnToPortal();
               return false;
             "
-            >Return to Portal</a
+            ><i data-lucide="corner-up-left" aria-hidden="true"></i>Return to
+            Portal</a
           >
           <a
             href="#"
@@ -144,7 +142,7 @@
               registrarLogout();
               return false;
             "
-            >Logout</a
+            ><i data-lucide="log-out" aria-hidden="true"></i>Logout</a
           >
         </div>
       </nav>
@@ -197,7 +195,7 @@
                 aria-expanded="false"
                 onclick="toggleNotificationPanel()"
               >
-                <span aria-hidden="true">🔔</span
+                <i data-lucide="bell" aria-hidden="true"></i
                 ><span
                   id="notif-badge"
                   class="notif-badge"
@@ -230,7 +228,7 @@
               aria-label="Profile Settings"
               onclick="openProfileSettings()"
             >
-              <span aria-hidden="true">⚙️</span>
+              <i data-lucide="settings" aria-hidden="true"></i>
             </button>
             <img
               id="topbar-avatar"
@@ -766,26 +764,46 @@
             <button
               type="button"
               onclick="previewReportCard(currentDocStudentId)"
-              data-i18n="reg_preview_report_card"
             >
-              Preview Report Card
+              <i data-lucide="file-text" aria-hidden="true"></i>
+              <span data-i18n="reg_preview_report_card"
+                >Preview Report Card</span
+              >
             </button>
             <button
               type="button"
               onclick="previewTranscript(currentDocStudentId)"
-              data-i18n="reg_preview_transcript"
             >
-              Preview / Issue Transcript
+              <i data-lucide="scroll-text" aria-hidden="true"></i>
+              <span data-i18n="reg_preview_transcript"
+                >Preview / Issue Transcript</span
+              >
             </button>
-            <button
-              type="button"
-              onclick="downloadIdCard(currentDocStudentId)"
-              data-i18n="reg_download_id_card"
-            >
-              Download ID Card
+            <button type="button" onclick="downloadIdCard(currentDocStudentId)">
+              <i data-lucide="id-card" aria-hidden="true"></i>
+              <span data-i18n="reg_download_id_card">Download ID Card</span>
             </button>
           </div>
           <div id="doc-report-card-preview"></div>
+
+          <h3 style="margin-top: 30px">Bulk Documents (by Section)</h3>
+          <p class="muted">
+            ID cards download as one zip, report cards combine into one PDF for
+            the whole section. Transcripts are issued one student at a time
+            above — they're only given to a student who has transferred out or
+            graduated Grade 12, so there's no bulk option for them.
+          </p>
+          <div class="search-box">
+            <select id="bulk-doc-section" style="flex: 1"></select>
+            <button type="button" onclick="bulkDownloadIdCards()">
+              <i data-lucide="id-card" aria-hidden="true"></i>
+              <span>Bulk ID Cards (.zip)</span>
+            </button>
+            <button type="button" onclick="bulkDownloadReportCards()">
+              <i data-lucide="files" aria-hidden="true"></i>
+              <span>Bulk Report Cards (combined PDF)</span>
+            </button>
+          </div>
 
           <h3 data-i18n="reg_issuance_log_heading" style="margin-top: 30px">
             Recent Issuances
@@ -801,39 +819,40 @@
             Preview the layout every student's Report Card, Transcript, and
             School Recommendation Letter follow — no student record needed.
           </p>
-          <div class="search-box">
+          <div class="template-grid">
             <button
               type="button"
-              onclick="
-                previewReportCard(
-                  'SAMPLE-0001',
-                  'doc-report-card-preview-templates',
-                )
-              "
-              data-i18n="reg_sample_report_card"
+              class="template-card"
+              onclick="previewSampleReportCard()"
             >
-              Sample Report Card
+              <i data-lucide="file-text" aria-hidden="true"></i>
+              <span data-i18n="reg_sample_report_card">Sample Report Card</span>
             </button>
             <button
               type="button"
-              onclick="previewTranscript('SAMPLE-0001')"
-              data-i18n="reg_sample_transcript"
+              class="template-card"
+              onclick="previewSampleTranscript()"
             >
-              Sample Transcript
+              <i data-lucide="scroll-text" aria-hidden="true"></i>
+              <span data-i18n="reg_sample_transcript">Sample Transcript</span>
             </button>
             <button
               type="button"
-              onclick="downloadIdCard('SAMPLE-0001')"
-              data-i18n="reg_sample_id_card"
+              class="template-card"
+              onclick="previewSampleIdCard()"
             >
-              Sample ID Card
+              <i data-lucide="id-card" aria-hidden="true"></i>
+              <span data-i18n="reg_sample_id_card">Sample ID Card</span>
             </button>
             <button
               type="button"
-              onclick="previewRecommendationLetter('SAMPLE-0001')"
-              data-i18n="reg_sample_recommendation"
+              class="template-card"
+              onclick="previewSampleRecommendation()"
             >
-              Sample Recommendation Letter
+              <i data-lucide="file-signature" aria-hidden="true"></i>
+              <span data-i18n="reg_sample_recommendation"
+                >Sample Recommendation Letter</span
+              >
             </button>
           </div>
           <div id="doc-report-card-preview-templates"></div>
@@ -1028,8 +1047,8 @@
         padding-top: 100px;
       "
     >
-      <div style="font-size: 80px; color: #3498db; margin-bottom: 20px">
-        &#9313;
+      <div style="color: #3498db; margin-bottom: 20px">
+        <i data-lucide="check-circle-2" style="width: 80px; height: 80px"></i>
       </div>
       <h2>Success!</h2>
       <p>The record has been updated successfully.</p>
@@ -1065,7 +1084,9 @@
         color: white;
       "
     >
-      <div style="font-size: 60px; margin-bottom: 10px">&#128274;</div>
+      <div style="margin-bottom: 10px">
+        <i data-lucide="lock" style="width: 60px; height: 60px"></i>
+      </div>
       <h2>You're a Recorder</h2>
       <p style="max-width: 420px; margin: 10px auto 0">
         This section is part of the full Registrar admin tools and isn't
@@ -1106,7 +1127,7 @@
           aria-label="Close"
           onclick="closeStudentHistory()"
         >
-          &times;
+          <i data-lucide="x" aria-hidden="true"></i>
         </button>
         <h2 id="student-history-heading" data-i18n="reg_history_heading">
           Student History
@@ -1145,7 +1166,7 @@
           aria-label="Close"
           onclick="closeProfileSettings()"
         >
-          &times;
+          <i data-lucide="x" aria-hidden="true"></i>
         </button>
         <h2
           id="profile-settings-heading"
@@ -1167,7 +1188,7 @@
           />
           <div class="file-upload-row">
             <label class="file-upload-btn" for="settings-avatar-input">
-              <span aria-hidden="true">📷</span>
+              <i data-lucide="camera" aria-hidden="true"></i>
               <span data-i18n="reg_choose_photo">Choose Photo</span>
             </label>
             <span
@@ -1205,7 +1226,7 @@
           <p id="settings-signature-status" class="muted"></p>
           <div class="file-upload-row">
             <label class="file-upload-btn" for="settings-signature-input">
-              <span aria-hidden="true">✍️</span>
+              <i data-lucide="pen-line" aria-hidden="true"></i>
               <span data-i18n="reg_choose_file">Choose File</span>
             </label>
             <span

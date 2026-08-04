@@ -39,8 +39,18 @@ body{
 }
 
 /* Header */
-.header{ display:grid; grid-template-columns:56px 1fr 56px; gap:var(--s3); align-items:center; padding-bottom:var(--s1); border-bottom:2px solid var(--seal); }
-.flag-box{ width:56px; height:44px; display:flex; align-items:center; justify-content:center; color:var(--ink-faint); border-radius:4px; }
+.header{ display:grid; grid-template-columns:76px 1fr 76px; gap:var(--s3); align-items:center; padding-bottom:var(--s1); border-bottom:2px solid var(--seal); }
+.flag-box{ width:76px; display:flex; align-items:center; justify-content:center; }
+.flag-img{
+  display:block;
+  width:68px;
+  height:auto;
+  aspect-ratio:3/2;
+  object-fit:cover;
+  border-radius:2px;
+  border:1px solid rgba(0,0,0,0.18);
+  box-shadow:0 0.5px 1.5px rgba(0,0,0,0.15);
+}
 .header-center{ text-align:center; }
 .header-center h3{ font-family:"Noto Serif Ethiopic",serif; font-size:0.78rem; color:var(--ink-soft); margin:2px 0; }
 .header-center h2{ font-size:1.08rem; font-weight:700; color:var(--ink); margin:2px 0; }
@@ -48,19 +58,85 @@ body{
 /* Sub header */
 .sub-header{ display:flex; justify-content:space-between; font-size:0.85rem; margin-top:6px; margin-bottom:10px; border-bottom:1px solid var(--line); padding-bottom:6px; }
 
-.doc-title{ text-align:center; text-decoration:underline; font-size:1.02rem; font-weight:700; margin:12px 0; }
+.doc-title{
+  text-align:center;
+  font-size:0.78rem;
+  font-weight:700;
+  letter-spacing:0.08em;
+  text-transform:uppercase;
+  color:var(--paper);
+  background:var(--seal);
+  display:inline-block;
+  padding:5px 16px;
+  border-radius:3px;
+  margin:10px auto 14px;
+}
+.title-info-col{ text-align:center; }
 
-/* Info */
-.info-section{ font-size:0.9rem; line-height:1.4; margin-bottom:12px; }
-.underline-field{ display:inline-block; border-bottom:1px solid var(--line); min-width:120px; height:18px; }
-.long-field{ min-width:380px; }
+/* Info: labeled field grid (label caption above, bold value below with a
+   dotted rule) instead of run-on "Label: value" text with manual nbsp
+   spacing, which was wrapping awkwardly once the photo column was added */
+.info-grid{
+  display:grid;
+  grid-template-columns:repeat(3, 1fr);
+  gap:4px var(--s4);
+  text-align:left;
+}
+.info-grid .field.wide{ grid-column:1 / -1; }
+.field label{
+  display:block;
+  font-size:0.66rem;
+  font-weight:600;
+  letter-spacing:0.02em;
+  text-transform:uppercase;
+  color:var(--ink-faint);
+}
+.field .val{
+  font-size:0.92rem;
+  font-weight:600;
+  color:var(--ink);
+  border-bottom:1px dotted var(--line);
+  padding:2px 0 4px;
+  min-height:1.3em;
+}
 
-/* Photo + ID */
-.photo-wrap{ position:absolute; top:110px; right:18mm; width:140px; display:flex; flex-direction:column; align-items:center; gap:8px; }
-.photo-box{ width:86px; height:100px; border:1.5px solid var(--line); background:var(--paper-2); display:flex; align-items:center; justify-content:center; color:var(--ink-faint); }
-.id-block{ display:flex; flex-direction:column; align-items:center; gap:6px; }
-.id-chip{ font-size:0.78rem; color:var(--ink-soft); display:flex; align-items:center; gap:8px; }
-.id-chip strong{ color:var(--ink); font-weight:700; }
+/* Title/Info + Photo row */
+.title-photo-row{ display:grid; grid-template-columns:1fr 140px; gap:var(--s4); align-items:start; margin-top:var(--s4); }
+.title-info-col{ min-width:0; }
+
+/* Photo, with Student ID as a caption strip beneath it (ID card style) */
+.photo-wrap{ width:140px; display:flex; flex-direction:column; align-items:center; }
+.photo-box{
+  width:86px; height:100px;
+  border:1.5px solid var(--line);
+  border-bottom:none;
+  background:var(--paper-2);
+  display:flex; align-items:center; justify-content:center;
+  color:var(--ink-faint);
+}
+.photo-caption{
+  width:86px;
+  background:var(--seal);
+  color:var(--paper);
+  text-align:center;
+  padding:3px 2px 4px;
+  border-radius:0 0 3px 3px;
+  line-height:1.3;
+}
+.photo-caption .id-label{
+  display:block;
+  font-size:0.56rem;
+  font-weight:700;
+  text-transform:uppercase;
+  letter-spacing:0.04em;
+  opacity:0.85;
+}
+.photo-caption .id-value{
+  display:block;
+  font-size:0.72rem;
+  font-weight:700;
+  word-break:break-all;
+}
 
 /* Table styling like certificate */
 table{ width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; font-size:0.9rem; margin-top:8px; }
@@ -68,6 +144,12 @@ th, td{ border:1px solid var(--line); padding:6px 8px; text-align:center; }
 thead th{ background:var(--seal); color:var(--paper); font-weight:700; padding:8px; }
 th.subject-col, td.subject-col{ text-align:left; padding-left:10px; width:20%; }
 tbody tr:nth-child(even) td{ background:oklch(0.975 0.006 95); }
+
+/* A subject that doesn't apply to a given year's stream (e.g. Physics
+   in a General-stream year) — struck through for just that year's
+   three columns, not the whole row, since one row spans all four
+   years and a subject can be applicable in some and not others. */
+td.not-applicable{ text-decoration:line-through; color:var(--ink-faint); opacity:0.65; }
 
 .note{ font-size:0.82rem; color:var(--ink-faint); margin-top:12px; margin-bottom:12px; }
 
@@ -78,14 +160,38 @@ tbody tr:nth-child(even) td{ background:oklch(0.975 0.006 95); }
 .seal-area{ width:80px; height:80px; border:1.5px dashed var(--line); border-radius:50%; display:flex; align-items:center; justify-content:center; color:var(--ink-faint); font-weight:700; }
 
 /* Responsive small screens */
-@media (max-width:900px){ body{ padding:var(--s4); } .page{ padding:12mm; } .header{ grid-template-columns:48px 1fr 48px; } .signatures{ grid-template-columns:1fr; } }
+@media screen and (max-width:900px){ body{ padding:var(--s4); } .page{ padding:12mm; } .header{ grid-template-columns:60px 1fr 60px; } .signatures{ grid-template-columns:1fr; } }
 
 /* Print rules */
 @page{ size:A4 portrait; margin:4mm; }
 @media print{
   html,body{ background:none; padding:0; margin:0; }
-  .page{ box-shadow:none; width:calc(100% - 8mm); max-width:calc(210mm - 8mm); padding:8mm; }
-  .photo-box{ display:none; }
+  .page{
+    box-shadow:none;
+    width:calc(100% - 8mm);
+    max-width:calc(210mm - 8mm);
+    padding:8mm;
+    /* Fill the full printable area (297mm page minus the 4mm+4mm @page
+       margin = 289mm) so a short transcript still has its signatures
+       pinned to the bottom of the page, not floating right under the
+       table. Deliberately NOT max-height/overflow:hidden, though — the
+       subject table's row count now depends on how many subjects a
+       school has configured, so a school with a longer subject list
+       will produce a taller table than 289mm allows. Clipping the
+       overflow was silently cropping off the Principal's whole
+       signature block in that case; letting it flow onto a second page
+       instead is a far smaller problem than a signature vanishing from
+       a document whose own footer says it's invalid without one. */
+    min-height:289mm;
+    display:flex;
+    flex-direction:column;
+    justify-content:space-between;
+  }
+  /* Photo must stay visible in print: the note on this transcript states
+     it is invalid without the student's photograph, so hiding it here
+     would have silently produced an invalid document. */
+  .photo-box{ width:70px; height:82px; }
+  .photo-caption{ width:70px; }
   table{ font-size:0.85rem; }
   th,td{ padding:4px 6px; }
   .signatures{ gap:8px; }

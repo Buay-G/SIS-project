@@ -108,6 +108,7 @@ window.onSisLangChange = function () {
     }
     if (currentUser.is_registrar) {
         loadSections();
+        loadBulkSectionOptions();
         loadUnassignedQueue();
         loadPlacementRegistered();
         loadPlacementPromoted();
@@ -165,6 +166,7 @@ function applyRolePermissions() {
         loadRecorders();
         loadEligibleTeachers();
         loadSections();
+        loadBulkSectionOptions();
         loadUnassignedQueue();
         loadPlacementRegistered();
         loadPlacementPromoted();
@@ -200,10 +202,13 @@ function showRecorderIntercept() {
 function closeRecorderIntercept() {
     document.getElementById('recorder-intercept-modal').style.display = 'none';
     // TODO: point this at the real teacher-portal entry route.
-    window.location.href = '/teachers/dashboard.html';
+    window.location.href = '/teachers/index.html';
 }
 
 document.addEventListener('DOMContentLoaded', loadCurrentUser);
+document.addEventListener('DOMContentLoaded', () => {
+    if (window.lucide) lucide.createIcons();
+});
 
 // --- 1b. Toasts & Confirm dialogs ---
 // Replaces native alert()/confirm() with a styled, non-blocking toast and a
@@ -234,10 +239,10 @@ function showAlert(message, type) {
     toast.className = `toast toast-${type}`;
     toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
 
-    const icon = document.createElement('span');
+    const icon = document.createElement('i');
     icon.className = 'toast-icon';
     icon.setAttribute('aria-hidden', 'true');
-    icon.textContent = type === 'error' ? '⚠️' : '✅';
+    icon.setAttribute('data-lucide', type === 'error' ? 'alert-triangle' : 'check-circle-2');
 
     const text = document.createElement('span');
     text.className = 'toast-message';
@@ -259,6 +264,7 @@ function showAlert(message, type) {
     toast.appendChild(text);
     toast.appendChild(closeBtn);
     container.appendChild(toast);
+    if (window.lucide) lucide.createIcons({ root: toast });
     setTimeout(remove, 6000);
 }
 
@@ -704,6 +710,44 @@ async function loadSections() {
     }
 }
 
+// Populates the Documents tab's "Bulk Documents" section picker from
+// the same active sections used in Section Setup, so there's one
+// source of truth for what a "section" is.
+async function loadBulkSectionOptions() {
+    const select = document.getElementById('bulk-doc-section');
+    if (!select) return;
+    try {
+        const res = await fetch('http://localhost:3001/api/registrar/sections', { credentials: 'include' });
+        if (!res.ok) throw new Error("Could not load sections.");
+        const sections = await res.json();
+        const active = sections.filter(s => s.is_active);
+        select.innerHTML = active.length === 0
+            ? '<option value="">No active sections configured</option>'
+            : '<option value="">Select a section…</option>' + active
+                .map(s => `<option value="${s.class_level}|${s.section_name}|${s.stream}">Grade ${s.class_level} — ${s.section_name} (${s.stream})</option>`)
+                .join('');
+    } catch (err) {
+        console.error(err);
+        select.innerHTML = '<option value="">Could not load sections</option>';
+    }
+}
+
+function bulkDownloadIdCards() {
+    const val = document.getElementById('bulk-doc-section')?.value;
+    if (!val) { showAlert("Pick a section first.", "error"); return; }
+    const [class_level, section, stream] = val.split('|');
+    const params = new URLSearchParams({ class_level, section, stream });
+    window.open(`http://localhost:3001/api/registrar/documents/id-card/bulk/docx-zip?${params}`, '_blank');
+}
+
+function bulkDownloadReportCards() {
+    const val = document.getElementById('bulk-doc-section')?.value;
+    if (!val) { showAlert("Pick a section first.", "error"); return; }
+    const [class_level, section, stream] = val.split('|');
+    const params = new URLSearchParams({ class_level, section, stream });
+    window.open(`http://localhost:3001/api/registrar/documents/report-card/bulk/pdf?${params}`, '_blank');
+}
+
 async function addSection() {
     const class_level = document.getElementById('sec_grade').value;
     const stream = document.getElementById('sec_stream').value;
@@ -725,6 +769,7 @@ async function addSection() {
         document.getElementById('sec_name').value = '';
         document.getElementById('sec_capacity').value = '';
         await loadSections();
+        loadBulkSectionOptions();
         await loadUnassignedQueue();
     } catch (err) {
         console.error(err);
@@ -744,6 +789,7 @@ async function toggleSectionActive(id, isActive) {
             const result = await res.json();
             showAlert(result.error || "Could not update section.");
             await loadSections();
+        loadBulkSectionOptions();
             return;
         }
         await loadUnassignedQueue();
@@ -763,6 +809,7 @@ async function deleteSection(id) {
         const result = await res.json();
         if (!res.ok) return showAlert(result.error || "Could not delete section.");
         await loadSections();
+        loadBulkSectionOptions();
     } catch (err) {
         console.error(err);
         showAlert(t("reg_server_error"));
@@ -877,6 +924,7 @@ async function runPlacement(class_level, stream) {
 
         await loadUnassignedQueue();
         await loadSections();
+        loadBulkSectionOptions();
         await loadPlacementRegistered();
         await loadStudentRegistry();
     } catch (err) {
@@ -907,6 +955,7 @@ async function runPlacementAll() {
 
         await loadUnassignedQueue();
         await loadSections();
+        loadBulkSectionOptions();
         await loadPlacementRegistered();
         await loadStudentRegistry();
     } catch (err) {
@@ -1393,19 +1442,47 @@ function downloadReportCard(student_id) {
     setTimeout(() => loadDocumentHistory(student_id), 1500);
 }
 
+// Documents tab, real student — this both shows the transcript AND
+// logs it as issued in one click (the PDF opens in a new tab since
+// it's the actual issuance action, not just a look).
 function previewTranscript(student_id) {
-    // The Grade 9-12 transcript is a rich, multi-page document rendered
-    // server-side from templates/transcript.html — opened directly
-    // rather than re-rendered in a preview pane.
     window.open(`http://localhost:3001/api/registrar/documents/transcript/${encodeURIComponent(student_id)}/pdf`, '_blank');
     setTimeout(loadIssuanceLog, 1500);
     setTimeout(() => loadDocumentHistory(student_id), 1500);
 }
 
+// Templates tab sample — embedded in the page itself (an <iframe> into
+// the same inline-disposition PDF endpoint) rather than opening
+// anything, so it's a look, not a download or a new tab. Uses the real
+// templates/certificate/certificate.html render (same as the actual
+// issued report card), unlike the plain-table previewReportCard()
+// used for a real student's quick in-page preview.
+function previewSampleReportCard() {
+    const preview = document.getElementById('doc-report-card-preview-templates');
+    preview.innerHTML = `<iframe src="http://localhost:3001/api/registrar/documents/report-card/SAMPLE-0001/pdf" title="Sample Report Card" style="width:100%; height:80vh; min-height:600px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
+}
+
+// Templates tab sample — embedded in the page itself (an <iframe> into
+// the same inline-disposition PDF endpoint) rather than opening
+// anything, so it's a look, not a download or a new tab.
+function previewSampleTranscript() {
+    const preview = document.getElementById('doc-report-card-preview-templates');
+    preview.innerHTML = `<iframe src="http://localhost:3001/api/registrar/documents/transcript/SAMPLE-0001/pdf" title="Sample Transcript" style="width:100%; height:80vh; min-height:600px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
+}
+
+// View-only ID card preview (HTML) — downloadIdCard() below is the
+// actual .docx issuance, used from the Documents tab for a real student.
 function downloadIdCard(student_id) {
     window.open(`http://localhost:3001/api/registrar/documents/id-card/${encodeURIComponent(student_id)}/docx`, '_blank');
     setTimeout(loadIssuanceLog, 1500);
     setTimeout(() => loadDocumentHistory(student_id), 1500);
+}
+
+// Templates tab sample — embedded in the page via <iframe>, same
+// pattern as previewSampleTranscript above.
+function previewSampleIdCard() {
+    const preview = document.getElementById('doc-report-card-preview-templates');
+    preview.innerHTML = `<iframe src="http://localhost:3001/api/registrar/documents/id-card/SAMPLE-0001/preview" title="Sample ID Card" style="width:100%; height:70vh; min-height:560px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
 }
 
 // The design is real and renders server-side from
@@ -1413,19 +1490,9 @@ function downloadIdCard(student_id) {
 // feature yet to source real per-student data from, so only the
 // sample ID has anything to show (the server returns a clear message
 // for any other student_id rather than a fake letter).
-async function previewRecommendationLetter(student_id) {
-    try {
-        const res = await fetch(`http://localhost:3001/api/registrar/documents/recommendation/${encodeURIComponent(student_id)}/preview`, { credentials: 'include' });
-        if (!res.ok) {
-            const result = await res.json().catch(() => ({}));
-            showAlert(result.error || t('reg_recommendation_coming_soon'));
-            return;
-        }
-        window.open(`http://localhost:3001/api/registrar/documents/recommendation/${encodeURIComponent(student_id)}/preview`, '_blank');
-    } catch (err) {
-        console.error(err);
-        showAlert(t('reg_server_error'));
-    }
+function previewSampleRecommendation() {
+    const preview = document.getElementById('doc-report-card-preview-templates');
+    preview.innerHTML = `<iframe src="http://localhost:3001/api/registrar/documents/recommendation/SAMPLE-0001/preview" title="Sample Recommendation Letter" style="width:100%; height:80vh; min-height:600px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
 }
 
 async function loadIssuanceLog() {

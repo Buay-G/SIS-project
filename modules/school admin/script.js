@@ -78,14 +78,31 @@ async function checkAuthAndInit() {
             document.getElementById('profile-avatar-initials-text').style.display = 'none';
         }
 
+        renderTopbarAcademicYear();
         filterNavByTitle(CURRENT_TITLE);
         loadDashboard();
         loadTopbarSemester();
         refreshUnreadMessagesBadge();
+        loadAlertsDropdown();
     } catch (err) {
         console.error('checkAuthAndInit error:', err);
         window.location.href = '/login.html';
     }
+}
+
+// Topbar "Academic Year" label — replaces the old (unused) search box.
+// The Ethiopian school year is identified by a single Ethiopian year
+// (Meskerem–Sene/Hamle), so this shows just that, with the two-Gregorian-
+// year span in brackets per the portal's Ethiopian-first date convention.
+// Recomputes itself automatically every Ethiopian New Year since it's
+// derived from today's date, not a stored value.
+function renderTopbarAcademicYear() {
+    const el = document.getElementById('topbar-academic-year-text');
+    if (!el) return;
+    if (typeof EthCal === 'undefined') { el.textContent = '—'; return; }
+    const todayEth = EthCal.toEthiopian(new Date());
+    const gcStart = EthCal.toGregorianDate(todayEth.year, 1, 1).getFullYear(); // Meskerem 1 of this EC year
+    el.textContent = t('sa_topbar_academic_year', { year: todayEth.year, gcRange: `${gcStart}/${gcStart + 1}` });
 }
 
 // The top-bar's "Semester: Open/Closed" chip — a lightweight read of the
@@ -110,8 +127,125 @@ async function loadTopbarSemester() {
     }
 }
 
-// Principal sees every section; Admin VP / Academic VP only see the
-// nav items whose data-titles list includes their own title.
+// ==========================================================
+// NOTIFICATIONS (bell) DROPDOWN
+// Independent of the Dashboard page — works from anywhere in the portal,
+// and is role-aware: each title only ever sees the items it actually has
+// authority over (mirrors the server's own role gates), with the
+// absence-request items rendered as real Approve/Reject buttons rather
+// than plain text, wired straight into the same decide functions the
+// dedicated list pages already use.
+// ==========================================================
+let ALERTS_DROPDOWN_OPEN = false;
+
+function toggleAlertsDropdown() {
+    const panel = document.getElementById('sa-alerts-dropdown');
+    ALERTS_DROPDOWN_OPEN = !ALERTS_DROPDOWN_OPEN;
+    panel.style.display = ALERTS_DROPDOWN_OPEN ? 'flex' : 'none';
+    if (ALERTS_DROPDOWN_OPEN) loadAlertsDropdown();
+}
+
+document.addEventListener('click', (e) => {
+    const wrap = document.getElementById('sa-alerts-wrap');
+    if (ALERTS_DROPDOWN_OPEN && wrap && !wrap.contains(e.target)) {
+        ALERTS_DROPDOWN_OPEN = false;
+        document.getElementById('sa-alerts-dropdown').style.display = 'none';
+    }
+});
+
+function alertItemHtml({ title, meta, actionsHtml }) {
+    return `<div class="alert-item">
+        <div class="alert-item-title">${title}</div>
+        ${meta ? `<div class="alert-item-meta">${meta}</div>` : ''}
+        ${actionsHtml ? `<div class="alert-item-actions">${actionsHtml}</div>` : ''}
+    </div>`;
+}
+
+// Fetches this role's own pending items, updates the bell badge, and (if
+// the panel happens to be open) re-renders its contents. Safe to call
+// often — on init, on bell click, and after every approve/reject so the
+// badge count and list stay in sync without a manual page refresh.
+async function loadAlertsDropdown() {
+    if (!CURRENT_TITLE) return;
+    const badge = document.getElementById('sa-alerts-count');
+    const body = document.getElementById('sa-alerts-dropdown-body');
+    let items = [];
+
+    try {
+        if (CURRENT_TITLE === 'Admin VP') {
+            const res = await apiFetch(`${API_BASE}/api/admin/teacher-absence-requests`);
+            const rows = res.ok ? await res.json() : [];
+            items = rows.map(r => alertItemHtml({
+                title: `${lucideIcon('user', 15)} ${escapeHtml(r.first_name)} ${escapeHtml(r.last_name)} (${r.teacher_id})`,
+                meta: `${t('sa_nav_absence')}: ${formatEthDateRange(r.date_from, r.date_to)}${r.reason ? ' · ' + escapeHtml(r.reason) : ''}`,
+                actionsHtml: `
+                    <button class="btn btn-success" onclick="decideTeacherAbsence(${r.request_id}, 'approve', 'admin')">${t('sa_approve')}</button>
+                    <button class="btn btn-danger" onclick="decideTeacherAbsence(${r.request_id}, 'reject', 'admin')">${t('sa_reject')}</button>
+                    <button class="btn btn-ghost" onclick="navigateToPage('absence')">${t('sa_view')}</button>`
+            }));
+        } else if (CURRENT_TITLE === 'Academic VP') {
+            const res = await apiFetch(`${API_BASE}/api/admin/absence-requests`);
+            const rows = res.ok ? await res.json() : [];
+            items = rows.map(r => alertItemHtml({
+                title: `${lucideIcon('user', 15)} ${escapeHtml(r.first_name)} ${escapeHtml(r.last_name)} (${r.student_id})`,
+                meta: `${r.class_level}-${r.section} · ${formatEthDateRange(r.date_from, r.date_to)}`,
+                actionsHtml: `
+                    <button class="btn btn-success" onclick="decideStudentAbsence(${r.request_id}, 'approve')">${t('sa_approve')}</button>
+                    <button class="btn btn-danger" onclick="decideStudentAbsence(${r.request_id}, 'reject')">${t('sa_reject')}</button>
+                    <button class="btn btn-ghost" onclick="navigateToPage('student-absence-escalations')">${t('sa_view')}</button>`
+            }));
+        } else if (CURRENT_TITLE === 'Principal') {
+            const [escRes, casesRes, docsRes] = await Promise.all([
+                apiFetch(`${API_BASE}/api/principal/teacher-absence-requests`),
+                apiFetch(`${API_BASE}/api/principal/disciplinary-cases`),
+                apiFetch(`${API_BASE}/api/principal/teacher-document-requests`)
+            ]);
+            const escalated = escRes.ok ? await escRes.json() : [];
+            const cases = casesRes.ok ? await casesRes.json() : [];
+            const docs = docsRes.ok ? await docsRes.json() : [];
+
+            items = escalated.map(r => alertItemHtml({
+                title: `${lucideIcon('triangle-alert', 15)} ${escapeHtml(r.first_name)} ${escapeHtml(r.last_name)} (${r.teacher_id})`,
+                meta: `${t('sa_nav_escalated_absence')}: ${formatEthDateRange(r.date_from, r.date_to)}${r.reason ? ' · ' + escapeHtml(r.reason) : ''}`,
+                actionsHtml: `
+                    <button class="btn btn-success" onclick="decideTeacherAbsence(${r.request_id}, 'approve', 'principal')">${t('sa_approve')}</button>
+                    <button class="btn btn-danger" onclick="decideTeacherAbsence(${r.request_id}, 'reject', 'principal')">${t('sa_reject')}</button>
+                    <button class="btn btn-ghost" onclick="navigateToPage('escalated-absence')">${t('sa_view')}</button>`
+            }));
+            items = items.concat(cases.map(r => alertItemHtml({
+                title: `${lucideIcon('shield-alert', 15)} ${escapeHtml(r.full_name || r.student_id)}`,
+                meta: escapeHtml(r.description || ''),
+                actionsHtml: `<button class="btn btn-ghost" onclick="navigateToPage('disciplinary')">${t('sa_view')}</button>`
+            })));
+            items = items.concat(docs.map(r => alertItemHtml({
+                title: `${lucideIcon('signature', 15)} ${escapeHtml(r.teacher_name)} (${r.teacher_id})`,
+                meta: r.doc_type === 'signature' ? t('sa_doc_type_signature') : t('sa_doc_type_id_photo'),
+                actionsHtml: `<button class="btn btn-ghost" onclick="navigateToPage('document-approvals')">${t('sa_view')}</button>`
+            })));
+        }
+    } catch (err) {
+        console.error('loadAlertsDropdown error:', err);
+    }
+
+    if (badge) {
+        if (items.length > 0) { badge.style.display = 'flex'; badge.textContent = items.length; }
+        else badge.style.display = 'none';
+    }
+    if (body) {
+        body.innerHTML = items.length > 0 ? items.join('') : `<div class="alerts-dropdown-empty">${t('sa_no_flags')}</div>`;
+    }
+}
+
+// Small helper so a dropdown item's "View" button can jump straight to the
+// right nav section (reuses whatever nav-click wiring already exists —
+// just simulates a click on the matching sidebar link).
+function navigateToPage(page) {
+    ALERTS_DROPDOWN_OPEN = false;
+    document.getElementById('sa-alerts-dropdown').style.display = 'none';
+    document.querySelector(`#sa-nav-menu [data-page="${page}"]`)?.click();
+}
+
+
 function filterNavByTitle(title) {
     document.querySelectorAll('#sa-nav-menu [data-titles]').forEach(el => {
         const allowed = el.getAttribute('data-titles').split(',').map(s => s.trim());
@@ -150,6 +284,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 'escalated-absence': loadEscalatedAbsence,
                 disciplinary: loadDisciplinaryCases,
                 'teacher-audit': loadTeacherAudit,
+                'subject-entry-requests': loadSubjectEntryRequests,
+                'analysis-report': loadAnalysisReport,
                 'document-approvals': loadDocumentApprovals,
                 recognition: loadRecognition,
                 students: loadStudents,
@@ -159,12 +295,21 @@ document.addEventListener('DOMContentLoaded', () => {
             };
             if (loaders[page]) loaders[page]();
 
-            if (window.innerWidth <= 900) document.getElementById('sidebar').classList.remove('open');
+            if (window.innerWidth <= 900) {
+                document.getElementById('sidebar').classList.remove('open');
+                document.getElementById('sidebar-backdrop')?.classList.remove('active');
+            }
         });
     });
 
     document.getElementById('sidebar-toggle')?.addEventListener('click', () => {
         document.getElementById('sidebar').classList.toggle('open');
+        document.getElementById('sidebar-backdrop')?.classList.toggle('active');
+    });
+
+    document.getElementById('sidebar-backdrop')?.addEventListener('click', () => {
+        document.getElementById('sidebar').classList.remove('open');
+        document.getElementById('sidebar-backdrop').classList.remove('active');
     });
 
     document.getElementById('sa-logout-btn').addEventListener('click', async (e) => {
@@ -191,6 +336,7 @@ document.addEventListener('DOMContentLoaded', () => {
     wireTeacherSearch('ta-teacher-search', 'ta-teacher-search-btn', 'ta-teacher-search-results', 'ta-teacher-select');
     wireTeacherSearch('hr-teacher-search', 'hr-teacher-search-btn', 'hr-teacher-search-results', 'hr-teacher-select');
     document.getElementById('subj-add-btn')?.addEventListener('click', addSubjectConfig);
+    populateSubjectCatalogOptions();
     document.getElementById('semester-start-btn')?.addEventListener('click', startSemester);
     document.getElementById('semester-close-btn')?.addEventListener('click', closeSemester);
     document.getElementById('send-warning-btn')?.addEventListener('click', sendConductWarning);
@@ -211,8 +357,12 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('msg-box-sent-btn')?.addEventListener('click', () => switchMessageBox('sent'));
     document.getElementById('profile-signature-file')?.addEventListener('change', (e) => uploadAdminDocument(e, 'signature'));
     document.getElementById('profile-stamp-file')?.addEventListener('change', (e) => uploadAdminDocument(e, 'stamp'));
+    document.getElementById('profile-school-seal-file')?.addEventListener('change', uploadSchoolSeal);
     document.getElementById('profile-avatar-file')?.addEventListener('change', uploadAdminAvatar);
+    document.getElementById('profile-id-photo-file')?.addEventListener('change', uploadAdminIdPhoto);
     document.getElementById('msg-box-teachers-btn')?.addEventListener('click', () => switchMessageBox('teachers'));
+    document.getElementById('ar-load-btn')?.addEventListener('click', loadAnalysisReport);
+    document.getElementById('ar-print-btn')?.addEventListener('click', printAnalysisReport);
 
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -227,6 +377,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // re-render dynamic (JS-built) content when the language toggle is used
 window.onSisLangChange = () => {
     loadTopbarSemester(); // topbar chip lives outside any single page, so refresh it unconditionally
+    renderTopbarAcademicYear();
     const active = document.querySelector('.page-content.active');
     if (active) {
         const page = active.id.replace('page-', '');
@@ -236,6 +387,8 @@ window.onSisLangChange = () => {
             'marks-review': loadMarksReview, 'mark-cutoff': loadMarkCutoffPage, semester: loadSemesterStatus,
             'escalated-absence': loadEscalatedAbsence, disciplinary: loadDisciplinaryCases,
             'teacher-audit': loadTeacherAudit,
+            'subject-entry-requests': loadSubjectEntryRequests,
+            'analysis-report': loadAnalysisReport,
             'document-approvals': loadDocumentApprovals, recognition: loadRecognition, students: loadStudents,
             messages: () => (CURRENT_MESSAGE_BOX === 'teachers' ? loadContactThreads() : loadMessages(CURRENT_MESSAGE_BOX || 'inbox')),
             'id-card': () => (adminIdCardData ? renderAdminIdCard(adminIdCardData) : loadAdminIdCard())
@@ -256,13 +409,14 @@ async function loadDashboard() {
 
     const stats = [];
     const widgets = [];
+    widgets.push(renderEthCalendarWidget());
 
     try {
         const studentStatsRes = await apiFetch(`${API_BASE}/api/student-stats`);
         if (studentStatsRes.ok) {
             const s = await studentStatsRes.json();
-            const sub = `<span class="stat-sub-item">👦 ${s.male || 0}</span><span class="stat-sub-item">👧 ${s.female || 0}</span>`;
-            stats.push(statCard('🎒', t('sa_stat_total_students'), s.total, '', null, sub));
+            const sub = `<span class="stat-sub-item">${lucideIcon('mars', 14)} ${s.male || 0}</span><span class="stat-sub-item">${lucideIcon('venus', 14)} ${s.female || 0}</span>`;
+            stats.push(statCard(lucideIcon('users'), t('sa_stat_total_students'), s.total, '', null, sub));
         }
 
         if (CURRENT_TITLE === 'Admin VP') {
@@ -274,8 +428,9 @@ async function loadDashboard() {
             const textbooks = textbooksRes.ok ? await textbooksRes.json() : { log: [] };
             const lostCount = (textbooks.log || []).filter(r => r.status === 'lost').length;
 
-            stats.push(statCard('📝', t('sa_stat_pending_teacher_absence'), pendingAbsence.length, pendingAbsence.length > 0 ? 'warning' : ''));
-            stats.push(statCard('📘', t('sa_stat_lost_textbooks'), lostCount, lostCount > 0 ? 'danger' : ''));
+            stats.push(statCard(lucideIcon('clipboard-list'), t('sa_stat_pending_teacher_absence'), pendingAbsence.length, pendingAbsence.length > 0 ? 'warning' : ''));
+            stats.push(statCard(lucideIcon('book-x'), t('sa_stat_lost_textbooks'), lostCount, lostCount > 0 ? 'danger' : ''));
+            loadAlertsDropdown();
         }
 
         if (CURRENT_TITLE === 'Academic VP') {
@@ -287,36 +442,39 @@ async function loadDashboard() {
             const marks = marksRes.ok ? await marksRes.json() : [];
             const notPushed = marks.filter(m => !m.pushed).length;
 
-            stats.push(statCard('🎓', t('sa_stat_current_term'), term.current_term || '—', ''));
-            stats.push(statCard('📊', t('sa_stat_homerooms_not_pushed'), notPushed, notPushed > 0 ? 'warning' : 'success'));
+            stats.push(statCard(lucideIcon('calendar'), t('sa_stat_current_term'), term.current_term || '—', ''));
+            stats.push(statCard(lucideIcon('send'), t('sa_stat_homerooms_not_pushed'), notPushed, notPushed > 0 ? 'warning' : 'success'));
+            loadAlertsDropdown();
         }
 
         if (CURRENT_TITLE === 'Principal') {
-            const [escalatedRes, casesRes, docsRes, leaveRes, perfRes] = await Promise.all([
+            const [escalatedRes, casesRes, docsRes, leaveRes, perfRes, lastSemesterRes] = await Promise.all([
                 apiFetch(`${API_BASE}/api/principal/teacher-absence-requests`),
                 apiFetch(`${API_BASE}/api/principal/disciplinary-cases`),
                 apiFetch(`${API_BASE}/api/principal/teacher-document-requests`),
                 apiFetch(`${API_BASE}/api/principal/students-on-leave`),
-                apiFetch(`${API_BASE}/api/principal/school-performance`)
+                apiFetch(`${API_BASE}/api/principal/school-performance`),
+                apiFetch(`${API_BASE}/api/principal/last-semester-performance`)
             ]);
             const escalated = escalatedRes.ok ? await escalatedRes.json() : [];
             const cases = casesRes.ok ? await casesRes.json() : [];
             const docs = docsRes.ok ? await docsRes.json() : [];
             const onLeave = leaveRes.ok ? await leaveRes.json() : [];
             const performance = perfRes.ok ? await perfRes.json() : null;
+            const lastSemester = lastSemesterRes.ok ? await lastSemesterRes.json() : null;
             STUDENTS_ON_LEAVE_CACHE = onLeave;
 
             const currentlyOnLeave = onLeave.filter(r => r.currently_on_leave).length;
 
-            stats.push(statCard('🚨', t('sa_stat_escalated_absence'), escalated.length, escalated.length > 0 ? 'danger' : ''));
-            stats.push(statCard('🛑', t('sa_stat_pending_cases'), cases.length, cases.length > 0 ? 'danger' : ''));
-            stats.push(statCard('🖋️', t('sa_stat_pending_documents'), docs.length, docs.length > 0 ? 'warning' : ''));
-            stats.push(statCard('🌴', t('sa_stat_students_on_leave'), currentlyOnLeave, '', 'openStudentsOnLeaveModal()'));
+            stats.push(statCard(lucideIcon('triangle-alert'), t('sa_stat_escalated_absence'), escalated.length, escalated.length > 0 ? 'danger' : ''));
+            stats.push(statCard(lucideIcon('shield-alert'), t('sa_stat_pending_cases'), cases.length, cases.length > 0 ? 'danger' : ''));
+            stats.push(statCard(lucideIcon('signature'), t('sa_stat_pending_documents'), docs.length, docs.length > 0 ? 'warning' : ''));
+            stats.push(statCard(lucideIcon('plane-takeoff'), t('sa_stat_students_on_leave'), currentlyOnLeave, '', 'openStudentsOnLeaveModal()'));
 
-            const alertsCount = escalated.length + cases.length + docs.length;
-            const alertsBadge = document.getElementById('sa-alerts-count');
-            if (alertsCount > 0) { alertsBadge.style.display = 'flex'; alertsBadge.textContent = alertsCount; }
-            else alertsBadge.style.display = 'none';
+            // Bell badge + dropdown contents — shared logic in
+            // loadAlertsDropdown() so the count here always matches what
+            // clicking the bell actually shows.
+            loadAlertsDropdown();
 
             // School Performance — four angles: academic marks, student
             // attendance (present/excused/unexcused), teacher attendance
@@ -359,6 +517,56 @@ async function loadDashboard() {
                 ], (cc.taught || 0) + (cc.missed || 0)));
             }
 
+            // Last Semester Performance — a frozen snapshot of the four
+            // charts above, taken the moment the previous semester was
+            // closed (see POST /api/term/close on the server). Principal-
+            // only, read-only: it doesn't recalculate, so it keeps showing
+            // exactly what the school looked like when that semester ended
+            // even after the live widgets above have reset for the new term.
+            if (lastSemester) {
+                const lsChartBlock = (heading, slices, total) => total > 0 ? `
+                    <div class="widget chart-widget">
+                        <h3>${heading}</h3>
+                        ${renderPieChart(slices, 120)}
+                    </div>` : '';
+
+                const la = lastSemester.academic || {};
+                const lsa = lastSemester.student_attendance || {};
+                const lta = lastSemester.teacher_attendance || {};
+                const lcc = lastSemester.class_coverage || {};
+
+                const archivedDate = lastSemester.archived_at ? formatEthDate(lastSemester.archived_at) : '';
+                widgets.push(`
+                    <div class="widget" style="grid-column: 1 / -1;">
+                        <h3>${t('sa_widget_last_semester')}
+                            <span class="badge badge-none">${escapeHtml(lastSemester.term || '')}</span>
+                        </h3>
+                        <p class="form-hint" style="margin-top:-8px;">${t('sa_last_semester_hint')} ${archivedDate ? `(${archivedDate})` : ''}</p>
+                        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:12px;">
+                            ${lsChartBlock(t('sa_widget_school_performance'), [
+                                { label: t('sa_perf_good'), value: la.good, color: 'var(--success)' },
+                                { label: t('sa_perf_average'), value: la.average, color: 'var(--warning)' },
+                                { label: t('sa_perf_poor'), value: la.poor, color: 'var(--danger)' },
+                                { label: t('sa_perf_none'), value: la.none, color: 'var(--muted)' }
+                            ], la.total)}
+                            ${lsChartBlock(t('sa_widget_student_attendance'), [
+                                { label: t('sa_att_present'), value: lsa.present, color: 'var(--success)' },
+                                { label: t('sa_att_excused'), value: lsa.excused, color: 'var(--info)' },
+                                { label: t('sa_att_unexcused'), value: lsa.unexcused, color: 'var(--danger)' }
+                            ], (lsa.present || 0) + (lsa.excused || 0) + (lsa.unexcused || 0))}
+                            ${lsChartBlock(t('sa_widget_teacher_attendance'), [
+                                { label: t('sa_att_present'), value: lta.present, color: 'var(--success)' },
+                                { label: t('sa_att_excused'), value: lta.excused, color: 'var(--info)' },
+                                { label: t('sa_att_unexcused'), value: lta.unexcused, color: 'var(--danger)' }
+                            ], (lta.present || 0) + (lta.excused || 0) + (lta.unexcused || 0))}
+                            ${lsChartBlock(t('sa_widget_class_coverage'), [
+                                { label: t('sa_coverage_taught'), value: lcc.taught, color: 'var(--success)' },
+                                { label: t('sa_coverage_missed'), value: lcc.missed, color: 'var(--danger)' }
+                            ], (lcc.taught || 0) + (lcc.missed || 0))}
+                        </div>
+                    </div>`);
+            }
+
             // Teacher Performance & Red-Flag Audit widget
             const auditRes = await apiFetch(`${API_BASE}/api/principal/teacher-audit`);
             if (auditRes.ok) {
@@ -387,6 +595,126 @@ async function loadDashboard() {
         console.error('loadDashboard error:', err);
         statsEl.innerHTML = `<div class="widget-empty">${t('sa_load_error')}</div>`;
     }
+}
+
+// Small inline-SVG Lucide icon set. Returns markup with no fixed
+// color — it uses stroke="currentColor" so it always matches whatever
+// text color its container (e.g. .stat-icon) is styled with.
+const LUCIDE_PATHS = {
+    users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/>',
+    'triangle-alert': '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+    'shield-alert': '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
+    signature: '<path d="m21 17-2.156-1.868A.5.5 0 0 0 18 15.5v.5a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1c0-2.545-3.991-3.97-8.5-4a1 1 0 0 0 0 5c4.153 0 4.745-11.295 5.708-13.5a2.5 2.5 0 1 1 3.31 3.284"/><path d="M3 21h18"/>',
+    'plane-takeoff': '<path d="M2 22h20"/><path d="M6.36 17.4 4 17l-2-4 1.1-.55a2 2 0 0 1 1.8 0l.17.1a2 2 0 0 0 1.8 0L8 12 5 6l.9-.45a2 2 0 0 1 2.09.2l4.02 3a2 2 0 0 0 2.1.2l4.19-2.06a2.41 2.41 0 0 1 1.73-.17L21 7a1.4 1.4 0 0 1 .87 1.99l-.38.76c-.23.46-.6.84-1.07 1.08L7.58 17.2a2 2 0 0 1-1.22.18Z"/>',
+    'circle-check': '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+    'circle-x': '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
+    'trending-up': '<path d="M16 7h6v6"/><path d="m22 7-8.5 8.5-5-5L2 17"/>',
+    'book-x': '<path d="m14.5 7-5 5"/><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"/><path d="m9.5 7 5 5"/>',
+    'clipboard-list': '<rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/>',
+    calendar: '<path d="M8 2v3"/><path d="M16 2v3"/><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/>',
+    'calendar-days': '<path d="M8 2v3"/><path d="M16 2v3"/><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M8 14h.01"/><path d="M12 14h.01"/><path d="M16 14h.01"/><path d="M8 18h.01"/><path d="M12 18h.01"/><path d="M16 18h.01"/>',
+    send: '<path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/>',
+    venus: '<path d="M12 15v7"/><path d="M9 19h6"/><circle cx="12" cy="9" r="6"/>',
+    mars: '<path d="M16 3h5v5"/><path d="m21 3-6.75 6.75"/><circle cx="10" cy="14" r="6"/>',
+    award: '<path d="m15.477 12.89 1.515 8.526a.5.5 0 0 1-.81.47l-3.58-2.687a1 1 0 0 0-1.197 0l-3.586 2.686a.5.5 0 0 1-.81-.469l1.514-8.526"/><circle cx="12" cy="8" r="6"/>',
+    'log-out': '<path d="m16 17 5-5-5-5"/><path d="M21 12H9"/><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>',
+    menu: '<path d="M4 5h16"/><path d="M4 12h16"/><path d="M4 19h16"/>',
+    search: '<path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/>',
+    bell: '<path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/>',
+    camera: '<path d="M13.997 4a2 2 0 0 1 1.76 1.05l.486.9A2 2 0 0 0 18.003 7H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1.997a2 2 0 0 0 1.759-1.048l.489-.904A2 2 0 0 1 10.004 4z"/><circle cx="12" cy="13" r="3"/>',
+    user: '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+    'book-open': '<path d="M12 5v16"/><path d="M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/>'
+};
+// ---------- Ethiopian calendar helpers (shared across the whole app) ----------
+// Every date shown anywhere in the portal should go through this, so the
+// Ethiopian calendar is primary and the Gregorian date rides along in
+// brackets, per school policy. Falls back to the plain ISO string if the
+// date is missing/invalid, or if ethiopian-calendar.js failed to load.
+function formatEthDate(dateInput) {
+    if (!dateInput) return '—';
+    if (typeof EthCal === 'undefined') return dateInput;
+    const arg = (dateInput instanceof Date) ? dateInput : String(dateInput).slice(0, 10);
+    try {
+        return EthCal.formatWithGC(arg, { lang: getCurrentLang(), gcLabel: t('sa_eth_cal_gc') });
+    } catch {
+        return dateInput;
+    }
+}
+
+// Same idea, but for a from→to range: only prints the "(GC: ...)" once at
+// the end so two adjacent Ethiopian dates don't each carry their own
+// bracket, which reads noisily in a table cell.
+function formatEthDateRange(fromStr, toStr) {
+    if (!fromStr && !toStr) return '—';
+    if (typeof EthCal === 'undefined') return `${fromStr || ''} → ${toStr || ''}`;
+    const lang = getCurrentLang();
+    const gcLabel = t('sa_eth_cal_gc');
+    try {
+        const fromEth = EthCal.formatWithGC(String(fromStr).slice(0, 10), { lang, ethOnly: true });
+        const toEth = toStr ? EthCal.formatWithGC(String(toStr).slice(0, 10), { lang, ethOnly: true }) : null;
+        const fromGC = EthCal.formatWithGC(String(fromStr).slice(0, 10), { lang, gcOnly: true });
+        const toGC = toStr ? EthCal.formatWithGC(String(toStr).slice(0, 10), { lang, gcOnly: true }) : null;
+        if (!toEth || toEth === fromEth) return `${fromEth} (${gcLabel}: ${fromGC})`;
+        return `${fromEth} → ${toEth} (${gcLabel}: ${fromGC} → ${toGC})`;
+    } catch {
+        return `${fromStr || ''} → ${toStr || ''}`;
+    }
+}
+
+// Timestamp variant — Ethiopian calendar date (GC in brackets) plus the
+// clock time, for message threads and "last updated" style fields.
+function formatEthDateTime(dateStr) {
+    if (!dateStr) return '—';
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return String(dateStr);
+    const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return `${formatEthDate(d)} · ${timeStr}`;
+}
+
+// Dashboard widget: today's Ethiopian date + a running list of upcoming
+// Ethiopian public holidays (fixed ones computed from the Ethiopian
+// calendar itself so they're always correct; movable lunar/Easter ones
+// come from EthCal's small reference table — see ethiopian-calendar.js).
+function renderEthCalendarWidget() {
+    if (typeof EthCal === 'undefined') return '';
+    const lang = getCurrentLang();
+    const now = new Date();
+    const eth = EthCal.toEthiopian(now);
+    if (!eth) return '';
+    const weekday = EthCal.weekdayName(now, lang);
+    const gcStr = now.toLocaleDateString(lang === 'am' ? 'en-GB' : 'en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+
+    const upcoming = EthCal.getUpcomingHolidays(now, 6);
+    const rows = upcoming.length > 0 ? upcoming.map(h => {
+        const label = h.daysAway === 0 ? t('sa_eth_cal_today_bang')
+            : h.daysAway === 1 ? t('sa_eth_cal_tomorrow')
+            : t('sa_eth_cal_in_days', { n: h.daysAway });
+        const gDateStr = h.date.toLocaleDateString(lang === 'am' ? 'en-GB' : 'en-US', { month: 'short', day: 'numeric' });
+        return `
+            <div class="eth-holiday-row">
+                <div class="eth-holiday-date-chip">${gDateStr}</div>
+                <div class="eth-holiday-info">
+                    <div class="eth-holiday-name">${t(h.key)}${h.tentative ? ` <span class="eth-holiday-tentative">(${t('sa_eth_cal_tentative')})</span>` : ''}</div>
+                </div>
+                <div class="eth-holiday-countdown">${label}</div>
+            </div>`;
+    }).join('') : `<div class="widget-empty">${t('sa_eth_cal_no_upcoming')}</div>`;
+
+    return `
+        <div class="widget eth-cal-widget">
+            <h3><span class="eth-cal-title">${lucideIcon('calendar-days', 18)} ${t('sa_eth_cal_widget_title')}</span></h3>
+            <div class="eth-cal-today">
+                <div class="eth-cal-today-eth">${eth.day} ${EthCal.monthName(eth.month, lang)} ${eth.year}</div>
+                <div class="eth-cal-today-meta">${weekday} · ${t('sa_eth_cal_gc')}: ${gcStr}</div>
+            </div>
+            <div class="eth-cal-holidays-heading">${t('sa_eth_cal_upcoming_holidays')}</div>
+            <div class="eth-holiday-list">${rows}</div>
+        </div>`;
+}
+
+function lucideIcon(name, size = 22) {
+    const paths = LUCIDE_PATHS[name] || '';
+    return `<svg class="lucide-icon" xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
 }
 
 function statCard(icon, label, value, tone, onclick, sub) {
@@ -475,7 +803,7 @@ function openStudentsOnLeaveModal() {
                 <tr>
                     <td>${escapeHtml([r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' '))} (${r.student_id})</td>
                     <td>${escapeHtml(r.class_level)}-${escapeHtml(r.section)}${r.stream ? ' (' + escapeHtml(r.stream) + ')' : ''}</td>
-                    <td>${r.date_from} &rarr; ${r.date_to}</td>
+                    <td>${formatEthDateRange(r.date_from, r.date_to)}</td>
                     <td><span class="badge ${r.currently_on_leave ? 'badge-pending' : 'badge-none'}">${r.currently_on_leave ? t('sa_currently_on_leave') : t('sa_leave_completed')}</span></td>
                 </tr>`).join('')}</tbody>
         </table></div>`;
@@ -512,9 +840,9 @@ async function lookupPunctuality() {
     if (!data) { resultEl.innerHTML = ''; return; }
     resultEl.innerHTML = `
         <div class="stat-row" style="margin-top:14px;">
-            ${statCard('✅', t('sa_present_count'), data.present_count, 'success')}
-            ${statCard('❌', t('sa_absent_count'), data.absent_count, data.absent_count > 0 ? 'danger' : '')}
-            ${statCard('📈', t('sa_punctuality_rate'), data.punctuality_rate != null ? data.punctuality_rate + '%' : '—', '')}
+            ${statCard(lucideIcon('circle-check'), t('sa_present_count'), data.present_count, 'success')}
+            ${statCard(lucideIcon('circle-x'), t('sa_absent_count'), data.absent_count, data.absent_count > 0 ? 'danger' : '')}
+            ${statCard(lucideIcon('trending-up'), t('sa_punctuality_rate'), data.punctuality_rate != null ? data.punctuality_rate + '%' : '—', '')}
         </div>`;
 }
 
@@ -544,7 +872,7 @@ async function loadTextbooks() {
 
     summaryEl.innerHTML = (data.summary || []).map(s => `
         <div class="stat-card">
-            <div class="stat-icon">📘</div>
+            <div class="stat-icon">${lucideIcon('book-open')}</div>
             <div><div class="stat-label">${s.subject_name}</div>
             <div class="stat-value" style="font-size:1rem;">${s.returned_count}/${s.total_issued} ${t('sa_returned_lower')}, ${s.lost_count} ${t('sa_lost_lower')}</div></div>
         </div>`).join('') || `<div class="widget-empty">${t('sa_no_data')}</div>`;
@@ -567,17 +895,20 @@ async function loadTextbooks() {
 }
 
 async function decidePenalty(student_id, subject_id) {
-    const decision = prompt(t('sa_prompt_penalty_decision'));
-    if (!decision || !['waived', 'charged'].includes(decision.trim())) return;
+    const decision = await showChoiceModal(t('sa_prompt_penalty_decision'), [
+        { value: 'waived', label: t('sa_penalty_waived'), className: 'btn-success' },
+        { value: 'charged', label: t('sa_penalty_charged'), className: 'btn-danger' }
+    ]);
+    if (!decision) return;
     let amount = null;
-    if (decision.trim() === 'charged') {
-        amount = prompt(t('sa_prompt_penalty_amount'));
+    if (decision === 'charged') {
+        amount = await showPromptModal(t('sa_prompt_penalty_amount'), { multiline: false, required: true });
         if (amount === null) return;
     }
-    const note = prompt(t('sa_prompt_penalty_note')) || '';
+    const note = await showPromptModal(t('sa_prompt_penalty_note')) || '';
     const res = await apiFetch(`${API_BASE}/api/admin/textbooks/penalty`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ student_id, subject_id, decision: decision.trim(), amount, note })
+        body: JSON.stringify({ student_id, subject_id, decision, amount, note })
     });
     await handleJsonResponse(res, t('sa_penalty_recorded'));
     loadTextbooks();
@@ -601,7 +932,7 @@ async function loadTeacherAbsenceRequests() {
     tbody.innerHTML = rows.map(r => `
         <tr>
             <td>${escapeHtml(r.first_name)} ${escapeHtml(r.last_name)} (${r.teacher_id})</td>
-            <td>${r.date_from} → ${r.date_to}</td>
+            <td>${formatEthDateRange(r.date_from, r.date_to)}</td>
             <td>${escapeHtml(r.reason || '—')}</td>
             <td>
                 <button class="btn btn-sm btn-success" onclick="decideTeacherAbsence(${r.request_id}, 'approve', 'admin')">${t('sa_approve')}</button>
@@ -625,7 +956,7 @@ async function loadStudentAbsenceEscalations() {
         <tr>
             <td>${escapeHtml(r.first_name)} ${escapeHtml(r.last_name)} (${r.student_id})</td>
             <td>${r.class_level}-${r.section}</td>
-            <td>${r.date_from} → ${r.date_to}</td>
+            <td>${formatEthDateRange(r.date_from, r.date_to)}</td>
             <td>${escapeHtml(r.reason || '—')}</td>
             <td>
                 <button class="btn btn-sm btn-success" onclick="decideStudentAbsence(${r.request_id}, 'approve')">${t('sa_approve')}</button>
@@ -638,7 +969,7 @@ async function decideTeacherAbsence(request_id, action, scope) {
     const base = scope === 'principal' ? '/api/principal/teacher-absence-requests' : '/api/admin/teacher-absence-requests';
     let body = {};
     if (action === 'reject') {
-        const reason = prompt(t('sa_prompt_rejection_reason')) || '';
+        const reason = await showPromptModal(t('sa_prompt_rejection_reason')) || '';
         body = { reason };
     }
     const res = await apiFetch(`${API_BASE}${base}/${request_id}/${action}`, {
@@ -646,12 +977,13 @@ async function decideTeacherAbsence(request_id, action, scope) {
     });
     await handleJsonResponse(res, t('sa_done'));
     if (scope === 'principal') loadEscalatedAbsence(); else loadTeacherAbsenceRequests();
+    if (typeof loadAlertsDropdown === 'function') loadAlertsDropdown();
 }
 
 async function decideStudentAbsence(request_id, action) {
     let body = {};
     if (action === 'reject') {
-        const reason = prompt(t('sa_prompt_rejection_reason')) || '';
+        const reason = await showPromptModal(t('sa_prompt_rejection_reason')) || '';
         body = { reason };
     }
     const res = await apiFetch(`${API_BASE}/api/admin/absence-requests/${request_id}/${action}`, {
@@ -659,6 +991,7 @@ async function decideStudentAbsence(request_id, action) {
     });
     await handleJsonResponse(res, t('sa_done'));
     loadStudentAbsenceEscalations();
+    if (typeof loadAlertsDropdown === 'function') loadAlertsDropdown();
 }
 
 // ==========================================================
@@ -727,7 +1060,7 @@ async function loadMarksReview() {
             <td>${escapeHtml(r.full_name)}</td>
             <td>${r.class_level}-${r.section} (${escapeHtml(r.stream || '')})</td>
             <td><span class="badge badge-${r.pushed ? 'approved' : 'pending'}">${r.pushed ? t('sa_pushed') : t('sa_not_pushed')}</span></td>
-            <td>${r.pushed_at ? new Date(r.pushed_at).toLocaleString() : '—'}</td>
+            <td>${r.pushed_at ? formatEthDateTime(r.pushed_at) : '—'}</td>
         </tr>`).join('');
 }
 
@@ -801,7 +1134,7 @@ async function loadEscalatedAbsence() {
     tbody.innerHTML = rows.map(r => `
         <tr>
             <td>${escapeHtml(r.first_name)} ${escapeHtml(r.last_name)} (${r.teacher_id})</td>
-            <td>${r.date_from} → ${r.date_to}</td>
+            <td>${formatEthDateRange(r.date_from, r.date_to)}</td>
             <td>${escapeHtml(r.reason || '—')}</td>
             <td>
                 <button class="btn btn-sm btn-success" onclick="decideTeacherAbsence(${r.request_id}, 'approve', 'principal')">${t('sa_approve')}</button>
@@ -833,14 +1166,15 @@ async function loadDisciplinaryCases() {
 }
 
 async function decideCase(case_id, decision) {
-    if (decision === 'terminated' && !confirm(t('sa_confirm_terminate'))) return;
-    const note = prompt(t('sa_prompt_decision_note')) || '';
+    if (decision === 'terminated' && !(await showConfirmModal(t('sa_confirm_terminate'), { danger: true }))) return;
+    const note = await showPromptModal(t('sa_prompt_decision_note')) || '';
     const res = await apiFetch(`${API_BASE}/api/principal/disciplinary-cases/${case_id}/decide`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ decision, note })
     });
     await handleJsonResponse(res, t('sa_case_decided'));
     loadDisciplinaryCases();
+    if (typeof loadAlertsDropdown === 'function') loadAlertsDropdown();
 }
 
 // ==========================================================
@@ -867,12 +1201,13 @@ async function loadDocumentApprovals() {
 
 async function decideDocumentRequest(request_id, action) {
     let body = {};
-    if (action === 'reject') body = { reason: prompt(t('sa_prompt_rejection_reason')) || '' };
+    if (action === 'reject') body = { reason: await showPromptModal(t('sa_prompt_rejection_reason')) || '' };
     const res = await apiFetch(`${API_BASE}/api/principal/teacher-document-requests/${request_id}/${action}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     });
     await handleJsonResponse(res, t('sa_done'));
     loadDocumentApprovals();
+    if (typeof loadAlertsDropdown === 'function') loadAlertsDropdown();
 }
 
 // ==========================================================
@@ -885,6 +1220,15 @@ async function loadRecognition() {
     if (!res.ok) { tbody.innerHTML = `<tr><td colspan="5">${t('sa_load_error')}</td></tr>`; return; }
     const data = await res.json();
     const ranked = (data.ranked || []).slice(0, 15);
+
+    const topFemaleRow = document.getElementById('sa-recognition-top-female-row');
+    if (topFemaleRow) {
+        const tf = (data.top_female || [])[0];
+        topFemaleRow.innerHTML = tf
+            ? statCard(lucideIcon('award'), t('sa_top_female_student'), `${escapeHtml(tf.full_name || tf.student_id)} — ${tf.year_average}`, 'accent')
+            : statCard(lucideIcon('award'), t('sa_top_female_student'), '—', '');
+    }
+
     if (ranked.length === 0) { tbody.innerHTML = `<tr><td colspan="5">${t('sa_no_data')}</td></tr>`; return; }
     tbody.innerHTML = ranked.map(r => `
         <tr>
@@ -898,6 +1242,105 @@ async function loadRecognition() {
                     : `<button class="btn btn-sm btn-accent" onclick="issueAward('${r.student_id}')">${t('sa_award')}</button>`)
                 : '—'}</td>
         </tr>`).join('');
+
+    loadTeacherLeaderboard();
+}
+
+// ==========================================================
+// TOP-PERFORMING TEACHERS (Principal / Academic VP / Admin VP)
+// ==========================================================
+async function loadTeacherLeaderboard() {
+    const tbody = document.getElementById('sa-teacher-leaderboard-tbody');
+    if (!tbody) return;
+    tbody.innerHTML = `<tr><td colspan="4">${t('sa_loading')}</td></tr>`;
+    const res = await apiFetch(`${API_BASE}/api/school/teacher-leaderboard`);
+    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="4">${t('sa_load_error')}</td></tr>`; return; }
+    const rows = await res.json();
+    if (!rows || rows.length === 0) { tbody.innerHTML = `<tr><td colspan="4">${t('sa_no_data')}</td></tr>`; return; }
+    tbody.innerHTML = rows.map((r, i) => `
+        <tr>
+            <td>#${i + 1}</td>
+            <td>${escapeHtml(r.full_name)}</td>
+            <td>${r.punctuality_rate != null ? r.punctuality_rate + '%' : '—'}</td>
+            <td>${r.absent_days_30d}</td>
+        </tr>`).join('');
+}
+
+// ==========================================================
+// SUBJECT ENTRY REQUESTS (Academic VP) — a homeroom teacher asking to
+// enter marks for another subject, usually because that subject's own
+// teacher is unavailable. See the matching backend comment on
+// subject_entry_requests for the full picture.
+// ==========================================================
+async function loadSubjectEntryRequests() {
+    const tbody = document.getElementById('sa-subject-entry-requests-tbody');
+    tbody.innerHTML = `<tr><td colspan="6">${t('sa_loading')}</td></tr>`;
+    const res = await apiFetch(`${API_BASE}/api/academic-vp/subject-entry-requests`);
+    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_load_error')}</td></tr>`; return; }
+    const rows = await res.json();
+    if (!rows || rows.length === 0) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_no_data')}</td></tr>`; return; }
+    tbody.innerHTML = rows.map(r => `
+        <tr>
+            <td><a href="#" onclick="openTeacherAuditModal('${r.teacher_id}'); return false;">${escapeHtml([r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' '))}</a></td>
+            <td>${escapeHtml(r.subject_name)}</td>
+            <td>${escapeHtml(r.class_level)}-${escapeHtml(r.section)}${r.stream ? ` (${escapeHtml(r.stream)})` : ''}</td>
+            <td>${escapeHtml(r.reason || '—')}</td>
+            <td>${formatEthDate(r.requested_at)}</td>
+            <td>
+                <button class="btn btn-sm btn-accent" onclick="decideSubjectEntryRequest(${r.id}, 'approve')">${t('sa_approve')}</button>
+                <button class="btn btn-sm btn-ghost" onclick="decideSubjectEntryRequest(${r.id}, 'reject')">${t('sa_reject')}</button>
+            </td>
+        </tr>`).join('');
+}
+
+async function decideSubjectEntryRequest(id, action) {
+    let body = {};
+    if (action === 'reject') body = { reason: await showPromptModal(t('sa_prompt_rejection_reason')) || '' };
+    const res = await apiFetch(`${API_BASE}/api/academic-vp/subject-entry-requests/${id}/${action}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    await handleJsonResponse(res, t('sa_done'));
+    loadSubjectEntryRequests();
+}
+
+// ==========================================================
+// SEMESTER / YEARLY ANALYSIS REPORT (Principal / Academic VP / Admin VP)
+// ==========================================================
+const AR_CATS = ['total_student', 'drop_out', 'tested', 'incomplete', 'band_0_49', 'band_50_74', 'band_75_100'];
+
+async function loadAnalysisReport() {
+    const tbody = document.getElementById('sa-analysis-report-tbody');
+    const term = document.getElementById('ar-term-select')?.value || 'Year';
+
+    // Only the Principal's account has a signature/seal on file to sign
+    // the PDF with (see /api/principal/analysis-report/pdf on the
+    // server) — Academic VP and Admin VP can view this same data above,
+    // but the print button would just 403 for them, so hide it instead
+    // of leaving a button that looks broken.
+    const printBtn = document.getElementById('ar-print-btn');
+    const printNote = document.getElementById('ar-print-note');
+    const isPrincipal = CURRENT_TITLE === 'Principal';
+    if (printBtn) printBtn.style.display = isPrincipal ? '' : 'none';
+    if (printNote) printNote.style.display = isPrincipal ? 'none' : '';
+
+    tbody.innerHTML = `<tr><td colspan="23">${t('sa_loading')}</td></tr>`;
+    const res = await apiFetch(`${API_BASE}/api/principal/analysis-report?term=${encodeURIComponent(term)}`);
+    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="23">${t('sa_load_error')}</td></tr>`; return; }
+    const data = await res.json();
+    const rowHtml = (r, isTotal) => `
+        <tr ${isTotal ? 'style="font-weight:bold;background:var(--bg-subtle,#f7f7f7);"' : ''}>
+            <td>${escapeHtml(String(r.class_level))}</td>
+            ${AR_CATS.map(k => `<td>${r[k].male}</td><td>${r[k].female}</td><td>${r[k].total}</td>`).join('')}
+            <td>${r.highest_rank_male}</td>
+            <td>${r.highest_rank_female}</td>
+        </tr>`;
+    if (!data.rows || data.rows.length === 0) { tbody.innerHTML = `<tr><td colspan="23">${t('sa_no_data')}</td></tr>`; return; }
+    tbody.innerHTML = data.rows.map(r => rowHtml(r, false)).join('') + rowHtml(data.totals, true);
+}
+
+function printAnalysisReport() {
+    const term = document.getElementById('ar-term-select')?.value || 'Year';
+    window.open(`${API_BASE}/api/principal/analysis-report/pdf?term=${encodeURIComponent(term)}`, '_blank');
 }
 
 async function issueAward(student_id) {
@@ -966,9 +1409,9 @@ function renderStudentsTable(list) {
     const female = list.filter(s => s.sex === 'Female').length;
     if (statRow) {
         statRow.innerHTML = [
-            statCard('🎒', t('sa_stat_total_students'), total, ''),
-            statCard('👦', t('sa_stat_male_students'), male, ''),
-            statCard('👧', t('sa_stat_female_students'), female, '')
+            statCard(lucideIcon('users'), t('sa_stat_total_students'), total, ''),
+            statCard(lucideIcon('mars'), t('sa_stat_male_students'), male, ''),
+            statCard(lucideIcon('venus'), t('sa_stat_female_students'), female, '')
         ].join('');
     }
     if (list.length === 0) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_no_data')}</td></tr>`; return; }
@@ -1058,7 +1501,7 @@ async function approveTransferRequest(request_id) {
 }
 
 async function rejectTransferRequest(request_id) {
-    const reason = prompt(t('sa_decline_reason_prompt')) || '';
+    const reason = await showPromptModal(t('sa_decline_reason_prompt')) || '';
     const res = await apiFetch(`${API_BASE}/api/principal/transfer-requests/${request_id}/reject`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason })
     });
@@ -1081,7 +1524,7 @@ async function loadTransferredStudents() {
             <td>${r.class_level}-${r.section}</td>
             <td>${escapeHtml(r.transfer_code || '—')}</td>
             <td><span class="badge ${r.transfer_status === 'completed' ? 'badge-approved' : 'badge-pending'}">${escapeHtml(r.transfer_status)}</span></td>
-            <td>${new Date(r.completed_at || r.initiated_at).toLocaleDateString()}</td>
+            <td>${formatEthDate(r.completed_at || r.initiated_at)}</td>
         </tr>`).join('');
 }
 
@@ -1105,7 +1548,7 @@ async function loadGraduationBatches() {
 
 async function openBatchModal(batch) {
     openModal(`<h3>${escapeHtml(batch)}</h3><div id="batch-modal-body">${t('sa_loading')}</div>
-        <div class="form-actions"><button class="btn btn-ghost" onclick="closeModal()">${t('sa_close')}</button></div>`);
+        <div class="form-actions"><button class="btn btn-ghost" onclick="closeModal()">${t('sa_close')}</button></div>`, 'modal-box-wide');
     const res = await apiFetch(`${API_BASE}/api/principal/graduation-batches/${encodeURIComponent(batch)}`);
     const body = document.getElementById('batch-modal-body');
     if (!body) return;
@@ -1169,9 +1612,20 @@ function wireTeacherSearch(inputId, btnId, resultsId, hiddenId) {
         }
         results.innerHTML = matches.slice(0, 8).map(tr => `
             <div class="badge badge-none" style="cursor:pointer; margin:2px 4px 2px 0; display:inline-block;"
-                 onclick="selectTeacherFromSearch('${inputId}','${resultsId}','${hiddenId}','${tr.teacher_id}', ${JSON.stringify(tr.full_name)})">
+                 data-teacher-id="${escapeHtml(tr.teacher_id)}" data-teacher-name="${escapeHtml(tr.full_name)}">
                 ${escapeHtml(tr.full_name)} (${tr.teacher_id})
             </div>`).join('');
+        // Delegated listeners on the freshly-rendered badges, rather than
+        // an inline onclick string — a teacher's full_name traveling
+        // through JSON.stringify() straight into a double-quoted onclick
+        // attribute would embed a raw " and silently corrupt/truncate the
+        // handler for every single result, which is exactly why clicking
+        // a suggestion did nothing.
+        results.querySelectorAll('[data-teacher-id]').forEach(el => {
+            el.addEventListener('click', () => {
+                selectTeacherFromSearch(inputId, resultsId, hiddenId, el.dataset.teacherId, el.dataset.teacherName);
+            });
+        });
     };
 
     btn?.addEventListener('click', runSearch);
@@ -1268,7 +1722,7 @@ async function acceptIncomingTeacher(incoming_id) {
 }
 
 async function declineIncomingTeacher(incoming_id) {
-    const reason = prompt(t('sa_decline_reason_prompt')) || '';
+    const reason = await showPromptModal(t('sa_decline_reason_prompt')) || '';
     const res = await apiFetch(`${API_BASE}/api/principal/incoming-teachers/${incoming_id}/decline`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason })
@@ -1402,7 +1856,7 @@ async function removeTeacherHomeroom(teacher_id) {
 // no separate password to set, so this is a one-click confirm rather
 // than a form.
 async function grantRegistrar(teacher_id) {
-    if (!confirm(t('sa_grant_registrar_confirm'))) return;
+    if (!(await showConfirmModal(t('sa_grant_registrar_confirm')))) return;
     const res = await apiFetch(`${API_BASE}/api/academic-vp/grant-registrar`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ teacher_id })
@@ -1412,7 +1866,7 @@ async function grantRegistrar(teacher_id) {
 }
 
 async function revokeRegistrar(teacher_id) {
-    if (!confirm(t('sa_revoke_registrar_confirm'))) return;
+    if (!(await showConfirmModal(t('sa_revoke_registrar_confirm'), { danger: true }))) return;
     const res = await apiFetch(`${API_BASE}/api/academic-vp/grant-registrar`, {
         method: 'DELETE', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ teacher_id })
@@ -1464,7 +1918,52 @@ async function saveTeacherAssignment() {
 // SUBJECT CONFIGURATION (Academic VP) — which subjects this school
 // actually teaches, tagged by stream, so they surface in the Subject &
 // Teaching Assignment form and the Timetable builder.
-// ==========================================================
+//
+// Subject Name is a dropdown, not free text, populated from
+// /api/academic-vp/subject-dictionary — the zone's own subject
+// dictionary, set by the Head of Education for the zone this school
+// belongs to (see /api/zonal/subject-dictionary). There's no
+// hardcoded list here anymore: two schools in different zones can see
+// two different subject lists (e.g. only the zone that teaches Nuer or
+// Dha-Anywaa as a mother tongue offers it), and the zone can add or
+// retire a subject without a code change. A mistyped/inconsistent
+// subject_name (e.g. "Phisics" vs "Physics") still can't sneak into
+// Subject Configuration, since the dropdown only ever offers exactly
+// what the dictionary contains and the server re-validates it.
+// A subject that's taught in more than one stream (Math, English, IT,
+// etc.) is meant to be added once PER stream it's taught in — there's
+// no "All Streams" shortcut (see subj-stream below); the
+// certificate/report-card/transcript generation already merges same-
+// named rows per student's own stream, so this doesn't reintroduce the
+// duplicate-subject-row bug.
+async function populateSubjectCatalogOptions() {
+    const select = document.getElementById('subj-name');
+    if (!select) return;
+    const placeholder = select.querySelector('option[value=""]');
+    try {
+        const res = await apiFetch(`${API_BASE}/api/academic-vp/subject-dictionary`);
+        const names = res.ok ? await res.json() : [];
+        select.innerHTML = '';
+        if (placeholder) select.appendChild(placeholder);
+        if (names.length === 0) {
+            const empty = document.createElement('option');
+            empty.value = '';
+            empty.disabled = true;
+            empty.textContent = t('sa_no_subject_dictionary');
+            select.appendChild(empty);
+            return;
+        }
+        names.forEach(name => {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            select.appendChild(opt);
+        });
+    } catch (err) {
+        console.error('populateSubjectCatalogOptions error:', err);
+    }
+}
+
 async function loadSubjectConfig() {
     const tbody = document.getElementById('sa-subject-config-tbody');
     if (!tbody) return;
@@ -1475,6 +1974,10 @@ async function loadSubjectConfig() {
     TA_SUBJECTS_CACHE = subjects;
     refreshAssignmentSubjectOptions();
     if (subjects.length === 0) { tbody.innerHTML = `<tr><td colspan="3">${t('sa_no_data')}</td></tr>`; return; }
+    // "All Streams" (stream = null) can no longer be created from this
+    // form, but a row saved under the old behavior may still exist —
+    // this label keeps any such legacy row readable instead of showing
+    // a blank stream.
     const streamLabel = s => s.stream === 'General' ? t('sa_stream_general')
         : s.stream === 'Natural' ? t('sa_stream_natural')
         : s.stream === 'Social' ? t('sa_stream_social')
@@ -1489,9 +1992,8 @@ async function loadSubjectConfig() {
 
 async function addSubjectConfig() {
     const subject_name = document.getElementById('subj-name').value.trim();
-    const streamRaw = document.getElementById('subj-stream').value;
-    if (!subject_name || !streamRaw) return showToast(t('sa_err_subject_fields_required'), 'error');
-    const stream = streamRaw === 'ALL' ? null : streamRaw;
+    const stream = document.getElementById('subj-stream').value;
+    if (!subject_name || !stream) return showToast(t('sa_err_subject_fields_required'), 'error');
 
     const res = await apiFetch(`${API_BASE}/api/academic-vp/subjects`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1505,7 +2007,7 @@ async function addSubjectConfig() {
 }
 
 async function deleteSubjectConfig(subject_id) {
-    if (!confirm(t('sa_confirm_remove_subject'))) return;
+    if (!(await showConfirmModal(t('sa_confirm_remove_subject'), { danger: true }))) return;
     const res = await apiFetch(`${API_BASE}/api/academic-vp/subjects/${encodeURIComponent(subject_id)}`, { method: 'DELETE' });
     await handleJsonResponse(res, t('sa_subject_removed'));
     loadSubjectConfig();
@@ -1587,7 +2089,7 @@ async function openTeacherAuditModal(teacher_id) {
     const d = await res.json();
 
     const attendanceRows = (d.attendance_last_30d || []).slice(0, 10).map(a =>
-        `<tr><td>${a.attendance_date}</td><td><span class="badge badge-${a.status}">${a.status}</span></td></tr>`).join('') ||
+        `<tr><td>${formatEthDate(a.attendance_date)}</td><td><span class="badge badge-${a.status}">${a.status}</span></td></tr>`).join('') ||
         `<tr><td colspan="2">${t('sa_no_data')}</td></tr>`;
 
     const scoreRows = (d.subject_scores || []).map(s =>
@@ -1597,8 +2099,8 @@ async function openTeacherAuditModal(teacher_id) {
     openModal(`
         <h3>${escapeHtml(d.full_name)} (${d.teacher_id})</h3>
         <div class="stat-row" style="margin-bottom:16px;">
-            ${statCard('❌', t('sa_absent_count'), d.absent_days_30d, d.absent_days_30d > 0 ? 'danger' : '')}
-            ${statCard('📈', t('sa_punctuality_rate'), d.punctuality.rate != null ? d.punctuality.rate + '%' : '—', '')}
+            ${statCard(lucideIcon('circle-x'), t('sa_absent_count'), d.absent_days_30d, d.absent_days_30d > 0 ? 'danger' : '')}
+            ${statCard(lucideIcon('trending-up'), t('sa_punctuality_rate'), d.punctuality.rate != null ? d.punctuality.rate + '%' : '—', '')}
         </div>
         <h4>${t('sa_attendance_last_30d')}</h4>
         <div class="data-table-wrap" style="margin-bottom:16px;">
@@ -1619,20 +2121,95 @@ async function openTeacherAuditModal(teacher_id) {
 // ==========================================================
 // GENERIC MODAL HELPER
 // ==========================================================
-function openModal(innerHtml) {
+function openModal(innerHtml, extraClass) {
     closeModal();
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.id = 'sa-generic-modal';
     overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
     const box = document.createElement('div');
-    box.className = 'modal-box';
+    box.className = extraClass ? `modal-box ${extraClass}` : 'modal-box';
     box.innerHTML = innerHtml;
     overlay.appendChild(box);
     document.getElementById('sa-audit-modal-root').appendChild(overlay);
 }
 function closeModal() {
     document.getElementById('sa-generic-modal')?.remove();
+}
+
+// Styled replacements for the browser's native confirm()/prompt() — same
+// visual language as every other modal in the app (modal-overlay/modal-box),
+// instead of the unstyled OS-level popup. Each returns a Promise so call
+// sites just swap `confirm(msg)` for `await showConfirmModal(msg)` and
+// `prompt(msg)` for `await showPromptModal(msg)` with no other changes.
+function showConfirmModal(message, { danger = false, confirmLabel, cancelLabel } = {}) {
+    return new Promise(resolve => {
+        openModal(`
+            <h3>${t('sa_confirm_title')}</h3>
+            <p style="margin:12px 0 20px;">${escapeHtml(message)}</p>
+            <div class="form-actions">
+                <button class="btn btn-ghost" id="sa-confirm-cancel-btn">${cancelLabel || t('sa_cancel')}</button>
+                <button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" id="sa-confirm-ok-btn">${confirmLabel || t('sa_confirm_ok')}</button>
+            </div>`);
+        let settled = false;
+        const finish = (val) => { if (settled) return; settled = true; closeModal(); resolve(val); };
+        document.getElementById('sa-confirm-ok-btn').onclick = () => finish(true);
+        document.getElementById('sa-confirm-cancel-btn').onclick = () => finish(false);
+        document.getElementById('sa-generic-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'sa-generic-modal') finish(false);
+        });
+    });
+}
+
+function showPromptModal(message, { placeholder = '', required = false, multiline = true } = {}) {
+    return new Promise(resolve => {
+        const field = multiline
+            ? `<textarea id="sa-prompt-input-field" class="form-control" rows="3" placeholder="${escapeHtml(placeholder)}" style="width:100%; margin:12px 0;"></textarea>`
+            : `<input id="sa-prompt-input-field" class="form-control" type="text" placeholder="${escapeHtml(placeholder)}" style="width:100%; margin:12px 0;">`;
+        openModal(`
+            <h3>${escapeHtml(message)}</h3>
+            ${field}
+            <p id="sa-prompt-input-error" class="form-hint" style="color:var(--danger); display:none;">${t('sa_field_required')}</p>
+            <div class="form-actions">
+                <button class="btn btn-ghost" id="sa-prompt-cancel-btn">${t('sa_cancel')}</button>
+                <button class="btn btn-primary" id="sa-prompt-ok-btn">${t('sa_confirm_ok')}</button>
+            </div>`);
+        const input = document.getElementById('sa-prompt-input-field');
+        input.focus();
+        let settled = false;
+        const finish = (val) => { if (settled) return; settled = true; closeModal(); resolve(val); };
+        document.getElementById('sa-prompt-ok-btn').onclick = () => {
+            const val = input.value.trim();
+            if (required && !val) { document.getElementById('sa-prompt-input-error').style.display = 'block'; return; }
+            finish(val);
+        };
+        document.getElementById('sa-prompt-cancel-btn').onclick = () => finish(null);
+        document.getElementById('sa-generic-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'sa-generic-modal') finish(null);
+        });
+    });
+}
+
+// Small set of labeled buttons instead of a free-text prompt, for
+// decisions that only make sense as one of a fixed set of values.
+function showChoiceModal(message, choices) {
+    return new Promise(resolve => {
+        openModal(`
+            <h3>${escapeHtml(message)}</h3>
+            <div class="form-actions" style="flex-wrap:wrap; margin-top:16px;">
+                ${choices.map(c => `<button class="btn ${c.className || 'btn-ghost'}" data-choice-value="${escapeHtml(c.value)}">${escapeHtml(c.label)}</button>`).join('')}
+                <button class="btn btn-ghost" id="sa-choice-cancel-btn">${t('sa_cancel')}</button>
+            </div>`);
+        let settled = false;
+        const finish = (val) => { if (settled) return; settled = true; closeModal(); resolve(val); };
+        document.getElementById('sa-generic-modal').querySelectorAll('[data-choice-value]').forEach(btn => {
+            btn.onclick = () => finish(btn.getAttribute('data-choice-value'));
+        });
+        document.getElementById('sa-choice-cancel-btn').onclick = () => finish(null);
+        document.getElementById('sa-generic-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'sa-generic-modal') finish(null);
+        });
+    });
 }
 
 // ==========================================================
@@ -1705,7 +2282,7 @@ async function loadMessages(box) {
         <div style="padding:12px 4px; border-bottom:1px solid var(--border); ${!m.is_read && box === 'inbox' ? 'font-weight:700;' : ''}">
             <div style="display:flex; justify-content:space-between;">
                 <span>${escapeHtml(m.subject || t('sa_no_subject'))}</span>
-                <span class="form-hint">${new Date(m.sent_at).toLocaleString()}</span>
+                <span class="form-hint">${formatEthDateTime(m.sent_at)}</span>
             </div>
             <div class="form-hint">${box === 'inbox' ? escapeHtml(m.sender_type) : escapeHtml(m.recipient_type)}</div>
             <div>${escapeHtml(m.body)}</div>
@@ -1730,7 +2307,7 @@ async function loadContactThreads() {
         <div style="padding:12px 4px; border-bottom:1px solid var(--border); cursor:pointer; ${th.unread_count > 0 ? 'font-weight:700;' : ''}" onclick="openContactThreadModal(${th.thread_id})">
             <div style="display:flex; justify-content:space-between; align-items:center;">
                 <span>${escapeHtml(th.subject)} ${th.unread_count > 0 ? `<span class="badge badge-rejected">${th.unread_count}</span>` : ''}</span>
-                <span class="form-hint">${new Date(th.updated_at).toLocaleString()}</span>
+                <span class="form-hint">${formatEthDateTime(th.updated_at)}</span>
             </div>
             <div class="form-hint">${escapeHtml(th.teacher_name)} · ${escapeHtml(th.category)}
                 <span class="badge ${th.status === 'Resolved' ? 'badge-closed' : 'badge-open'}">${escapeHtml(th.status)}</span>
@@ -1752,7 +2329,7 @@ async function openContactThreadModal(thread_id) {
         <div style="max-height:280px; overflow-y:auto; margin-bottom:12px;">
             ${messages.map(m => `
                 <div style="padding:8px 10px; margin-bottom:6px; border-radius:8px; background:${m.sender_role === 'teacher' ? '#f7faf8' : 'var(--info-bg)'};">
-                    <div class="form-hint">${m.sender_role === 'teacher' ? escapeHtml(thread.teacher_id) : t('sa_you_label')} · ${new Date(m.sent_at).toLocaleString()}</div>
+                    <div class="form-hint">${m.sender_role === 'teacher' ? escapeHtml(thread.teacher_id) : t('sa_you_label')} · ${formatEthDateTime(m.sent_at)}</div>
                     <div>${escapeHtml(m.body)}</div>
                 </div>`).join('')}
         </div>
@@ -1868,6 +2445,26 @@ async function loadDocumentStatus() {
         stampPreview.src = API_BASE + data.stamp_url; stampPreview.style.display = '';
         document.getElementById('profile-stamp-placeholder').style.display = 'none';
     }
+    const idPhotoPreview = document.getElementById('profile-id-photo-preview');
+    if (data.id_photo_url) {
+        idPhotoPreview.src = API_BASE + data.id_photo_url; idPhotoPreview.style.display = '';
+        document.getElementById('profile-id-photo-placeholder').style.display = 'none';
+    }
+
+    // School Seal — a school-wide asset (not tied to any one admin), so
+    // everyone sees the same preview, but only the Principal can change
+    // it. Everyone else gets a locked dropzone with an explanatory hint.
+    const sealPreview = document.getElementById('profile-school-seal-preview');
+    if (data.school_seal_url) {
+        sealPreview.src = API_BASE + data.school_seal_url; sealPreview.style.display = '';
+        document.getElementById('profile-school-seal-placeholder').style.display = 'none';
+    }
+    const isPrincipal = CURRENT_TITLE === 'Principal';
+    const sealCard = document.getElementById('profile-school-seal-card');
+    document.getElementById('profile-school-seal-change-btn').style.display = isPrincipal ? '' : 'none';
+    document.getElementById('profile-school-seal-locked-hint').style.display = isPrincipal ? 'none' : '';
+    if (sealCard) sealCard.querySelector('.doc-upload-dropzone').style.cursor = isPrincipal ? 'pointer' : 'not-allowed';
+
     if (data.avatar_url) {
         const fullUrl = API_BASE + data.avatar_url;
         const profileImg = document.getElementById('profile-avatar-img');
@@ -1877,6 +2474,24 @@ async function loadDocumentStatus() {
         topbarImg.src = fullUrl; topbarImg.style.display = '';
         document.getElementById('sa-avatar-initials-text').style.display = 'none';
     }
+}
+
+async function uploadSchoolSeal(event) {
+    if (CURRENT_TITLE !== 'Principal') {
+        event.target.value = '';
+        showToast(t('sa_school_seal_principal_only'), 'error');
+        return;
+    }
+    const file = event.target.files[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('school_seal', file);
+    const res = await apiFetch(`${API_BASE}/api/admin/upload-school-seal`, { method: 'POST', body: formData });
+    const data = await handleJsonResponse(res, t('sa_school_seal_uploaded'));
+    if (!data || !data.school_seal_url) return;
+    const preview = document.getElementById('profile-school-seal-preview');
+    preview.src = API_BASE + data.school_seal_url; preview.style.display = '';
+    document.getElementById('profile-school-seal-placeholder').style.display = 'none';
 }
 
 async function uploadAdminDocument(event, kind) {
@@ -1893,6 +2508,25 @@ async function uploadAdminDocument(event, kind) {
         preview.src = API_BASE + url; preview.style.display = '';
         document.getElementById(`profile-${kind}-placeholder`).style.display = 'none';
     }
+}
+
+// ID card photo — intentionally its own function rather than reusing
+// uploadAdminDocument(): the form field name is id_photo (not a plain
+// "kind" string), and unlike signature/stamp this also needs to bust the
+// in-memory adminIdCardData cache so the ID card page re-fetches the new
+// photo instead of showing whatever was cached from the last visit.
+async function uploadAdminIdPhoto(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('id_photo', file);
+    const res = await apiFetch(`${API_BASE}/api/admin/upload-id-photo`, { method: 'POST', body: formData });
+    const data = await handleJsonResponse(res, t('sa_id_photo_uploaded'));
+    if (!data?.id_photo_url) return;
+    const preview = document.getElementById('profile-id-photo-preview');
+    preview.src = API_BASE + data.id_photo_url; preview.style.display = '';
+    document.getElementById('profile-id-photo-placeholder').style.display = 'none';
+    adminIdCardData = null;
 }
 
 // Profile picture — updates both the profile-page circle and the

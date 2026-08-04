@@ -64,7 +64,9 @@ body {
 }
 
 #sidebar button {
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: 10px;
     width: 100%;
     position: relative;
     background: transparent;
@@ -80,6 +82,7 @@ body {
     text-align: left;
     transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
+#sidebar button i[data-lucide] { width: 17px; height: 17px; flex-shrink: 0; stroke-width: 2px; }
 
 #sidebar button:hover { background: rgba(255,255,255,0.1); color: #ffffff; border-left-color: rgba(255,255,255,0.4); }
 #sidebar button.active { background: rgba(37, 99, 235, 0.55); color: #ffffff; border-left-color: #60a5fa; font-weight: 600; }
@@ -162,6 +165,13 @@ body {
     box-shadow: 0 2px 8px rgba(0,0,0,0.18);
     border-radius: 0 0 10px 10px;
     margin-bottom: 20px;
+    /* Without its own compositor layer, a sticky element combined with
+       border-radius repaints a frame late in Chrome/Edge, letting a sliver
+       of the row that just scrolled underneath flash above the rounded
+       corners. transform + will-change force the browser to composite this
+       bar on its own layer so it stays fully opaque during scroll. */
+    transform: translateZ(0);
+    will-change: transform;
 }
 .page-title { margin: 0; font-size: 1.05rem; font-weight: 700; color: #fff; letter-spacing: 0.04em; text-transform: uppercase; }
 .user-actions { display: flex; align-items: center; gap: 6px; }
@@ -601,4 +611,71 @@ textarea:focus-visible,
     padding: 2px 9px;
     margin-left: 6px;
     white-space: nowrap;
+}
+
+/* =========================================================================
+   13. Lucide icons — sizing/alignment for every spot an emoji used to sit.
+   Lucide swaps each `<i data-lucide="name">` placeholder for an inline
+   `<svg class="lucide lucide-name">` (any class already on the placeholder
+   carries over too). Colour comes from `currentColor`, so icons pick up
+   whatever text colour surrounds them unless overridden below.
+   ========================================================================= */
+.lucide { flex-shrink: 0; vertical-align: -3px; }
+
+#sidebar button .lucide { width: 17px; height: 17px; }
+.return-to-portal-btn .lucide,
+.sidebar-logout-btn .lucide { width: 17px; height: 17px; }
+
+.notification-btn .lucide,
+.settings-btn .lucide { width: 18px; height: 18px; }
+
+.file-upload-btn .lucide { width: 16px; height: 16px; }
+
+.modal-close-btn { display: flex; align-items: center; justify-content: center; }
+.modal-close-btn .lucide { width: 16px; height: 16px; stroke-width: 2.25px; }
+
+.toast-icon { width: 18px; height: 18px; margin-top: 1px; }
+.toast-error .toast-icon { color: #dc2626; }
+.toast-success .toast-icon { color: #16a34a; }
+
+.search-box > button .lucide,
+#doc-student-actions button .lucide { width: 16px; height: 16px; }
+
+/* =========================================================================
+   14. Templates tab — icon cards for the sample document previews
+   (Report Card / Transcript / ID Card / Recommendation Letter), replacing
+   the plain text buttons that used to sit in a .search-box row.
+   ========================================================================= */
+.template-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 14px;
+    margin-bottom: 25px;
+}
+.template-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    background: #f8f9fa;
+    color: #1e3a8a;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 22px 14px;
+    font-size: 0.88rem;
+    font-weight: 600;
+    text-align: center;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, transform 0.1s;
+}
+.template-card .lucide {
+    width: 34px;
+    height: 34px;
+    stroke-width: 1.6px;
+    color: #1e3a8a;
+}
+.template-card:hover { background: #eaf0fd; border-color: #93b4f0; transform: translateY(-2px); }
+
+@media (max-width: 520px) {
+    .template-grid { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
 }

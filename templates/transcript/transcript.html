@@ -10,81 +10,77 @@
     <div class="page">
       <!-- Top Header -->
       <div class="header">
-        <div class="flag-box">[ Flag ]</div>
+        <div class="flag-box">
+          <img
+            class="flag-img"
+            src="../../public/assets/images/gambella_flag.png"
+            alt="Gambella regional flag"
+          />
+        </div>
         <div class="header-center">
           <h3>በጋምቤላ ሕዝቦች ብሔራዊ ክልላዊ መንግሥት</h3>
           <h2>Gambella People National Regional State</h2>
           <h3>የኒውላንድ ሁለተኛ ደረጃ ት/ቤት</h3>
           <h2>Newland Secondary School</h2>
         </div>
-        <div class="flag-box">[ Flag ]</div>
+        <div class="flag-box">
+          <img
+            class="flag-img"
+            src="../../public/assets/images/ethiopia_flag.png"
+            alt="Ethiopian national flag"
+          />
+        </div>
       </div>
 
       <!-- Contact Sub-Header removed -->
 
-      <!-- Photo + Student ID -->
-      <div class="photo-wrap">
-        <div class="photo-box" id="photo-box">Photo</div>
-        <div class="id-block">
-          <div class="id-chip">
-            <strong>Student ID:</strong>
-            <span
-              id="f-student-id"
-              class="underline-field"
-              style="min-width: 120px; display: inline-block; margin-left: 8px"
-            ></span>
+      <!-- Title/Info (left) + Photo (right), side by side so the photo
+           reserves its own column instead of floating over the text -->
+      <div class="title-photo-row">
+        <div class="title-info-col">
+          <!-- Title -->
+          <div class="doc-title">Student Transcript</div>
+
+          <!-- Student Details -->
+          <div class="info-grid">
+            <div class="field wide">
+              <label>Student's Full Name</label>
+              <div class="val" id="f-student-name"></div>
+            </div>
+            <div class="field">
+              <label>Stream</label>
+              <div class="val" id="f-stream"></div>
+            </div>
+            <div class="field">
+              <label>Sex</label>
+              <div class="val" id="f-sex"></div>
+            </div>
+            <div class="field">
+              <label>Age</label>
+              <div class="val" id="f-age"></div>
+            </div>
+            <div class="field">
+              <label>Program</label>
+              <div class="val">Regular</div>
+            </div>
+            <div class="field">
+              <label>Date of Admission</label>
+              <div class="val" id="f-date-admission"></div>
+            </div>
+            <div class="field">
+              <label>Date of Leaving</label>
+              <div class="val" id="f-date-leaving"></div>
+            </div>
           </div>
         </div>
-      </div>
 
-      <!-- Title -->
-      <div class="doc-title">Student Transcript</div>
-
-      <!-- Student Details -->
-      <div class="info-section">
-        <div>
-          <strong>Student's Full Name:</strong>
-          <span id="f-student-name" class="underline-field long-field"></span>
-        </div>
-        <div>
-          <strong>Stream:</strong>
-          <span
-            id="f-stream"
-            class="underline-field"
-            style="min-width: 160px"
-          ></span>
-        </div>
-        <div>
-          <strong>Sex:</strong>
-          <span
-            id="f-sex"
-            class="underline-field"
-            style="min-width: 80px"
-          ></span>
-          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-          <strong>Age:</strong>
-          <span
-            id="f-age"
-            class="underline-field"
-            style="min-width: 80px"
-          ></span>
-          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-          <strong>Program:</strong> <u>Regular</u>
-        </div>
-        <div>
-          <strong>Date of Admission:</strong>
-          <span
-            id="f-date-admission"
-            class="underline-field"
-            style="min-width: 180px"
-          ></span>
-          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-          <strong>Date of Leaving:</strong>
-          <span
-            id="f-date-leaving"
-            class="underline-field"
-            style="min-width: 180px"
-          ></span>
+        <!-- Photo, with Student ID as a caption strip -->
+        <div class="photo-wrap">
+          <div class="photo-box" id="photo-box">Photo</div>
+          <div class="photo-caption">
+            <span class="id-label">Student ID</span>
+            <span class="id-value" id="f-student-id"></span>
+          </div>
         </div>
       </div>
 
@@ -191,7 +187,124 @@
       </div>
     </div>
     <script>
-      const DATA = __TRANSCRIPT_DATA_JSON__;
+      /* Same pattern as certificate.html: the server injects real DATA
+         via __TRANSCRIPT_DATA_JSON__; this fallback only kicks in when
+         the file is opened directly (no server), so the template can
+         still be previewed/tested on its own. */
+      const DATA =
+        typeof __TRANSCRIPT_DATA_JSON__ !== "undefined"
+          ? __TRANSCRIPT_DATA_JSON__
+          : {
+              student_id: "S1234567",
+              student_name: "Samuel Bekele",
+              stream: "Natural Science",
+              sex: "Male",
+              age: 17,
+              date_of_admission: "10 Sep 2022",
+              date_of_leaving: "03 Jul 2026",
+              registrar_name: "Mr. Alemu",
+              issue_date: "04 Jul 2026",
+              years: [
+                {
+                  class_level: 9,
+                  ec_year: "2015",
+                  subjects: [
+                    {
+                      name: "Nuer/Dha-Anywaa",
+                      s1: 78,
+                      s2: 81,
+                      applicable: true,
+                    },
+                    {
+                      name: "Federal language",
+                      s1: 75,
+                      s2: 80,
+                      applicable: true,
+                    },
+                    { name: "English", s1: 79, s2: 82, applicable: true },
+                    { name: "Mathematics", s1: 85, s2: 87, applicable: true },
+                    { name: "Physics", s1: null, s2: null, applicable: false },
+                    {
+                      name: "Chemistry",
+                      s1: null,
+                      s2: null,
+                      applicable: false,
+                    },
+                    { name: "Biology", s1: null, s2: null, applicable: false },
+                    { name: "Economics", s1: 82, s2: 84, applicable: true },
+                    { name: "Geography", s1: 80, s2: 82, applicable: true },
+                    { name: "History", s1: 87, s2: 85, applicable: true },
+                    { name: "Citizenship", s1: 83, s2: 85, applicable: true },
+                    { name: "Agriculture", s1: 78, s2: 80, applicable: true },
+                    { name: "ICT", s1: 88, s2: 90, applicable: true },
+                    {
+                      name: "Physical Education",
+                      s1: 86,
+                      s2: 88,
+                      applicable: true,
+                    },
+                  ],
+                  days_absent_s1: 1,
+                  days_absent_s2: 2,
+                  total_s1: 1101,
+                  total_s2: 1132,
+                  avg_s1: 78.6,
+                  avg_s2: 80.9,
+                  avg_year: 79.7,
+                  rank: 6,
+                  class_size: 30,
+                },
+                {
+                  class_level: 10,
+                  ec_year: "2016",
+                  subjects: [
+                    {
+                      name: "Nuer/Dha-Anywaa",
+                      s1: 81,
+                      s2: 83,
+                      applicable: true,
+                    },
+                    {
+                      name: "Federal language",
+                      s1: 79,
+                      s2: 85,
+                      applicable: true,
+                    },
+                    { name: "English", s1: 82, s2: 85, applicable: true },
+                    { name: "Mathematics", s1: 88, s2: 91, applicable: true },
+                    { name: "Physics", s1: null, s2: null, applicable: false },
+                    {
+                      name: "Chemistry",
+                      s1: null,
+                      s2: null,
+                      applicable: false,
+                    },
+                    { name: "Biology", s1: null, s2: null, applicable: false },
+                    { name: "Economics", s1: 85, s2: 87, applicable: true },
+                    { name: "Geography", s1: 83, s2: 86, applicable: true },
+                    { name: "History", s1: 90, s2: 88, applicable: true },
+                    { name: "Citizenship", s1: 86, s2: 88, applicable: true },
+                    { name: "Agriculture", s1: 80, s2: 82, applicable: true },
+                    { name: "ICT", s1: 90, s2: 92, applicable: true },
+                    {
+                      name: "Physical Education",
+                      s1: 88,
+                      s2: 90,
+                      applicable: true,
+                    },
+                  ],
+                  days_absent_s1: 2,
+                  days_absent_s2: 1,
+                  total_s1: 1182,
+                  total_s2: 1216,
+                  avg_s1: 84.4,
+                  avg_s2: 86.9,
+                  avg_year: 85.6,
+                  rank: 5,
+                  class_size: 32,
+                },
+              ],
+            };
     </script>
     <script src="transcript.js"></script>
   </body>

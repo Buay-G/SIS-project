@@ -33,7 +33,7 @@ const subjLabel = s => s.amh
   ? `<span class="en">${s.en}</span> <span class="amh">/ ${s.amh}</span>`
   : `<span class="en">${s.en}</span>`;
 
-const taken = SUBJECTS.filter(s => s.s1 != null && s.s2 != null);
+const taken = SUBJECTS.filter(s => s.applicable !== false && s.s1 != null && s.s2 != null);
 const sum = (arr, fn) => arr.reduce((t,s)=>t + fn(s), 0);
 const s1Total = sum(taken, s => s.s1);
 const s2Total = sum(taken, s => s.s2);
@@ -44,11 +44,18 @@ const s2Avg = s2Total / taken.length;
 const yearAvg = (s1Avg + s2Avg) / 2;
 
 let rows = SUBJECTS.map(s => {
-  const avg = (s.s1 != null && s.s2 != null) ? r1((s.s1 + s.s2)/2) : null;
-  return `<tr>
+  // A subject flagged not-applicable (outside the student's stream) is
+  // shown for context but never carries a score, even if a stray mark
+  // exists for it in the data — that mark shouldn't have been entered
+  // for this student's stream in the first place.
+  const applicable = s.applicable !== false;
+  const s1 = applicable ? s.s1 : null;
+  const s2 = applicable ? s.s2 : null;
+  const avg = (s1 != null && s2 != null) ? r1((s1 + s2)/2) : null;
+  return `<tr${applicable ? '' : ' class="not-applicable"'}>
     <td class="subject">${subjLabel(s)}</td>
-    <td>${fmt(s.s1)}</td>
-    <td>${fmt(s.s2)}</td>
+    <td>${fmt(s1)}</td>
+    <td>${fmt(s2)}</td>
     <td>${avg != null ? `<span class="score">${avg}</span>` : '<span class="score na">—</span>'}</td>
     <td class="rating">${avg != null ? descriptor(avg) : '—'}</td>
   </tr>`;

@@ -140,6 +140,30 @@
             <a
               href="#"
               class="nav-link"
+              data-page="leaderboard"
+              id="nav-leaderboard"
+              style="display: none"
+            >
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <line x1="12" y1="20" x2="12" y2="10" />
+                <line x1="18" y1="20" x2="18" y2="4" />
+                <line x1="6" y1="20" x2="6" y2="16" />
+              </svg>
+              <span data-i18n="nav_leaderboard">Leaderboard</span>
+            </a>
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
               data-page="textbooks"
               id="nav-textbooks"
               style="display: none"
@@ -333,6 +357,11 @@
               <span class="sidebar-toggle-bar"></span>
             </button>
             <h1 class="page-title" id="page-title-text">—</h1>
+            <span
+              id="academic-year-badge"
+              class="academic-year-badge"
+              style="display: none"
+            ></span>
             <span
               id="moe-code-badge"
               class="moe-code-badge"
@@ -601,6 +630,12 @@
           <div class="dashboard-grid">
             <div class="widget">
               <h3>Bulk Upload</h3>
+              <p style="font-size: 0.8rem; color: #64748b; margin-bottom: 10px">
+                Score limits per assessment type: Individual Assignment 1 & 2
+                (1-5 each), Group Assignment (1-10), Quiz (1-10), Midterm
+                (1-30), Final (1-40). Rows outside their type's range are
+                skipped.
+              </p>
               <div class="file-wrapper">
                 <div>
                   <label for="csv-file" class="sr-only"
@@ -662,7 +697,7 @@
                   <label for="type-select" class="sr-only"
                     >Assessment type</label
                   >
-                  <select id="type-select">
+                  <select id="type-select" onchange="updateScoreInputLimits()">
                     <option value="individual_assignment_1">
                       Individual Assignment 1
                     </option>
@@ -675,20 +710,24 @@
                     <option value="final">Final</option>
                   </select>
 
-                  <label for="score-input" class="sr-only"
-                    >Score, 0 to 100</label
+                  <label
+                    for="score-input"
+                    id="score-input-label"
+                    class="sr-only"
+                    >Score, 1 to 5</label
                   >
                   <input
                     type="number"
                     id="score-input"
-                    placeholder="Enter Score (0-100)"
-                    min="0"
-                    max="100"
-                    oninput="
-                      if (this.value.length > 2)
-                        this.value = this.value.slice(0, 2);
-                    "
+                    placeholder="Enter Score (1-5)"
+                    min="1"
+                    max="5"
+                    oninput="clampScoreInput(this)"
                   />
+                  <div
+                    id="score-input-hint"
+                    style="font-size: 0.78rem; color: #64748b; margin: 4px 0 0"
+                  ></div>
                   <button
                     type="button"
                     class="btn-primary"
@@ -771,6 +810,47 @@
               </button>
               <span id="gradesheet-status" style="font-size: 0.85rem"></span>
             </div>
+          </div>
+
+          <div class="widget" id="subject-request-widget" style="display: none">
+            <h3 data-i18n="subject_request_heading">
+              Request Access to Another Subject
+            </h3>
+            <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 14px">
+              <span data-i18n="subject_request_desc"
+                >If a subject teacher for your section is unavailable, you can
+                ask the Academic VP for temporary access to enter marks for that
+                subject in your section.</span
+              >
+            </p>
+            <div class="search-group" style="flex-wrap: wrap">
+              <label for="subject-request-select" class="sr-only"
+                >Subject to request</label
+              >
+              <select id="subject-request-select" class="form-input">
+                <option value="" data-i18n="subject_request_select_placeholder">
+                  Select a subject…
+                </option>
+              </select>
+              <label for="subject-request-reason" class="sr-only"
+                >Reason for request</label
+              >
+              <input
+                type="text"
+                id="subject-request-reason"
+                class="form-input"
+                data-i18n-placeholder="subject_request_reason_placeholder"
+                placeholder="Reason (e.g. subject teacher on leave)"
+              />
+              <button class="btn-primary" onclick="submitSubjectEntryRequest()">
+                <span data-i18n="subject_request_submit">Send Request</span>
+              </button>
+            </div>
+            <div
+              id="subject-request-status-note"
+              style="font-size: 0.8rem; color: #64748b; margin-top: 8px"
+            ></div>
+            <div id="subject-request-list" style="margin-top: 16px"></div>
           </div>
         </section>
         <section id="page-students" class="page-content" style="display: none">
@@ -929,6 +1009,34 @@
                   Loading…
                 </p>
               </div>
+            </div>
+          </div>
+        </section>
+
+        <section
+          id="page-leaderboard"
+          class="page-content leaderboard-page"
+          style="display: none"
+        >
+          <div class="widget">
+            <h2 data-i18n="leaderboard_heading">Leaderboard</h2>
+            <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 16px">
+              <span data-i18n="leaderboard_desc_prefix"
+                >Student rank order for</span
+              >
+              <strong id="leaderboard-section-label"></strong>.
+            </p>
+            <div
+              id="leaderboard-basis-note"
+              style="font-size: 0.85rem; color: #64748b; margin-bottom: 14px"
+            ></div>
+            <div id="leaderboard-list">
+              <p
+                style="color: #64748b; font-size: 0.85rem"
+                data-i18n="loading_text"
+              >
+                Loading…
+              </p>
             </div>
           </div>
         </section>

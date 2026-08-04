@@ -46,7 +46,19 @@ a { color: inherit; }
 .dashboard-container {
     display: grid;
     grid-template-columns: 250px 1fr;
-    height: 100vh;
+    /* position: fixed + inset: 0 pins this exactly to the viewport and
+       removes it from normal document flow entirely — so no matter how
+       tall its content gets (grid rows sizing to max-content, a
+       long page, anything), it can NEVER add height to <body>/<html>.
+       That's a stronger guarantee than height: 100vh + overflow: hidden
+       (which relies on the grid row never growing past 100vh in the
+       first place): with position: fixed, the browser has nothing to
+       scroll at the document level even if that assumption ever breaks.
+       overflow: hidden here is now just a second line of defense,
+       clipping the fixed box itself. */
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
 }
 
 .sidebar {
@@ -57,6 +69,12 @@ a { color: inherit; }
     flex-direction: column;
     overflow: hidden;
     height: 100%;
+    /* Grid items default to min-height: auto, i.e. "at least as tall as
+       my content" — which fights the 100%-of-track height above.
+       min-height: 0 lets it actually shrink to the assigned track size
+       so its own internal .nav-menu scrollbar (not the page) handles
+       overflow. Same reasoning as .main-content below. */
+    min-height: 0;
 }
 
 .logo {
@@ -97,7 +115,8 @@ a { color: inherit; }
     font-weight: 500;
     transition: background 0.15s, color 0.15s;
 }
-.nav-link .nav-icon { font-size: 1.05rem; width: 20px; text-align: center; flex-shrink: 0; }
+.nav-link .nav-icon { width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.nav-icon .lucide-icon { width: 18px; height: 18px; }
 .nav-link:hover { background: rgba(255,255,255,0.08); color: #fff; }
 .nav-link.active { background: var(--accent); color: #22321f; font-weight: 700; }
 
@@ -168,19 +187,15 @@ a { color: inherit; }
 .topbar-meta-chip-moe { color: var(--accent); border-color: rgba(240,180,41,0.3); }
 .topbar-semester-chip.is-open { background: rgba(21,128,61,0.28); color: #bbf7d0; border-color: rgba(21,128,61,0.4); }
 .topbar-semester-chip.is-closed { background: rgba(185,28,28,0.28); color: #fecaca; border-color: rgba(185,28,28,0.4); }
-.top-search {
-    flex: 1; max-width: 420px;
+.top-academic-year {
     display: flex; align-items: center; gap: 8px;
     background: rgba(255,255,255,0.14);
     border: 1px solid rgba(255,255,255,0.18);
     border-radius: 10px; padding: 8px 14px;
-    color: rgba(255,255,255,0.85);
+    color: rgba(255,255,255,0.92); font-size: 0.85rem; font-weight: 600;
+    white-space: nowrap;
 }
-.top-search input {
-    background: transparent; border: none; outline: none;
-    color: #fff; font-size: 0.85rem; width: 100%;
-}
-.top-search input::placeholder { color: rgba(255,255,255,0.6); }
+.top-academic-year .lucide-icon { flex-shrink: 0; opacity: 0.85; }
 
 .top-bar-right { margin-left: auto; display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
 
@@ -204,6 +219,33 @@ a { color: inherit; }
     display: flex; align-items: center; justify-content: center; padding: 0 3px;
 }
 
+/* ---------- Notifications (bell) dropdown ---------- */
+.alerts-dropdown-wrap { position: relative; }
+.alerts-dropdown {
+    position: absolute; top: calc(100% + 10px); right: 0; z-index: 200;
+    width: 340px; max-width: 90vw; max-height: 420px;
+    background: #fff; color: var(--text, #1f2937);
+    border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.22);
+    border: 1px solid var(--border); overflow: hidden;
+    display: flex; flex-direction: column;
+}
+.alerts-dropdown-header {
+    padding: 12px 16px; font-weight: 800; font-size: 0.85rem;
+    border-bottom: 1px solid var(--border); background: var(--bg);
+}
+.alerts-dropdown-body { overflow-y: auto; max-height: 360px; padding: 4px 0; }
+.alerts-dropdown-empty { padding: 24px 16px; text-align: center; color: var(--muted); font-size: 0.85rem; }
+.alert-item {
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 6px;
+}
+.alert-item:last-child { border-bottom: none; }
+.alert-item-title { font-size: 0.82rem; font-weight: 700; display: flex; align-items: center; gap: 6px; }
+.alert-item-title .lucide-icon { flex-shrink: 0; }
+.alert-item-meta { font-size: 0.74rem; color: var(--muted); }
+.alert-item-actions { display: flex; gap: 6px; margin-top: 2px; flex-wrap: wrap; }
+.alert-item-actions .btn { padding: 4px 10px; font-size: 0.72rem; }
+
 .topbar-profile { display: flex; align-items: center; gap: 8px; color: #fff; }
 .topbar-profile-avatar {
     width: 36px; height: 36px; border-radius: 50%;
@@ -217,7 +259,13 @@ a { color: inherit; }
 .topbar-profile-title { font-size: 0.68rem; color: rgba(255,255,255,0.65); }
 
 /* ---------- Main content ---------- */
-.main-content { display: flex; flex-direction: column; height: 100%; overflow-y: auto; }
+/* min-height: 0 is the fix for "the whole page scrolls instead of
+   just this panel" — as a grid item, .main-content otherwise refuses
+   to shrink below its content's natural height (min-height: auto is
+   the grid/flex default), which lets it grow past .dashboard-container
+   and hands scrolling over to the page/body instead of staying
+   contained here where overflow-y: auto expects to do the work. */
+.main-content { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow-y: auto; overflow-x: auto; }
 .page-content { padding: 22px 28px 40px; }
 .page-content h2 { margin: 0 0 4px; font-size: 1.3rem; }
 .page-subtitle { color: var(--muted); font-size: 0.85rem; margin: 0 0 20px; }
@@ -252,7 +300,8 @@ a { color: inherit; }
 .stat-card .stat-label { font-size: 0.75rem; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
 .stat-card .stat-value { font-size: 1.6rem; font-weight: 800; color: var(--text); line-height: 1.25; }
 .stat-card .stat-sub-row { display: flex; gap: 12px; margin-top: 2px; }
-.stat-card .stat-sub-item { font-size: 0.72rem; font-weight: 700; color: var(--muted); }
+.stat-card .stat-sub-item { font-size: 0.72rem; font-weight: 700; color: var(--muted); display: inline-flex; align-items: center; gap: 3px; }
+.stat-card .stat-sub-item .lucide-icon { display: inline-block; vertical-align: middle; }
 .stat-card.stat-warning .stat-icon { background: var(--warning-bg); color: var(--warning); }
 .stat-card.stat-danger .stat-icon { background: var(--danger-bg); color: var(--danger); }
 .stat-card.stat-success .stat-icon { background: var(--success-bg); color: var(--success); }
@@ -280,6 +329,32 @@ a { color: inherit; }
 }
 .widget-empty { color: var(--muted); font-size: 0.85rem; padding: 18px 4px; text-align: center; }
 .widget-loading { color: var(--muted); font-size: 0.85rem; padding: 18px 4px; text-align: center; }
+
+/* ---------- Ethiopian calendar widget ---------- */
+.eth-cal-title { display: inline-flex; align-items: center; gap: 8px; }
+.eth-cal-widget { grid-column: 1 / -1; }
+.eth-cal-today {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px;
+    background: var(--bg); border-radius: 10px; padding: 12px 16px; margin-bottom: 14px;
+}
+.eth-cal-today-eth { font-size: 1.3rem; font-weight: 800; color: var(--primary); }
+.eth-cal-today-meta { font-size: 0.8rem; color: var(--muted); }
+.eth-cal-holidays-heading { font-size: 0.78rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 8px; }
+.eth-holiday-list { display: flex; flex-direction: column; gap: 2px; max-height: 340px; overflow-y: auto; }
+.eth-holiday-row {
+    display: flex; align-items: center; gap: 12px; padding: 9px 6px;
+    border-bottom: 1px solid var(--border);
+}
+.eth-holiday-row:last-child { border-bottom: none; }
+.eth-holiday-date-chip {
+    flex-shrink: 0; min-width: 56px; text-align: center;
+    background: var(--info-bg); color: var(--info); font-weight: 700; font-size: 0.75rem;
+    border-radius: 8px; padding: 6px 4px;
+}
+.eth-holiday-info { flex: 1; min-width: 0; }
+.eth-holiday-name { font-size: 0.85rem; font-weight: 600; }
+.eth-holiday-tentative { font-size: 0.75rem; font-weight: 500; color: var(--muted); font-style: italic; }
+.eth-holiday-countdown { flex-shrink: 0; font-size: 0.75rem; font-weight: 700; color: var(--accent-dark); white-space: nowrap; }
 
 /* ---------- Dashboard donut charts ---------- */
 .chart-widget h3 { margin-bottom: 6px; }
@@ -333,7 +408,8 @@ a { color: inherit; }
     display: flex; flex-direction: column; align-items: center; gap: 4px;
     color: var(--muted); font-size: 0.72rem; font-weight: 600;
 }
-.doc-upload-icon { font-size: 1.4rem; }
+.doc-upload-icon { display: inline-flex; align-items: center; justify-content: center; }
+.doc-upload-icon .lucide-icon { width: 28px; height: 28px; }
 .doc-upload-caption {
     display: flex; align-items: center; justify-content: space-between;
     font-size: 0.82rem; font-weight: 700; color: var(--text);
@@ -682,12 +758,70 @@ a { color: inherit; }
 
 /* ---------- Tables ---------- */
 .data-table-wrap {
-    overflow-x: auto;
+    /* No overflow-x/y here on purpose. ANY non-'visible' overflow value
+       (auto, hidden, clip — doesn't matter which) turns this element
+       into a scroll container, and position:sticky on the th below
+       then measures its "top" offset from THIS box instead of the real
+       page scroller (.main-content). Since this wrap is only as tall
+       as the table itself, that yanks the sticky header down by 70px
+       from the wrap's own top edge — landing it mid-table instead of
+       pinned under the topbar. Horizontal scrolling for wide tables is
+       handled one level up, on .main-content, so .main-content stays
+       the single unambiguous sticky reference. Corner rounding is done
+       on the header/footer cells directly below instead of via
+       overflow-clipping here.
+    */
     border: 1px solid var(--border);
     border-radius: 12px;
 }
 table.data-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-table.data-table thead { background: var(--primary); color: #fff; }
+table.data-table thead th:first-child { border-top-left-radius: 11px; }
+table.data-table thead th:last-child { border-top-right-radius: 11px; }
+table.data-table tbody tr:last-child td:first-child { border-bottom-left-radius: 11px; }
+table.data-table tbody tr:last-child td:last-child { border-bottom-right-radius: 11px; }
+/* Column headers stay visible while rows scroll past underneath, on
+   every page that just has a plain title above its table. Sticks right
+   below the 70px topbar (position:sticky is on the th, referencing
+   .main-content as the scrolling ancestor — see the note on
+   .data-table-wrap above for why that reference stays intact). #page-students
+   opts out below since it already has a taller sticky block (title +
+   stat cards + tabs) that would otherwise overlap this at the same top
+   offset.
+   Background/color live on the th itself, not on thead — a stuck th is
+   the thing that actually moves, so it needs to carry its own paint
+   with it. Putting the background on thead as well just repaints an
+   empty box at the thead's original, now-vacated position, showing up
+   as a second, textless green bar stacked above the real header. */
+table.data-table thead th {
+    position: sticky; top: 70px; z-index: 30;
+    background: var(--primary); color: #fff;
+}
+#page-students table.data-table thead th { position: static; }
+/* The Analysis Report table (23 columns) is wider than any other table
+   in the app — wide enough that .main-content itself needs a
+   horizontal scrollbar to show it, which also drags the topbar
+   sideways with it (the topbar has no horizontal position of its own
+   to hold onto, only the sticky top:0 vertical anchor covered above).
+   Every other page's table fits without .main-content ever needing to
+   scroll horizontally, so this hasn't come up until now. Scoping a
+   local horizontal scrollbar to just this page's wrap keeps the wide
+   table contained and leaves the topbar alone — the tradeoff (per the
+   note on .data-table-wrap above) is that this page's own header row
+   can't sit sticky against .main-content, so it's turned off here too,
+   same as #page-students. */
+#page-analysis-report .data-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+#page-analysis-report table.data-table thead th { position: static; }
+#page-analysis-report table.data-table { min-width: 1500px; }
+/* Inside a modal (e.g. the graduation batch student list), the table's
+   nearest scrolling ancestor is .modal-box itself — not .main-content —
+   since .modal-box has its own overflow-y: auto. That means "top: 70px"
+   above sticks the header 70px down from the MODAL's own top edge
+   instead of clearing a page topbar that isn't there, landing the
+   header mid-list, overlapping/hiding whatever rows happened to start
+   in that first 70px (this is the "weird" duplicate-looking row the
+   header was covering). There's nothing to clear inside a modal, so it
+   should freeze flush at the modal's own top instead. */
+.modal-box table.data-table thead th { top: 0; }
 table.data-table th, table.data-table td {
     padding: 10px 14px; text-align: left; white-space: nowrap;
     border-bottom: 1px solid var(--border);
@@ -718,6 +852,18 @@ table.data-table tbody tr:hover { background: #f7faf8; }
 
 /* ---------- Tabs ---------- */
 .tab-row { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+
+/* A page's title/stat-cards/tabs can opt into staying pinned while only
+   the table below scrolls, by wrapping them in .page-sticky-header. Sticks
+   just under the 70px topbar (which is itself sticky at top:0), with a
+   solid background so table rows don't show through as they scroll past. */
+.page-sticky-header {
+    position: sticky; top: 70px; z-index: 40;
+    background: var(--bg);
+    padding-bottom: 4px;
+}
+.page-sticky-header .stat-row:last-child,
+.page-sticky-header .tab-row:last-child { margin-bottom: 0; }
 .tab-btn {
     padding: 10px 16px; border: none; background: transparent; cursor: pointer;
     font-size: 0.85rem; font-weight: 700; color: var(--muted);
@@ -734,6 +880,13 @@ table.data-table tbody tr:hover { background: #f7faf8; }
     background: #fff; border-radius: 14px; padding: 24px;
     width: 92%; max-width: 440px; max-height: 86vh; overflow-y: auto;
 }
+/* For modals whose content is a wide data-table (e.g. the graduation
+   batch student list: Student ID/Name/Class/Stream) rather than a
+   short confirmation message — 440px forced that table into an
+   immediate horizontal scroll that hid the Student ID column entirely.
+   Opt-in via openModal(html, 'modal-box-wide') so plain confirm/prompt
+   dialogs elsewhere keep their compact width. */
+.modal-box.modal-box-wide { max-width: 720px; }
 .modal-box h3 { margin-top: 0; }
 
 /* ---------- Toast ---------- */
@@ -809,6 +962,7 @@ table.data-table tbody tr:hover { background: #f7faf8; }
 
 /* ---------- Sidebar toggle (mobile) ---------- */
 .sidebar-toggle { display: none; }
+.sidebar-backdrop { display: none; }
 
 @media (max-width: 900px) {
     .dashboard-container { grid-template-columns: 1fr; }
@@ -817,17 +971,34 @@ table.data-table tbody tr:hover { background: #f7faf8; }
         transform: translateX(-100%); transition: transform 0.2s;
     }
     .sidebar.open { transform: translateX(0); }
+    .sidebar-backdrop {
+        display: block; position: fixed; inset: 0; z-index: 90;
+        background: rgba(0,0,0,0.45);
+        opacity: 0; pointer-events: none; transition: opacity 0.2s;
+    }
+    .sidebar-backdrop.active { opacity: 1; pointer-events: auto; }
     .sidebar-toggle {
         display: flex; align-items: center; justify-content: center;
         width: 36px; height: 36px; border-radius: 9px; border: none;
         background: rgba(255,255,255,0.12); color: #fff; cursor: pointer;
     }
-    .top-search { display: none; }
     .form-row { grid-template-columns: 1fr; }
     .profile-header-card { flex-wrap: wrap; text-align: center; justify-content: center; }
     .profile-id-chip { margin: 6px auto 0; }
     .chart-flex { justify-content: center; text-align: left; }
     .topbar-meta-chip-moe { display: none; }
+
+    /* Sticky table headers only make sense against the full-height
+       desktop layout; below this width they risk landing mid-table (see
+       the notes on .data-table-wrap / thead th above). Turning sticky off
+       and giving each table its own contained horizontal scrollbar here
+       is simpler and safer than trying to keep every page's sticky-offset
+       math correct at every width. */
+    table.data-table thead th { position: static; }
+    .data-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    table.data-table { min-width: 640px; }
+    .page-sticky-header { position: static; }
+    .modal-box { overflow-x: hidden; }
 }
 
 @media (max-width: 520px) {

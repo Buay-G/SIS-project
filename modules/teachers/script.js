@@ -27,6 +27,7 @@ window.onSisLangChange = () => {
     if (lastStudentPerformance) renderDashboardStudentPerformance(lastStudentPerformance);
     if (lastSemesterStatus) renderSemesterStatusBadge(lastSemesterStatus);
     if (lastMyClassRoster) renderMyClassRoster(lastMyClassRoster);
+    if (lastLeaderboardData) renderLeaderboard(lastLeaderboardData);
     if (conductData && conductData.length > 0) {
         populateConductSectionFilter(conductData);
         renderConductList(conductData);
@@ -70,6 +71,16 @@ async function checkAuthAndInit() {
             }
         }
 
+        const yearBadge = document.getElementById('academic-year-badge');
+        if (yearBadge) {
+            if (data.academic_year && data.academic_year.label) {
+                yearBadge.textContent = data.academic_year.label;
+                yearBadge.style.display = 'inline-flex';
+            } else {
+                yearBadge.style.display = 'none';
+            }
+        }
+
         const moeBadge = document.getElementById('moe-code-badge');
         if (moeBadge) {
             if (data.moe_school_code) {
@@ -80,7 +91,11 @@ async function checkAuthAndInit() {
             }
         }
 
-        if (data.is_registrar) {
+        // A Recorder is a lighter-weight role a Registrar grants for
+        // specific tasks (student search, transfers) — see
+        // requireRegistrarOrRecorder on the server — so they need this
+        // nav item too, not only a full Registrar.
+        if (data.is_registrar || data.is_recorder) {
             const item = document.getElementById('nav-registrar-item');
             if (item) item.style.display = 'block';
         }
@@ -419,6 +434,95 @@ async function refreshMyClassRosterPreservingScroll() {
     if (scrollBox) scrollBox.scrollTop = savedScrollTop;
 }
 
+// REQUEST ACCESS TO ANOTHER SUBJECT (homeroom teacher covering a subject
+// whose usual teacher is unavailable) — populates the subject dropdown
+// with every subject in the school for the homeroom's stream, and shows
+// the teacher's own past/pending requests with their current status.
+async function loadSubjectEntryRequestUI() {
+    const widget = document.getElementById('subject-request-widget');
+    const select = document.getElementById('subject-request-select');
+    if (!widget || !select) return;
+
+    // Upload Marks is visited by every teacher, but this widget only makes
+    // sense for a homeroom teacher covering their own section — hide it
+    // entirely for everyone else rather than showing an empty form.
+    if (!homeroomInfo || !homeroomInfo.is_homeroom) {
+        widget.style.display = 'none';
+        return;
+    }
+    widget.style.display = 'block';
+
+    try {
+        const res = await apiFetch(`${API_BASE}/api/subjects?stream=${encodeURIComponent(homeroomInfo.stream)}`);
+        const subjects = res.ok ? await res.json() : [];
+        select.innerHTML = `<option value="">${typeof t === 'function' ? t('subject_request_select_placeholder') : 'Select a subject…'}</option>` +
+            subjects.map(s => `<option value="${s.subject_id}">${escapeHtml(s.subject_name)}</option>`).join('');
+    } catch (err) {
+        console.error("Error loading subjects for subject-entry request:", err);
+    }
+
+    await renderSubjectEntryRequestList();
+}
+
+async function renderSubjectEntryRequestList() {
+    const list = document.getElementById('subject-request-list');
+    if (!list) return;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/teacher/subject-entry-requests`);
+        const requests = res.ok ? await res.json() : [];
+        if (requests.length === 0) {
+            list.innerHTML = '';
+            return;
+        }
+        const statusLabel = { pending: 'Pending', approved: 'Approved', rejected: 'Rejected' };
+        const statusClass = { pending: 'status-pending', approved: 'status-approved', rejected: 'status-rejected' };
+        list.innerHTML = `
+            <table class="student-table">
+                <thead><tr><th>Subject</th><th>Status</th><th>Requested</th></tr></thead>
+                <tbody>
+                    ${requests.map(r => `
+                        <tr>
+                            <td>${escapeHtml(r.subject_name)}</td>
+                            <td><span class="request-status-badge ${statusClass[r.status] || ''}">${statusLabel[r.status] || r.status}</span></td>
+                            <td>${escapeHtml(new Date(r.requested_at).toLocaleDateString())}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>`;
+    } catch (err) {
+        console.error("Error loading subject-entry request status:", err);
+    }
+}
+
+window.submitSubjectEntryRequest = async () => {
+    const select = document.getElementById('subject-request-select');
+    const reasonInput = document.getElementById('subject-request-reason');
+    const note = document.getElementById('subject-request-status-note');
+    const subject_id = select ? select.value : '';
+
+    if (!subject_id) {
+        showAlertModal("Please select a subject to request.");
+        return;
+    }
+
+    try {
+        const res = await apiFetch(`${API_BASE}/api/teacher/subject-entry-requests`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ subject_id, reason: reasonInput ? reasonInput.value.trim() : '' })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Could not submit request');
+
+        if (note) note.textContent = data.message || 'Request sent.';
+        if (reasonInput) reasonInput.value = '';
+        if (select) select.value = '';
+        await renderSubjectEntryRequestList();
+    } catch (err) {
+        showAlertModal(err.message || 'Could not submit request.');
+    }
+};
+
 window.applyMyClassSearch = () => {
     const input = document.getElementById('myclass-search');
     myClassSearchTerm = input ? input.value.trim().toLowerCase() : '';
@@ -468,6 +572,72 @@ function renderMyClassRoster(data) {
                 : `<button class="textbook-action-btn" onclick="markMyClassPresent('${s.student_id}')">${markBtnLabel}</button>`
             }
         </div>`).join('')}</div>`;
+}
+
+// HOMEROOM LEADERBOARD — who's leading the class, by rank.
+let lastLeaderboardData = null;
+
+async function loadLeaderboard() {
+    const container = document.getElementById('leaderboard-list');
+    const note = document.getElementById('leaderboard-basis-note');
+    if (!container) return;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/leaderboard`);
+        if (!res.ok) throw new Error("Could not load the leaderboard");
+        const data = await res.json();
+        lastLeaderboardData = data;
+        renderLeaderboard(data);
+    } catch (err) {
+        console.error("Leaderboard load error:", err);
+        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('leaderboard_could_not_load') : 'Could not load the leaderboard.'}</p>`;
+        if (note) note.textContent = '';
+    }
+}
+
+function renderLeaderboard(data) {
+    const container = document.getElementById('leaderboard-list');
+    const note = document.getElementById('leaderboard-basis-note');
+    if (!container) return;
+
+    if (note) {
+        if (data.basis === 'year') {
+            note.textContent = typeof t === 'function' ? t('leaderboard_basis_year') : "Ranked by year average (both semesters synced).";
+        } else if (data.basis === 'term') {
+            note.textContent = (typeof t === 'function' ? t('leaderboard_basis_term') : `Ranked by {term} average (year average not available yet).`).replace('{term}', data.term || '');
+        } else {
+            note.textContent = '';
+        }
+    }
+
+    if (!data.students || data.students.length === 0) {
+        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('leaderboard_no_data') : 'No ranked marks yet for your section — rankings appear once a subject teacher pushes scores for this term.'}</p>`;
+        return;
+    }
+
+    const rankLabel = typeof t === 'function' ? t('leaderboard_rank_col') : 'Rank';
+    const avgLabel = typeof t === 'function' ? t('leaderboard_avg_col') : 'Average';
+
+    container.innerHTML = `
+        <table class="student-table leaderboard-table">
+            <thead>
+                <tr>
+                    <th>${rankLabel}</th>
+                    <th>${typeof t === 'function' ? t('leaderboard_name_col') : 'Student'}</th>
+                    <th>${avgLabel}</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${data.students.map(s => `
+                    <tr class="${s.rank === 1 ? 'leaderboard-row-top' : ''}">
+                        <td class="leaderboard-rank-cell">${s.rank === 1 ? '🏆 ' : ''}${escapeHtml(String(s.rank))}</td>
+                        <td>${escapeHtml(s.full_name || '—')}</td>
+                        <td>${escapeHtml(String(s.average))}</td>
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
+        <p style="font-size:0.8rem; color:#64748b; margin-top:10px;">${(typeof t === 'function' ? t('leaderboard_class_size') : 'Out of {n} ranked students').replace('{n}', data.class_size)}</p>
+    `;
 }
 
 // Marking/undoing updates the in-memory roster and re-renders in place —
@@ -973,6 +1143,9 @@ async function loadHomeroomInfo() {
         const myClassNav = document.getElementById('nav-myclass');
         if (myClassNav) myClassNav.style.display = homeroomInfo.is_homeroom ? 'block' : 'none';
 
+        const leaderboardNav = document.getElementById('nav-leaderboard');
+        if (leaderboardNav) leaderboardNav.style.display = homeroomInfo.is_homeroom ? 'block' : 'none';
+
         const actionCenterNav = document.getElementById('nav-actioncenter');
         if (actionCenterNav) actionCenterNav.style.display = homeroomInfo.is_homeroom ? 'block' : 'none';
 
@@ -988,6 +1161,9 @@ async function loadHomeroomInfo() {
 
             const myClassLabel = document.getElementById('myclass-section-label');
             if (myClassLabel) myClassLabel.textContent = `Grade ${homeroomInfo.class_level} - ${homeroomInfo.section} (${homeroomInfo.stream})`;
+
+            const leaderboardLabel = document.getElementById('leaderboard-section-label');
+            if (leaderboardLabel) leaderboardLabel.textContent = `Grade ${homeroomInfo.class_level} - ${homeroomInfo.section} (${homeroomInfo.stream})`;
 
             const sidebarBadge = document.getElementById('sidebar-homeroom-badge');
             const sidebarLabel = document.getElementById('sidebar-homeroom-label');
@@ -2224,13 +2400,21 @@ function setupNavigation() {
             const target = clicked.getAttribute('data-page');
             const targetPage = document.getElementById(`page-${target}`);
             if (targetPage) {
-                targetPage.style.display = 'block';
+                // Class Attendance ("myclass") uses a flex layout in CSS —
+                // frozen header on top, scrollable roster below — so it
+                // needs display:flex specifically. Forcing 'block' here
+                // (as every other page uses) breaks that flex chain: the
+                // roster then just grows to its full, un-clipped height
+                // and the page's own overflow:hidden clips it with no way
+                // to scroll at all.
+                targetPage.style.display = (target === 'myclass') ? 'flex' : 'block';
                 if (target === 'textbooks') loadTextbooksGrid();
                 if (target === 'myclass') loadMyClassRoster();
+                if (target === 'leaderboard') loadLeaderboard();
                 if (target === 'contact') { loadContactThreads(); loadMysections(); }
                 if (target === 'idcard') loadTeacherIdCard();
                 if (target === 'actioncenter') loadActionCenterRequests();
-                if (target === 'upload') loadGradeSheetSections();
+                if (target === 'upload') { loadGradeSheetSections(); loadSubjectEntryRequestUI(); }
                 if (target === 'profile') loadTeacherDocumentStatus();
             } else {
                 console.warn(`No page found for data-page="${target}". Did you forget to add <section id="page-${target}">?`);
@@ -3166,6 +3350,54 @@ function showPromptModal(message, title = "Add a note", placeholder = '') {
 }
 
 // MARK ENTRY — search, submit, bulk upload
+// Mirrors ASSESSMENT_TYPE_LIMITS on the server (server.js) — the school's
+// fixed assessment weights that sum to 100: 5 + 5 + 10 + 10 + 30 + 40.
+// Kept here too so the score input can show the right min/max and a
+// helpful hint before the person even submits, rather than only finding
+// out from a rejected request.
+const ASSESSMENT_TYPE_LIMITS = {
+    individual_assignment_1: { min: 1, max: 5 },
+    individual_assignment_2: { min: 1, max: 5 },
+    group_assignment: { min: 1, max: 10 },
+    quiz: { min: 1, max: 10 },
+    midterm: { min: 1, max: 30 },
+    final: { min: 1, max: 40 }
+};
+
+// Called on page load (once the mark-inputs are shown) and every time the
+// assessment type dropdown changes, so the score field's min/max/hint
+// always match whichever type is currently selected.
+window.updateScoreInputLimits = () => {
+    const typeSelect = document.getElementById('type-select');
+    const scoreInput = document.getElementById('score-input');
+    const hint = document.getElementById('score-input-hint');
+    const label = document.getElementById('score-input-label');
+    if (!typeSelect || !scoreInput) return;
+
+    const limits = ASSESSMENT_TYPE_LIMITS[typeSelect.value] || { min: 1, max: 100 };
+    scoreInput.min = limits.min;
+    scoreInput.max = limits.max;
+    scoreInput.placeholder = `Enter Score (${limits.min}-${limits.max})`;
+    if (label) label.textContent = `Score, ${limits.min} to ${limits.max}`;
+    if (hint) hint.textContent = `${assessmentTypeLabel(typeSelect.value)} is worth ${limits.max}% — enter a score between ${limits.min} and ${limits.max}.`;
+
+    // Re-clamp whatever's already typed, so switching type never leaves
+    // a value that was valid for the old type but is now out of range.
+    if (scoreInput.value !== '') clampScoreInput(scoreInput);
+};
+
+// Clamps live input to the currently selected type's min/max as the person
+// types, rather than only rejecting on submit.
+window.clampScoreInput = (input) => {
+    if (input.value === '') return;
+    const typeSelect = document.getElementById('type-select');
+    const limits = ASSESSMENT_TYPE_LIMITS[typeSelect?.value] || { min: 1, max: 100 };
+    let num = parseInt(input.value, 10);
+    if (isNaN(num)) return;
+    if (num > limits.max) num = limits.max;
+    input.value = String(num);
+};
+
 window.searchStudent = async () => {
     const id = document.getElementById('search-id').value;
     const display = document.getElementById('student-display');
@@ -3198,7 +3430,8 @@ window.searchStudent = async () => {
                 <strong>Grade:</strong> ${student.class_level} | <strong>Section:</strong> ${student.section}
             </div>`;
         inputs.style.display = 'block';
-        await loadAuthorizedSubjects(student.stream);
+        await loadAuthorizedSubjects(student.stream, student.class_level, student.section);
+        updateScoreInputLimits();
 
     } catch (err) {
         showAlertModal(err.message);
@@ -3219,8 +3452,9 @@ window.submitIndividualMark = async () => {
         return;
     }
 
-    if (isNaN(score) || score < 1 || score > 100) {
-        showAlertModal("Please enter a valid numeric score between 1 and 100.");
+    const limits = ASSESSMENT_TYPE_LIMITS[type] || { min: 1, max: 100 };
+    if (isNaN(score) || score < limits.min || score > limits.max) {
+        showAlertModal(`Please enter a valid score for ${assessmentTypeLabel(type)}, between ${limits.min} and ${limits.max}.`);
         return;
     }
 
@@ -3453,7 +3687,7 @@ logoutBtns.forEach(logoutBtn => {
 
 window.toggleTheme = () => document.body.classList.toggle('dark-theme');
 
-async function loadAuthorizedSubjects(stream) {
+async function loadAuthorizedSubjects(stream, class_level, section) {
     const select = document.getElementById('subject-select');
     if (!select) {
         console.error("Dropdown element #subject-select not found in the DOM!");
@@ -3461,7 +3695,9 @@ async function loadAuthorizedSubjects(stream) {
     }
 
     try {
-        const url = `${API_BASE}/api/teacher/eligible-subjects?teacher_id=${CURRENT_TEACHER_ID}&stream=${encodeURIComponent(stream)}`;
+        let url = `${API_BASE}/api/teacher/eligible-subjects?teacher_id=${CURRENT_TEACHER_ID}&stream=${encodeURIComponent(stream)}`;
+        if (class_level) url += `&class_level=${encodeURIComponent(class_level)}`;
+        if (section) url += `&section=${encodeURIComponent(section)}`;
 
         const res = await apiFetch(url);
         const subjects = await res.json();
@@ -3517,10 +3753,10 @@ window.onGradeSheetSectionChange = async () => {
 
     const idx = select.value;
     if (idx === '') return;
-    const { stream } = gradeSheetSections[idx];
+    const { class_level, section, stream } = gradeSheetSections[idx];
 
     try {
-        const res = await apiFetch(`${API_BASE}/api/teacher/eligible-subjects?teacher_id=${CURRENT_TEACHER_ID}&stream=${encodeURIComponent(stream)}`);
+        const res = await apiFetch(`${API_BASE}/api/teacher/eligible-subjects?teacher_id=${CURRENT_TEACHER_ID}&stream=${encodeURIComponent(stream)}&class_level=${encodeURIComponent(class_level)}&section=${encodeURIComponent(section)}`);
         const subjects = res.ok ? await res.json() : [];
         subjectSelect.innerHTML = '<option value="">Select subject…</option>' +
             subjects.map(s => `<option value="${s.subject_id}">${escapeHtml(s.subject_name)}</option>`).join('');
@@ -3567,19 +3803,25 @@ function renderGradeSheetTable(students) {
         return;
     }
 
-    const headerCells = GRADESHEET_ASSESSMENT_TYPES.map(type => `<th>${escapeHtml(assessmentTypeLabel(type))}</th>`).join('');
+    const headerCells = GRADESHEET_ASSESSMENT_TYPES.map(type => {
+        const limits = ASSESSMENT_TYPE_LIMITS[type];
+        return `<th>${escapeHtml(assessmentTypeLabel(type))}<br><span style="font-weight:400; font-size:0.72rem; opacity:0.8;">(${limits.min}-${limits.max})</span></th>`;
+    }).join('');
 
     const rows = students.map(s => {
         const fullName = [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' ');
-        const cells = GRADESHEET_ASSESSMENT_TYPES.map(type => `
+        const cells = GRADESHEET_ASSESSMENT_TYPES.map(type => {
+            const limits = ASSESSMENT_TYPE_LIMITS[type];
+            return `
             <td>
                 <label for="gs-${s.student_id}-${type}" class="sr-only">${escapeHtml(assessmentTypeLabel(type))} score for ${escapeHtml(fullName)}</label>
-                <input type="number" min="0" max="100" class="gradesheet-input"
+                <input type="number" min="${limits.min}" max="${limits.max}" class="gradesheet-input"
                        id="gs-${s.student_id}-${type}"
                        data-student-id="${s.student_id}"
                        data-type="${type}"
                        oninput="this.classList.add('gradesheet-input-dirty'); this.classList.remove('gradesheet-input-saved','gradesheet-input-error');">
-            </td>`).join('');
+            </td>`;
+        }).join('');
         return `
             <tr data-search-text="${escapeHtml((fullName + ' ' + s.student_id).toLowerCase())}">
                 <td><strong>${escapeHtml(s.student_id)}</strong><br><span style="color:#64748b;">${escapeHtml(fullName)}</span></td>
@@ -3627,9 +3869,10 @@ window.saveGradeSheet = async () => {
         const student_id = input.dataset.studentId;
         const type = input.dataset.type;
         const score = parseInt(input.value, 10);
+        const limits = ASSESSMENT_TYPE_LIMITS[type] || { min: 1, max: 100 };
 
-        if (isNaN(score) || score < 0 || score > 100) {
-            throw new Error('Score must be between 0 and 100');
+        if (isNaN(score) || score < limits.min || score > limits.max) {
+            throw new Error(`${assessmentTypeLabel(type)} must be between ${limits.min} and ${limits.max}`);
         }
 
         const res = await apiFetch(`${API_BASE}/api/add-mark`, {
