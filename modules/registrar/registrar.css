@@ -164,7 +164,6 @@ body {
     height: 60px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.18);
     border-radius: 0 0 10px 10px;
-    margin-bottom: 20px;
     /* Without its own compositor layer, a sticky element combined with
        border-radius repaints a frame late in Chrome/Edge, letting a sliver
        of the row that just scrolled underneath flash above the rounded
@@ -175,6 +174,40 @@ body {
 }
 .page-title { margin: 0; font-size: 1.05rem; font-weight: 700; color: #fff; letter-spacing: 0.04em; text-transform: uppercase; }
 .user-actions { display: flex; align-items: center; gap: 6px; }
+
+/* Hamburger: hidden on desktop, shown only under the 900px breakpoint
+   where the sidebar becomes an off-canvas drawer (see section 11). */
+.sidebar-hamburger {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    background: rgba(255,255,255,0.12);
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 8px;
+    color: #ffffff;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.sidebar-hamburger:hover { background: rgba(255,255,255,0.25); }
+.sidebar-hamburger .lucide { width: 20px; height: 20px; }
+
+/* Dimmed backdrop behind the open drawer — tapping it closes the menu.
+   Sits above the page but below the drawer itself; invisible and
+   non-interactive until .sidebar-open is toggled on .dashboard-container. */
+.sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.5);
+    z-index: 1900;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+}
+
 .notification-btn, .settings-btn {
     background: rgba(255,255,255,0.12);
     border: 1px solid rgba(255,255,255,0.18);
@@ -210,16 +243,24 @@ body {
 .notif-empty { padding: 14px; font-size: 0.85rem; color: #64748b; text-align: center; }
 
 /* 4. Main Content: Takes remaining width — same padding as the
-   teacher portal's .main-content */
+   teacher portal's .main-content.
+   No top padding here on purpose: #content is the scrolling ancestor
+   for the sticky .top-bar below, and position:sticky measures its
+   "top: 0" offset from the *padding edge* of that ancestor. Any
+   padding-top left here would stay permanently un-clipped above the
+   stuck header, so whatever had scrolled past could show through as
+   a see-through sliver above the bar. The lost top spacing is added
+   back on .tab-content's margin-top instead, which is safe since that
+   element isn't the sticky one. */
 #content {
     flex-grow: 1;
-    padding: 32px;
+    padding: 0 32px 32px;
     overflow-y: auto;
     background-color: #ffffff;
 }
 
 /* 5. Components */
-.tab-content { display: none; background: white; padding: 25px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+.tab-content { display: none; background: white; padding: 25px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-top: 20px; }
 .tab-content.active { display: block; }
 
 .search-box { background: #f8f9fa; padding: 20px; border: 1px solid #e9ecef; border-radius: 8px; display: flex; gap: 10px; margin-bottom: 25px; }
@@ -571,20 +612,49 @@ textarea:focus-visible,
    11. Responsiveness
    ========================================================================= */
 @media (max-width: 900px) {
-    .dashboard-container { flex-direction: column; height: auto; min-height: 100vh; }
-    body { overflow: auto; height: auto; }
-    #sidebar { width: 100%; flex-direction: row; flex-wrap: wrap; }
-    .sidebar-header { flex: 1 1 100%; padding: 16px; }
-    .sidebar-nav { flex: 1 1 100%; max-height: 220px; padding: 8px; }
-    .sidebar-footer { flex: 1 1 100%; flex-direction: row; flex-wrap: wrap; }
+    .dashboard-container { height: 100vh; }
+    body { overflow: hidden; height: 100vh; }
+
+    /* Sidebar becomes a fixed off-canvas drawer: hidden past the left
+       edge by default, slides in over the content when
+       .dashboard-container gets .sidebar-open (via the hamburger),
+       and slides back out on overlay tap, Escape, or picking a nav
+       item (switchTab calls closeSidebar()). */
+    #sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        height: 100vh;
+        width: 260px;
+        max-width: 82vw;
+        flex-direction: column;
+        transform: translateX(-100%);
+        transition: transform 0.25s ease;
+        z-index: 2000;
+        box-shadow: 4px 0 24px rgba(0,0,0,0.25);
+    }
+    .dashboard-container.sidebar-open #sidebar { transform: translateX(0); }
+    .sidebar-header { flex: 0 0 auto; }
+    .sidebar-nav { flex: 1 1 auto; max-height: none; padding: 16px 12px; }
+    .sidebar-footer { flex: 0 0 auto; flex-direction: column; }
     .sidebar-role-badge { flex: 1 1 100%; }
     .return-to-portal-btn, .sidebar-logout-btn { flex: 1 1 auto; }
-    #content { padding: 16px; }
+
+    .dashboard-container.sidebar-open .sidebar-overlay {
+        display: block;
+        opacity: 1;
+        pointer-events: auto;
+    }
+
+    .sidebar-hamburger { display: flex; }
+
+    #content { padding: 0 16px 16px; width: 100%; }
     .top-bar { flex-wrap: wrap; height: auto; padding: 12px 16px; gap: 10px; }
     .topbar-school-name { max-width: 100%; white-space: normal; }
     .form-grid { grid-template-columns: 1fr; }
     .lang-switch-group { order: -1; }
 }
+
 
 @media (max-width: 520px) {
     .user-actions { gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
@@ -678,4 +748,94 @@ textarea:focus-visible,
 
 @media (max-width: 520px) {
     .template-grid { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+}
+/* 14. Student Registry Table ("Students" nav) — professional data-table
+   layout replacing the old stacked search-box rows. Student ID leads,
+   name is a clickable link into the same history modal the row's
+   "View History" button opens. */
+.data-table-wrap {
+    overflow-x: auto;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+}
+table.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+    background: white;
+}
+table.data-table thead th {
+    text-align: left;
+    background: #f1f5fb;
+    color: #1e3a8a;
+    font-size: 0.74rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 12px 16px;
+    border-bottom: 2px solid #dbe3f3;
+    white-space: nowrap;
+}
+table.data-table tbody td {
+    padding: 12px 16px;
+    border-bottom: 1px solid #edf1f7;
+    vertical-align: middle;
+    color: #2d3748;
+}
+table.data-table tbody tr:last-child td { border-bottom: none; }
+table.data-table tbody tr:hover { background: #f8fafc; }
+table.data-table td.data-table-id {
+    font-family: 'Courier New', Consolas, monospace;
+    font-weight: 700;
+    color: #1e3a8a;
+    white-space: nowrap;
+}
+table.data-table .student-name-link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: #1e3a8a;
+    font-weight: 600;
+    font-size: inherit;
+    text-align: left;
+    cursor: pointer;
+    text-decoration: none;
+}
+table.data-table .student-name-link:hover { text-decoration: underline; color: #142c66; }
+table.data-table td.data-table-meta { color: #7f8c8d; font-size: 0.82rem; white-space: nowrap; }
+table.data-table td.data-table-action { text-align: right; white-space: nowrap; }
+table.data-table td.data-table-action button { padding: 7px 14px; font-size: 0.82rem; }
+
+.status-pill {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+.status-pill.status-active { background: #e3f7e8; color: #1c7a3e; }
+.status-pill.status-pending { background: #fef3d6; color: #92650a; }
+.status-pill.status-graduated { background: #e6ecfb; color: #1e3a8a; }
+.status-pill.status-transferring { background: #fde8d9; color: #b0480a; }
+.status-pill.status-transferred { background: #eceff3; color: #52606d; }
+
+/* Mobile: keep the actual table structure (rows/columns), just let the
+   wrapper scroll horizontally and tighten sizing — no more collapsing
+   into stacked label/value cards, per feedback that the table should
+   "remain as a table" on small screens too. */
+@media (max-width: 720px) {
+    .data-table-wrap {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    table.data-table {
+        font-size: 0.82rem;
+        min-width: 640px;
+    }
+    table.data-table thead th,
+    table.data-table tbody td {
+        padding: 10px 12px;
+    }
+    table.data-table td.data-table-action button { padding: 6px 10px; font-size: 0.78rem; }
 }

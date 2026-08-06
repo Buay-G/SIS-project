@@ -1129,7 +1129,10 @@ app.post('/api/register', requireAuth, requireRegistrarOrRecorder, async (req, r
         const plain_password = '1234';
         const security_password = await bcrypt.hash(plain_password, 10);
         const assigned_pc = `PC-${Math.floor(Math.random() * 39) + 1}`;
-        const status = (fayda_number && fayda_number.trim() !== '') ? 'Active' : 'Pending';
+        // Every new registration starts Active, regardless of whether the
+        // Fayda (national ID) number was captured yet — Pending previously
+        // meant "missing Fayda number", now retired per registrar preference.
+        const status = 'Active';
 
         // No section assigned at registration time anymore — the student
         // sits in the unassigned queue (section IS NULL) until a Registrar
@@ -4776,7 +4779,9 @@ app.post('/api/upload-marks', requireAuth, handleUploadError(upload.single('file
 app.put('/api/update/:id', requireAuth, requireRegistrarOrRecorder, async (req, res) => {
     try {
         const { first_name, middle_name, last_name, phone_number, fayda_number, sex, class_level, stream } = req.body;
-        const finalStatus = (fayda_number && fayda_number.trim() !== '') ? 'Active' : 'Pending';
+        // Status no longer tracks Fayda-number completeness — every student
+        // stays Active through an info update regardless of that field.
+        const finalStatus = 'Active';
         const sql = `UPDATE students SET first_name=?, middle_name=?, last_name=?, phone_number=?, fayda_number=?, sex=?, class_level=?, stream=?, status=? WHERE student_id=? AND school_id=?`;
         const [result] = await pool.query(sql, [first_name, middle_name, last_name, phone_number, fayda_number, sex, class_level, stream, finalStatus, req.params.id, req.user.school_id]);
         if (result.affectedRows === 0) {
@@ -5258,7 +5263,8 @@ async function insertTransferredStudent(conn, school_id, fields) {
     const email_address = `${student_id}@${school_prefix.toLowerCase()}.edu`;
     const security_password = await bcrypt.hash('1234', 10);
     const assigned_pc = `PC-${Math.floor(Math.random() * 39) + 1}`;
-    const status = (fields.fayda_number && fields.fayda_number.trim() !== '') ? 'Active' : 'Pending';
+    // Same as new registration: always Active regardless of Fayda number.
+    const status = 'Active';
 
     // section is left NULL on purpose — transferred-in students wait for
     // the Placement Wizard exactly like new registrations do.
@@ -5508,8 +5514,8 @@ app.post('/api/registrar/transfers/outgoing/:id/cancel', requireAuth, requireReg
         if (rows.length === 0) return res.status(404).json({ error: "Transfer not found." });
         if (rows[0].status !== 'pending') return res.status(400).json({ error: "Only a pending transfer can be cancelled." });
 
-        const [studentRows] = await pool.query('SELECT fayda_number FROM students WHERE student_id = ? AND school_id = ?', [rows[0].student_id, req.user.school_id]);
-        const restoredStatus = (studentRows[0]?.fayda_number && studentRows[0].fayda_number.trim() !== '') ? 'Active' : 'Pending';
+        // Always restore to Active regardless of Fayda-number completeness.
+        const restoredStatus = 'Active';
 
         await pool.query("UPDATE student_transfers SET status = 'cancelled' WHERE id = ?", [req.params.id]);
         await pool.query('UPDATE students SET status = ? WHERE student_id = ? AND school_id = ?', [restoredStatus, rows[0].student_id, req.user.school_id]);

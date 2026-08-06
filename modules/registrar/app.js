@@ -193,6 +193,27 @@ function switchTab(tabId) {
         tab.classList.remove('active');
     });
     document.getElementById(tabId).classList.add('active');
+    closeSidebar();
+}
+
+// --- Mobile sidebar drawer: hamburger opens it, tapping the dimmed
+// overlay (or picking a nav item, via switchTab above) closes it again.
+// No-op on desktop widths since .sidebar-open only has an effect inside
+// the <=900px media query.
+function toggleSidebar() {
+    const container = document.querySelector('.dashboard-container');
+    if (!container) return;
+    const isOpen = container.classList.toggle('sidebar-open');
+    const hamburger = document.querySelector('.sidebar-hamburger');
+    if (hamburger) hamburger.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+}
+
+function closeSidebar() {
+    const container = document.querySelector('.dashboard-container');
+    if (!container) return;
+    container.classList.remove('sidebar-open');
+    const hamburger = document.querySelector('.sidebar-hamburger');
+    if (hamburger) hamburger.setAttribute('aria-expanded', 'false');
 }
 
 function showRecorderIntercept() {
@@ -208,6 +229,9 @@ function closeRecorderIntercept() {
 document.addEventListener('DOMContentLoaded', loadCurrentUser);
 document.addEventListener('DOMContentLoaded', () => {
     if (window.lucide) lucide.createIcons();
+});
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeSidebar();
 });
 
 // --- 1b. Toasts & Confirm dialogs ---
@@ -968,6 +992,16 @@ async function runPlacementAll() {
 // they enrolled and — once they've graduated or transferred out — when
 // they left, both in E.C. with the Gregorian date in brackets.
 
+function statusPillClass(status) {
+    const s = String(status || '').toLowerCase();
+    if (s === 'active') return 'status-active';
+    if (s === 'pending') return 'status-pending';
+    if (s === 'graduated') return 'status-graduated';
+    if (s.startsWith('transferred - pending')) return 'status-transferring';
+    if (s.startsWith('transferred')) return 'status-transferred';
+    return '';
+}
+
 async function loadStudentRegistry() {
     const container = document.getElementById('student-registry-list');
     if (!container) return;
@@ -988,20 +1022,40 @@ async function loadStudentRegistry() {
             container.innerHTML = '<p class="muted">No students match this filter.</p>';
             return;
         }
-        container.innerHTML = students.map(s => `
-            <div class="search-box" style="justify-content: space-between; align-items: center; flex-wrap: wrap;">
-                <span>
-                    <strong>${s.full_name}</strong> <span class="muted">(${s.student_id})</span>
-                    &nbsp; ${t('reg_grade_label')} ${s.class_level}${s.section ? '-' + s.section : ''} — ${s.stream || ''}
-                    <br>
-                    <span class="muted" style="font-size: 12px;">
-                        ${t('reg_enrolled_label')}: ${formatYearBilingual(s.enrolled_at) || '—'}
-                        ${s.left_at ? ` &nbsp;|&nbsp; ${t('reg_left_label')}: ${formatYearBilingual(s.left_at)}` : ''}
-                    </span>
-                </span>
-                <button type="button" onclick="viewStudentHistory('${s.student_id}')">${t('reg_view_history')}</button>
+        container.innerHTML = `
+            <div class="data-table-wrap">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>${t('reg_col_student_id')}</th>
+                            <th>${t('reg_col_name')}</th>
+                            <th>${t('reg_col_grade')}</th>
+                            <th>${t('reg_col_status')}</th>
+                            <th>${t('reg_enrolled_label')}</th>
+                            <th>${t('reg_left_label')}</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${students.map(s => `
+                            <tr>
+                                <td class="data-table-id">${s.student_id}</td>
+                                <td>
+                                    <button type="button" class="student-name-link" onclick="viewStudentHistory('${s.student_id}')">${s.full_name}</button>
+                                </td>
+                                <td>${t('reg_grade_label')} ${s.class_level}${s.section ? '-' + s.section : ''}${s.stream ? ' — ' + s.stream : ''}</td>
+                                <td><span class="status-pill ${statusPillClass(s.status)}">${s.status || '—'}</span></td>
+                                <td class="data-table-meta">${formatYearBilingual(s.enrolled_at) || '—'}</td>
+                                <td class="data-table-meta">${s.left_at ? formatYearBilingual(s.left_at) : '—'}</td>
+                                <td class="data-table-action">
+                                    <button type="button" onclick="viewStudentHistory('${s.student_id}')">${t('reg_view_history')}</button>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
             </div>
-        `).join('');
+        `;
     } catch (err) {
         console.error(err);
         container.innerHTML = '<p class="muted">Could not load the student registry.</p>';

@@ -147,9 +147,25 @@
         </div>
       </nav>
 
+      <div
+        class="sidebar-overlay"
+        onclick="closeSidebar()"
+        aria-hidden="true"
+      ></div>
+
       <main id="content">
         <header class="top-bar">
           <div class="top-bar-left">
+            <button
+              type="button"
+              class="sidebar-hamburger"
+              onclick="toggleSidebar()"
+              aria-label="Open navigation menu"
+              aria-expanded="false"
+              aria-controls="sidebar"
+            >
+              <i data-lucide="menu" aria-hidden="true"></i>
+            </button>
             <span id="topbar-school-name" class="topbar-school-name">—</span>
             <span id="topbar-moe-code" class="topbar-chip" hidden></span>
             <span
@@ -281,7 +297,7 @@
             <span
               >Browse every registered and existing student at the school.</span
             >
-            <button type="button" onclick="switchTab('update-info')">
+            <button type="button" onclick="switchTab('students')">
               View All Students
             </button>
           </div>
