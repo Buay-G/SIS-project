@@ -1039,6 +1039,10 @@ const SIS_TRANSLATIONS = {
         holiday_eid_fitr: "Eid al-Fitr",
         holiday_eid_adha: "Eid al-Adha",
         holiday_mawlid: "Mawlid (The Prophet's Birthday)",
+        eth_month_meskerem: 'Meskerem', eth_month_tikimt: 'Tikimt', eth_month_hidar: 'Hidar',
+        eth_month_tahsas: 'Tahsas', eth_month_tir: 'Tir', eth_month_yekatit: 'Yekatit',
+        eth_month_megabit: 'Megabit', eth_month_miazia: 'Miazia', eth_month_ginbot: 'Ginbot',
+        eth_month_sene: 'Sene', eth_month_hamle: 'Hamle', eth_month_nehase: 'Nehase', eth_month_pagume: 'Pagume',
     },
 
     am: {
@@ -2065,6 +2069,10 @@ const SIS_TRANSLATIONS = {
         holiday_eid_fitr: "ዒድ አል ፈጥር",
         holiday_eid_adha: "ዒድ አል አድሐ",
         holiday_mawlid: "መውሊድ (የነቢዩ ልደት)",
+        eth_month_meskerem: 'መስከረም', eth_month_tikimt: 'ጥቅምት', eth_month_hidar: 'ኅዳር',
+        eth_month_tahsas: 'ታኅሳስ', eth_month_tir: 'ጥር', eth_month_yekatit: 'የካቲት',
+        eth_month_megabit: 'መጋቢት', eth_month_miazia: 'ሚያዝያ', eth_month_ginbot: 'ግንቦት',
+        eth_month_sene: 'ሰኔ', eth_month_hamle: 'ሐምሌ', eth_month_nehase: 'ነሐሴ', eth_month_pagume: 'ጳጉሜ',
     }
 };
 

@@ -109,6 +109,149 @@ async function checkAuthAndInit() {
 }
 
 // INIT — single DOMContentLoaded, every loader called once
+// --- Ethiopian Calendar dashboard widget ---
+// Same Julian-Day-Number method as toEthiopianDate in server.js (kept as
+// a separate client-side copy since this renders in the browser without
+// a round trip) — gregorianToJdn/toEthiopianDate must stay numerically
+// identical to their server.js counterparts. ethiopianToGregorian is the
+// inverse, used to place each fixed-date EC holiday on the Gregorian
+// calendar so it can be sorted/filtered against "today".
+const ETH_CAL_MONTHS = ['Meskerem', 'Tikimt', 'Hidar', 'Tahsas', 'Tir', 'Yekatit', 'Megabit', 'Miazia', 'Ginbot', 'Sene', 'Hamle', 'Nehase', 'Pagume'];
+const ETH_CAL_EPOCH = 1723856;
+
+function gregorianToJdnLocal(year, month, day) {
+    const a = Math.floor((14 - month) / 12);
+    const y = year + 4800 - a;
+    const m = month + 12 * a - 3;
+    return day + Math.floor((153 * m + 2) / 5) + 365 * y + Math.floor(y / 4) - Math.floor(y / 100) + Math.floor(y / 400) - 32045;
+}
+
+function toEthiopianDateLocal(dateInput) {
+    const d = new Date(dateInput);
+    const jdn = gregorianToJdnLocal(d.getFullYear(), d.getMonth() + 1, d.getDate());
+    const r = (jdn - ETH_CAL_EPOCH) % 1461;
+    const n = (r % 365) + 365 * Math.floor(r / 1460);
+    const year = 4 * Math.floor((jdn - ETH_CAL_EPOCH) / 1461) + Math.floor(r / 365) - Math.floor(r / 1460);
+    const month = Math.floor(n / 30) + 1;
+    const day = (n % 30) + 1;
+    return { year, month, day, monthName: ETH_CAL_MONTHS[month - 1] };
+}
+
+function jdnToGregorianLocal(jdn) {
+    const a = jdn + 32044;
+    const b = Math.floor((4 * a + 3) / 146097);
+    const c = a - Math.floor((146097 * b) / 4);
+    const d = Math.floor((4 * c + 3) / 1461);
+    const e = c - Math.floor((1461 * d) / 4);
+    const m = Math.floor((5 * e + 2) / 153);
+    const day = e - Math.floor((153 * m + 2) / 5) + 1;
+    const month = m + 3 - 12 * Math.floor(m / 10);
+    const year = 100 * b + d - 4800 + Math.floor(m / 10);
+    return new Date(year, month - 1, day);
+}
+
+function ethiopianToGregorianLocal(ecYear, ecMonth, ecDay) {
+    const jdn = ecYear * 365 + Math.floor(ecYear / 4) + 30 * (ecMonth - 1) + ecDay - 1 + ETH_CAL_EPOCH;
+    return jdnToGregorianLocal(jdn);
+}
+
+// Fixed-date EC holidays: month/day never move relative to the
+// Ethiopian calendar, so they're generated for "this EC year" and
+// "next EC year" every time the widget renders, and re-anchored to
+// Gregorian dates from there.
+const ETH_CAL_FIXED_HOLIDAYS = [
+    { key: 'holiday_enkutatash', month: 1, day: 1 },
+    { key: 'holiday_meskel', month: 1, day: 17 },
+    { key: 'holiday_buhe', month: 12, day: 13 },
+    { key: 'holiday_genna', month: 4, day: 29 },
+    { key: 'holiday_timkat', month: 5, day: 11 },
+    { key: 'holiday_adwa', month: 6, day: 23 },
+    { key: 'holiday_labor', month: 8, day: 23 },
+    { key: 'holiday_patriots', month: 8, day: 27 },
+    { key: 'holiday_derg', month: 9, day: 20 }
+];
+
+// Movable (lunar/paschal) holidays don't have a fixed EC month/day, so
+// they're kept as explicit Gregorian dates per year instead of being
+// derived. Extend this table as future years are needed — anything
+// missing for the relevant year is simply skipped rather than guessed.
+const ETH_CAL_MOVABLE_HOLIDAYS = {
+    2026: [
+        { key: 'holiday_eid_fitr', month: 3, day: 20 },
+        { key: 'holiday_eid_adha', month: 5, day: 27 },
+        { key: 'holiday_mawlid', month: 8, day: 26, tentative: true },
+        { key: 'holiday_good_friday', month: 4, day: 3 },
+        { key: 'holiday_fasika', month: 4, day: 5 }
+    ],
+    2027: [
+        { key: 'holiday_eid_fitr', month: 3, day: 9, tentative: true },
+        { key: 'holiday_eid_adha', month: 5, day: 16, tentative: true },
+        { key: 'holiday_mawlid', month: 8, day: 15, tentative: true },
+        { key: 'holiday_good_friday', month: 4, day: 30 },
+        { key: 'holiday_fasika', month: 5, day: 2 }
+    ]
+};
+
+async function renderEthiopianCalendarWidget() {
+    const dateEl = document.getElementById('eth-cal-today-date');
+    const gcEl = document.getElementById('eth-cal-today-gc');
+    const listEl = document.getElementById('eth-cal-holiday-list');
+    if (!dateEl || !listEl) return;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayEc = toEthiopianDateLocal(today);
+    const weekday = today.toLocaleDateString(getCurrentLang() === 'am' ? 'am-ET' : 'en-US', { weekday: 'long' });
+    const gcLabel = today.toLocaleDateString('en-GB', { year: 'numeric', month: 'short', day: 'numeric' });
+
+    const monthKey = `eth_month_${todayEc.monthName.toLowerCase()}`;
+    dateEl.textContent = `${todayEc.day} ${t(monthKey)} ${todayEc.year}`;
+    gcEl.textContent = `${weekday} · ${t('sa_eth_cal_gc')}: ${gcLabel}`;
+
+    // Build every fixed holiday for this EC year and next, plus whatever
+    // movable holidays are on file for the Gregorian years involved, then
+    // keep only the ones landing in the next ~6 months.
+    const candidates = [];
+    [todayEc.year, todayEc.year + 1].forEach(ecYear => {
+        ETH_CAL_FIXED_HOLIDAYS.forEach(h => {
+            const gc = ethiopianToGregorianLocal(ecYear, h.month, h.day);
+            candidates.push({ key: h.key, date: gc, tentative: false });
+        });
+    });
+    const gcYearsInvolved = new Set(candidates.map(c => c.date.getFullYear()));
+    gcYearsInvolved.add(today.getFullYear());
+    gcYearsInvolved.add(today.getFullYear() + 1);
+    gcYearsInvolved.forEach(gcYear => {
+        (ETH_CAL_MOVABLE_HOLIDAYS[gcYear] || []).forEach(h => {
+            candidates.push({ key: h.key, date: new Date(gcYear, h.month - 1, h.day), tentative: !!h.tentative });
+        });
+    });
+
+    const sixMonthsOut = new Date(today);
+    sixMonthsOut.setMonth(sixMonthsOut.getMonth() + 6);
+
+    const upcoming = candidates
+        .filter(c => c.date >= today && c.date <= sixMonthsOut)
+        .sort((a, b) => a.date - b.date);
+
+    if (upcoming.length === 0) {
+        listEl.innerHTML = `<p class="eth-cal-no-upcoming">${t('sa_eth_cal_no_upcoming')}</p>`;
+        return;
+    }
+
+    listEl.innerHTML = upcoming.map(h => {
+        const days = Math.round((h.date - today) / 86400000);
+        const dateBadge = h.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        const daysLabel = days === 0 ? t('sa_eth_cal_today_bang') : (days === 1 ? t('sa_eth_cal_tomorrow') : t('sa_eth_cal_in_days', { n: days }));
+        return `
+            <div class="eth-cal-holiday-row">
+                <span class="eth-cal-holiday-date-badge">${dateBadge}</span>
+                <span class="eth-cal-holiday-name">${t(h.key)}${h.tentative ? `<span class="eth-cal-holiday-tentative">(${t('sa_eth_cal_tentative')})</span>` : ''}</span>
+                <span class="eth-cal-holiday-days">${daysLabel}</span>
+            </div>`;
+    }).join('');
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     const authed = await checkAuthAndInit();
     if (!authed) return;
@@ -126,7 +269,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         loadHomeroomInfo(),
         loadDashboardTodaysClasses(),
         loadDashboardStudentPerformance(),
-        loadSemesterStatus()
+        loadSemesterStatus(),
+        renderEthiopianCalendarWidget()
     ]);
     results.forEach(r => { if (r.status === 'rejected') console.error('Init loader failed:', r.reason); });
     setupNavigation();
@@ -539,6 +683,22 @@ function renderMyClassRoster(data) {
     if (totalEl) totalEl.textContent = data.total ?? 0;
     if (presentEl) presentEl.textContent = data.present_count ?? 0;
     if (absentEl) absentEl.textContent = (data.total ?? 0) - (data.present_count ?? 0);
+
+    // Today's a school holiday — attendance isn't expected, so show a
+    // banner instead of letting "Not Yet Marked" read as a problem.
+    let banner = document.getElementById('myclass-holiday-banner');
+    if (data.is_holiday) {
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.id = 'myclass-holiday-banner';
+            banner.className = 'myclass-holiday-banner';
+            container.parentNode.insertBefore(banner, container);
+        }
+        banner.textContent = `Today is ${data.holiday_name} — attendance isn't required.`;
+        banner.style.display = 'block';
+    } else if (banner) {
+        banner.style.display = 'none';
+    }
 
     const roster = data.roster || [];
 
@@ -1242,6 +1402,8 @@ window.loadHomeroomSectionReport = async () => {
 
         const headerCells = data.subject_columns.map(name => `<th colspan="3">${name}</th>`).join('');
         const subHeaderCells = data.subject_columns.map(() => '<th>S1</th><th>S2</th><th>Avg</th>').join('');
+        const locked = !!data.current_term_locked;
+        const incompleteCount = data.students.filter(s => s.status === 'Incomplete').length;
 
         const rows = data.students.map(student => {
             const cells = data.subject_columns.map(name => {
@@ -1249,15 +1411,29 @@ window.loadHomeroomSectionReport = async () => {
                 const cell = (v) => v != null ? v : '<span class="shaded-blank">N/A</span>';
                 return `<td>${cell(subj.semester_1)}</td><td>${cell(subj.semester_2)}</td><td>${cell(subj.year_average)}</td>`;
             }).join('');
-            return `<tr><td>${student.student_id}</td><td>${student.full_name}</td>${cells}</tr>`;
+            const statusBadge = studentStatusBadge(student.status);
+            const statusControls = locked
+                ? ''
+                : `<select class="form-input" style="padding:4px 6px; font-size:0.8rem; width:auto;" onchange="setStudentStatus('${student.student_id}', this.value)">
+                        <option value="Active" ${student.status === 'Active' ? 'selected' : ''}>Active</option>
+                        <option value="Incomplete" ${student.status === 'Incomplete' ? 'selected' : ''}>Incomplete</option>
+                        <option value="Dropout" ${student.status === 'Dropout' ? 'selected' : ''}>Dropout</option>
+                   </select>`;
+            return `<tr><td>${student.student_id}</td><td>${student.full_name}</td>${cells}<td>${statusBadge}</td><td>${statusControls}</td></tr>`;
         }).join('');
+
+        const notifyBtn = locked
+            ? ''
+            : `<button class="btn-primary" onclick="notifyIncompleteStudents()" style="margin-bottom:12px; margin-left:8px; width:auto; padding:8px 16px; background:#b45309;">Notify Incomplete Students${incompleteCount ? ` (${incompleteCount})` : ''}</button>`;
 
         output.innerHTML = `
             <button class="btn-primary" onclick="exportSectionReportCSV()" style="margin-bottom:12px; width:auto; padding:8px 16px;">Export CSV</button>
+            ${notifyBtn}
+            ${locked ? '<p style="font-size:0.8rem; color:#64748b; margin-bottom:12px;">This term\'s report has already been pushed to the Academic VP — status is locked.</p>' : ''}
             <div style="overflow-x:auto;">
                 <table id="progress-table">
                     <thead>
-                        <tr><th rowspan="2">ID</th><th rowspan="2">Full Name</th>${headerCells}</tr>
+                        <tr><th rowspan="2">ID</th><th rowspan="2">Full Name</th>${headerCells}<th rowspan="2">Status</th><th rowspan="2">Set Status</th></tr>
                         <tr>${subHeaderCells}</tr>
                     </thead>
                     <tbody>${rows}</tbody>
@@ -1266,6 +1442,46 @@ window.loadHomeroomSectionReport = async () => {
     } catch (err) {
         console.error("Section report load error:", err);
         output.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not load section report.</p>';
+    }
+};
+
+function studentStatusBadge(status) {
+    if (status === 'Incomplete') return '<span style="background:#fef3c7; color:#b45309; padding:2px 8px; border-radius:999px; font-size:0.75rem; font-weight:600;">Incomplete</span>';
+    if (status === 'Dropout') return '<span style="background:#fee2e2; color:#b91c1c; padding:2px 8px; border-radius:999px; font-size:0.75rem; font-weight:600;">Dropout</span>';
+    return '<span style="background:#dcfce7; color:#166534; padding:2px 8px; border-radius:999px; font-size:0.75rem; font-weight:600;">Active</span>';
+}
+
+window.setStudentStatus = async (studentId, status) => {
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/student-status`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ student_id: studentId, status })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            showAlertModal(data.error || "Could not update this student's status.");
+            return;
+        }
+        await window.loadHomeroomSectionReport();
+    } catch (err) {
+        console.error("setStudentStatus error:", err);
+        showAlertModal("Could not update this student's status.");
+    }
+};
+
+window.notifyIncompleteStudents = async () => {
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/notify-incomplete`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) {
+            showAlertModal(data.error || "Could not send notifications.");
+            return;
+        }
+        showAlertModal(data.message);
+    } catch (err) {
+        console.error("notifyIncompleteStudents error:", err);
+        showAlertModal("Could not send notifications.");
     }
 };
 

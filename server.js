@@ -92,10 +92,20 @@ function verifyQrPayload(payload) {
     return id;
 }
 
-// Monday-Friday only — adjust here if your school week differs.
+// Monday-Friday only, and not an Ethiopian calendar holiday (see
+// isEthiopianHoliday(), defined further down in this file — function
+// declarations hoist, and this is never called until a request comes
+// in, long after the whole module has finished loading, so the
+// forward reference is safe). This is the single choke point every
+// absence-inferring feature goes through — countAbsentDays,
+// computeStreak (student AND teacher streaks), and the day-status
+// generators below — so a holiday now behaves like a school closure
+// everywhere absence would otherwise be inferred, not just on
+// weekends.
 function isSchoolDay(date) {
     const day = date.getDay();
-    return day !== 0 && day !== 6;
+    if (day === 0 || day === 6) return false;
+    return !isEthiopianHoliday(date);
 }
 function toDateOnly(d) {
     return d.toISOString().slice(0, 10); // YYYY-MM-DD
@@ -1837,6 +1847,13 @@ app.post('/api/admin/mark-teacher-attendance', requireAuth, requireAdminTitle('A
     }
     try {
         const today = toDateOnly(new Date());
+        // A holiday isn't a day anyone was expected to show up, so it
+        // can't be logged against a teacher as an absence — same
+        // principle as isSchoolDay() skipping holidays for students.
+        const holidayName = getEthiopianHolidayName(new Date());
+        if (status === 'absent' && holidayName) {
+            return res.status(400).json({ error: `Today is ${holidayName} — a school holiday. Attendance can't be marked absent on a holiday.` });
+        }
         await pool.query(
             `INSERT INTO teacher_attendance (teacher_id, school_id, attendance_date, status, marked_by)
              VALUES (?, ?, ?, ?, ?)
@@ -1947,13 +1964,19 @@ app.get('/api/student/attendance-calendar', requireAuth, requireRole('students')
         while (cursor <= to) {
             const dateStr = toDateOnly(cursor);
             let status;
+            const holidayName = getEthiopianHolidayName(cursor);
             if (termStartDate && dateStr < termStartDate) status = 'not_started';
+            // Holiday takes priority over weekend so the widget can color
+            // it distinctly (yellow) rather than lumping it in with an
+            // ordinary Saturday/Sunday — a holiday that lands on a weekday
+            // is exactly the case that used to get miscounted as absent.
+            else if (holidayName) status = 'holiday';
             else if (!isSchoolDay(cursor)) status = 'weekend';
             else if (dateStr > today) status = 'future';
             else if (presentSet.has(dateStr)) status = 'present';
             else if (excusedSet.has(dateStr)) status = 'excused';
             else status = 'absent';
-            days.push({ date: dateStr, status });
+            days.push({ date: dateStr, status, holiday_name: holidayName || null });
             cursor.setDate(cursor.getDate() + 1);
         }
 
@@ -2334,6 +2357,23 @@ function weekdaysBetween(startStr, endStr) {
     return count;
 }
 
+// Same as weekdaysBetween, but also excludes Ethiopian calendar
+// holidays — used anywhere an "expected attendance slots" total is
+// computed, so a school-wide holiday doesn't get counted as a day
+// everyone should have shown up and silently inflate the unexcused
+// count for both students and teachers.
+function schoolDaysBetween(startStr, endStr) {
+    let count = 0;
+    const cur = new Date(startStr + 'T00:00:00Z');
+    const end = new Date(endStr + 'T00:00:00Z');
+    while (cur <= end) {
+        const day = cur.getUTCDay();
+        if (day >= 1 && day <= 5 && !isEthiopianHoliday(cur)) count++;
+        cur.setUTCDate(cur.getUTCDate() + 1);
+    }
+    return count;
+}
+
 // Shared by the live /api/principal/school-performance endpoint below and
 // by archiveSchoolPerformance() (see the Semester Archive section near
 // POST /api/term/close) — both need the exact same four-angle breakdown,
@@ -2341,7 +2381,7 @@ function weekdaysBetween(startStr, endStr) {
 // sees live and the numbers frozen into last semester's archive are always
 // computed the same way.
 async function computeSchoolPerformance(school_id, since, today, currentTerm) {
-    const schoolDays30 = weekdaysBetween(since, today);
+    const schoolDays30 = schoolDaysBetween(since, today);
 
     // (1) Academic performance
     const [markRows] = await pool.query(
@@ -2389,7 +2429,7 @@ async function computeSchoolPerformance(school_id, since, today, currentTerm) {
         const rTo = toDateOnly(new Date(r.date_to));
         const overlapFrom = rFrom > since ? rFrom : since;
         const overlapTo = rTo < today ? rTo : today;
-        if (overlapFrom <= overlapTo) studentExcused += weekdaysBetween(overlapFrom, overlapTo);
+        if (overlapFrom <= overlapTo) studentExcused += schoolDaysBetween(overlapFrom, overlapTo);
     }
     const studentUnexcused = Math.max(0, totalStudentSlots - Number(student_present) - studentExcused);
     const studentAttendance = { present: Number(student_present), excused: studentExcused, unexcused: studentUnexcused };
@@ -2848,7 +2888,13 @@ app.get('/api/student/my-class-attendance', requireAuth, requireClassMonitor, as
             absence_request_status: excusedMap.get(s.student_id) || null
         }));
 
-        res.json({ date, roster, absent_count: roster.filter(r => !r.present).length });
+        res.json({
+            date,
+            roster,
+            absent_count: roster.filter(r => !r.present).length,
+            is_holiday: !!getEthiopianHolidayName(date),
+            holiday_name: getEthiopianHolidayName(date)
+        });
     } catch (err) {
         console.error("/api/student/my-class-attendance error:", err);
         res.status(500).json({ error: "Could not load class attendance" });
@@ -2931,6 +2977,69 @@ function formatDualDateText(dateInput) {
     const e = toEthiopianDate(d);
     const gc = d.toLocaleDateString('en-GB', { year: 'numeric', month: 'short', day: 'numeric' });
     return `${e.day} ${e.monthName} ${e.year} E.C. (${gc} GC)`;
+}
+
+// --- Ethiopian calendar holidays — shared by isSchoolDay() (so no one's
+// attendance is dinged for a day the school itself was closed) and by
+// the attendance-calendar/holiday-aware endpoints below (so the UI can
+// color a holiday distinctly from an ordinary weekend). Mirrors the
+// client-side ETH_CAL_FIXED_HOLIDAYS/ETH_CAL_MOVABLE_HOLIDAYS tables in
+// script.js's dashboard widget — keep the two in sync if either changes.
+//
+// Fixed holidays never move relative to the Ethiopian calendar, so
+// they're stored as [ec_month, ec_day] and matched directly against
+// toEthiopianDate()'s output — no year-specific Gregorian conversion
+// needed.
+const ETH_FIXED_HOLIDAYS = [
+    { md: [1, 1], name: 'Enkutatash (New Year)' },
+    { md: [1, 17], name: 'Meskel (Finding of the True Cross)' },
+    { md: [12, 13], name: 'Buhe' },
+    { md: [4, 29], name: 'Genna (Ethiopian Christmas)' },
+    { md: [5, 11], name: 'Timkat (Epiphany)' },
+    { md: [6, 23], name: 'Adwa Victory Day' },
+    { md: [8, 23], name: 'International Labor Day' },
+    { md: [8, 27], name: "Patriots' Victory Day" },
+    { md: [9, 20], name: 'Derg Downfall Day' }
+];
+
+// Movable (lunar/paschal) holidays don't have a fixed Ethiopian-calendar
+// month/day, so they're kept as explicit Gregorian dates per year
+// instead of being derived. Extend this table as future years are
+// needed — a year with no entry here simply has no movable holidays
+// recognized, rather than a guessed date.
+const ETH_MOVABLE_HOLIDAYS = {
+    2026: [
+        { md: [3, 20], name: 'Eid al-Fitr' },
+        { md: [5, 27], name: 'Eid al-Adha' },
+        { md: [8, 26], name: "Mawlid (The Prophet's Birthday)" },
+        { md: [4, 3], name: 'Ethiopian Good Friday (Siklet)' },
+        { md: [4, 5], name: 'Fasika (Ethiopian Easter)' }
+    ],
+    2027: [
+        { md: [3, 9], name: 'Eid al-Fitr' },
+        { md: [5, 16], name: 'Eid al-Adha' },
+        { md: [8, 15], name: "Mawlid (The Prophet's Birthday)" },
+        { md: [4, 30], name: 'Ethiopian Good Friday (Siklet)' },
+        { md: [5, 2], name: 'Fasika (Ethiopian Easter)' }
+    ]
+};
+
+// Returns the holiday name if `date` is an Ethiopian calendar holiday,
+// or null otherwise. Checks fixed EC holidays via toEthiopianDate() (so
+// no Gregorian conversion is needed) and movable holidays via the
+// explicit per-Gregorian-year table above.
+function getEthiopianHolidayName(date) {
+    const d = new Date(date);
+    const ec = toEthiopianDate(d);
+    const fixed = ETH_FIXED_HOLIDAYS.find(h => h.md[0] === ec.month && h.md[1] === ec.day);
+    if (fixed) return fixed.name;
+    const movable = (ETH_MOVABLE_HOLIDAYS[d.getFullYear()] || [])
+        .find(h => h.md[0] === d.getMonth() + 1 && h.md[1] === d.getDate());
+    return movable ? movable.name : null;
+}
+
+function isEthiopianHoliday(date) {
+    return getEthiopianHolidayName(date) !== null;
 }
 
 // Certificate photo intentionally reuses the same id_photo_url as the ID
@@ -8098,6 +8207,24 @@ app.get('/api/homeroom/section-report', requireAuth, async (req, res) => {
         );
         const syncedTerms = new Set(syncRows.map(r => r.term));
 
+        // Current-term Incomplete/Dropout flags the homeroom teacher has
+        // set (see /api/homeroom/student-status below). Scoped to the
+        // current term only — a student flagged Incomplete last semester
+        // starts this semester's review clean.
+        const currentTerm = await getCurrentTerm(req.user.school_id);
+        const [statusRows] = await pool.query(
+            `SELECT student_id, status, notified_at FROM student_term_status
+             WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ? AND term = ?`,
+            [req.user.school_id, class_level, section, stream, currentTerm]
+        );
+        const statusByStudent = {};
+        statusRows.forEach(r => { statusByStudent[r.student_id] = { status: r.status, notified_at: r.notified_at }; });
+        const [pushedNowRows] = await pool.query(
+            'SELECT 1 FROM pushed_marks_reports WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ? AND term = ?',
+            [req.user.school_id, class_level, section, stream, currentTerm]
+        );
+        const currentTermLocked = pushedNowRows.length > 0;
+
         // Collect the distinct set of subjects that have EVER been pushed
         // for this section, so every student row has the same columns.
         const subjectNames = [...new Set(scoreRows.map(r => r.subject_name))].sort();
@@ -8125,13 +8252,19 @@ app.get('/api/homeroom/section-report', requireAuth, async (req, res) => {
                 };
             });
             const subjectValues = Object.values(subjects);
+            const statusEntry = statusByStudent[student.student_id];
             return {
                 student_id: student.student_id,
                 full_name: [student.first_name, student.middle_name, student.last_name].filter(Boolean).join(' '),
                 subjects,
                 semester_1_average: overallAverage(subjectValues.map(s => s.semester_1)),
                 semester_2_average: overallAverage(subjectValues.map(s => s.semester_2)),
-                year_average: overallAverage(subjectValues.map(s => s.year_average))
+                year_average: overallAverage(subjectValues.map(s => s.year_average)),
+                // Reflects THIS term's review status only (see currentTerm
+                // above) — 'Active' unless the homeroom teacher has
+                // flagged the student Incomplete or Dropout for it.
+                status: statusEntry?.status || 'Active',
+                status_notified_at: statusEntry?.notified_at || null
             };
         });
 
@@ -8168,11 +8301,132 @@ app.get('/api/homeroom/section-report', requireAuth, async (req, res) => {
             semester_1_class_size: s1Ranks.size ? [...s1Ranks.values()][0].class_size : null,
             semester_2_class_size: s2Ranks.size ? [...s2Ranks.values()][0].class_size : null,
             year_class_size: yearRanks.size ? [...yearRanks.values()][0].class_size : null,
+            current_term: currentTerm,
+            // Once this term's report has been pushed to the Academic VP,
+            // Incomplete/Dropout flags for it are locked — same rule as
+            // subject marks (see /api/homeroom/student-status).
+            current_term_locked: currentTermLocked,
             students: report
         });
     } catch (err) {
         console.error("section-report error:", err);
         res.status(500).json({ error: "Could not load section report" });
+    }
+});
+
+// --- Homeroom teacher: flag a student's status for the CURRENT term's
+// master-sheet review ---
+// status is one of 'Active' (default/clear), 'Incomplete' (missing one
+// or more required assessments — surfaced to the student as a
+// notification via /api/homeroom/notify-incomplete below and shown to
+// the Academic VP once pushed), or 'Dropout' (student has stopped
+// attending; no notification is sent for this one). Flags are scoped to
+// class_level/section/stream/term via student_term_status, so a status
+// set this semester doesn't carry over to the next.
+//
+// Requires a new table — run this migration if it doesn't exist yet:
+//   CREATE TABLE student_term_status (
+//     id INT AUTO_INCREMENT PRIMARY KEY,
+//     school_id INT NOT NULL,
+//     student_id VARCHAR(50) NOT NULL,
+//     class_level VARCHAR(10) NOT NULL,
+//     section VARCHAR(5) NOT NULL,
+//     stream VARCHAR(30) NOT NULL,
+//     term VARCHAR(20) NOT NULL,
+//     status VARCHAR(20) NOT NULL DEFAULT 'Active',
+//     flagged_by VARCHAR(50) NULL,
+//     flagged_at DATETIME NULL,
+//     notified_at DATETIME NULL,
+//     UNIQUE KEY uq_student_term (school_id, student_id, term)
+//   );
+const STUDENT_TERM_STATUSES = ['Active', 'Incomplete', 'Dropout'];
+
+app.post('/api/homeroom/student-status', requireAuth, async (req, res) => {
+    const { student_id, status } = req.body;
+    if (!student_id || !STUDENT_TERM_STATUSES.includes(status)) {
+        return res.status(400).json({ error: `status must be one of: ${STUDENT_TERM_STATUSES.join(', ')}` });
+    }
+
+    try {
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) {
+            return res.status(403).json({ error: "You are not a homeroom teacher." });
+        }
+        const { class_level, section, stream } = homeroom;
+        const term = await getCurrentTerm(req.user.school_id);
+
+        // Same "locked once pushed" rule the marks themselves follow —
+        // once the section's report is with the Academic VP, the roster
+        // reviewed there shouldn't keep shifting underneath them.
+        const [existingPush] = await pool.query(
+            'SELECT 1 FROM pushed_marks_reports WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ? AND term = ?',
+            [req.user.school_id, class_level, section, stream, term]
+        );
+        if (existingPush.length > 0) {
+            return res.status(409).json({ error: `This section's ${term} report has already been pushed to the Academic VP and is locked.` });
+        }
+
+        const [studentRows] = await pool.query(
+            'SELECT student_id FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream = ? AND school_id = ?',
+            [student_id, class_level, section, stream, req.user.school_id]
+        );
+        if (studentRows.length === 0) {
+            return res.status(404).json({ error: "This student isn't in your homeroom section." });
+        }
+
+        await pool.query(
+            `INSERT INTO student_term_status (school_id, student_id, class_level, section, stream, term, status, flagged_by, flagged_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+             ON DUPLICATE KEY UPDATE status = VALUES(status), flagged_by = VALUES(flagged_by), flagged_at = NOW(),
+                 notified_at = IF(VALUES(status) = 'Incomplete', notified_at, NULL)`,
+            [req.user.school_id, student_id, class_level, section, stream, term, status, req.user.user_id]
+        );
+
+        res.json({ message: `Student marked ${status} for ${term}.` });
+    } catch (err) {
+        console.error("/api/homeroom/student-status error:", err);
+        res.status(500).json({ error: "Could not update this student's status." });
+    }
+});
+
+// --- Homeroom teacher: notify every student currently flagged
+// Incomplete for the current term, once (skips anyone already notified
+// so re-clicking after flagging a couple more students doesn't spam the
+// whole list again). ---
+app.post('/api/homeroom/notify-incomplete', requireAuth, async (req, res) => {
+    try {
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) {
+            return res.status(403).json({ error: "You are not a homeroom teacher." });
+        }
+        const { class_level, section, stream } = homeroom;
+        const term = await getCurrentTerm(req.user.school_id);
+
+        const [rows] = await pool.query(
+            `SELECT student_id FROM student_term_status
+             WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ? AND term = ?
+               AND status = 'Incomplete' AND notified_at IS NULL`,
+            [req.user.school_id, class_level, section, stream, term]
+        );
+
+        if (rows.length === 0) {
+            return res.json({ message: "No newly-flagged Incomplete students to notify.", notified: 0 });
+        }
+
+        const message = `You have been marked Incomplete for ${term}. One or more required assessments are still missing — please contact your subject teacher(s) and your homeroom teacher as soon as possible.`;
+        for (const row of rows) {
+            await notifyStudent(row.student_id, req.user.school_id, req.user.user_id, 'incomplete_status', message);
+        }
+        await pool.query(
+            `UPDATE student_term_status SET notified_at = NOW()
+             WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ? AND term = ? AND status = 'Incomplete' AND notified_at IS NULL`,
+            [req.user.school_id, class_level, section, stream, term]
+        );
+
+        res.json({ message: `Notified ${rows.length} student(s) marked Incomplete.`, notified: rows.length });
+    } catch (err) {
+        console.error("/api/homeroom/notify-incomplete error:", err);
+        res.status(500).json({ error: "Could not send notifications." });
     }
 });
 
@@ -8578,6 +8832,11 @@ app.get('/api/homeroom/attendance-today', requireAuth, async (req, res) => {
             date: today,
             total: roster.length,
             present_count: roster.filter(r => r.present).length,
+            // Lets the "My Class" page show a yellow "Today is a
+            // holiday" banner instead of an alarming "Not Yet Marked"
+            // count — attendance genuinely isn't expected today.
+            is_holiday: !!getEthiopianHolidayName(new Date()),
+            holiday_name: getEthiopianHolidayName(new Date()),
             roster
         });
     } catch (err) {
@@ -9626,15 +9885,22 @@ app.get('/api/academic-vp/marks-review', requireAuth, requireAdminTitle('Academi
         const [rows] = await pool.query(
             `SELECT t.teacher_id, t.first_name, t.last_name,
                     t.homeroom_class_level AS class_level, t.homeroom_section AS section, t.homeroom_stream AS stream,
-                    p.pushed_at
+                    p.pushed_at,
+                    SUM(CASE WHEN sts.status = 'Incomplete' THEN 1 ELSE 0 END) AS incomplete_count,
+                    SUM(CASE WHEN sts.status = 'Dropout' THEN 1 ELSE 0 END) AS dropout_count
              FROM teachers t
              LEFT JOIN pushed_marks_reports p
                  ON p.school_id = t.school_id
                  AND p.class_level = t.homeroom_class_level AND p.section = t.homeroom_section AND p.stream = t.homeroom_stream
                  AND p.term = ?
+             LEFT JOIN student_term_status sts
+                 ON sts.school_id = t.school_id
+                 AND sts.class_level = t.homeroom_class_level AND sts.section = t.homeroom_section AND sts.stream = t.homeroom_stream
+                 AND sts.term = ?
              WHERE t.school_id = ? AND t.homeroom_class_level IS NOT NULL
+             GROUP BY t.teacher_id, t.first_name, t.last_name, t.homeroom_class_level, t.homeroom_section, t.homeroom_stream, p.pushed_at
              ORDER BY t.homeroom_class_level, t.homeroom_section`,
-            [term, req.user.school_id]
+            [term, term, req.user.school_id]
         );
         res.json(rows.map(r => ({
             teacher_id: r.teacher_id,
@@ -9643,11 +9909,107 @@ app.get('/api/academic-vp/marks-review', requireAuth, requireAdminTitle('Academi
             section: r.section,
             stream: r.stream,
             pushed: !!r.pushed_at,
-            pushed_at: r.pushed_at
+            pushed_at: r.pushed_at,
+            // Only meaningful once pushed — a homeroom teacher can still
+            // be mid-review with unflagged students otherwise.
+            incomplete_count: r.pushed_at ? Number(r.incomplete_count) : 0,
+            dropout_count: r.pushed_at ? Number(r.dropout_count) : 0
         })));
     } catch (err) {
         console.error("/api/academic-vp/marks-review error:", err);
         res.status(500).json({ error: "Could not load the marks review" });
+    }
+});
+
+// --- Academic VP: the compiled master sheet for one section, once its
+// homeroom teacher has pushed it — same per-subject totals as
+// /api/homeroom/section-report, plus the Incomplete/Dropout list the
+// homeroom teacher finalized before pushing. Locked to sections that
+// have actually been pushed for the requested term, since an unpushed
+// section's review is still the homeroom teacher's to finish.
+app.get('/api/academic-vp/section-master-sheet', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    const { class_level, section, stream } = req.query;
+    if (!class_level || !section || !stream) {
+        return res.status(400).json({ error: "class_level, section, and stream are required" });
+    }
+
+    try {
+        const term = await getCurrentTerm(req.user.school_id);
+
+        const [pushRows] = await pool.query(
+            'SELECT pushed_at FROM pushed_marks_reports WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ? AND term = ?',
+            [req.user.school_id, class_level, section, stream, term]
+        );
+        if (pushRows.length === 0) {
+            return res.status(404).json({ error: `This section's ${term} report hasn't been pushed to you yet.` });
+        }
+
+        const [students] = await pool.query(
+            `SELECT student_id, first_name, middle_name, last_name
+             FROM students
+             WHERE class_level = ? AND section = ? AND stream = ? AND school_id = ?
+             ORDER BY first_name, last_name`,
+            [class_level, section, stream, req.user.school_id]
+        );
+
+        const [scoreRows] = await pool.query(
+            `SELECT prs.student_id, s.subject_name, pr.term, prs.total_score
+             FROM pushed_report_scores prs
+             JOIN pushed_reports pr ON pr.push_id = prs.push_id AND pr.school_id = prs.school_id
+             JOIN subjects s ON s.subject_id = pr.subject_id AND s.school_id = pr.school_id
+             WHERE pr.class_level = ? AND pr.section = ? AND pr.stream = ? AND pr.school_id = ?`,
+            [class_level, section, stream, req.user.school_id]
+        );
+
+        const [statusRows] = await pool.query(
+            `SELECT student_id, status FROM student_term_status
+             WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ? AND term = ?`,
+            [req.user.school_id, class_level, section, stream, term]
+        );
+        const statusByStudent = {};
+        statusRows.forEach(r => { statusByStudent[r.student_id] = r.status; });
+
+        const subjectNames = [...new Set(scoreRows.map(r => r.subject_name))].sort();
+        const scoresByStudent = {};
+        scoreRows.forEach(row => {
+            if (!scoresByStudent[row.student_id]) scoresByStudent[row.student_id] = {};
+            if (!scoresByStudent[row.student_id][row.subject_name]) {
+                scoresByStudent[row.student_id][row.subject_name] = {};
+            }
+            scoresByStudent[row.student_id][row.subject_name][row.term] = Number(row.total_score);
+        });
+
+        const report = students.map(student => {
+            const subjects = {};
+            subjectNames.forEach(name => {
+                const entry = (scoresByStudent[student.student_id] || {})[name] || {};
+                const s1 = entry['Semester 1'] ?? null;
+                const s2 = entry['Semester 2'] ?? null;
+                subjects[name] = { semester_1: s1, semester_2: s2, year_average: yearAverage(s1, s2) };
+            });
+            const subjectValues = Object.values(subjects);
+            return {
+                student_id: student.student_id,
+                full_name: [student.first_name, student.middle_name, student.last_name].filter(Boolean).join(' '),
+                subjects,
+                semester_1_average: overallAverage(subjectValues.map(s => s.semester_1)),
+                semester_2_average: overallAverage(subjectValues.map(s => s.semester_2)),
+                year_average: overallAverage(subjectValues.map(s => s.year_average)),
+                status: statusByStudent[student.student_id] || 'Active'
+            };
+        });
+
+        res.json({
+            class_level, section, stream, term,
+            pushed_at: pushRows[0].pushed_at,
+            subject_columns: subjectNames,
+            students: report,
+            incomplete_students: report.filter(r => r.status === 'Incomplete').map(r => ({ student_id: r.student_id, full_name: r.full_name })),
+            dropout_students: report.filter(r => r.status === 'Dropout').map(r => ({ student_id: r.student_id, full_name: r.full_name }))
+        });
+    } catch (err) {
+        console.error("/api/academic-vp/section-master-sheet error:", err);
+        res.status(500).json({ error: "Could not load this section's master sheet" });
     }
 });
 

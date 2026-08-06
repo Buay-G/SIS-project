@@ -2164,3 +2164,81 @@ body.dark-theme .document-approval-preview { background: #1e293b; border-color: 
 @media (max-width: 500px) {
     .idcard-scene { width: 100%; max-width: 320px; }
 }
+/* --- Ethiopian Calendar dashboard widget --- */
+.eth-cal-today-banner {
+    background: #eef2ff;
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 18px;
+}
+.eth-cal-today-date {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: var(--primary);
+    line-height: 1.3;
+}
+.eth-cal-today-gc {
+    color: #64748b;
+    font-size: 0.82rem;
+    margin-top: 2px;
+}
+.eth-cal-upcoming-heading {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #94a3b8;
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+.eth-cal-holiday-row {
+    display: flex;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid #eef1f6;
+}
+.eth-cal-holiday-row:last-child { border-bottom: none; }
+.eth-cal-holiday-date-badge {
+    background: #e0e7ff;
+    color: var(--primary);
+    font-weight: 700;
+    font-size: 0.75rem;
+    padding: 4px 9px;
+    border-radius: 6px;
+    min-width: 52px;
+    text-align: center;
+    flex-shrink: 0;
+}
+.eth-cal-holiday-name {
+    flex: 1;
+    margin: 0 12px;
+    font-size: 0.88rem;
+    color: var(--text-main);
+}
+.eth-cal-holiday-tentative {
+    font-style: italic;
+    color: #94a3b8;
+    font-size: 0.78rem;
+    margin-left: 4px;
+}
+.eth-cal-holiday-days {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: #b45309;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.eth-cal-no-upcoming {
+    color: #64748b;
+    font-size: 0.85rem;
+}
+
+.myclass-holiday-banner {
+    background: #fef9c3;
+    border: 1px solid #fde047;
+    color: #854d0e;
+    font-weight: 600;
+    font-size: 0.85rem;
+    padding: 10px 14px;
+    border-radius: 8px;
+    margin-bottom: 14px;
+}
