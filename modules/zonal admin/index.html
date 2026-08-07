@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-role="zonal_admins">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,7 +7,8 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="sidebar">
+    <div class="nav-overlay" id="navOverlay"></div>
+    <div class="sidebar" id="sidebar">
       <div class="brand">
         <div class="brand-badge">GCEO</div>
         <div>
@@ -16,6 +17,9 @@
           </div>
           <div class="brand-sub" data-i18n="za_brand_sub">Gambella Zone</div>
         </div>
+        <button class="nav-close-btn" id="navCloseBtn" aria-label="Close menu">
+          ✕
+        </button>
       </div>
 
       <div class="nav-scroll" id="navScroll"></div>
@@ -28,7 +32,7 @@
           </div>
           <div class="role-id">ID <b id="roleIdTxt">GCEO-HOE-001</b></div>
         </div>
-        <button class="logout-btn">
+        <button class="logout-btn" id="logoutBtn">
           ⏻ <span data-i18n="za_logout">Logout</span>
         </button>
       </div>
@@ -37,18 +41,21 @@
     <div class="main">
       <div class="topbar">
         <div class="topbar-left">
-          <h1 id="pageTitle" data-i18n="za_page_title_dashboard">Dashboard</h1>
+          <div class="topbar-title-row">
+            <button class="nav-open-btn" id="navOpenBtn" aria-label="Open menu">
+              ☰
+            </button>
+            <h1 id="pageTitle" data-i18n="za_page_title_dashboard">
+              Dashboard
+            </h1>
+          </div>
           <div class="badges">
             <span class="badge gold" data-i18n="za_zone_badge"
               >GAMBELLA CITY EDUC. OFFICE</span
             >
-            <span class="badge" data-i18n="za_zone_code_badge"
-              >ZONE CODE GBL-01</span
-            >
             <span class="badge" id="academicYearBadge"
               >📅 Academic Year 2018 E.C. (2025/2026 GC)</span
             >
-            <span class="badge open">Semester 1 · Open</span>
           </div>
         </div>
         <div class="topbar-right">
@@ -68,35 +75,30 @@
               አማርኛ
             </button>
           </div>
-          <div class="bell">🔔<span class="dot">3</span></div>
+          <div class="bell" id="notifBell">
+            🔔<span class="dot" id="notifDot" style="display: none">0</span>
+            <div class="notif-panel" id="notifPanel">
+              <div class="notif-header" data-i18n="za_notifications">
+                Notifications
+              </div>
+              <div id="notifList"></div>
+            </div>
+          </div>
           <div class="who">
-            <div class="avatar" id="avatarInit">AT</div>
+            <div class="avatar" id="avatarInit">–</div>
             <div>
-              <div class="who-name" id="whoName">Abebe Tulu</div>
-              <div class="who-role" id="whoRole">Head of Education</div>
+              <div class="who-name" id="whoName">…</div>
+              <div class="who-role" id="whoRole">…</div>
             </div>
           </div>
         </div>
       </div>
 
-      <div class="role-switch">
-        <span data-i18n="za_preview_as">Preview dashboard as:</span>
-        <select id="roleSelect">
-          <option value="hoe" data-i18n="za_role_hoe">Head of Education</option>
-          <option value="tdc" data-i18n="za_role_tdc">
-            Teacher Development Coordinator
-          </option>
-          <option value="supervisor" data-i18n="za_role_supervisor">
-            Supervisor
-          </option>
-        </select>
-      </div>
-
       <div class="content" id="content"></div>
     </div>
 
+    <script src="/assets/js/guard.js"></script>
     <script src="/assets/js/i18n.js"></script>
-    <script src="/assets/js/data.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

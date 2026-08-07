@@ -812,6 +812,25 @@ app.post('/api/zonal/proposals/:id/reject', requireAuth, requireHeadOfEducation,
 // Head of Education grants/revokes a Teacher Development Coordinator's ability to act
 // directly (skip the proposal step). Scoped to Development Coordinators in their own
 // zone only.
+// Lists the Teacher Development Coordinators in the Head of Education's own
+// zone with their current delegation flag, so the Delegate Authority page
+// has something to populate its picker with (mirrors the shape used by
+// /api/zonal/teamleader/:id/delegate below).
+app.get('/api/zonal/teamleaders', requireAuth, requireHeadOfEducation, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT admin_id, first_name, last_name, can_act_independently
+             FROM zonal_admins WHERE zone_id = ? AND title = 'Teacher Development Coordinator'
+             ORDER BY first_name`,
+            [req.user.zone_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/zonal/teamleaders error:", err);
+        res.status(500).json({ error: "Could not load Teacher Development Coordinators" });
+    }
+});
+
 app.post('/api/zonal/teamleader/:id/delegate', requireAuth, requireHeadOfEducation, async (req, res) => {
     const { can_act_independently } = req.body;
     try {
@@ -898,6 +917,388 @@ app.get('/api/zonal/performance', requireAuth, requireZonalAdmin, async (req, re
     } catch (err) {
         console.error("/api/zonal/performance error:", err);
         res.status(500).json({ error: "Could not load performance report" });
+    }
+});
+
+// ============================================================
+// Zonal: administrative-hierarchy lookups (region -> zone -> woreda ->
+// kebele), used by the "Setup New School" form's cascading dropdowns.
+// Assumes each child table carries a foreign key to its parent —
+// zone.region_id, woreda.zone_id, kebele.woreda_id — matching how the
+// region/woreda tables are already joined elsewhere in this file
+// (see the `LEFT JOIN woreda`/`LEFT JOIN zone`/`LEFT JOIN region`
+// blocks). Adjust the column names below if your import used
+// different ones.
+// ============================================================
+app.get('/api/zonal/lookup/regions', requireAuth, requireZonalAdmin, async (req, res) => {
+    try {
+        const [rows] = await pool.query('SELECT region_id, region_name FROM region ORDER BY region_name');
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/zonal/lookup/regions error:", err);
+        res.status(500).json({ error: "Could not load regions" });
+    }
+});
+
+app.get('/api/zonal/lookup/zones', requireAuth, requireZonalAdmin, async (req, res) => {
+    const { region_id } = req.query;
+    try {
+        let query = 'SELECT zone_id, zone_name, region_id FROM zone';
+        const params = [];
+        if (region_id) { query += ' WHERE region_id = ?'; params.push(region_id); }
+        query += ' ORDER BY zone_name';
+        const [rows] = await pool.query(query, params);
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/zonal/lookup/zones error:", err);
+        res.status(500).json({ error: "Could not load zones" });
+    }
+});
+
+app.get('/api/zonal/lookup/woredas', requireAuth, requireZonalAdmin, async (req, res) => {
+    const { zone_id } = req.query;
+    try {
+        let query = 'SELECT woreda_id, woreda_name, zone_id FROM woreda';
+        const params = [];
+        if (zone_id) { query += ' WHERE zone_id = ?'; params.push(zone_id); }
+        query += ' ORDER BY woreda_name';
+        const [rows] = await pool.query(query, params);
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/zonal/lookup/woredas error:", err);
+        res.status(500).json({ error: "Could not load woredas" });
+    }
+});
+
+app.get('/api/zonal/lookup/kebeles', requireAuth, requireZonalAdmin, async (req, res) => {
+    const { woreda_id } = req.query;
+    try {
+        let query = 'SELECT kebele_id, kebele_name, woreda_id FROM kebele';
+        const params = [];
+        if (woreda_id) { query += ' WHERE woreda_id = ?'; params.push(woreda_id); }
+        query += ' ORDER BY kebele_name';
+        const [rows] = await pool.query(query, params);
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/zonal/lookup/kebeles error:", err);
+        res.status(500).json({ error: "Could not load kebeles" });
+    }
+});
+
+// --- Zonal: register a new school ---
+// Head of Education always direct; a Teacher Development Coordinator
+// only direct if delegated (requireCanActInZone — see its own comment
+// above). zone_id is deliberately NOT taken from the request body: it's
+// always the caller's own req.user.zone_id, so a zonal admin can never
+// register a school into someone else's zone.
+// Requires this column if it doesn't exist yet (region_id/zone_id/
+// woreda_id already exist on schools — see the joins throughout this
+// file):
+//   ALTER TABLE schools ADD COLUMN kebele_id INT NULL, ADD FOREIGN KEY (kebele_id) REFERENCES kebele(kebele_id);
+app.post('/api/zonal/schools', requireAuth, requireCanActInZone, async (req, res) => {
+    const { school_name, school_prefix, moe_school_code, region_id, woreda_id, kebele_id } = req.body;
+    if (!school_name || !school_prefix) {
+        return res.status(400).json({ error: "school_name and school_prefix are required" });
+    }
+    try {
+        const [result] = await pool.query(
+            `INSERT INTO schools (school_name, school_prefix, moe_school_code, region_id, zone_id, woreda_id, kebele_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [school_name.trim(), school_prefix.trim().toUpperCase(), moe_school_code || null, region_id || null, req.user.zone_id, woreda_id || null, kebele_id || null]
+        );
+        res.json({ message: "School registered.", school_id: result.insertId });
+    } catch (err) {
+        console.error("/api/zonal/schools POST error:", err);
+        if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: "A school with that prefix or MOE code already exists." });
+        res.status(500).json({ error: "Could not register school" });
+    }
+});
+
+// Same random-code pattern as generateTransferCode() (student transfers,
+// below) — a distinct prefix (ASG- vs TRF-) keeps the two kinds of code
+// visually distinguishable wherever they're printed or typed in.
+function generateTeacherAssignmentCode() {
+    return 'ASG-' + crypto.randomBytes(5).toString('hex').toUpperCase();
+}
+
+app.get('/api/zonal/generate-assignment-code', requireAuth, requireCanActInZone, (req, res) => {
+    res.json({ code: generateTeacherAssignmentCode() });
+});
+
+// --- Zonal: transfer an existing, already-employed teacher to a
+// different school in the same zone ---
+// Distinct from /api/zonal/teachers above (which pushes a brand-new HIRE
+// candidate through Principal acceptance): this moves someone who
+// already has a live teachers row. It still goes through the
+// destination Principal as an incoming_teachers record so they
+// explicitly accept before it goes live — same acceptance gate as a
+// fresh hire — rather than silently relocating the account. The
+// outgoing teacher's row at their CURRENT school is deactivated here;
+// what happens to their in-progress classes/homeroom at that school is
+// the origin Principal's call, via the replace-with endpoint below.
+// Requires these columns if they don't exist yet:
+//   ALTER TABLE incoming_teachers ADD COLUMN transferred_from_teacher_id VARCHAR(50) NULL, ADD COLUMN transferred_from_school_id INT NULL;
+//   ALTER TABLE teachers ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE;
+// and the teacher login query should filter WHERE is_active = TRUE.
+app.post('/api/zonal/teachers/:teacher_id/transfer', requireAuth, requireCanActInZone, async (req, res) => {
+    const { teacher_id } = req.params;
+    const { to_school_id } = req.body;
+    if (!to_school_id) return res.status(400).json({ error: "to_school_id is required" });
+    try {
+        const zoneSchoolIds = await getZonalSchoolIds(req);
+        const [teacherRows] = await pool.query(
+            'SELECT teacher_id, school_id, first_name, middle_name, last_name, contact_number, email FROM teachers WHERE teacher_id = ?',
+            [teacher_id]
+        );
+        if (teacherRows.length === 0) return res.status(404).json({ error: "Teacher not found." });
+        const teacher = teacherRows[0];
+
+        if (!zoneSchoolIds.includes(teacher.school_id)) {
+            return res.status(403).json({ error: "That teacher's current school isn't in your zone." });
+        }
+        if (!zoneSchoolIds.includes(Number(to_school_id))) {
+            return res.status(403).json({ error: "The destination school isn't in your zone." });
+        }
+        if (Number(to_school_id) === teacher.school_id) {
+            return res.status(400).json({ error: "Teacher is already at that school." });
+        }
+
+        const [result] = await pool.query(
+            `INSERT INTO incoming_teachers (school_id, pushed_by, first_name, middle_name, last_name, contact_number, email, transferred_from_teacher_id, transferred_from_school_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [to_school_id, req.user.user_id, teacher.first_name, teacher.middle_name, teacher.last_name, teacher.contact_number, teacher.email, teacher.teacher_id, teacher.school_id]
+        );
+        await pool.query('UPDATE teachers SET is_active = FALSE WHERE teacher_id = ?', [teacher.teacher_id]);
+
+        res.json({
+            message: "Transfer pushed to the destination school. Their Principal will review and accept before it goes live.",
+            incoming_id: result.insertId
+        });
+    } catch (err) {
+        console.error("/api/zonal/teachers/:teacher_id/transfer error:", err);
+        res.status(500).json({ error: "Could not initiate transfer" });
+    }
+});
+
+// --- School Admin (Principal): replace an outgoing teacher with an
+// incoming one, moving their teaching assignments and homeroom over ---
+// marks itself has no teacher_id column at all (student_id, subject_id,
+// type, score, term, school_id — see the marks INSERTs earlier in this
+// file); a teacher's ownership of marks is entirely DERIVED through
+// teacher_assignments (subject_id + class_level + section) and, for a
+// homeroom teacher, teachers.homeroom_class_level/section/stream. So
+// "transferring the marks" to the new teacher really means repointing
+// those two things — once that's done, every marks-review/report-card
+// view that joins through teacher_assignments or homeroom_* picks up
+// the new teacher automatically; no marks rows themselves need to move.
+app.post('/api/school-admin/teachers/:old_teacher_id/replace-with/:new_teacher_id', requireAuth, requirePrincipal, async (req, res) => {
+    const { old_teacher_id, new_teacher_id } = req.params;
+    if (old_teacher_id === new_teacher_id) {
+        return res.status(400).json({ error: "The outgoing and incoming teacher must be different." });
+    }
+    const conn = await pool.getConnection();
+    try {
+        await conn.beginTransaction();
+
+        const [[oldT]] = await conn.query(
+            'SELECT teacher_id, homeroom_class_level, homeroom_section, homeroom_stream FROM teachers WHERE teacher_id = ? AND school_id = ? FOR UPDATE',
+            [old_teacher_id, req.user.school_id]
+        );
+        const [[newT]] = await conn.query(
+            'SELECT teacher_id FROM teachers WHERE teacher_id = ? AND school_id = ? FOR UPDATE',
+            [new_teacher_id, req.user.school_id]
+        );
+        if (!oldT) { await conn.rollback(); return res.status(404).json({ error: "Outgoing teacher not found at your school." }); }
+        if (!newT) { await conn.rollback(); return res.status(404).json({ error: "Incoming teacher not found at your school." }); }
+
+        try {
+            await conn.query(
+                `UPDATE teacher_assignments SET teacher_id = ?, assigned_by = ?, assigned_at = NOW()
+                 WHERE teacher_id = ? AND school_id = ?`,
+                [new_teacher_id, req.user.user_id, old_teacher_id, req.user.school_id]
+            );
+        } catch (err) {
+            if (err.code === 'ER_DUP_ENTRY') {
+                await conn.rollback();
+                return res.status(409).json({ error: "The incoming teacher already holds one of the outgoing teacher's exact class/section/subject assignments — resolve that overlap in Teacher Assignments first, then retry." });
+            }
+            throw err;
+        }
+
+        if (oldT.homeroom_class_level) {
+            await conn.query(
+                `UPDATE teachers SET homeroom_class_level = ?, homeroom_section = ?, homeroom_stream = ? WHERE teacher_id = ? AND school_id = ?`,
+                [oldT.homeroom_class_level, oldT.homeroom_section, oldT.homeroom_stream, new_teacher_id, req.user.school_id]
+            );
+            await conn.query(
+                `UPDATE teachers SET homeroom_class_level = NULL, homeroom_section = NULL, homeroom_stream = NULL WHERE teacher_id = ? AND school_id = ?`,
+                [old_teacher_id, req.user.school_id]
+            );
+        }
+
+        await conn.query(`UPDATE teachers SET is_active = FALSE WHERE teacher_id = ? AND school_id = ?`, [old_teacher_id, req.user.school_id]);
+
+        await conn.commit();
+        res.json({ message: "Teaching assignments and homeroom transferred to the new teacher." });
+    } catch (err) {
+        await conn.rollback();
+        console.error("/api/school-admin/teachers/:old_teacher_id/replace-with/:new_teacher_id error:", err);
+        res.status(500).json({ error: "Could not complete the teacher replacement" });
+    } finally {
+        conn.release();
+    }
+});
+
+// --- Zonal: Head of Education / Teacher Development Coordinator digital
+// signature & stamp — moved below the `const upload = multer(...)`
+// definition (see uploadZonalDocument/upload-signature/upload-stamp
+// further down this file); referencing `upload` up here, before that
+// `const` initializes, throws "Cannot access 'upload' before
+// initialization" at startup.
+
+// --- Zonal: zone-wide student totals, filterable by school/class/
+// stream/section --- Head of Education and Teacher Development
+// Coordinator only. A Supervisor's visibility stays intentionally
+// narrow to their individually assigned schools (see getZonalSchoolIds
+// and /api/zonal/performance) rather than the whole zone.
+app.get('/api/zonal/students', requireAuth, requireZonalAdmin, async (req, res) => {
+    if (req.user.title === 'Supervisor') {
+        return res.status(403).json({ error: "Zone-wide student totals aren't available to Supervisor accounts — see /api/zonal/performance for your assigned schools." });
+    }
+    const { school_id, class_level, stream, section } = req.query;
+    try {
+        const zoneSchoolIds = await getZonalSchoolIds(req);
+        if (zoneSchoolIds.length === 0) return res.json({ rows: [], totals: { male: 0, female: 0, total: 0 } });
+
+        let schoolFilter = zoneSchoolIds;
+        if (school_id) {
+            if (!zoneSchoolIds.includes(Number(school_id))) return res.status(403).json({ error: "That school isn't in your zone." });
+            schoolFilter = [Number(school_id)];
+        }
+
+        let query = `
+            SELECT st.school_id, sc.school_name, st.class_level, st.stream, st.section,
+                   SUM(CASE WHEN st.sex = 'Male' THEN 1 ELSE 0 END) AS male,
+                   SUM(CASE WHEN st.sex = 'Female' THEN 1 ELSE 0 END) AS female,
+                   COUNT(*) AS total
+            FROM students st
+            JOIN schools sc ON sc.id = st.school_id
+            WHERE st.school_id IN (?) AND st.status NOT IN ('Graduated') AND st.status NOT LIKE 'Transferred%'`;
+        const params = [schoolFilter];
+        if (class_level) { query += ' AND st.class_level = ?'; params.push(class_level); }
+        if (stream) { query += ' AND st.stream = ?'; params.push(stream); }
+        if (section) { query += ' AND st.section = ?'; params.push(section); }
+        query += ' GROUP BY st.school_id, sc.school_name, st.class_level, st.stream, st.section ORDER BY sc.school_name, st.class_level, st.stream, st.section';
+
+        const [rows] = await pool.query(query, params);
+        // mysql2 returns SUM()/COUNT() results as strings for some column
+        // types — Number() them explicitly, otherwise `acc.male += r.male`
+        // does STRING concatenation ("0" + "129" + "94" + ... => "0129094")
+        // instead of addition once the very first += hits a string.
+        const totals = rows.reduce((acc, r) => {
+            acc.male += Number(r.male) || 0;
+            acc.female += Number(r.female) || 0;
+            acc.total += Number(r.total) || 0;
+            return acc;
+        }, { male: 0, female: 0, total: 0 });
+
+        res.json({ rows, totals });
+    } catch (err) {
+        console.error("/api/zonal/students error:", err);
+        res.status(500).json({ error: "Could not load zone student totals" });
+    }
+});
+
+// --- Zonal: individual student roster (every student record across the
+// zone, not aggregated counts — see /api/zonal/students above for the
+// summary-cards version). Unlike that endpoint, this one does NOT
+// exclude Graduated/Transferred students by default — the whole point
+// is to let Head of Education/Development Coordinator browse every
+// cohort, past and present, filterable by status.
+//
+// There's no separate per-academic-year history table for students
+// (a promoted student's class_level/section is simply overwritten each
+// year) so "enrollment_year" here is derived from students.created_at
+// (the Gregorian year the record was first registered) rather than a
+// true academic-year record — good enough to separate cohorts/intakes,
+// but it won't show what class a student was in two years ago.
+app.get('/api/zonal/students-directory', requireAuth, requireZonalAdmin, async (req, res) => {
+    if (req.user.title === 'Supervisor') {
+        return res.status(403).json({ error: "The zone-wide student directory isn't available to Supervisor accounts — see /api/zonal/performance for your assigned schools." });
+    }
+    const { school_id, class_level, stream, section, status, enrollment_year } = req.query;
+    try {
+        const zoneSchoolIds = await getZonalSchoolIds(req);
+        if (zoneSchoolIds.length === 0) return res.json({ rows: [], years: [] });
+
+        let schoolFilter = zoneSchoolIds;
+        if (school_id) {
+            if (!zoneSchoolIds.includes(Number(school_id))) return res.status(403).json({ error: "That school isn't in your zone." });
+            schoolFilter = [Number(school_id)];
+        }
+
+        let query = `
+            SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.sex,
+                   st.class_level, st.stream, st.section, st.status, st.created_at,
+                   st.school_id, sc.school_name
+            FROM students st
+            JOIN schools sc ON sc.id = st.school_id
+            WHERE st.school_id IN (?)`;
+        const params = [schoolFilter];
+        if (class_level) { query += ' AND st.class_level = ?'; params.push(class_level); }
+        if (stream) { query += ' AND st.stream = ?'; params.push(stream); }
+        if (section) { query += ' AND st.section = ?'; params.push(section); }
+        if (status) { query += ' AND st.status = ?'; params.push(status); }
+        if (enrollment_year) { query += ' AND YEAR(st.created_at) = ?'; params.push(enrollment_year); }
+        query += ' ORDER BY sc.school_name, st.class_level, st.section, st.first_name';
+
+        const [years] = await pool.query(
+            `SELECT DISTINCT YEAR(created_at) AS yr FROM students WHERE school_id IN (?) AND created_at IS NOT NULL ORDER BY yr DESC`,
+            [schoolFilter]
+        );
+
+        const [rows] = await pool.query(query, params);
+        res.json({
+            rows: rows.map(r => ({
+                student_id: r.student_id,
+                full_name: [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' '),
+                sex: r.sex,
+                class_level: r.class_level,
+                stream: r.stream,
+                section: r.section,
+                status: r.status,
+                enrollment_year: r.created_at ? new Date(r.created_at).getFullYear() : null,
+                school_id: r.school_id,
+                school_name: r.school_name
+            })),
+            years: years.map(y => y.yr).filter(Boolean)
+        });
+    } catch (err) {
+        console.error("/api/zonal/students-directory error:", err);
+        res.status(500).json({ error: "Could not load the student directory" });
+    }
+});
+
+// --- Zonal: Head of Education suspends/reactivates a Teacher
+// Development Coordinator or Supervisor account in their zone ---
+// Deliberately excludes 'Head of Education' from the WHERE clause — a
+// HoE can't suspend themselves or another HoE through this route.
+// Requires this column if it doesn't exist yet:
+//   ALTER TABLE zonal_admins ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE;
+// and the zonal admin login query should filter WHERE is_active = TRUE
+// so a suspended account can no longer sign in.
+app.post('/api/zonal/admin-users/:id/suspend', requireAuth, requireHeadOfEducation, async (req, res) => {
+    const { is_active } = req.body;
+    try {
+        const [result] = await pool.query(
+            `UPDATE zonal_admins SET is_active = ? WHERE admin_id = ? AND zone_id = ? AND title != 'Head of Education'`,
+            [!!is_active, req.params.id, req.user.zone_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Account not found in your zone." });
+        res.json({ message: is_active ? "Account reactivated." : "Account suspended." });
+    } catch (err) {
+        console.error("/api/zonal/admin-users/:id/suspend error:", err);
+        res.status(500).json({ error: "Could not update account status" });
     }
 });
 
@@ -1313,6 +1714,71 @@ async function convertHeicIfNeeded(file) {
         return null;
     }
 }
+
+// --- Zonal: Head of Education / Teacher Development Coordinator digital
+// signature & stamp --- Same self-serve pattern as school_admins' own
+// signature/stamp upload (uploadAdminDocument, in the School Admin
+// section further down) — a zonal_admins account IS the approving
+// authority for its own circulars/appointment letters/Teacher ID cards,
+// so no separate review step. Deliberately excludes Supervisor, per the
+// spec: only Head of Education and Teacher Development Coordinator
+// authenticate documents this way. Placed here (after `upload`,
+// `handleUploadError`, and `convertHeicIfNeeded` are all defined above)
+// rather than up in the main Zonal Admin block, since referencing
+// `upload` before its `const` initializes throws a ReferenceError at
+// startup — see the note left in that block.
+// Requires these columns if they don't exist yet:
+//   ALTER TABLE zonal_admins ADD COLUMN signature_url VARCHAR(255) NULL, ADD COLUMN stamp_url VARCHAR(255) NULL;
+async function uploadZonalDocument(req, res, column, fieldName) {
+    if (req.user.title === 'Supervisor') {
+        return res.status(403).json({ error: "This action is restricted to the Head of Education and Teacher Development Coordinator." });
+    }
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+    if (!req.file.mimetype.startsWith('image/')) {
+        fs.unlink(req.file.path, () => { });
+        return res.status(400).json({ error: `${fieldName} must be an image file (JPEG or PNG).` });
+    }
+    const converted = await convertHeicIfNeeded(req.file);
+    if (converted) req.file = converted;
+
+    const filePath = `/uploads/${req.file.filename}`;
+    await pool.query(`UPDATE zonal_admins SET ${column} = ? WHERE admin_id = ?`, [filePath, req.user.user_id]);
+    res.json({ [column]: filePath });
+}
+
+// Self-serve read of the caller's own signature/stamp, so the Signature &
+// Seal page has something to load before the person uploads anything —
+// the two POST routes below only ever write, they never had a matching GET.
+app.get('/api/zonal/profile-documents', requireAuth, requireZonalAdmin, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            'SELECT signature_url, stamp_url FROM zonal_admins WHERE admin_id = ?',
+            [req.user.user_id]
+        );
+        res.json({ signature_url: rows[0]?.signature_url || null, stamp_url: rows[0]?.stamp_url || null });
+    } catch (err) {
+        console.error("/api/zonal/profile-documents error:", err);
+        res.status(500).json({ error: "Could not load your signature and stamp" });
+    }
+});
+
+app.post('/api/zonal/upload-signature', requireAuth, requireZonalAdmin, handleUploadError(upload.single('signature')), async (req, res) => {
+    try {
+        await uploadZonalDocument(req, res, 'signature_url', 'Signature');
+    } catch (err) {
+        console.error("/api/zonal/upload-signature error:", err);
+        res.status(500).json({ error: "Could not upload signature" });
+    }
+});
+
+app.post('/api/zonal/upload-stamp', requireAuth, requireZonalAdmin, handleUploadError(upload.single('stamp')), async (req, res) => {
+    try {
+        await uploadZonalDocument(req, res, 'stamp_url', 'Stamp');
+    } catch (err) {
+        console.error("/api/zonal/upload-stamp error:", err);
+        res.status(500).json({ error: "Could not upload stamp" });
+    }
+});
 
 // --- Student self-service routes ---
 // These must be registered BEFORE /api/student/:id below — Express
@@ -11108,6 +11574,20 @@ app.get('/api/me', requireAuth, async (req, res) => {
         }
 
         let additional_role = null;
+        let zonal_admin_full_name = null;
+        if (req.user.role === 'zonal_admins') {
+            // Same first/last name columns zonal_admins already has (see the
+            // /api/messages Head-of-Education lookup above) — used so the
+            // zonal dashboard's top bar can show a real name instead of the
+            // account ID.
+            const [zaRows] = await pool.query(
+                'SELECT first_name, last_name FROM zonal_admins WHERE admin_id = ?',
+                [req.user.user_id]
+            ).catch(() => [[]]);
+            if (zaRows && zaRows.length > 0) {
+                zonal_admin_full_name = [zaRows[0].first_name, zaRows[0].last_name].filter(Boolean).join(' ') || null;
+            }
+        }
         let is_recorder = false;
         let is_registrar_flag = false;
         let avatar_url = null;
@@ -11173,7 +11653,7 @@ app.get('/api/me', requireAuth, async (req, res) => {
             is_recorder,
             avatar_url,
             id_photo_url,
-            admin_full_name,
+            admin_full_name: admin_full_name || zonal_admin_full_name,
             registrar_signature_url
         });
     } catch (err) {

@@ -1,117 +1,436 @@
-/* Basic page reset and centering */
-body {
+/* ===== Design tokens ===== */
+:root {
+    --navy: #16204a;
+    --mint: #b9f2dc;
+    --panel-blue-top: #cfe0f7;
+    --panel-blue-bottom: #6f93d8;
+    --gold: #f6cf5c;
+    --gold-hover: #f0c23d;
+    --ink: #1c2a52;
+    --white: #ffffff;
+    --font: 'Poppins', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
     margin: 0;
-    padding: 0;
+}
+
+body {
+    font-family: var(--font);
+    color: var(--white);
+    background:
+        linear-gradient(100deg, rgba(10,14,30,0.15) 0%, rgba(10,14,30,0.55) 70%, rgba(10,14,30,0.85) 100%),
+        url('/assets/images/lgbackground.png') center center / cover no-repeat fixed;
+    min-height: 100vh;
+    min-height: 100dvh;
     display: flex;
-    justify-content: center;
+    flex-direction: column;
+}
+
+@media (max-width: 720px) {
+    body {
+        background-attachment: scroll;
+    }
+}
+
+/* Groups the card and footer so they always move together as one unit,
+   centered as a whole in the viewport instead of drifting apart. */
+.page {
+    flex: 1 0 auto;
+    display: flex;
+    flex-direction: column;
     align-items: center;
-    height: 100vh;
-    background-color: #f4f7f6; /* Soft light gray background */
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-}
-
-/* The login card */
-.login-container {
-    background-color: #ffffff;
-    padding: 40px;
-    border-radius: 10px;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+    justify-content: center;
     width: 100%;
-    max-width: 350px;
-    text-align: center;
+    padding: 64px 20px 24px;
+    gap: 22px;
 }
 
-.login-container h2 {
-    color: #2c3e50;
-    margin-bottom: 25px;
+/* ===== Top-right brand mark ===== */
+.brand-mark {
+    position: absolute;
+    top: 32px;
+    right: 40px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 700;
+    font-size: 1.15rem;
+    letter-spacing: 0.02em;
+    text-shadow: 0 2px 6px rgba(0,0,0,0.35);
+}
+
+.brand-mark svg {
+    width: 22px;
+    height: 22px;
+}
+
+/* ===== Center stage ===== */
+.stage {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+}
+
+.card {
+    display: flex;
+    align-items: stretch;
+    background: transparent;
+    border: 3px solid var(--mint);
+    border-radius: 26px;
+    box-shadow: 0 25px 50px rgba(0, 0, 0, 0.35);
+    overflow: hidden;
+    max-width: 860px;
+    width: 100%;
+}
+
+/* Left: photo pane (shows the background scenery, framed) */
+.card-photo {
+    flex: 0 0 46%;
+    align-self: stretch;
+    margin: 14px;
+    border-radius: 16px;
+    background: url('/assets/images/lgbackground.png') center 30% / cover no-repeat;
+    min-height: clamp(300px, 52vh, 440px);
+}
+
+/* Right: form pane */
+.card-form {
+    flex: 1;
+    padding: 36px 44px 40px;
+    background: linear-gradient(160deg, var(--panel-blue-top) 0%, var(--panel-blue-bottom) 100%);
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+/* ===== Brand header inside form ===== */
+.brand-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 22px;
+}
+
+.logo {
+    width: 68px;
+    height: 68px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 2px solid var(--white);
+    background: var(--white);
+    flex-shrink: 0;
+}
+
+.brand-header h1 {
+    margin: 0;
     font-size: 1.5rem;
+    line-height: 1.2;
+    color: var(--ink);
+    text-transform: uppercase;
+    font-weight: 800;
+    letter-spacing: 0.01em;
 }
 
-/* Input styling */
-input {
-    width: 100%;
-    padding: 12px;
-    margin: 10px 0;
-    border: 1px solid #ddd;
-    border-radius: 5px;
-    box-sizing: border-box; /* Ensures padding doesn't affect width */
-    font-size: 16px;
+/* ===== Form ===== */
+#loginForm {
+    display: flex;
+    flex-direction: column;
 }
 
-/* Button styling */
-button {
+#loginForm label {
+    color: var(--ink);
+    font-weight: 700;
+    font-size: 1rem;
+    margin: 10px 0 8px;
+}
+
+#loginForm input {
     width: 100%;
-    padding: 12px;
-    background-color: #3498db;
-    color: white;
+    padding: 14px 16px;
     border: none;
-    border-radius: 5px;
-    font-size: 16px;
+    border-radius: 24px;
+    font-size: 15px;
+    font-family: var(--font);
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.08);
+}
+
+#loginForm input:focus {
+    outline: 3px solid var(--navy);
+    outline-offset: 1px;
+}
+
+button {
+    margin-top: 24px;
+    padding: 14px;
+    border: none;
+    border-radius: 24px;
+    background: var(--gold);
+    color: var(--ink);
+    font-weight: 800;
+    font-size: 1.05rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
     cursor: pointer;
-    margin-top: 10px;
-    transition: background-color 0.3s;
+    box-shadow: 0 8px 16px rgba(0,0,0,0.2);
+    transition: background-color 0.2s ease, transform 0.1s ease;
 }
 
 button:hover {
-    background-color: #2980b9;
+    background: var(--gold-hover);
 }
 
-/* Message text */
+button:active {
+    transform: translateY(1px);
+}
+
+/* ===== Message ===== */
 #message {
-    margin-top: 20px;
+    margin-top: 16px;
     font-size: 14px;
-    color: #e74c3c; /* Red color for error messages */
-}
-/* Logo Styling */
-.logo {
-    max-width: 100px; /* Adjust size as needed */
-    height: auto;
-    margin-bottom: 15px; /* Adds space between logo and title */
-    display: block;
-    margin-left: auto;
-    margin-right: auto;
-}
-
-/* Optional: Refine the container padding if it feels too cramped */
-.login-container {
-    background-color: #ffffff;
-    padding: 30px 40px; /* Reduced top/bottom padding to make room for logo */
-    border-radius: 15px; /* Slightly more rounded for a modern look */
-    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1); /* Softer, larger shadow */
-    width: 100%;
-    max-width: 350px;
+    color: #ffe1e1;
     text-align: center;
+    min-height: 1em;
 }
 
-/* Improve input spacing */
-#loginForm input {
-    width: 100%;
-    padding: 14px;
-    margin: 12px 0;
-    border: 1px solid #ced4da;
-    border-radius: 8px; /* Rounded corners for inputs */
-    font-size: 15px;
-}
-/* Footer Styling */
+/* ===== Footer ===== */
 .footer {
-    position: fixed; /* Keeps it at the bottom of the screen */
-    bottom: 20px;
+    flex-shrink: 0;
     width: 100%;
+    max-width: 860px;
     text-align: center;
-    color: #7f8c8d;
+    padding: 0 20px;
     font-size: 0.85rem;
 }
 
+.footer p {
+    margin: 0 0 4px;
+    text-shadow: 0 1px 4px rgba(0,0,0,0.5);
+}
+
 .footer-links {
-    margin-top: 5px;
+    text-shadow: 0 1px 4px rgba(0,0,0,0.5);
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 4px 10px;
 }
 
 .footer-links a {
-    color: #3498db;
+    white-space: nowrap;
+}
+
+.footer-links a {
+    color: var(--white);
     text-decoration: none;
-    margin: 0 10px;
+    opacity: 0.9;
 }
 
 .footer-links a:hover {
     text-decoration: underline;
+}
+
+.footer-contact {
+    display: flex;
+    justify-content: center;
+    gap: 48px;
+    margin-top: 16px;
+    flex-wrap: wrap;
+}
+
+.contact-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    text-align: left;
+    text-shadow: 0 1px 4px rgba(0,0,0,0.5);
+}
+
+.icon-circle {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.icon-circle svg {
+    width: 16px;
+    height: 16px;
+    color: var(--white);
+}
+
+.contact-item strong {
+    display: block;
+    font-size: 0.85rem;
+}
+
+.contact-item div div {
+    font-size: 0.8rem;
+    opacity: 0.9;
+}
+
+/* ===== Responsive ===== */
+
+/* Tablet: narrower two-column card */
+@media (max-width: 860px) {
+    .card {
+        max-width: 640px;
+    }
+    .card-photo {
+        min-height: clamp(260px, 46vh, 380px);
+    }
+    .card-form {
+        padding: 30px 28px 34px;
+    }
+    .brand-header {
+        gap: 12px;
+    }
+    .logo {
+        width: 56px;
+        height: 56px;
+    }
+    .brand-header h1 {
+        font-size: 1.25rem;
+    }
+}
+
+/* Small tablet / large phone: stack photo above form */
+@media (max-width: 640px) {
+    /* Swap the busy full-bleed photo for a soft, plain gradient behind
+       the card — much easier to read than text over the photo. */
+    body {
+        background:
+            linear-gradient(180deg, #f9e9db 0%, #eef1f8 22%, #eef1f8 78%, #f3e3d4 100%);
+        background-attachment: scroll;
+    }
+
+    .page {
+        padding: 56px 16px 20px;
+        gap: 16px;
+    }
+    .card {
+        flex-direction: column;
+        border-radius: 20px;
+    }
+    .card-photo {
+        flex: none;
+        width: calc(100% - 24px);
+        min-height: clamp(150px, 26vh, 240px);
+        margin: 12px 12px 0;
+    }
+    .card-form {
+        padding: 24px 24px 30px;
+    }
+
+    /* Dark text everywhere that used to sit on the photo, since the
+       background is now light */
+    .brand-mark {
+        top: 16px;
+        right: 20px;
+        font-size: 1rem;
+        color: var(--ink);
+        text-shadow: none;
+    }
+    .brand-header h1 {
+        font-size: 1.3rem;
+    }
+    .footer p,
+    .footer-links,
+    .contact-item {
+        color: var(--ink);
+        text-shadow: none;
+    }
+    .footer-links a {
+        color: var(--navy);
+    }
+    .icon-circle {
+        background: var(--ink);
+        border-color: var(--ink);
+    }
+}
+
+/* Phone */
+@media (max-width: 420px) {
+    .page {
+        padding: 52px 10px 16px;
+        gap: 14px;
+    }
+    .card-photo {
+        min-height: clamp(120px, 22vh, 190px);
+    }
+    .card-form {
+        padding: 22px 18px 26px;
+    }
+    .brand-header {
+        gap: 12px;
+    }
+    .logo {
+        width: 56px;
+        height: 56px;
+    }
+    .brand-header h1 {
+        font-size: 1.15rem;
+    }
+    #loginForm label {
+        margin: 8px 0 6px;
+    }
+    #loginForm input {
+        padding: 12px 14px;
+    }
+    button {
+        padding: 12px;
+        font-size: 1rem;
+        margin-top: 18px;
+    }
+    .footer-contact {
+        gap: 24px;
+    }
+    .contact-item {
+        font-size: 0.8rem;
+    }
+}
+
+/* Short-height screens (landscape phones, small laptops): shrink photo further
+   so the whole card + footer still fits without huge empty gaps, and shrink
+   the brand mark so it can't collide with the card title */
+@media (max-height: 700px) {
+    .card-photo {
+        min-height: clamp(180px, 34vh, 320px);
+    }
+    .page {
+        padding-top: 50px;
+    }
+}
+
+@media (max-height: 500px) {
+    .page {
+        gap: 10px;
+        padding: 40px 16px 12px;
+    }
+    .brand-mark {
+        top: 10px;
+        right: 16px;
+        font-size: 0.85rem;
+    }
+    .brand-mark svg {
+        width: 16px;
+        height: 16px;
+    }
+    .card-photo {
+        min-height: clamp(120px, 30vh, 220px);
+    }
+    .card-form {
+        padding: 18px 28px 20px;
+    }
 }
