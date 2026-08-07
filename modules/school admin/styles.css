@@ -704,31 +704,67 @@ a { color: inherit; }
     flex-wrap: wrap;
 }
 
+/* Standard CR-80 card size (2.125in x 3.375in — the real physical
+   dimensions of a school/ID card, same as a credit card, portrait
+   orientation), so the printed card is true-to-size instead of a
+   scaled-up screen mockup. */
+@page { size: auto; margin: 0.3in; }
+
 @media print {
     * {
         -webkit-print-color-adjust: exact !important;
         print-color-adjust: exact !important;
         color-adjust: exact !important;
     }
-    body { height: auto !important; overflow: visible !important; }
+    html, body { height: auto !important; overflow: visible !important; margin: 0 !important; }
     .dashboard-container { display: block !important; height: auto !important; }
-    .main-content { height: auto !important; overflow: visible !important; display: block !important; }
+    .main-content { height: auto !important; overflow: visible !important; display: block !important; margin: 0 !important; }
 
     .sidebar, .top-bar, .idcard-actions { display: none !important; }
-    .main-content { margin: 0 !important; }
+    /* Only the card itself should print — no page heading, subtitle, or
+       the page's usual padding, so the card sits right at the top of
+       the printed page instead of being pushed down by them. */
+    #page-id-card { padding: 0 !important; }
+    #page-id-card h2, #page-id-card > .page-subtitle, #idcard-error { display: none !important; }
     .idcard-wrap { padding: 0; display: block; }
 
-    .idcard-scene { display: block; height: auto; perspective: none; margin: 0 auto; }
-    .idcard-flipper { display: block; position: static; transform: none !important; transform-style: flat; }
+    /* The card's internal layout (photo ring, text rows, etc.) is all
+       built at a fixed 320x500px "screen mockup" size — rather than
+       rebuild every inner measurement for print, scale that whole
+       design down to the true CR-80 card size (2.125in x 3.375in =
+       204x324px at 96px/in) with a CSS transform, so what prints is
+       physically card-sized but keeps the exact same proportions you
+       see on screen. scaleX = 204/320 = 0.6375, scaleY = 324/500 =
+       0.648 (the ~1% difference between the two just accounts for the
+       screen mockup's ratio being very slightly off from true CR-80 —
+       imperceptible in print). */
+    .idcard-scene {
+        display: block;
+        perspective: none;
+    }
+    .idcard-flipper { display: block; position: static; transform: none !important; transform-style: flat; page-break-inside: avoid; }
     .idcard-face {
         position: static;
+        width: 320px;
+        height: 500px;
+        margin: 0 auto;
+        transform: scale(0.6375, 0.648);
+        transform-origin: center;
         backface-visibility: visible;
         box-shadow: none;
-        margin: 0 auto;
-        break-after: page;
-        page-break-after: always;
     }
-    .idcard-back { transform: none; break-after: auto; page-break-after: auto; }
+    /* Front and back now sit on the SAME printed page (no page break
+       between them) with a real 10px gap. Since the scale above is
+       anchored at "center", each face keeps 88px of blank reserved
+       space above and below its visible (shrunk) card — stacked
+       directly, front and back would end up 176px apart (88+88), not
+       10px. Pulling the back face up by 166px (176 - 10) closes that
+       down to exactly a 10px visual gap between the two cards; see the
+       comment above for where 88/176 come from. */
+    .idcard-back {
+        transform: scale(0.6375, 0.648) !important;
+        margin-top: -166px !important;
+    }
 }
 
 @media (max-width: 500px) {
@@ -846,6 +882,26 @@ table.data-table tbody tr:hover { background: #f7faf8; }
 }
 .form-group textarea { resize: vertical; min-height: 70px; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+/* Same idea as .form-row but keeps 3 fields on one line (e.g. the Class
+   Leaderboard's Class/Section/Stream filters) instead of wrapping the
+   3rd one to its own row underneath. */
+.form-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+
+/* A row of controls (dropdown + buttons) that should stay on one line
+   and wrap together as a block, rather than falling into the 2-column
+   .form-row grid where a 3rd/4th item drops to its own row. Used by
+   the Analysis Report Term/Load/Print toolbar. Bottom-aligned so the
+   buttons (no label above them) sit flush with the dropdown's bottom
+   edge instead of its label. */
+.toolbar-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+.toolbar-row .form-group { min-width: 160px; margin-bottom: 0; }
+.toolbar-row .btn { height: 38px; }
 .form-actions { display: flex; gap: 10px; margin-top: 16px; }
 .form-hint { font-size: 0.75rem; color: var(--muted); margin-top: 4px; }
 .form-error { font-size: 0.8rem; color: var(--danger); margin-top: 8px; }
@@ -983,6 +1039,7 @@ table.data-table tbody tr:hover { background: #f7faf8; }
         background: rgba(255,255,255,0.12); color: #fff; cursor: pointer;
     }
     .form-row { grid-template-columns: 1fr; }
+    .form-row-3 { grid-template-columns: 1fr; }
     .profile-header-card { flex-wrap: wrap; text-align: center; justify-content: center; }
     .profile-id-chip { margin: 6px auto 0; }
     .chart-flex { justify-content: center; text-align: left; }

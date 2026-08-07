@@ -4002,7 +4002,7 @@ app.get('/api/principal/school-leaderboard', requireAuth, requireAdminTitle('Pri
     try {
         const leaderboard = await getSchoolYearLeaderboard(req.user.school_id);
         if (leaderboard.length === 0) {
-            return res.json({ class_size: 0, leaders: [], top_female: null, ranked: [] });
+            return res.json({ class_size: 0, leaders: [], top_female: null, top_male: null, ranked: [] });
         }
 
         // "Average Rank" — rank is based on each student's overall YEAR
@@ -4049,7 +4049,12 @@ app.get('/api/principal/school-leaderboard', requireAuth, requireAdminTitle('Pri
         const topFemaleScore = ranked.find(l => l.sex === 'Female')?.year_average ?? null;
         const top_female = topFemaleScore == null ? [] : ranked.filter(l => l.sex === 'Female' && l.year_average === topFemaleScore);
 
-        res.json({ class_size, leaders, top_female, ranked });
+        // Same idea, for the highest-scoring MALE student school-wide —
+        // shown next to top_female on the Recognition Awards page.
+        const topMaleScore = ranked.find(l => l.sex !== 'Female')?.year_average ?? null;
+        const top_male = topMaleScore == null ? [] : ranked.filter(l => l.sex !== 'Female' && l.year_average === topMaleScore);
+
+        res.json({ class_size, leaders, top_female, top_male, ranked });
     } catch (err) {
         console.error("school-leaderboard error:", err);
         res.status(500).json({ error: "Could not load the school leaderboard" });
@@ -8258,18 +8263,39 @@ app.get('/api/homeroom/section-report', requireAuth, async (req, res) => {
                 };
             });
             const subjectValues = Object.values(subjects);
+            const semester_1_average = overallAverage(subjectValues.map(s => s.semester_1));
+            const semester_2_average = overallAverage(subjectValues.map(s => s.semester_2));
             const statusEntry = statusByStudent[student.student_id];
+
+            // "Incomplete" for THIS term is auto-derived from the term
+            // average, not just a manual flag: a student whose average
+            // for the CURRENT term is below 50 is Incomplete for that
+            // term, full stop — and that's re-evaluated fresh every term,
+            // so a student Incomplete this semester can lead the class
+            // next semester once their average recovers. A 'Dropout'
+            // flag always wins (a dropped-out student isn't "incomplete",
+            // they've left), and a homeroom can still manually flag
+            // Incomplete even above 50 (e.g. missing a required
+            // assessment) — that manual flag is kept if the average
+            // itself doesn't already put them below 50.
+            const currentTermAverage = currentTerm === 'Semester 1' ? semester_1_average : semester_2_average;
+            const autoIncomplete = currentTermAverage != null && currentTermAverage < 50;
+            const status = statusEntry?.status === 'Dropout'
+                ? 'Dropout'
+                : (autoIncomplete ? 'Incomplete' : (statusEntry?.status || 'Active'));
+
             return {
                 student_id: student.student_id,
                 full_name: [student.first_name, student.middle_name, student.last_name].filter(Boolean).join(' '),
                 subjects,
-                semester_1_average: overallAverage(subjectValues.map(s => s.semester_1)),
-                semester_2_average: overallAverage(subjectValues.map(s => s.semester_2)),
+                semester_1_average,
+                semester_2_average,
                 year_average: overallAverage(subjectValues.map(s => s.year_average)),
                 // Reflects THIS term's review status only (see currentTerm
-                // above) — 'Active' unless the homeroom teacher has
-                // flagged the student Incomplete or Dropout for it.
-                status: statusEntry?.status || 'Active',
+                // above) — 'Active' unless auto-derived Incomplete (term
+                // average below 50) or the homeroom teacher has flagged
+                // the student Incomplete/Dropout for it.
+                status,
                 status_notified_at: statusEntry?.notified_at || null
             };
         });
@@ -8326,9 +8352,11 @@ app.get('/api/homeroom/section-report', requireAuth, async (req, res) => {
 // or more required assessments — surfaced to the student as a
 // notification via /api/homeroom/notify-incomplete below and shown to
 // the Academic VP once pushed), or 'Dropout' (student has stopped
-// attending; no notification is sent for this one). Flags are scoped to
-// class_level/section/stream/term via student_term_status, so a status
-// set this semester doesn't carry over to the next.
+// attending — a PENDING flag only; it doesn't drop the student until
+// the Academic VP approves it via /api/academic-vp/dropout-requests
+// below, see academic_decision/decided_by/decided_at). Flags are scoped
+// to class_level/section/stream/term via student_term_status, so a
+// status set this semester doesn't carry over to the next.
 //
 // Requires a new table — run this migration if it doesn't exist yet:
 //   CREATE TABLE student_term_status (
@@ -8343,6 +8371,11 @@ app.get('/api/homeroom/section-report', requireAuth, async (req, res) => {
 //     flagged_by VARCHAR(50) NULL,
 //     flagged_at DATETIME NULL,
 //     notified_at DATETIME NULL,
+//     reason_category VARCHAR(20) NULL,
+//     reason TEXT NULL,
+//     academic_decision VARCHAR(20) NULL,
+//     decided_by VARCHAR(50) NULL,
+//     decided_at DATETIME NULL,
 //     UNIQUE KEY uq_student_term (school_id, student_id, term)
 //   );
 const STUDENT_TERM_STATUSES = ['Active', 'Incomplete', 'Dropout'];
@@ -9994,14 +10027,23 @@ app.get('/api/academic-vp/section-master-sheet', requireAuth, requireAdminTitle(
                 subjects[name] = { semester_1: s1, semester_2: s2, year_average: yearAverage(s1, s2) };
             });
             const subjectValues = Object.values(subjects);
+            const semester_1_average = overallAverage(subjectValues.map(s => s.semester_1));
+            const semester_2_average = overallAverage(subjectValues.map(s => s.semester_2));
+            const flaggedStatus = statusByStudent[student.student_id] || 'Active';
+            // Same rule as the homeroom section-report: a below-50 average
+            // for THIS term makes a student Incomplete automatically,
+            // re-evaluated fresh each term. Dropout (once approved) wins.
+            const currentTermAverage = term === 'Semester 1' ? semester_1_average : semester_2_average;
+            const autoIncomplete = currentTermAverage != null && currentTermAverage < 50;
+            const status = flaggedStatus === 'Dropout' ? 'Dropout' : (autoIncomplete ? 'Incomplete' : flaggedStatus);
             return {
                 student_id: student.student_id,
                 full_name: [student.first_name, student.middle_name, student.last_name].filter(Boolean).join(' '),
                 subjects,
-                semester_1_average: overallAverage(subjectValues.map(s => s.semester_1)),
-                semester_2_average: overallAverage(subjectValues.map(s => s.semester_2)),
+                semester_1_average,
+                semester_2_average,
                 year_average: overallAverage(subjectValues.map(s => s.year_average)),
-                status: statusByStudent[student.student_id] || 'Active'
+                status
             };
         });
 
@@ -10055,6 +10097,14 @@ app.post('/api/academic-vp/conduct-warning', requireAuth, requireAdminTitle('Aca
 // Academic VP hands a termination-level case to the Principal — this
 // doesn't terminate anyone by itself, it just opens the case for the
 // Principal to decide on.
+// Thrown by mysql2 as err.code = 'ER_NO_SUCH_TABLE' when a migration
+// comment above a route hasn't actually been run against the database
+// yet. Used to turn an opaque 500 into an actionable message pointing
+// back at the CREATE TABLE that's missing.
+function isMissingTableError(err) {
+    return err && (err.code === 'ER_NO_SUCH_TABLE' || err.errno === 1146);
+}
+
 app.post('/api/academic-vp/disciplinary-cases', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
     const { student_id, description } = req.body;
     if (!student_id || !description?.trim()) {
@@ -10069,6 +10119,9 @@ app.post('/api/academic-vp/disciplinary-cases', requireAuth, requireAdminTitle('
         res.json({ message: "Case handed to the Principal.", case_id: result.insertId });
     } catch (err) {
         console.error("/api/academic-vp/disciplinary-cases error:", err);
+        if (isMissingTableError(err)) {
+            return res.status(500).json({ error: "The student_disciplinary_cases table doesn't exist yet — run the CREATE TABLE migration noted above this route in server.js." });
+        }
         res.status(500).json({ error: "Could not open a disciplinary case" });
     }
 });
@@ -10088,6 +10141,9 @@ app.get('/api/principal/disciplinary-cases', requireAuth, requirePrincipal, asyn
         res.json(rows);
     } catch (err) {
         console.error("/api/principal/disciplinary-cases GET error:", err);
+        if (isMissingTableError(err)) {
+            return res.status(500).json({ error: "The student_disciplinary_cases table doesn't exist yet — run the CREATE TABLE migration noted above /api/academic-vp/disciplinary-cases in server.js." });
+        }
         res.status(500).json({ error: "Could not load disciplinary cases" });
     }
 });
@@ -12096,21 +12152,29 @@ app.post('/api/admin/messages/:id/read', requireAuth, requireRole('school_admins
 });
 
 // ==========================================================
-// Homeroom: mark a student as dropped out
+// Homeroom: flag a student as dropped out (pending Academic VP review)
 // ==========================================================
-// The only place students.status ever becomes 'Dropped' — needed so the
-// Analysis Report below has a real "Drop Out" figure instead of having to
-// infer it. Scoped the same way as /api/homeroom/reset-student-password:
-// the caller must be a homeroom teacher, and the student must be in
-// their own section. reason_category mirrors the two buckets on the
-// Ministry's own paper form (academic-related vs family/home-related),
-// plus 'other' for anything that isn't either.
+// This used to set students.status = 'Dropped' immediately. It no longer
+// does — a homeroom dropout flag now goes into student_term_status as a
+// pending 'Dropout' for the current term, same table/flow as the
+// Incomplete flag above, and only becomes an actual dropout once the
+// Academic VP approves it via /api/academic-vp/dropout-requests/:id/approve
+// below. That's the only place students.status ever becomes 'Dropped'.
+// reason_category mirrors the two buckets on the Ministry's own paper
+// form (academic-related vs family/home-related), plus 'other' for
+// anything that isn't either.
 //
 // Requires these columns if they don't exist yet:
 //   ALTER TABLE students
 //     ADD COLUMN dropout_reason_category VARCHAR(20) NULL,
 //     ADD COLUMN dropout_reason TEXT NULL,
 //     ADD COLUMN dropped_at DATETIME NULL;
+//   ALTER TABLE student_term_status
+//     ADD COLUMN reason_category VARCHAR(20) NULL,
+//     ADD COLUMN reason TEXT NULL,
+//     ADD COLUMN academic_decision VARCHAR(20) NULL,
+//     ADD COLUMN decided_by VARCHAR(50) NULL,
+//     ADD COLUMN decided_at DATETIME NULL;
 app.post('/api/homeroom/students/:student_id/mark-dropout', requireAuth, async (req, res) => {
     const { reason_category, reason } = req.body;
     if (!['academic', 'family', 'other'].includes(reason_category)) {
@@ -12119,22 +12183,106 @@ app.post('/api/homeroom/students/:student_id/mark-dropout', requireAuth, async (
     try {
         const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
         if (!homeroom) return res.status(403).json({ error: "Only a homeroom teacher can mark a dropout." });
+        const { class_level, section, stream } = homeroom;
+        const term = await getCurrentTerm(req.user.school_id);
 
         const [studentRows] = await pool.query(
             'SELECT student_id FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream = ? AND school_id = ?',
-            [req.params.student_id, homeroom.class_level, homeroom.section, homeroom.stream, req.user.school_id]
+            [req.params.student_id, class_level, section, stream, req.user.school_id]
         );
         if (studentRows.length === 0) return res.status(403).json({ error: "This student is not in your homeroom section." });
 
         await pool.query(
-            `UPDATE students SET status = 'Dropped', dropout_reason_category = ?, dropout_reason = ?, dropped_at = NOW()
-             WHERE student_id = ? AND school_id = ?`,
-            [reason_category, reason || null, req.params.student_id, req.user.school_id]
+            `INSERT INTO student_term_status (school_id, student_id, class_level, section, stream, term, status, reason_category, reason, flagged_by, flagged_at, academic_decision, decided_by, decided_at)
+             VALUES (?, ?, ?, ?, ?, ?, 'Dropout', ?, ?, ?, NOW(), NULL, NULL, NULL)
+             ON DUPLICATE KEY UPDATE status = 'Dropout', reason_category = VALUES(reason_category), reason = VALUES(reason),
+                 flagged_by = VALUES(flagged_by), flagged_at = NOW(), academic_decision = NULL, decided_by = NULL, decided_at = NULL`,
+            [req.user.school_id, req.params.student_id, class_level, section, stream, term, reason_category, reason || null, req.user.user_id]
         );
-        res.json({ message: "Student marked as dropped out." });
+        res.json({ message: "Student flagged as dropped out — sent to the Academic VP for review." });
     } catch (err) {
         console.error("/api/homeroom/students/:id/mark-dropout error:", err);
         res.status(500).json({ error: "Could not update this student's status" });
+    }
+});
+
+// ==========================================================
+// Academic VP: review homeroom dropout flags
+// ==========================================================
+// Lists every student currently flagged 'Dropout' for the current term,
+// school-wide, that hasn't been decided yet (academic_decision IS NULL).
+// Approving is the ONLY path that actually sets students.status =
+// 'Dropped' — that's what makes the Analysis Report's Drop Out column
+// (and the school's official dropout record for the term) real.
+// Rejecting clears the flag back to Active so the student isn't left
+// in limbo.
+app.get('/api/academic-vp/dropout-requests', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    try {
+        const term = await getCurrentTerm(req.user.school_id);
+        const [rows] = await pool.query(
+            `SELECT sts.student_id, sts.class_level, sts.section, sts.stream, sts.reason_category, sts.reason, sts.flagged_at,
+                    s.first_name, s.middle_name, s.last_name
+             FROM student_term_status sts
+             JOIN students s ON s.student_id = sts.student_id AND s.school_id = sts.school_id
+             WHERE sts.school_id = ? AND sts.term = ? AND sts.status = 'Dropout' AND sts.academic_decision IS NULL
+             ORDER BY sts.flagged_at DESC`,
+            [req.user.school_id, term]
+        );
+        res.json(rows.map(r => ({
+            student_id: r.student_id,
+            full_name: [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' '),
+            class_level: r.class_level, section: r.section, stream: r.stream,
+            reason_category: r.reason_category, reason: r.reason,
+            flagged_at: r.flagged_at
+        })));
+    } catch (err) {
+        console.error("/api/academic-vp/dropout-requests GET error:", err);
+        res.status(500).json({ error: "Could not load dropout requests" });
+    }
+});
+
+app.post('/api/academic-vp/dropout-requests/:student_id/approve', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    try {
+        const term = await getCurrentTerm(req.user.school_id);
+        const [rows] = await pool.query(
+            `SELECT reason_category, reason FROM student_term_status
+             WHERE school_id = ? AND student_id = ? AND term = ? AND status = 'Dropout' AND academic_decision IS NULL`,
+            [req.user.school_id, req.params.student_id, term]
+        );
+        if (rows.length === 0) return res.status(404).json({ error: "No pending dropout request for this student." });
+        const { reason_category, reason } = rows[0];
+
+        await pool.query(
+            `UPDATE students SET status = 'Dropped', dropout_reason_category = ?, dropout_reason = ?, dropped_at = NOW()
+             WHERE student_id = ? AND school_id = ?`,
+            [reason_category, reason, req.params.student_id, req.user.school_id]
+        );
+        await pool.query(
+            `UPDATE student_term_status SET academic_decision = 'approved', decided_by = ?, decided_at = NOW()
+             WHERE school_id = ? AND student_id = ? AND term = ?`,
+            [req.user.user_id, req.user.school_id, req.params.student_id, term]
+        );
+        res.json({ message: "Student marked as dropped out." });
+    } catch (err) {
+        console.error("/api/academic-vp/dropout-requests/:id/approve error:", err);
+        res.status(500).json({ error: "Could not approve this dropout request" });
+    }
+});
+
+app.post('/api/academic-vp/dropout-requests/:student_id/reject', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    try {
+        const term = await getCurrentTerm(req.user.school_id);
+        const [result] = await pool.query(
+            `UPDATE student_term_status
+             SET status = 'Active', academic_decision = 'rejected', decided_by = ?, decided_at = NOW()
+             WHERE school_id = ? AND student_id = ? AND term = ? AND status = 'Dropout' AND academic_decision IS NULL`,
+            [req.user.user_id, req.user.school_id, req.params.student_id, term]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "No pending dropout request for this student." });
+        res.json({ message: "Dropout request rejected — student set back to Active." });
+    } catch (err) {
+        console.error("/api/academic-vp/dropout-requests/:id/reject error:", err);
+        res.status(500).json({ error: "Could not reject this dropout request" });
     }
 });
 

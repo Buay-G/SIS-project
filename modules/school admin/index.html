@@ -518,6 +518,33 @@
             <a
               href="#"
               class="nav-link"
+              data-page="dropout-requests"
+              data-titles="Academic VP"
+            >
+              <span class="nav-icon"
+                ><svg
+                  class="lucide-icon"
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M18 6 6 18" />
+                  <path d="m6 6 12 12" /></svg></span
+              ><span data-i18n="sa_nav_dropout_requests"
+                >Dropout Requests</span
+              ></a
+            >
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
               data-page="analysis-report"
               data-titles="Principal,Academic VP,Admin VP"
             >
@@ -643,6 +670,35 @@
               ><span data-i18n="sa_nav_students">Students</span></a
             >
           </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="class-leaderboard"
+              data-titles="Principal,Admin VP,Academic VP"
+            >
+              <span class="nav-icon"
+                ><svg
+                  class="lucide-icon"
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M18 20V10" />
+                  <path d="M12 20V4" />
+                  <path d="M6 20v-6" /></svg></span
+              ><span data-i18n="sa_tab_students_leaderboard"
+                >Class Leaderboard</span
+              ></a
+            >
+          </li>
+
           <li>
             <a
               href="#"
@@ -1037,6 +1093,29 @@
             >
               Record
             </button>
+          </div>
+
+          <div class="widget" style="margin-bottom: 18px">
+            <h3 data-i18n="sa_nav_teacher_leaderboard">
+              Top Performing Teachers
+            </h3>
+            <p class="page-subtitle" data-i18n="sa_teacher_leaderboard_sub">
+              Teachers with the best attendance and teaching-period punctuality
+              over the last 30 days.
+            </p>
+            <div class="data-table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="sa_col_rank">Rank</th>
+                    <th data-i18n="sa_col_teacher">Teacher</th>
+                    <th data-i18n="sa_col_punctuality">Punctuality</th>
+                    <th data-i18n="sa_col_absences_30d">Absences (30d)</th>
+                  </tr>
+                </thead>
+                <tbody id="sa-teacher-leaderboard-tbody"></tbody>
+              </table>
+            </div>
           </div>
 
           <div class="widget" style="margin-bottom: 18px">
@@ -1807,6 +1886,31 @@
           </div>
         </section>
 
+        <!-- ===================== DROPOUT REQUESTS (Academic VP) ===================== -->
+        <section class="page-content" id="page-dropout-requests">
+          <h2 data-i18n="sa_nav_dropout_requests">Dropout Requests</h2>
+          <p class="page-subtitle" data-i18n="sa_dropout_requests_sub">
+            A homeroom teacher has flagged these students as dropped out for the
+            current term. Approve to make it official — it will then count in
+            the Analysis Report's Drop Out figures — or reject to send the
+            student back to Active.
+          </p>
+          <div class="data-table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th data-i18n="sa_col_student">Student</th>
+                  <th data-i18n="sa_col_class">Class</th>
+                  <th data-i18n="sa_col_reason">Reason</th>
+                  <th data-i18n="sa_col_requested_at">Flagged</th>
+                  <th data-i18n="sa_col_action">Action</th>
+                </tr>
+              </thead>
+              <tbody id="sa-dropout-requests-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
         <!-- ===================== ANALYSIS REPORT (Principal / Academic VP / Admin VP) ===================== -->
         <section class="page-content" id="page-analysis-report">
           <h2 data-i18n="sa_nav_analysis_report">Analysis Report</h2>
@@ -1814,10 +1918,7 @@
             Semester/yearly result analysis, by class level — for head office
             and zonal review.
           </p>
-          <div
-            class="form-row"
-            style="margin-bottom: 16px; align-items: flex-end; gap: 12px"
-          >
+          <div class="toolbar-row">
             <div class="form-group">
               <label for="ar-term-select" data-i18n="sa_ar_term_label"
                 >Term</label
@@ -1835,14 +1936,14 @@
               </select>
             </div>
             <button
-              class="btn btn-ghost"
+              class="btn btn-ghost toolbar-row-btn"
               id="ar-load-btn"
               data-i18n="sa_ar_load_btn"
             >
               Load
             </button>
             <button
-              class="btn btn-accent"
+              class="btn btn-accent toolbar-row-btn"
               id="ar-print-btn"
               data-i18n="sa_ar_print_btn"
             >
@@ -1851,7 +1952,7 @@
             <span
               id="ar-print-note"
               class="page-subtitle"
-              style="display: none; margin: 0"
+              style="display: none; margin: 0; flex-basis: 100%"
               data-i18n="sa_ar_print_principal_only"
               >Only the Principal can print/download the signed PDF.</span
             >
@@ -1956,25 +2057,44 @@
               <tbody id="sa-recognition-tbody"></tbody>
             </table>
           </div>
+        </section>
 
-          <h3 style="margin-top: 28px" data-i18n="sa_nav_teacher_leaderboard">
-            Top Performing Teachers
-          </h3>
-          <p class="page-subtitle" data-i18n="sa_teacher_leaderboard_sub">
-            Teachers with the best attendance and teaching-period punctuality
-            over the last 30 days.
+        <!-- ===================== CLASS LEADERBOARD ===================== -->
+        <section class="page-content" id="page-class-leaderboard">
+          <h2 data-i18n="sa_tab_students_leaderboard">Class Leaderboard</h2>
+          <p class="page-subtitle" data-i18n="sa_class_leaderboard_sub">
+            Pick a class and section to see who is leading it, by term average.
           </p>
+          <div class="form-row-3" style="max-width: 760px">
+            <div class="form-group">
+              <select id="lb-class-filter">
+                <option value="" data-i18n="sa_all_classes">All Classes</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <select id="lb-section-filter">
+                <option value="" data-i18n="sa_all_sections">
+                  All Sections
+                </option>
+              </select>
+            </div>
+            <div class="form-group">
+              <select id="lb-stream-filter">
+                <option value="" data-i18n="sa_all_streams">All Streams</option>
+              </select>
+            </div>
+          </div>
           <div class="data-table-wrap">
             <table class="data-table">
               <thead>
                 <tr>
                   <th data-i18n="sa_col_rank">Rank</th>
-                  <th data-i18n="sa_col_teacher">Teacher</th>
-                  <th data-i18n="sa_col_punctuality">Punctuality</th>
-                  <th data-i18n="sa_col_absences_30d">Absences (30d)</th>
+                  <th data-i18n="sa_col_student">Student</th>
+                  <th data-i18n="sa_col_class">Class</th>
+                  <th data-i18n="sa_col_average">Average</th>
                 </tr>
               </thead>
-              <tbody id="sa-teacher-leaderboard-tbody"></tbody>
+              <tbody id="sa-class-leaderboard-tbody"></tbody>
             </table>
           </div>
         </section>

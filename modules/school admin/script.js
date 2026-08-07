@@ -271,7 +271,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const loaders = {
                 dashboard: loadDashboard,
                 'teacher-setup': loadTeacherSetup,
-                teachers: () => {},
+                teachers: loadTeacherLeaderboard,
                 textbooks: loadTextbooks,
                 absence: loadAbsenceTabs,
                 'student-absence-escalations': loadStudentAbsenceEscalations,
@@ -285,9 +285,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 disciplinary: loadDisciplinaryCases,
                 'teacher-audit': loadTeacherAudit,
                 'subject-entry-requests': loadSubjectEntryRequests,
+                'dropout-requests': loadDropoutRequests,
                 'analysis-report': loadAnalysisReport,
                 'document-approvals': loadDocumentApprovals,
                 recognition: loadRecognition,
+                'class-leaderboard': loadClassLeaderboard,
                 students: loadStudents,
                 messages: () => switchMessageBox('inbox'),
                 profile: loadDocumentStatus,
@@ -345,6 +347,12 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('students-class-filter')?.addEventListener('change', filterStudentsTable);
     document.getElementById('students-section-filter')?.addEventListener('change', filterStudentsTable);
     document.getElementById('students-stream-filter')?.addEventListener('change', filterStudentsTable);
+    document.getElementById('lb-class-filter')?.addEventListener('change', () => {
+        updateLeaderboardStreamFilterForClass();
+        renderClassLeaderboard();
+    });
+    document.getElementById('lb-section-filter')?.addEventListener('change', renderClassLeaderboard);
+    document.getElementById('lb-stream-filter')?.addEventListener('change', renderClassLeaderboard);
 
     document.getElementById('direct-transfer-btn')?.addEventListener('click', initiateDirectTransfer);
     document.getElementById('teacher-assignment-btn')?.addEventListener('click', saveTeacherAssignment);
@@ -383,13 +391,16 @@ window.onSisLangChange = () => {
         const page = active.id.replace('page-', '');
         const loaders = {
             dashboard: loadDashboard, textbooks: loadTextbooks, absence: loadAbsenceTabs,
+            teachers: loadTeacherLeaderboard,
             'teacher-setup': loadTeacherSetup, 'teacher-assignments': loadTeacherAssignments,
             'marks-review': loadMarksReview, 'mark-cutoff': loadMarkCutoffPage, semester: loadSemesterStatus,
             'escalated-absence': loadEscalatedAbsence, disciplinary: loadDisciplinaryCases,
             'teacher-audit': loadTeacherAudit,
             'subject-entry-requests': loadSubjectEntryRequests,
+            'dropout-requests': loadDropoutRequests,
             'analysis-report': loadAnalysisReport,
-            'document-approvals': loadDocumentApprovals, recognition: loadRecognition, students: loadStudents,
+            'document-approvals': loadDocumentApprovals, recognition: loadRecognition,
+            'class-leaderboard': loadClassLeaderboard, students: loadStudents,
             messages: () => (CURRENT_MESSAGE_BOX === 'teachers' ? loadContactThreads() : loadMessages(CURRENT_MESSAGE_BOX || 'inbox')),
             'id-card': () => (adminIdCardData ? renderAdminIdCard(adminIdCardData) : loadAdminIdCard())
         };
@@ -1219,14 +1230,21 @@ async function loadRecognition() {
     const res = await apiFetch(`${API_BASE}/api/principal/school-leaderboard`);
     if (!res.ok) { tbody.innerHTML = `<tr><td colspan="5">${t('sa_load_error')}</td></tr>`; return; }
     const data = await res.json();
+    SCHOOL_LEADERBOARD_DATA = data; // keep the Students > Class Leaderboard tab in sync
     const ranked = (data.ranked || []).slice(0, 15);
 
     const topFemaleRow = document.getElementById('sa-recognition-top-female-row');
     if (topFemaleRow) {
         const tf = (data.top_female || [])[0];
-        topFemaleRow.innerHTML = tf
-            ? statCard(lucideIcon('award'), t('sa_top_female_student'), `${escapeHtml(tf.full_name || tf.student_id)} — ${tf.year_average}`, 'accent')
-            : statCard(lucideIcon('award'), t('sa_top_female_student'), '—', '');
+        const tm = (data.top_male || [])[0];
+        topFemaleRow.innerHTML = [
+            tf
+                ? statCard(lucideIcon('award'), t('sa_top_female_student'), `${escapeHtml(tf.full_name || tf.student_id)} — ${tf.year_average}`, 'accent')
+                : statCard(lucideIcon('award'), t('sa_top_female_student'), '—', ''),
+            tm
+                ? statCard(lucideIcon('award'), t('sa_top_male_student'), `${escapeHtml(tm.full_name || tm.student_id)} — ${tm.year_average}`, 'accent')
+                : statCard(lucideIcon('award'), t('sa_top_male_student'), '—', '')
+        ].join('');
     }
 
     if (ranked.length === 0) { tbody.innerHTML = `<tr><td colspan="5">${t('sa_no_data')}</td></tr>`; return; }
@@ -1242,8 +1260,6 @@ async function loadRecognition() {
                     : `<button class="btn btn-sm btn-accent" onclick="issueAward('${r.student_id}')">${t('sa_award')}</button>`)
                 : '—'}</td>
         </tr>`).join('');
-
-    loadTeacherLeaderboard();
 }
 
 // ==========================================================
@@ -1304,6 +1320,40 @@ async function decideSubjectEntryRequest(id, action) {
 }
 
 // ==========================================================
+// DROPOUT REQUESTS (Academic VP) — a homeroom teacher flagging a
+// student as dropped out for the current term. Approving here is what
+// actually marks the student Dropped and puts them in the Analysis
+// Report's Drop Out count; rejecting sends them back to Active.
+// ==========================================================
+async function loadDropoutRequests() {
+    const tbody = document.getElementById('sa-dropout-requests-tbody');
+    if (!tbody) return;
+    tbody.innerHTML = `<tr><td colspan="5">${t('sa_loading')}</td></tr>`;
+    const res = await apiFetch(`${API_BASE}/api/academic-vp/dropout-requests`);
+    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="5">${t('sa_load_error')}</td></tr>`; return; }
+    const rows = await res.json();
+    if (!rows || rows.length === 0) { tbody.innerHTML = `<tr><td colspan="5">${t('sa_no_data')}</td></tr>`; return; }
+    tbody.innerHTML = rows.map(r => `
+        <tr>
+            <td>${escapeHtml(r.full_name || r.student_id)}</td>
+            <td>${escapeHtml(r.class_level)}-${escapeHtml(r.section)}${r.stream ? ` (${escapeHtml(r.stream)})` : ''}</td>
+            <td>${escapeHtml(r.reason || '—')}</td>
+            <td>${formatEthDate(r.flagged_at)}</td>
+            <td>
+                <button class="btn btn-sm btn-accent" onclick="decideDropoutRequest('${r.student_id}', 'approve')">${t('sa_approve')}</button>
+                <button class="btn btn-sm btn-ghost" onclick="decideDropoutRequest('${r.student_id}', 'reject')">${t('sa_reject')}</button>
+            </td>
+        </tr>`).join('');
+}
+
+async function decideDropoutRequest(student_id, action) {
+    if (action === 'approve' && !(await showConfirmModal(t('sa_dropout_approve_confirm')))) return;
+    const res = await apiFetch(`${API_BASE}/api/academic-vp/dropout-requests/${student_id}/${action}`, { method: 'POST' });
+    await handleJsonResponse(res, action === 'approve' ? t('sa_dropout_approved_msg') : t('sa_dropout_rejected_msg'));
+    loadDropoutRequests();
+}
+
+// ==========================================================
 // SEMESTER / YEARLY ANALYSIS REPORT (Principal / Academic VP / Admin VP)
 // ==========================================================
 const AR_CATS = ['total_student', 'drop_out', 'tested', 'incomplete', 'band_0_49', 'band_50_74', 'band_75_100'];
@@ -1355,6 +1405,7 @@ async function issueAward(student_id) {
 // STUDENTS
 // ==========================================================
 let ALL_STUDENTS = [];
+let SCHOOL_LEADERBOARD_DATA = null;
 const GRADUATED_OR_TRANSFERRED = s => s.status === 'Graduated' || String(s.status || '').startsWith('Transferred');
 
 async function loadStudents() {
@@ -1446,6 +1497,103 @@ function filterStudentsTable() {
     renderStudentsTable(list);
 }
 
+// ---------- Class Leaderboard (General, visible to Principal/Admin VP/Academic VP) ----------
+// Shows who's leading a given class/section/stream, by term average —
+// filtered client-side from the same school-wide ranking the
+// Recognition Awards page uses, so it's always consistent with that
+// ranking.
+function populateLeaderboardFilterOptions() {
+    const classSel = document.getElementById('lb-class-filter');
+    const sectionSel = document.getElementById('lb-section-filter');
+    const streamSel = document.getElementById('lb-stream-filter');
+    if (!classSel) return;
+    const uniq = key => [...new Set(ALL_STUDENTS.map(s => s[key]).filter(Boolean))]
+        .sort((a, b) => (isNaN(a) || isNaN(b)) ? String(a).localeCompare(String(b)) : a - b);
+    const buildOptions = (sel, values, allLabelKey) => {
+        const current = sel.value;
+        sel.innerHTML = `<option value="">${t(allLabelKey)}</option>` + values.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+        sel.value = current;
+    };
+    buildOptions(classSel, uniq('class_level'), 'sa_all_classes');
+    buildOptions(sectionSel, uniq('section'), 'sa_all_sections');
+    if (streamSel) buildOptions(streamSel, uniq('stream'), 'sa_all_streams');
+}
+
+// Same rule as updateStreamOptionsForLevel above (Grade 9/10 = General
+// only, Grade 11/12 = Natural or Social), adapted for this filter: an
+// "All Streams" option stays available here since narrowing to a
+// specific stream is optional, not required like on a registration
+// form. Called whenever the Class filter changes.
+function updateLeaderboardStreamFilterForClass() {
+    const classSel = document.getElementById('lb-class-filter');
+    const streamSel = document.getElementById('lb-stream-filter');
+    if (!classSel || !streamSel) return;
+    const level = classSel.value;
+    if (level === '9' || level === '10') {
+        streamSel.innerHTML = `<option value="General">${t('sa_stream_general')}</option>`;
+        streamSel.value = 'General';
+        streamSel.disabled = true;
+    } else if (level === '11' || level === '12') {
+        streamSel.innerHTML = `
+            <option value="">${t('sa_all_streams')}</option>
+            <option value="Natural">${t('sa_stream_natural')}</option>
+            <option value="Social">${t('sa_stream_social')}</option>`;
+        streamSel.value = '';
+        streamSel.disabled = false;
+    } else {
+        // "All Classes" — restore the full set of real stream values
+        // actually present in the school's data.
+        streamSel.disabled = false;
+        const uniq = [...new Set(ALL_STUDENTS.map(s => s.stream).filter(Boolean))].sort();
+        streamSel.innerHTML = `<option value="">${t('sa_all_streams')}</option>` + uniq.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+        streamSel.value = '';
+    }
+}
+
+async function loadClassLeaderboard() {
+    const tbody = document.getElementById('sa-class-leaderboard-tbody');
+    if (!tbody) return;
+
+    if (ALL_STUDENTS.length === 0) {
+        const sres = await apiFetch(`${API_BASE}/api/students`);
+        if (sres.ok) ALL_STUDENTS = await sres.json();
+    }
+    populateLeaderboardFilterOptions();
+
+    if (!SCHOOL_LEADERBOARD_DATA) {
+        tbody.innerHTML = `<tr><td colspan="4">${t('sa_loading')}</td></tr>`;
+        const res = await apiFetch(`${API_BASE}/api/principal/school-leaderboard`);
+        if (!res.ok) { tbody.innerHTML = `<tr><td colspan="4">${t('sa_load_error')}</td></tr>`; return; }
+        SCHOOL_LEADERBOARD_DATA = await res.json();
+    }
+    renderClassLeaderboard();
+}
+
+function renderClassLeaderboard() {
+    const tbody = document.getElementById('sa-class-leaderboard-tbody');
+    if (!tbody) return;
+    const classVal = document.getElementById('lb-class-filter')?.value || '';
+    const sectionVal = document.getElementById('lb-section-filter')?.value || '';
+    const streamVal = document.getElementById('lb-stream-filter')?.value || '';
+    if (!classVal && !sectionVal && !streamVal) {
+        tbody.innerHTML = `<tr><td colspan="4">${t('sa_leaderboard_pick_class')}</td></tr>`;
+        return;
+    }
+    let list = (SCHOOL_LEADERBOARD_DATA?.ranked || []);
+    if (classVal) list = list.filter(r => String(r.class_level) === String(classVal));
+    if (sectionVal) list = list.filter(r => String(r.section) === String(sectionVal));
+    if (streamVal) list = list.filter(r => String(r.stream) === String(streamVal));
+    list = [...list].sort((a, b) => (a.rank ?? 999999) - (b.rank ?? 999999));
+    if (list.length === 0) { tbody.innerHTML = `<tr><td colspan="4">${t('sa_no_data')}</td></tr>`; return; }
+    tbody.innerHTML = list.map(r => `
+        <tr>
+            <td>#${r.rank}</td>
+            <td>${escapeHtml(r.full_name || r.student_id)}</td>
+            <td>${r.class_level}-${r.section}</td>
+            <td>${r.year_average}</td>
+        </tr>`).join('');
+}
+
 // ---------- Transfer Requests (Student -> Principal -> Registrar) ----------
 async function loadTransferRequests() {
     const tbody = document.getElementById('sa-transfer-requests-tbody');
@@ -1464,7 +1612,9 @@ async function loadTransferRequests() {
             <td>${r.status === 'pending'
                 ? `<button class="btn btn-sm btn-success" onclick="approveTransferRequest(${r.request_id})">${t('sa_approve')}</button>
                    <button class="btn btn-sm btn-danger" onclick="rejectTransferRequest(${r.request_id})">${t('sa_reject')}</button>`
-                : '—'}</td>
+                : (r.status === 'cleared'
+                    ? `<span class="badge badge-approved">${t('sa_transfer_done')}</span>`
+                    : '—')}</td>
         </tr>`).join('');
 }
 

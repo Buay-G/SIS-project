@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gambella City Education Office</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="sidebar">
+      <div class="brand">
+        <div class="brand-badge">GCEO</div>
+        <div>
+          <div class="brand-name" data-i18n="za_portal_title">
+            Gambella City Education Office
+          </div>
+          <div class="brand-sub" data-i18n="za_brand_sub">Gambella Zone</div>
+        </div>
+      </div>
+
+      <div class="nav-scroll" id="navScroll"></div>
+
+      <div class="side-footer">
+        <div class="role-card">
+          <div class="role-title">
+            <span id="roleIcon">🎓</span>
+            <span id="roleTitleTxt">Head of Education</span>
+          </div>
+          <div class="role-id">ID <b id="roleIdTxt">GCEO-HOE-001</b></div>
+        </div>
+        <button class="logout-btn">
+          ⏻ <span data-i18n="za_logout">Logout</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="main">
+      <div class="topbar">
+        <div class="topbar-left">
+          <h1 id="pageTitle" data-i18n="za_page_title_dashboard">Dashboard</h1>
+          <div class="badges">
+            <span class="badge gold" data-i18n="za_zone_badge"
+              >GAMBELLA CITY EDUC. OFFICE</span
+            >
+            <span class="badge" data-i18n="za_zone_code_badge"
+              >ZONE CODE GBL-01</span
+            >
+            <span class="badge" id="academicYearBadge"
+              >📅 Academic Year 2018 E.C. (2025/2026 GC)</span
+            >
+            <span class="badge open">Semester 1 · Open</span>
+          </div>
+        </div>
+        <div class="topbar-right">
+          <div class="lang-toggle">
+            <button
+              class="lang-switch-btn"
+              data-lang="en"
+              onclick="setLang('en')"
+            >
+              EN
+            </button>
+            <button
+              class="lang-switch-btn"
+              data-lang="am"
+              onclick="setLang('am')"
+            >
+              አማርኛ
+            </button>
+          </div>
+          <div class="bell">🔔<span class="dot">3</span></div>
+          <div class="who">
+            <div class="avatar" id="avatarInit">AT</div>
+            <div>
+              <div class="who-name" id="whoName">Abebe Tulu</div>
+              <div class="who-role" id="whoRole">Head of Education</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="role-switch">
+        <span data-i18n="za_preview_as">Preview dashboard as:</span>
+        <select id="roleSelect">
+          <option value="hoe" data-i18n="za_role_hoe">Head of Education</option>
+          <option value="tdc" data-i18n="za_role_tdc">
+            Teacher Development Coordinator
+          </option>
+          <option value="supervisor" data-i18n="za_role_supervisor">
+            Supervisor
+          </option>
+        </select>
+      </div>
+
+      <div class="content" id="content"></div>
+    </div>
+
+    <script src="/assets/js/i18n.js"></script>
+    <script src="/assets/js/data.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
