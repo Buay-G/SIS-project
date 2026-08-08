@@ -15,6 +15,17 @@
    cross-origin fetch otherwise. */
 const API_BASE = '';
 
+// Status values coming back from the DB should be lowercase ('pending',
+// 'approved', 'rejected', 'accepted', 'declined') per every backend query
+// and the documented schema — but some existing rows/environments have
+// been seen returning uppercase values instead (e.g. 'PENDING'), which
+// silently breaks every exact-match comparison below (a pending proposal
+// vanishes from the Approvals queue, an untranslated i18n key like
+// 'za_act_status_PENDING' shows up raw in the UI). Route every status
+// comparison and every za_act_status_/za_incoming_status_ key lookup
+// through this so casing in the data can never break the UI again.
+function normStatus(s){ return String(s == null ? '' : s).trim().toLowerCase(); }
+
 // If the session cookie is missing/expired, every one of these calls
 // gets a 401 from requireAuth — bounce straight back to login instead
 // of leaving the caller to render a raw "Request failed (401)" panel.
@@ -63,6 +74,48 @@ async function apiSend(method, path, body) {
     return data;
 }
 
+/* ---------------------------------------------------------------
+   Styled confirm dialog — replaces the browser's native confirm(),
+   which can't be themed and looks jarring against the rest of the
+   UI. Returns a Promise<boolean> resolved true/false depending on
+   which button was pressed (or false if dismissed via backdrop/Esc).
+   Styling lives in styles.css under .confirm-modal-*.
+   --------------------------------------------------------------- */
+function showConfirm(message, { title, confirmText } = {}) {
+  return new Promise(resolve => {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'confirm-modal-backdrop';
+    backdrop.innerHTML = `
+      <div class="confirm-modal" role="alertdialog" aria-modal="true">
+        <div class="confirm-modal-icon"><i data-lucide="alert-triangle"></i></div>
+        <h3 class="confirm-modal-title">${title || t('za_confirm_title')}</h3>
+        <p class="confirm-modal-msg">${message}</p>
+        <div class="confirm-modal-actions">
+          <button class="btn ghost" id="confirmModalCancel">${t('za_cancel')}</button>
+          <button class="btn primary" id="confirmModalOk">${confirmText || t('za_confirm_yes')}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(backdrop);
+    if (window.lucide) lucide.createIcons();
+
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      backdrop.remove();
+      document.removeEventListener('keydown', onKey);
+      resolve(result);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') finish(false); };
+    document.addEventListener('keydown', onKey);
+
+    backdrop.addEventListener('click', e => { if (e.target === backdrop) finish(false); });
+    backdrop.querySelector('#confirmModalCancel').addEventListener('click', () => finish(false));
+    backdrop.querySelector('#confirmModalOk').addEventListener('click', () => finish(true));
+    backdrop.querySelector('#confirmModalOk').focus();
+  });
+}
+
 /* ---------------------------------------------------------------- */
 
 // role/CURRENT_USER are populated from the real GET /api/me for the
@@ -81,9 +134,9 @@ const TITLE_TO_ROLE_KEY = {
 };
 
 const ROLE_META = {
-  hoe:        { titleKey: 'za_role_hoe', icon: '🎓', welcomeKey: 'za_welcome_hoe' },
-  tdc:        { titleKey: 'za_role_tdc', icon: '🧭', welcomeKey: 'za_welcome_tdc' },
-  supervisor: { titleKey: 'za_role_supervisor', icon: '🔎', welcomeKey: 'za_welcome_sup' }
+  hoe:        { titleKey: 'za_role_hoe', icon: 'graduation-cap', welcomeKey: 'za_welcome_hoe' },
+  tdc:        { titleKey: 'za_role_tdc', icon: 'compass', welcomeKey: 'za_welcome_tdc' },
+  supervisor: { titleKey: 'za_role_supervisor', icon: 'search', welcomeKey: 'za_welcome_sup' }
 };
 
 function initialsOf(name){
@@ -102,23 +155,23 @@ function initialsOf(name){
 const NAV = {
   hoe:[
     {sec:"za_sec_admin", items:[
-      ["za_nav_dashboard","🏠"],["za_nav_schools","🏫"],
-      ["za_nav_approvals","✅"],["za_nav_delegation","🪪"]
+      ["za_nav_dashboard","home"],["za_nav_schools","building-2"],
+      ["za_nav_approvals","check-circle-2"],["za_nav_delegation","id-card"]
     ]},
-    {sec:"za_sec_academic", items:[["za_nav_subjects","📘"],["za_nav_students","👥"]]},
-    {sec:"za_sec_oversight", items:[["za_nav_performance","📈"],["za_nav_signatures","✍️"],["za_nav_analysis","📊"]]}
+    {sec:"za_sec_academic", items:[["za_nav_students","users"],["za_nav_teachers","graduation-cap"]]},
+    {sec:"za_sec_oversight", items:[["za_nav_school_performance","bar-chart-3"],["za_nav_messages","mail"],["za_nav_myid","credit-card"],["za_nav_profile","file-signature"]]}
   ],
   tdc:[
     {sec:"za_sec_admin", items:[
-      ["za_nav_dashboard","🏠"],["za_nav_schools","🏫"],["za_nav_setup_school","➕"],
-      ["za_nav_recruitment","🧑‍🏫"],["za_nav_proposals","📝"]
+      ["za_nav_dashboard","home"],["za_nav_schools","building-2"],["za_nav_setup_school","plus-circle"],
+      ["za_nav_recruitment","user-plus"],["za_nav_proposals","clipboard-list"]
     ]},
-    {sec:"za_sec_academic", items:[["za_nav_subjects","📘"],["za_nav_students","👥"]]},
-    {sec:"za_sec_oversight", items:[["za_nav_performance","📈"],["za_nav_analysis","📊"]]}
+    {sec:"za_sec_academic", items:[["za_nav_subjects","book-open"],["za_nav_students","users"],["za_nav_teachers","graduation-cap"]]},
+    {sec:"za_sec_oversight", items:[["za_nav_school_performance","bar-chart-3"],["za_nav_messages","mail"],["za_nav_myid","credit-card"],["za_nav_profile","file-signature"]]}
   ],
   supervisor:[
-    {sec:"za_sec_admin", items:[["za_nav_dashboard","🏠"],["za_nav_schools","🏫"]]},
-    {sec:"za_sec_oversight", items:[["za_nav_performance","📈"]]}
+    {sec:"za_sec_admin", items:[["za_nav_dashboard","home"],["za_nav_schools","building-2"],["za_nav_teachers","graduation-cap"]]},
+    {sec:"za_sec_oversight", items:[["za_nav_school_performance","bar-chart-3"],["za_nav_messages","mail"],["za_nav_myid","credit-card"]]}
   ]
 };
 
@@ -134,7 +187,7 @@ function renderNav(){
     section.items.forEach(([key,icon])=>{
       const el = document.createElement('div');
       el.className = 'nav-item' + (key===activePage ? ' active':'');
-      el.innerHTML = `<span class="ic">${icon}</span><span>${t(key)}</span>`;
+      el.innerHTML = `<span class="ic"><i data-lucide="${icon}"></i></span><span>${t(key)}</span>`;
       el.onclick = ()=>{ activePage = key; render(); closeMobileNav(); };
       wrap.appendChild(el);
     });
@@ -154,7 +207,7 @@ function closeMobileNav(){
 function renderTopChrome(){
   const meta = ROLE_META[role];
   const name = CURRENT_USER.admin_full_name || CURRENT_USER.user_id;
-  document.getElementById('roleIcon').textContent = meta.icon;
+  document.getElementById('roleIcon').innerHTML = `<i data-lucide="${meta.icon}"></i>`;
   document.getElementById('roleTitleTxt').textContent = t(meta.titleKey);
   document.getElementById('roleIdTxt').textContent = CURRENT_USER.user_id;
   document.getElementById('whoName').textContent = name;
@@ -162,14 +215,17 @@ function renderTopChrome(){
   document.getElementById('avatarInit').textContent = initialsOf(name);
   document.getElementById('pageTitle').textContent = t(activePage);
   const ay = CURRENT_USER.academic_year;
-  document.getElementById('academicYearBadge').textContent = ay
-    ? '📅 ' + t('sa_topbar_academic_year', { year: ay.ec_year, gcRange: ay.gc_range })
-    : '📅';
+  document.getElementById('academicYearBadge').innerHTML = ay
+    ? `<i data-lucide="calendar-days"></i> ${t('sa_topbar_academic_year', { year: ay.ec_year, gcRange: ay.gc_range })}`
+    : `<i data-lucide="calendar-days"></i>`;
 }
 
 function errorPanel(err){
   const msg = (err && err.message) || String(err);
-  return `<div class="panel"><p class="hint">⚠️ ${msg}${msg.includes('logged in') ? '' : ''}</p></div>`;
+  return `<div class="panel"><div class="alert-box error">
+    <div class="icon"><i data-lucide="alert-triangle"></i></div>
+    <div class="body">${msg}</div>
+  </div></div>`;
 }
 
 /* ---------------- Dashboard — live from /api/zonal/* -----------------
@@ -216,12 +272,14 @@ async function loadAndRenderDashboard(){
 
 function proposalActivityLine(p, schoolName){
   const label = p.proposal_type==='hire_teacher' ? t('za_act_proposal_hire') : t('za_act_proposal_admin');
-  const statusKey = p.status==='pending' ? 'za_act_status_pending' : p.status==='approved' ? 'za_act_status_approved' : 'za_act_status_rejected';
+  const status = normStatus(p.status);
+  const statusKey = status==='pending' ? 'za_act_status_pending' : status==='approved' ? 'za_act_status_approved' : 'za_act_status_rejected';
   return { school: schoolName || '—', event: `${label} — ${t(statusKey)}`, date: p.reviewed_at || p.created_at };
 }
 
 function incomingActivityLine(i){
-  const key = i.status==='pending' ? 'za_act_teacher_pushed' : i.status==='accepted' ? 'za_act_teacher_accepted' : 'za_act_teacher_declined';
+  const status = normStatus(i.status);
+  const key = status==='pending' ? 'za_act_teacher_pushed' : status==='accepted' ? 'za_act_teacher_accepted' : 'za_act_teacher_declined';
   return { school: i.school_name, event: t(key), date: i.decided_at || i.created_at };
 }
 
@@ -229,7 +287,7 @@ function renderDashboard({ schools, students, proposals, incoming, performance }
   const meta = ROLE_META[role];
   let cards = `
     <div class="card">
-      <div class="icon">🏫</div>
+      <div class="icon"><i data-lucide="building-2"></i></div>
       <div><div class="label">${t(role==='supervisor' ? 'za_assigned_schools' : 'za_total_schools')}</div>
       <div class="value">${schools.length}</div></div>
     </div>`;
@@ -238,22 +296,22 @@ function renderDashboard({ schools, students, proposals, incoming, performance }
 
   if(role!=='supervisor'){
     const totals = students.totals || { male: 0, female: 0, total: 0 };
-    const pendingProposals = proposals.filter(p=>p.status==='pending').length;
-    const pendingIncoming = incoming.filter(i=>i.status==='pending').length;
+    const pendingProposals = proposals.filter(p=>normStatus(p.status)==='pending').length;
+    const pendingIncoming = incoming.filter(i=>normStatus(i.status)==='pending').length;
     cards += `
     <div class="card">
-      <div class="icon">👥</div>
+      <div class="icon"><i data-lucide="users"></i></div>
       <div><div class="label">${t('za_total_students')}</div>
       <div class="value">${totals.total.toLocaleString()}</div>
       <div class="subrow">♂ ${totals.male.toLocaleString()} &nbsp;&nbsp; ♀ ${totals.female.toLocaleString()}</div></div>
     </div>
     <div class="card alert">
-      <div class="icon">📝</div>
+      <div class="icon"><i data-lucide="file-pen-line"></i></div>
       <div><div class="label">${t('za_pending_proposals')}</div>
       <div class="value">${pendingProposals}</div></div>
     </div>
     <div class="card">
-      <div class="icon">🧑‍🏫</div>
+      <div class="icon"><i data-lucide="user-plus"></i></div>
       <div><div class="label">${t('za_incoming_pushed')}</div>
       <div class="value">${pendingIncoming}</div></div>
     </div>`;
@@ -267,7 +325,7 @@ function renderDashboard({ schools, students, proposals, incoming, performance }
     const flagged = performance.filter(p=>p.needs_followup);
     cards += `
     <div class="card alert">
-      <div class="icon">⚠️</div>
+      <div class="icon"><i data-lucide="alert-triangle"></i></div>
       <div><div class="label">${t('za_flagged_teachers')}</div>
       <div class="value">${flagged.length}</div></div>
     </div>`;
@@ -294,13 +352,15 @@ function renderDashboard({ schools, students, proposals, incoming, performance }
   </div>
   <div class="cards">${cards}</div>
   <div class="panel">
-    <h3>📋 ${t('za_recent_activity')}</h3>
+    <h3><i data-lucide="clipboard-list"></i> ${t('za_recent_activity')}</h3>
     <table>
       <tr><th>${t('za_th_school')}</th><th>Event</th><th>Date</th></tr>
       ${activityRows}
     </table>
     ${role==='supervisor' ? `<div class="hint">${t('za_locked_note')}</div>` : ''}
-  </div>`;
+  </div>
+  <div id="calWidgetHolder">${renderEthiopianCalendarWidget()}</div>`;
+  wireEthiopianCalendarWidget();
 }
 
 /* ---------------- Total Students — live from /api/zonal/students ---- */
@@ -319,13 +379,13 @@ let currentStudentRows = [];
 let currentStudentSchools = [];
 
 function studentsSkeletonHTML(){
-  return `<div class="panel"><h3>👥 ${t('za_students_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
+  return `<div class="panel"><h3><i data-lucide="users"></i> ${t('za_students_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
 }
 
 async function loadAndRenderStudents(filters){
   const content = document.getElementById('content');
   if(role==='supervisor'){
-    content.innerHTML = `<div class="panel"><h3>👥 ${t('za_students_title')}</h3>
+    content.innerHTML = `<div class="panel"><h3><i data-lucide="users"></i> ${t('za_students_title')}</h3>
       <p class="hint">${t('za_locked_note')}</p></div>`;
     return;
   }
@@ -341,15 +401,39 @@ async function loadAndRenderStudents(filters){
 }
 
 const STUDENT_STATUS_PILL = {
-  'Active':      'ok',
-  'Graduated':   'grad',
-  'Dropped':     'bad'
-  // anything else (e.g. 'Transferred Out') falls through to 'warn' below
+  'Active':                    'ok',
+  'Graduated':                 'grad',
+  'Dropped':                   'bad',
+  'Transferred - Pending':     'warn',
+  'Transferred - Completed':   'warn'
 };
 
+const STUDENT_STATUS_KEY = {
+  'Active':                  'za_status_active',
+  'Graduated':                'za_status_graduated',
+  'Dropped':                  'za_status_dropped',
+  'Transferred - Pending':    'za_status_transferred_pending',
+  'Transferred - Completed':  'za_status_transferred_completed'
+};
+
+function studentStatusLabel(status){
+  const key = STUDENT_STATUS_KEY[status];
+  return key ? t(key) : (status || '—');
+}
+
 function studentStatusPill(status){
-  const cls = STUDENT_STATUS_PILL[status] || (String(status||'').startsWith('Transferred') ? 'warn' : 'warn');
-  return `<span class="pill ${cls}">${status || '—'}</span>`;
+  const cls = STUDENT_STATUS_PILL[status] || 'warn';
+  return `<span class="pill ${cls}">${studentStatusLabel(status)}</span>`;
+}
+
+const STREAM_KEY = {
+  'General': 'za_stream_general',
+  'Natural': 'za_stream_natural',
+  'Social': 'za_stream_social'
+};
+function streamLabel(stream){
+  const key = STREAM_KEY[stream];
+  return key ? t(key) : (stream || '—');
 }
 
 function renderStudentsPanel(schools, data, filters){
@@ -365,22 +449,23 @@ function renderStudentsPanel(schools, data, filters){
   }, { male: 0, female: 0, total: 0 });
 
   const schoolOpts = schools.map(s=>`<option value="${s.id}" ${String(filters.school_id)===String(s.id)?'selected':''}>${s.school_name}</option>`).join('');
-  const classOpts = ['9','10','11','12'].map(c=>`<option value="${c}" ${filters.class_level===c?'selected':''}>Grade ${c}</option>`).join('');
-  const streamOpts = ['General','Natural','Social'].map(s=>`<option value="${s}" ${filters.stream===s?'selected':''}>${s}</option>`).join('');
+  const classOpts = ['9','10','11','12'].map(c=>`<option value="${c}" ${filters.class_level===c?'selected':''}>${t('za_grade_short',{level:c})}</option>`).join('');
+  const streamOpts = ['General','Natural','Social'].map(s=>`<option value="${s}" ${filters.stream===s?'selected':''}>${streamLabel(s)}</option>`).join('');
   const sectionOpts = ['A','B','C','D'].map(s=>`<option value="${s}" ${filters.section===s?'selected':''}>${s}</option>`).join('');
-  const statusOpts = ['Active','Graduated','Dropped','Transferred Out'].map(s=>`<option value="${s}" ${filters.status===s?'selected':''}>${s}</option>`).join('');
+  const STATUS_VALUES = ['Active','Graduated','Dropped','Transferred - Pending','Transferred - Completed'];
+  const statusOpts = STATUS_VALUES.map(s=>`<option value="${s}" ${filters.status===s?'selected':''}>${studentStatusLabel(s)}</option>`).join('');
   const yearOpts = years.map(y=>`<option value="${y}" ${String(filters.enrollment_year)===String(y)?'selected':''}>${y}</option>`).join('');
 
   const tableRows = rows.length ? rows.map(r=>`
     <tr>
-      <td>${r.student_id}</td><td>${r.full_name}</td><td>Grade ${r.class_level}</td>
-      <td>${r.stream || '—'}</td><td>${r.section || '—'}</td><td>${r.enrollment_year || '—'}</td>
+      <td>${r.student_id}</td><td>${r.full_name}</td><td>${t('za_grade_short',{level:r.class_level})}</td>
+      <td>${streamLabel(r.stream)}</td><td>${r.section || '—'}</td><td>${r.enrollment_year || '—'}</td>
       <td>${studentStatusPill(r.status)}</td>
     </tr>`).join('') : `<tr><td colspan="7" class="hint">${t('za_students_empty')}</td></tr>`;
 
   document.getElementById('content').innerHTML = `
   <div class="panel">
-    <h3>👥 ${t('za_students_title')}</h3>
+    <h3><i data-lucide="users"></i> ${t('za_students_title')}</h3>
     <p class="hint" style="margin-bottom:14px;">${t('za_students_hint')}</p>
     <div class="filters">
       <select id="filt_school"><option value="">${t('za_all')} — ${t('za_filters_school')}</option>${schoolOpts}</select>
@@ -396,13 +481,19 @@ function renderStudentsPanel(schools, data, filters){
       <div class="gender-chip male"><div class="n">${totals.male}</div><div class="l">♂ ${t('za_male')}</div></div>
       <div class="gender-chip female"><div class="n">${totals.female}</div><div class="l">♀ ${t('za_female')}</div></div>
     </div>
-    <table>
-      <tr>
-        <th>${t('za_th_id')}</th><th>${t('za_th_name')}</th><th>${t('za_th_class')}</th><th>${t('za_th_stream')}</th>
-        <th>${t('za_th_section')}</th><th>${t('za_th_enroll_year')}</th><th>${t('za_th_status')}</th>
-      </tr>
-      ${tableRows}
-    </table>
+    <div class="table-wrap sticky-head">
+      <table>
+        <thead>
+          <tr>
+            <th>${t('za_th_id')}</th><th>${t('za_th_name')}</th><th>${t('za_th_class')}</th><th>${t('za_th_stream')}</th>
+            <th>${t('za_th_section')}</th><th>${t('za_th_enroll_year')}</th><th>${t('za_th_status')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${tableRows}
+        </tbody>
+      </table>
+    </div>
   </div>`;
 
   const refetch = ()=>{
@@ -432,8 +523,8 @@ function downloadStudentsCsv(){
   const lines = [header.map(csvEscape).join(',')];
   currentStudentRows.forEach(r=>{
     lines.push([
-      schoolName(r.school_id), r.student_id, r.full_name, `Grade ${r.class_level}`,
-      r.stream || '', r.section || '', r.enrollment_year || '', r.status || ''
+      schoolName(r.school_id), r.student_id, r.full_name, t('za_grade_short',{level:r.class_level}),
+      r.stream || '', r.section || '', r.enrollment_year || '', studentStatusLabel(r.status)
     ].map(csvEscape).join(','));
   });
   const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
@@ -447,57 +538,147 @@ function downloadStudentsCsv(){
   URL.revokeObjectURL(url);
 }
 
-/* ---------------- Performance — live from /api/zonal/performance ---- */
+/* ---------------- School Performance — live from
+   /api/zonal/school-performance ----------------------------------------
+   Every zonal_admins title sees the pie chart + bucketed list (low /
+   average / good / excellence); only a Supervisor can click a school
+   to open the drill-down modal (backed by
+   /api/zonal/school-performance/:id/details) showing exactly what's
+   dragging the score down — teacher punctuality, overdue marks, or
+   sections with no teacher assigned at all. */
+const PERF_BUCKETS = [
+  { key:'excellence', color:'#1f8a4c', labelKey:'za_perf_excellence' },
+  { key:'good',        color:'#c99a4a', labelKey:'za_perf_good' },
+  { key:'average',     color:'#b3791a', labelKey:'za_perf_average' },
+  { key:'low',         color:'#c0392b', labelKey:'za_perf_low' },
+  { key:'no_data',     color:'#c7d0cb', labelKey:'za_perf_no_data' }
+];
+
 function performanceSkeletonHTML(){
-  return `<div class="panel"><h3>📈 ${t('za_performance_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
+  return `<div class="panel"><h3><i data-lucide="bar-chart-3"></i> ${t('za_school_performance_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
 }
 
 async function loadAndRenderPerformance(){
   const content = document.getElementById('content');
   try {
-    const [schools, rows] = await Promise.all([
-      apiGet('/api/zonal/schools'),
-      apiGet('/api/zonal/performance')
-    ]);
-    renderPerformancePanel(schools, rows);
+    const rows = await apiGet('/api/zonal/school-performance');
+    renderPerformancePanel(rows);
   } catch (err) {
     content.innerHTML = errorPanel(err);
   }
 }
 
-function renderPerformancePanel(schools, rows){
-  const schoolName = id => (schools.find(s=>String(s.id)===String(id)) || {}).school_name || '—';
+function perfPieSVG(counts, total){
+  const r = 70, cx = 90, cy = 90;
+  if(!total) return `<svg viewBox="0 0 180 180"><circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#e4e9e6" stroke-width="26"/></svg>`;
+  let angleStart = -90;
+  const arcs = PERF_BUCKETS.filter(b=>counts[b.key]).map(b=>{
+    const frac = counts[b.key] / total;
+    const angleEnd = angleStart + frac*360;
+    const large = (angleEnd - angleStart) > 180 ? 1 : 0;
+    const toXY = a => [cx + r*Math.cos(a*Math.PI/180), cy + r*Math.sin(a*Math.PI/180)];
+    const [x1,y1] = toXY(angleStart), [x2,y2] = toXY(angleEnd);
+    const path = frac >= 0.999
+      ? `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${b.color}" stroke-width="26"/>`
+      : `<path d="M ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2}" fill="none" stroke="${b.color}" stroke-width="26" stroke-linecap="butt"/>`;
+    angleStart = angleEnd;
+    return path;
+  }).join('');
+  return `<svg viewBox="0 0 180 180">${arcs}</svg>`;
+}
 
-  const tableRows = rows.length ? rows.map(r=>{
-    const attendance = r.periods_logged_last_14_days > 0
-      ? Math.round((r.periods_present_last_14_days / r.periods_logged_last_14_days) * 100) + '%'
-      : '—';
-    const lastMarksLabel = r.days_since_marks_upload != null ? `${r.days_since_marks_upload}d` : t('za_no_uploads_yet');
-    const pill = r.needs_followup
-      ? `<span class="pill bad">${t('za_status_followup')}</span>`
-      : (r.days_since_marks_upload != null && r.days_since_marks_upload > 7)
-        ? `<span class="pill warn">${t('za_status_watch')}</span>`
-        : `<span class="pill ok">${t('za_status_ontrack')}</span>`;
-    return `<tr>
-      <td>${r.full_name}</td><td>${schoolName(r.school_id)}</td><td>${attendance}</td>
-      <td>${lastMarksLabel}</td><td>${pill}</td>
-    </tr>`;
-  }).join('') : `<tr><td colspan="5" class="hint">${t('za_schools_empty')}</td></tr>`;
+function renderPerformancePanel(rows){
+  const counts = { excellence:0, good:0, average:0, low:0, no_data:0 };
+  rows.forEach(r=> counts[r.category] = (counts[r.category]||0) + 1);
+  const total = rows.length;
+
+  const legend = PERF_BUCKETS.map(b=>`
+    <div class="perf-legend-row">
+      <span class="perf-legend-dot" style="background:${b.color}"></span>
+      <span>${t(b.labelKey)}</span>
+      <span class="n">${counts[b.key]||0}</span>
+    </div>`).join('');
+
+  const canDrill = role === 'supervisor';
+  const schoolRows = rows.length ? rows.map(r=>`
+    <div class="perf-school-row ${canDrill ? 'clickable' : ''}" ${canDrill ? `data-school-id="${r.school_id}"` : ''}>
+      <div style="flex:1;min-width:0;">
+        <div class="psr-name">${r.school_name}</div>
+        <div class="psr-sub">${r.score != null ? t('za_perf_score', { score: r.score }) : t('za_perf_no_data')}${r.flagged_teachers ? ' · ' + t('za_perf_flagged', { count: r.flagged_teachers }) : ''}</div>
+      </div>
+      <span class="perf-bucket-pill ${r.category}">${t(PERF_BUCKETS.find(b=>b.key===r.category).labelKey)}</span>
+      ${canDrill ? '<i data-lucide="chevron-right"></i>' : ''}
+    </div>`).join('') : `<p class="hint">${t('za_schools_empty')}</p>`;
 
   document.getElementById('content').innerHTML = `
-  <div class="panel">
-    <h3>📈 ${t('za_performance_title')}</h3>
-    <table>
-      <tr><th>${t('za_th_teacher')}</th><th>${t('za_th_school')}</th><th>${t('za_th_attendance')}</th><th>${t('za_th_last_marks')}</th><th>${t('za_th_status')}</th></tr>
-      ${tableRows}
-    </table>
+  <div class="perf-layout">
+    <div class="perf-pie-card">
+      ${perfPieSVG(counts, total)}
+      <div class="perf-legend">${legend}</div>
+    </div>
+    <div class="panel">
+      <h3><i data-lucide="bar-chart-3"></i> ${t('za_school_performance_title')}</h3>
+      ${!canDrill ? `<p class="hint">${t('za_perf_view_only_note')}</p>` : ''}
+      <div class="perf-school-list">${schoolRows}</div>
+    </div>
   </div>`;
+
+  if(canDrill){
+    document.querySelectorAll('.perf-school-row[data-school-id]').forEach(el=>{
+      el.addEventListener('click', ()=> openPerformanceDetail(el.dataset.schoolId));
+    });
+  }
+}
+
+async function openPerformanceDetail(schoolId){
+  const backdrop = document.createElement('div');
+  backdrop.className = 'perf-modal-backdrop';
+  backdrop.innerHTML = `<div class="perf-modal"><p class="hint">${t('za_loading')}</p></div>`;
+  document.body.appendChild(backdrop);
+  backdrop.addEventListener('click', e=>{ if(e.target===backdrop) backdrop.remove(); });
+
+  try {
+    const d = await apiGet(`/api/zonal/school-performance/${schoolId}/details`);
+    const teacherRow = t => `<div class="perf-issue-row"><span>${t.full_name}</span><span>${t.attendance_rate!=null ? t.attendance_rate+'%' : '—'}</span></div>`;
+    const marksRow = t => `<div class="perf-issue-row"><span>${t.full_name}</span><span>${t.days_since_marks_upload!=null ? t.days_since_marks_upload+'d' : t('za_no_uploads_yet')}</span></div>`;
+    const gapRow = g => `<div class="perf-issue-row"><span>${t('za_grade_short',{level:g.class_level})}-${g.section}${g.stream? ' ('+g.stream+')':''}</span><span>${t('za_perf_no_teacher')}</span></div>`;
+
+    backdrop.querySelector('.perf-modal').innerHTML = `
+      <button class="perf-modal-close" id="perfModalClose"><i data-lucide="x"></i></button>
+      <h3 style="margin-bottom:4px;">${d.school_name}</h3>
+      <p class="hint" style="margin-bottom:0;">${t('za_perf_detail_sub')}</p>
+
+      <div class="perf-detail-section">
+        <h4><i data-lucide="clock-alert"></i> ${t('za_perf_teacher_punctuality')} (${d.teacher_punctuality.length})</h4>
+        ${d.teacher_punctuality.length ? d.teacher_punctuality.map(teacherRow).join('') : `<p class="hint">${t('za_perf_none_flagged')}</p>`}
+      </div>
+
+      <div class="perf-detail-section">
+        <h4><i data-lucide="file-clock"></i> ${t('za_perf_marks_overdue')} (${d.marks_overdue.length})</h4>
+        ${d.marks_overdue.length ? d.marks_overdue.map(marksRow).join('') : `<p class="hint">${t('za_perf_none_flagged')}</p>`}
+      </div>
+
+      <div class="perf-detail-section">
+        <h4><i data-lucide="user-x"></i> ${t('za_perf_no_teacher_section')} (${d.no_teacher_assigned.length})</h4>
+        ${d.no_teacher_assigned.length ? d.no_teacher_assigned.map(gapRow).join('') : `<p class="hint">${t('za_perf_none_flagged')}</p>`}
+      </div>
+
+      <div class="perf-detail-section">
+        <h4><i data-lucide="users"></i> ${t('za_perf_student_summary')}</h4>
+        <div class="perf-issue-row"><span>${t('za_total_students')}</span><span>${d.student_summary.total_students}</span></div>
+        <div class="perf-issue-row"><span>${t('za_perf_dropout_rate')}</span><span>${d.student_summary.dropout_rate!=null ? d.student_summary.dropout_rate+'%' : '—'}</span></div>
+      </div>`;
+    backdrop.querySelector('#perfModalClose').addEventListener('click', ()=> backdrop.remove());
+  } catch (err) {
+    backdrop.querySelector('.perf-modal').innerHTML = errorPanel(err) + `<button class="btn ghost" id="perfModalClose2">${t('za_close')}</button>`;
+    backdrop.querySelector('#perfModalClose2').addEventListener('click', ()=> backdrop.remove());
+  }
 }
 
 /* ---- Setup New School: real cascading region -> zone -> woreda -> kebele,
    backed by /api/zonal/lookup/* ---- */
 function setupSchoolSkeletonHTML(){
-  return `<div class="panel"><h3>➕ ${t('za_setup_title')}</h3><p class="hint">Loading…</p></div>`;
+  return `<div class="panel"><h3><i data-lucide="plus-circle"></i> ${t('za_setup_title')}</h3><p class="hint">Loading…</p></div>`;
 }
 
 async function loadAndRenderSetupSchool(){
@@ -514,7 +695,7 @@ function renderSetupSchoolPanel(regions){
   const regionOpts = regions.map(r=>`<option value="${r.region_id}">${r.region_name}</option>`).join('');
   document.getElementById('content').innerHTML = `
   <div class="panel">
-    <h3>➕ ${t('za_setup_title')}</h3>
+    <h3><i data-lucide="plus-circle"></i> ${t('za_setup_title')}</h3>
     <p class="hint" style="margin-bottom:16px;">${t('za_setup_hint')}</p>
     <div class="form-grid">
       <div class="form-field">
@@ -615,7 +796,7 @@ async function submitNewSchool(){
     kebele_id: document.getElementById('f_kebele').value || null
   };
   if(!body.school_name || !body.school_prefix){
-    msg.textContent = '⚠️ School name and prefix are required.';
+    msg.textContent = '⚠️ ' + t('za_setup_required');
     return;
   }
   try {
@@ -627,13 +808,13 @@ async function submitNewSchool(){
 }
 
 function genericPanel(titleKey, icon){
-  return `<div class="panel"><h3>${icon} ${t(titleKey)}</h3>
+  return `<div class="panel"><h3><i data-lucide="${icon}"></i> ${t(titleKey)}</h3>
     <p class="hint">${t('za_generic_hint')}</p></div>`;
 }
 
 /* ---------------- Schools — live from /api/zonal/schools ------------ */
 function schoolsSkeletonHTML(){
-  return `<div class="panel"><h3>🏫 ${t('za_schools_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
+  return `<div class="panel"><h3><i data-lucide="building-2"></i> ${t('za_schools_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
 }
 
 async function loadAndRenderSchools(){
@@ -655,7 +836,7 @@ function renderSchoolsPanel(schools){
 
   document.getElementById('content').innerHTML = `
   <div class="panel">
-    <h3>🏫 ${t('za_schools_title')}</h3>
+    <h3><i data-lucide="building-2"></i> ${t('za_schools_title')}</h3>
     <p class="hint" style="margin-bottom:14px;">${t(role==='supervisor' ? 'za_schools_hint_supervisor' : 'za_schools_hint')}</p>
     <table>
       <tr><th>${t('za_th_school')}</th><th>${t('za_th_prefix')}</th><th>${t('za_th_moe')}</th><th>${t('za_th_woreda')}</th><th>${t('za_th_region')}</th></tr>
@@ -678,7 +859,7 @@ function navHasPage(key){
      POST /api/zonal/proposals/:id/decide       body:{decision:'approved'|'rejected', note}
    ================================================================== */
 function approvalsSkeletonHTML(){
-  return `<div class="panel"><h3>✅ ${t('za_approvals_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
+  return `<div class="panel"><h3><i data-lucide="check-circle-2"></i> ${t('za_approvals_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
 }
 
 async function loadAndRenderApprovals(){
@@ -706,8 +887,8 @@ function proposalSubjectLine(p){
 
 function renderApprovalsPanel(schools, proposals){
   const schoolName = id => (schools.find(s=>String(s.id)===String(id)) || {}).school_name || '—';
-  const pending = proposals.filter(p=>p.status==='pending');
-  const decided = proposals.filter(p=>p.status!=='pending')
+  const pending = proposals.filter(p=>normStatus(p.status)==='pending');
+  const decided = proposals.filter(p=>normStatus(p.status)!=='pending')
     .sort((a,b)=> new Date(b.reviewed_at||b.created_at) - new Date(a.reviewed_at||a.created_at)).slice(0,10);
 
   const pendingHTML = pending.length ? pending.map(p=>`
@@ -725,19 +906,19 @@ function renderApprovalsPanel(schools, proposals){
   const decidedRows = decided.length ? decided.map(p=>`
     <tr>
       <td>${proposalTypeLabel(p)}</td><td>${proposalSubjectLine(p)}</td><td>${schoolName(p.school_id)}</td>
-      <td>${p.status==='approved' ? `<span class="pill ok">${t('za_act_status_approved')}</span>` : `<span class="pill bad">${t('za_act_status_rejected')}</span>`}</td>
+      <td>${normStatus(p.status)==='approved' ? `<span class="pill ok">${t('za_act_status_approved')}</span>` : `<span class="pill bad">${t('za_act_status_rejected')}</span>`}</td>
       <td>${fmtDate(p.reviewed_at)}</td>
     </tr>`).join('') : `<tr><td colspan="5" class="hint">${t('za_activity_empty')}</td></tr>`;
 
   document.getElementById('content').innerHTML = `
   <div class="panel">
-    <h3>✅ ${t('za_approvals_title')}</h3>
+    <h3><i data-lucide="check-circle-2"></i> ${t('za_approvals_title')}</h3>
     <p class="hint" style="margin-bottom:14px;">${t('za_approvals_hint')}</p>
     <div id="approvalsQueue">${pendingHTML}</div>
     <p class="hint" id="approvalsMsg"></p>
   </div>
   <div class="panel">
-    <h3>📋 ${t('za_approvals_history')}</h3>
+    <h3><i data-lucide="clipboard-list"></i> ${t('za_approvals_history')}</h3>
     <div class="table-wrap"><table>
       <tr><th>${t('za_th_type')}</th><th>${t('za_th_name')}</th><th>${t('za_th_school')}</th><th>${t('za_th_status')}</th><th>${t('za_th_decided')}</th></tr>
       ${decidedRows}
@@ -748,18 +929,25 @@ function renderApprovalsPanel(schools, proposals){
     const btn = e.target.closest('button[data-act]');
     if(!btn) return;
     const id = btn.dataset.id;
-    const msg = document.getElementById('approvalsMsg');
     try {
+      let successText;
       if(btn.dataset.act==='approve'){
         const result = await apiPost(`/api/zonal/proposals/${id}/approve`);
-        msg.textContent = '✅ ' + result.message;
+        successText = '✅ ' + result.message;
       } else {
         const reason = prompt(t('sa_prompt_rejection_reason')) || '';
         await apiPost(`/api/zonal/proposals/${id}/reject`, { reason });
+        successText = '✅ ' + t('za_proposal_rejected');
       }
-      loadAndRenderApprovals();
+      // Reload FIRST (this rebuilds #approvalsMsg from scratch), then set
+      // the confirmation text on the freshly-rendered element — otherwise
+      // the reload wipes the message before the user ever sees it.
+      await loadAndRenderApprovals();
+      const msg = document.getElementById('approvalsMsg');
+      if(msg) msg.textContent = successText;
     } catch (err) {
-      msg.textContent = '⚠️ ' + err.message;
+      const msg = document.getElementById('approvalsMsg');
+      if(msg) msg.textContent = '⚠️ ' + err.message;
     }
   });
 }
@@ -773,7 +961,7 @@ function renderApprovalsPanel(schools, proposals){
    a single zone-wide switch.
    ================================================================== */
 function delegationSkeletonHTML(){
-  return `<div class="panel"><h3>🪪 ${t('za_delegation_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
+  return `<div class="panel"><h3><i data-lucide="id-card"></i> ${t('za_delegation_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
 }
 
 async function loadAndRenderDelegation(){
@@ -798,7 +986,7 @@ function renderDelegationPanel(coordinators){
 
   document.getElementById('content').innerHTML = `
   <div class="panel">
-    <h3>🪪 ${t('za_delegation_title')}</h3>
+    <h3><i data-lucide="id-card"></i> ${t('za_delegation_title')}</h3>
     <p class="hint" style="margin-bottom:8px;">${t('za_delegation_hint')}</p>
     <div id="delegationList">${rows}</div>
     <p class="hint" id="delegationMsg"></p>
@@ -806,14 +994,15 @@ function renderDelegationPanel(coordinators){
 
   document.querySelectorAll('.delegateToggle').forEach(toggle=>{
     toggle.addEventListener('change', async ()=>{
-      const msg = document.getElementById('delegationMsg');
       try {
         const result = await apiPost(`/api/zonal/teamleader/${toggle.dataset.id}/delegate`, { can_act_independently: toggle.checked });
-        msg.textContent = '✅ ' + result.message;
-        loadAndRenderDelegation();
+        await loadAndRenderDelegation();
+        const newMsg = document.getElementById('delegationMsg');
+        if(newMsg) newMsg.textContent = '✅ ' + result.message;
       } catch (err) {
         toggle.checked = !toggle.checked;
-        msg.textContent = '⚠️ ' + err.message;
+        const msg = document.getElementById('delegationMsg');
+        if(msg) msg.textContent = '⚠️ ' + err.message;
       }
     });
   });
@@ -828,7 +1017,7 @@ function renderDelegationPanel(coordinators){
      DELETE /api/zonal/subject-dictionary/:subject_dict_id
    ================================================================== */
 function subjectsSkeletonHTML(){
-  return `<div class="panel"><h3>📘 ${t('za_subjects_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
+  return `<div class="panel"><h3><i data-lucide="book-open"></i> ${t('za_subjects_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
 }
 
 async function loadAndRenderSubjects(){
@@ -866,12 +1055,12 @@ function renderSubjectsPanel(subjects){
 
   document.getElementById('content').innerHTML = `
   <div class="panel">
-    <h3>📘 ${t('za_subjects_title')}</h3>
+    <h3><i data-lucide="book-open"></i> ${t('za_subjects_title')}</h3>
     <p class="hint" style="margin-bottom:14px;">${t('za_subjects_hint')}</p>
     ${formHTML}
   </div>
   <div class="panel">
-    <h3>📚 ${t('za_subjects_list')}</h3>
+    <h3><i data-lucide="book-open"></i> ${t('za_subjects_list')}</h3>
     <div class="table-wrap"><table>
       <tr><th>${t('za_f_subject_name')}</th><th>${t('za_th_action')}</th></tr>
       ${rows}
@@ -892,7 +1081,7 @@ function renderSubjectsPanel(subjects){
     });
     document.querySelectorAll('button[data-act="delete"]').forEach(btn=>{
       btn.addEventListener('click', async ()=>{
-        if(!confirm(t('za_subjects_delete_confirm'))) return;
+        if(!(await showConfirm(t('za_subjects_delete_confirm')))) return;
         try {
           await apiDelete(`/api/zonal/subject-dictionary/${btn.dataset.id}`);
           loadAndRenderSubjects();
@@ -918,7 +1107,7 @@ function renderSubjectsPanel(subjects){
           of Education approves it.
    ================================================================== */
 function recruitmentSkeletonHTML(){
-  return `<div class="panel"><h3>🧑‍🏫 ${t('za_recruitment_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
+  return `<div class="panel"><h3><i data-lucide="user-plus"></i> ${t('za_recruitment_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
 }
 
 async function loadAndRenderRecruitment(){
@@ -936,6 +1125,19 @@ async function loadAndRenderRecruitment(){
 
 const INCOMING_STATUS_PILL = { pending:'warn', accepted:'ok', declined:'bad' };
 
+// A Teacher Development Coordinator with direct-act authority (or the
+// Head of Education) can push a candidate straight to a school here —
+// no approval needed, so the form belongs on this page.
+//
+// A non-delegated Development Coordinator, on the other hand, already
+// describes the candidate once in My Proposals. The moment the Head of
+// Education approves that proposal, the server pushes it to the school
+// automatically (see the hire_teacher branch of
+// /api/zonal/proposals/:id/approve) — there's no second "push" action
+// left for them to take. Making them fill out the same name/phone/email
+// fields a second time here was pure duplicate work, so for this group
+// the page is now a read-only tracker: it just lists what they've sent,
+// whether that arrived via a direct push or an approved proposal.
 function renderRecruitmentPanel(schools, incoming){
   const schoolOpts = schools.map(s=>`<option value="${s.id}">${s.school_name}</option>`).join('');
   const direct = canActInZone();
@@ -943,14 +1145,14 @@ function renderRecruitmentPanel(schools, incoming){
   const rows = incoming.length ? incoming.slice().sort((a,b)=> new Date(b.created_at)-new Date(a.created_at)).map(i=>`
     <tr>
       <td>${[i.first_name, i.middle_name, i.last_name].filter(Boolean).join(' ')}</td><td>${i.school_name}</td>
-      <td><span class="pill ${INCOMING_STATUS_PILL[i.status]||'warn'}">${t('za_incoming_status_'+i.status)}</span></td>
+      <td><span class="pill ${INCOMING_STATUS_PILL[normStatus(i.status)]||'warn'}">${t('za_incoming_status_'+normStatus(i.status))}</span></td>
       <td>${fmtDate(i.created_at)}</td>
     </tr>`).join('') : `<tr><td colspan="4" class="hint">${t('za_recruitment_empty')}</td></tr>`;
 
-  document.getElementById('content').innerHTML = `
+  const formPanel = direct ? `
   <div class="panel">
-    <h3>🧑‍🏫 ${t('za_recruitment_title')}</h3>
-    <p class="hint" style="margin-bottom:14px;">${direct ? t('za_recruitment_hint_direct') : t('za_recruitment_hint_proposal')}</p>
+    <h3><i data-lucide="user-plus"></i> ${t('za_recruitment_title')}</h3>
+    <p class="hint" style="margin-bottom:14px;">${t('za_recruitment_hint_direct')}</p>
     <div class="form-grid">
       <div class="form-field">
         <label>${t('za_f_first_name')}</label>
@@ -982,17 +1184,36 @@ function renderRecruitmentPanel(schools, incoming){
       </div>
     </div>
     <div class="form-actions">
-      <button class="btn primary" id="btnPushCandidate">${direct ? t('za_recruitment_push') : t('za_recruitment_submit_proposal')}</button>
+      <button class="btn primary" id="btnPushCandidate">${t('za_recruitment_push')}</button>
     </div>
     <p class="hint" id="recruitmentMsg"></p>
-  </div>
+  </div>` : `
   <div class="panel">
-    <h3>📋 ${t('za_recruitment_pushed_title')}</h3>
+    <h3><i data-lucide="user-plus"></i> ${t('za_recruitment_title')}</h3>
+    <p class="hint" style="margin-bottom:14px;">${t('za_recruitment_hint_track')}</p>
+    <div class="form-actions">
+      <button class="btn primary" id="btnGoToProposals">${t('za_recruitment_go_to_proposals')}</button>
+    </div>
+  </div>`;
+
+  document.getElementById('content').innerHTML = `
+  ${formPanel}
+  <div class="panel">
+    <h3><i data-lucide="clipboard-list"></i> ${t('za_recruitment_pushed_title')}</h3>
     <div class="table-wrap"><table>
       <tr><th>${t('za_th_name')}</th><th>${t('za_th_school')}</th><th>${t('za_th_status')}</th><th>${t('za_th_pushed')}</th></tr>
       ${rows}
     </table></div>
   </div>`;
+  if (window.lucide) lucide.createIcons();
+
+  if(!direct){
+    document.getElementById('btnGoToProposals').addEventListener('click', ()=>{
+      activePage = 'za_nav_proposals';
+      render();
+    });
+    return;
+  }
 
   document.getElementById('btnPushCandidate').addEventListener('click', async ()=>{
     const msg = document.getElementById('recruitmentMsg');
@@ -1008,17 +1229,14 @@ function renderRecruitmentPanel(schools, incoming){
       return;
     }
     try {
-      if(direct){
-        const result = await apiPost('/api/zonal/teachers', { school_id, first_name, middle_name, last_name, contact_number, email, zonal_recruitment_code });
-        msg.textContent = '✅ ' + result.message;
-      } else {
-        const result = await apiPost('/api/zonal/proposals', {
-          proposal_type: 'hire_teacher', school_id,
-          payload: { first_name, middle_name, last_name, contact_number, email, zonal_recruitment_code }
-        });
-        msg.textContent = '✅ ' + result.message;
-      }
-      loadAndRenderRecruitment();
+      const result = await apiPost('/api/zonal/teachers', { school_id, first_name, middle_name, last_name, contact_number, email, zonal_recruitment_code });
+      const successText = '✅ ' + result.message;
+      // Reload FIRST (rebuilds #recruitmentMsg), then set the confirmation
+      // text on the new element — setting it before the reload gets wiped
+      // out instantly when the panel re-renders.
+      await loadAndRenderRecruitment();
+      const newMsg = document.getElementById('recruitmentMsg');
+      if(newMsg) newMsg.textContent = successText;
     } catch (err) {
       msg.textContent = '⚠️ ' + err.message;
     }
@@ -1033,17 +1251,18 @@ function renderRecruitmentPanel(schools, incoming){
           'appoint_school_admin', school_id, payload}
    ================================================================== */
 function myProposalsSkeletonHTML(){
-  return `<div class="panel"><h3>📝 ${t('za_my_proposals_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
+  return `<div class="panel"><h3><i data-lucide="file-pen-line"></i> ${t('za_my_proposals_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
 }
 
 async function loadAndRenderMyProposals(){
   const content = document.getElementById('content');
   try {
-    const [schools, proposals] = await Promise.all([
+    const [schools, proposals, admins] = await Promise.all([
       apiGet('/api/zonal/schools'),
-      apiGet('/api/zonal/proposals')
+      apiGet('/api/zonal/proposals'),
+      apiGet('/api/zonal/admin-users')
     ]);
-    renderMyProposalsPanel(schools, proposals);
+    renderMyProposalsPanel(schools, proposals, admins);
   } catch (err) {
     content.innerHTML = errorPanel(err);
   }
@@ -1070,29 +1289,64 @@ function myProposalTypeFieldsHTML(){
         <div class="form-field"><label>${t('za_f_middle_name')}</label><input type="text" id="mp_a_middle" placeholder="${t('za_optional')}"></div>
         <div class="form-field"><label>${t('za_f_last_name')}</label><input type="text" id="mp_a_last"></div>
         <div class="form-field"><label>${t('za_f_admin_title')}</label>
-          <select id="mp_a_title">${SCHOOL_ADMIN_TITLES.map(x=>`<option value="${x}">${x}</option>`).join('')}</select>
+          <select id="mp_a_title">${SCHOOL_ADMIN_TITLES.map(x=>`<option value="${x}">${teacherTitleLabel(x)}</option>`).join('')}</select>
         </div>
         <div class="form-field"><label>${t('za_f_candidate_phone')}</label><input type="text" id="mp_a_phone" placeholder="${t('za_optional')}"></div>
         <div class="form-field"><label>${t('za_f_candidate_email')}</label><input type="email" id="mp_a_email" placeholder="${t('za_optional')}"></div>
         <div class="form-field"><label>${t('za_f_password')}</label><input type="password" id="mp_a_password"></div>
       </div>
+      <div id="replaceAdminBox" style="display:none;margin-top:10px;padding:10px;border:1px solid var(--border,#333);border-radius:8px;">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input type="checkbox" id="mp_a_replace_check">
+          <span id="replaceAdminLabel"></span>
+        </label>
+      </div>
     </div>`;
 }
 
-function renderMyProposalsPanel(schools, proposals){
+// A school can only hold one Principal / one Academic VP / one Admin VP
+// at a time in practice — so when a Development Coordinator picks a
+// school + title that's already filled, this surfaces who's currently
+// in that seat and lets them opt in to replacing that person. Purely
+// client-side lookup against the admin roster already fetched for this
+// page; nothing is sent to the server until the checkbox is ticked and
+// the proposal is submitted with replace_admin_id in its payload.
+function currentAdminFor(admins, school_id, title){
+  return admins.find(a => String(a.school_id) === String(school_id) && a.title === title) || null;
+}
+
+function updateReplaceAdminBox(admins){
+  const school_id = document.getElementById('mp_school').value;
+  const title = document.getElementById('mp_a_title').value;
+  const box = document.getElementById('replaceAdminBox');
+  const label = document.getElementById('replaceAdminLabel');
+  const check = document.getElementById('mp_a_replace_check');
+  const existing = school_id ? currentAdminFor(admins, school_id, title) : null;
+  if (existing) {
+    box.style.display = '';
+    label.textContent = t('za_replace_admin_question').replace('{name}', existing.first_name + ' ' + existing.last_name).replace('{title}', teacherTitleLabel(title));
+    box.dataset.replaceId = existing.admin_id;
+  } else {
+    box.style.display = 'none';
+    check.checked = false;
+    box.dataset.replaceId = '';
+  }
+}
+
+function renderMyProposalsPanel(schools, proposals, admins){
   const schoolName = id => (schools.find(s=>String(s.id)===String(id)) || {}).school_name || '—';
   const schoolOpts = schools.map(s=>`<option value="${s.id}">${s.school_name}</option>`).join('');
 
   const rows = proposals.length ? proposals.slice().sort((a,b)=> new Date(b.created_at)-new Date(a.created_at)).map(p=>`
     <tr>
       <td>${proposalTypeLabel(p)}</td><td>${proposalSubjectLine(p)}</td><td>${schoolName(p.school_id)}</td>
-      <td><span class="pill ${PROPOSAL_STATUS_PILL[p.status]||'warn'}">${t('za_act_status_'+p.status)}</span></td>
+      <td><span class="pill ${PROPOSAL_STATUS_PILL[normStatus(p.status)]||'warn'}">${t('za_act_status_'+normStatus(p.status))}</span></td>
       <td>${fmtDate(p.created_at)}</td>
     </tr>`).join('') : `<tr><td colspan="5" class="hint">${t('za_my_proposals_empty')}</td></tr>`;
 
   document.getElementById('content').innerHTML = `
   <div class="panel">
-    <h3>📝 ${t('za_my_proposals_new')}</h3>
+    <h3><i data-lucide="file-pen-line"></i> ${t('za_my_proposals_new')}</h3>
     <p class="hint" style="margin-bottom:14px;">${t('za_my_proposals_hint')}</p>
     <div class="tabs">
       <button class="tab-btn active" data-type="hire_teacher">${t('za_act_proposal_hire')}</button>
@@ -1109,7 +1363,7 @@ function renderMyProposalsPanel(schools, proposals){
     <p class="hint" id="proposalFormMsg"></p>
   </div>
   <div class="panel">
-    <h3>📋 ${t('za_my_proposals_title')}</h3>
+    <h3><i data-lucide="clipboard-list"></i> ${t('za_my_proposals_title')}</h3>
     <div class="table-wrap"><table>
       <tr><th>${t('za_th_type')}</th><th>${t('za_th_name')}</th><th>${t('za_th_school')}</th><th>${t('za_th_status')}</th><th>${t('za_th_submitted')}</th></tr>
       ${rows}
@@ -1124,8 +1378,16 @@ function renderMyProposalsPanel(schools, proposals){
       activeType = btn.dataset.type;
       document.getElementById('fields_hire_teacher').style.display = activeType==='hire_teacher' ? '' : 'none';
       document.getElementById('fields_appoint_school_admin').style.display = activeType==='appoint_school_admin' ? '' : 'none';
+      if(activeType==='appoint_school_admin') updateReplaceAdminBox(admins);
     });
   });
+
+  // Whenever the target school or the admin title changes, re-check
+  // whether that seat is already filled at that school.
+  document.getElementById('mp_school').addEventListener('change', ()=>{
+    if(activeType==='appoint_school_admin') updateReplaceAdminBox(admins);
+  });
+  document.getElementById('mp_a_title').addEventListener('change', ()=> updateReplaceAdminBox(admins));
 
   document.getElementById('btnSubmitProposal').addEventListener('click', async ()=>{
     const msg = document.getElementById('proposalFormMsg');
@@ -1149,19 +1411,26 @@ function renderMyProposalsPanel(schools, proposals){
       const last_name = document.getElementById('mp_a_last').value.trim();
       const password = document.getElementById('mp_a_password').value;
       if(!first_name || !last_name || !password){ msg.textContent = '⚠️ ' + t('za_my_proposals_admin_required'); return; }
+      const replaceBox = document.getElementById('replaceAdminBox');
+      const wantsReplace = document.getElementById('mp_a_replace_check').checked;
       payload = {
         first_name, last_name, password,
         middle_name: document.getElementById('mp_a_middle').value.trim() || null,
         title: document.getElementById('mp_a_title').value,
         contact_number: document.getElementById('mp_a_phone').value.trim() || null,
-        email: document.getElementById('mp_a_email').value.trim() || null
+        email: document.getElementById('mp_a_email').value.trim() || null,
+        replace_admin_id: (wantsReplace && replaceBox.dataset.replaceId) ? replaceBox.dataset.replaceId : null
       };
     }
 
     try {
       const result = await apiPost('/api/zonal/proposals', { proposal_type: activeType, school_id, payload });
-      msg.textContent = '✅ ' + result.message;
-      loadAndRenderMyProposals();
+      // Reload FIRST (rebuilds #proposalFormMsg), then set the confirmation
+      // text on the new element — otherwise the reload wipes the message
+      // before the user ever sees it.
+      await loadAndRenderMyProposals();
+      const newMsg = document.getElementById('proposalFormMsg');
+      if(newMsg) newMsg.textContent = '✅ ' + result.message;
     } catch (err) {
       msg.textContent = '⚠️ ' + err.message;
     }
@@ -1175,24 +1444,54 @@ function renderMyProposalsPanel(schools, proposals){
      POST /api/zonal/upload-signature    multipart field name 'signature'
      POST /api/zonal/upload-stamp        multipart field name 'stamp'
    ================================================================== */
-function signaturesSkeletonHTML(){
-  return `<div class="panel"><h3>✍️ ${t('za_signatures_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
+/* ==================================================================
+   Profile Settings (Head of Education / Teacher Development
+   Coordinator only — a Supervisor's nav never shows this page, per
+   uploadZonalDocument's own 403 on the backend) — signature, seal
+   (stamp), ID photo, and account settings (name / password) all in
+   one place. Replaces the old standalone Signature & Seal page.
+   ================================================================== */
+function profileSkeletonHTML(){
+  return `<div class="panel"><h3><i data-lucide="file-signature"></i> ${t('za_profile_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
 }
 
-async function loadAndRenderSignatures(){
+async function loadAndRenderProfile(){
   const content = document.getElementById('content');
   try {
     const data = await apiGet('/api/zonal/profile-documents');
-    renderSignaturesPanel(data);
+    renderProfilePanel(data);
   } catch (err) {
     content.innerHTML = errorPanel(err);
   }
 }
 
-function renderSignaturesPanel(data){
+function renderProfilePanel(data){
+  const name = CURRENT_USER.admin_full_name || CURRENT_USER.user_id || '';
+  const photoBlock = data.id_photo_url
+    ? `<img class="identity-photo-img" src="${data.id_photo_url}" alt="${name}">`
+    : `<div class="identity-photo-placeholder">${initialsOf(name)}</div>`;
+
   document.getElementById('content').innerHTML = `
   <div class="panel">
-    <h3>✍️ ${t('za_signatures_title')}</h3>
+    <h3><i data-lucide="badge"></i> ${t('za_identity_title')}</h3>
+    <div class="identity-widget" style="margin-top:14px;">
+      <div class="identity-photo">
+        ${photoBlock}
+        <div class="identity-photo-edit" id="btnUploadIdentityPhoto" title="${t('za_change_photo')}">
+          <i data-lucide="camera"></i>
+        </div>
+        <input type="file" accept="image/*" id="f_identity_photo_file" style="display:none;">
+      </div>
+      <div class="identity-info">
+        <div class="identity-name">${name}</div>
+        <div class="identity-role">${t(ROLE_META[role].titleKey)}</div>
+        <div class="identity-id">${t('za_identity_id_label')}: ${CURRENT_USER.user_id || '—'}</div>
+      </div>
+    </div>
+    <p class="hint" id="identityMsg"></p>
+  </div>
+  <div class="panel">
+    <h3><i data-lucide="file-signature"></i> ${t('za_profile_docs_title')}</h3>
     <p class="hint" style="margin-bottom:14px;">${t('za_signatures_hint')}</p>
     <div class="sig-grid">
       <div>
@@ -1211,12 +1510,80 @@ function renderSignaturesPanel(data){
           <button class="btn ghost sm" id="btnUploadSeal">${t('za_upload')}</button>
         </div>
       </div>
+      <div>
+        <label style="display:block;font-size:12px;font-weight:700;color:var(--text-dim);margin-bottom:8px;">${t('za_id_photo_label')}</label>
+        <div class="upload-box">
+          ${data.id_photo_url ? `<img src="${data.id_photo_url}" alt="id photo">` : `<span class="hint">${t('za_no_id_photo')}</span>`}
+          <input type="file" accept="image/*" id="f_idphoto_file" style="display:none;">
+          <button class="btn ghost sm" id="btnUploadIdPhoto">${t('za_upload')}</button>
+        </div>
+      </div>
     </div>
     <p class="hint" id="signatureMsg"></p>
+  </div>
+  <div class="panel">
+    <h3><i data-lucide="settings"></i> ${t('za_account_settings_title')}</h3>
+    <div class="form-grid">
+      <div class="form-field">
+        <label>${t('za_first_name')}</label>
+        <input type="text" id="f_acct_first" value="${(CURRENT_USER.admin_full_name||'').split(' ')[0]||''}">
+      </div>
+      <div class="form-field">
+        <label>${t('za_last_name')}</label>
+        <input type="text" id="f_acct_last" value="${(CURRENT_USER.admin_full_name||'').split(' ').slice(1).join(' ')||''}">
+      </div>
+    </div>
+    <div class="form-actions" style="margin-bottom:22px;">
+      <button class="btn primary" id="btnSaveName">${t('za_save')}</button>
+    </div>
+    <div class="form-grid">
+      <div class="form-field">
+        <label>${t('za_current_password')}</label>
+        <input type="password" id="f_acct_curpw">
+      </div>
+      <div class="form-field">
+        <label>${t('za_new_password')}</label>
+        <input type="password" id="f_acct_newpw">
+      </div>
+    </div>
+    <div class="form-actions">
+      <button class="btn primary" id="btnSavePassword">${t('za_update_password')}</button>
+    </div>
+    <p class="hint" id="acctMsg"></p>
   </div>`;
 
+  wireSignatureUpload('f_identity_photo_file', 'btnUploadIdentityPhoto', '/api/zonal/upload-id-photo', 'id_photo', 'identityMsg');
   wireSignatureUpload('f_sig_file', 'btnUploadSig', '/api/zonal/upload-signature', 'signature');
   wireSignatureUpload('f_seal_file', 'btnUploadSeal', '/api/zonal/upload-stamp', 'stamp');
+  wireSignatureUpload('f_idphoto_file', 'btnUploadIdPhoto', '/api/zonal/upload-id-photo', 'id_photo');
+
+  document.getElementById('btnSaveName').addEventListener('click', async ()=>{
+    const acctMsg = document.getElementById('acctMsg');
+    try {
+      await apiPost('/api/zonal/account', {
+        first_name: document.getElementById('f_acct_first').value.trim(),
+        last_name: document.getElementById('f_acct_last').value.trim()
+      });
+      acctMsg.textContent = t('za_saved');
+      const me = await apiGet('/api/me');
+      CURRENT_USER = me;
+      renderTopChrome();
+      if(window.lucide) window.lucide.createIcons();
+    } catch (err) { acctMsg.textContent = err.message; }
+  });
+
+  document.getElementById('btnSavePassword').addEventListener('click', async ()=>{
+    const acctMsg = document.getElementById('acctMsg');
+    const current_password = document.getElementById('f_acct_curpw').value;
+    const new_password = document.getElementById('f_acct_newpw').value;
+    if(!new_password){ acctMsg.textContent = t('za_new_password'); return; }
+    try {
+      await apiPost('/api/zonal/account', { current_password, new_password });
+      acctMsg.textContent = t('za_saved');
+      document.getElementById('f_acct_curpw').value = '';
+      document.getElementById('f_acct_newpw').value = '';
+    } catch (err) { acctMsg.textContent = err.message; }
+  });
 }
 
 async function uploadZonalFile(path, fieldName, file){
@@ -1229,132 +1596,485 @@ async function uploadZonalFile(path, fieldName, file){
   return data;
 }
 
-function wireSignatureUpload(fileId, btnId, path, fieldName){
+function wireSignatureUpload(fileId, btnId, path, fieldName, msgId){
   const fileEl = document.getElementById(fileId);
   const btn = document.getElementById(btnId);
+  const msg = document.getElementById(msgId || 'signatureMsg');
   btn.addEventListener('click', ()=> fileEl.click());
   fileEl.addEventListener('change', async ()=>{
     const file = fileEl.files[0];
-    const msg = document.getElementById('signatureMsg');
     if(!file) return;
-    if(file.size > 2*1024*1024){ msg.textContent = '⚠️ ' + t('za_signature_too_large'); return; }
+    if(file.size > 2*1024*1024){ msg.textContent = t('za_signature_too_large'); return; }
     try {
       await uploadZonalFile(path, fieldName, file);
-      msg.textContent = '✅ ' + t('za_saved');
-      loadAndRenderSignatures();
+      await loadAndRenderProfile();
+      const newMsg = document.getElementById(msgId || 'signatureMsg');
+      if(newMsg) newMsg.textContent = t('za_saved');
     } catch (err) {
-      msg.textContent = '⚠️ ' + err.message;
+      msg.textContent = err.message;
     }
   });
 }
 
 /* ==================================================================
-   Analysis Report (HoE + TDC) — live from:
-     GET /api/zonal/analysis-reports?term=Semester 1|Semester 2|Year
-       -> { term, schools: [{ school_id, school_name, rows: [{
-            class_level, total_student:{male,female,total},
-            drop_out:{...}, tested:{...}, incomplete:{...},
-            band_0_49:{...}, band_50_74:{...}, band_75_100:{...},
-            highest_rank_male, highest_rank_female }], totals: {...same shape} }] }
+   My ID — placeholder for the digital ID card (front/back). No
+   backend data yet; this just reserves the page and layout so the
+   real card design can be dropped in later.
    ================================================================== */
-const ANALYSIS_TERMS = ['Semester 1','Semester 2','Year'];
-let analysisTerm = 'Year';
-let analysisSchoolId = null;
-
-function analysisSkeletonHTML(){
-  return `<div class="panel"><h3>📊 ${t('za_analysis_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
+function myIdPanelHTML(){
+  return `
+  <div class="panel">
+    <h3><i data-lucide="credit-card"></i> ${t('za_myid_title')}</h3>
+    <p class="hint" style="margin-bottom:18px;">${t('za_myid_hint')}</p>
+    <div class="id-card-row">
+      <div class="id-card-slot">
+        <div class="id-card-slot-label">${t('za_myid_front')}</div>
+        <div class="id-card-slot-body">
+          <i data-lucide="image"></i>
+          <p>${t('za_myid_coming_soon')}</p>
+        </div>
+      </div>
+      <div class="id-card-slot">
+        <div class="id-card-slot-label">${t('za_myid_back')}</div>
+        <div class="id-card-slot-body">
+          <i data-lucide="image"></i>
+          <p>${t('za_myid_coming_soon')}</p>
+        </div>
+      </div>
+    </div>
+  </div>`;
 }
 
-async function loadAndRenderAnalysis(){
+/* ==================================================================
+   Teachers directory (all three titles) — live from
+   /api/zonal/teachers, optionally filtered by ?school_id=.
+   ================================================================== */
+let teachersSchoolFilter = '';
+let teachersSearchTerm = '';
+
+// School-admin titles first (in seniority order), plain classroom
+// teachers last — so the table reads as a consistent hierarchy per
+// school instead of the incidental alphabetical-by-first-name order
+// the API happens to return.
+const TEACHER_TITLE_ORDER = ['Principal', 'Academic VP', 'Admin VP', 'Teacher'];
+const TEACHER_TITLE_KEY = {
+  'Principal': 'za_title_principal',
+  'Academic VP': 'za_title_academic_vp',
+  'Admin VP': 'za_title_admin_vp',
+  'Teacher': 'za_th_teacher'
+};
+function teacherTitleLabel(title){
+  const key = TEACHER_TITLE_KEY[title];
+  return key ? t(key) : (title || t('za_th_teacher'));
+}
+function teacherTitleRank(title){
+  const i = TEACHER_TITLE_ORDER.indexOf(title);
+  return i === -1 ? TEACHER_TITLE_ORDER.length : i;
+}
+
+function teachersSkeletonHTML(){
+  return `<div class="panel"><h3><i data-lucide="graduation-cap"></i> ${t('za_teachers_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
+}
+
+async function loadAndRenderTeachers(){
   const content = document.getElementById('content');
   try {
-    const data = await apiGet('/api/zonal/analysis-reports', { term: analysisTerm });
-    if(!analysisSchoolId && data.schools.length) analysisSchoolId = data.schools[0].school_id;
-    renderAnalysisPanel(data);
+    const [schools, teachers] = await Promise.all([
+      apiGet('/api/zonal/schools'),
+      apiGet('/api/zonal/teachers', teachersSchoolFilter ? { school_id: teachersSchoolFilter } : undefined)
+    ]);
+    renderTeachersPanel(schools, teachers);
   } catch (err) {
     content.innerHTML = errorPanel(err);
   }
 }
 
-function analysisRowHTML(r){
-  const label = r.class_level==='Total' ? t('za_total') : t('za_grade_short', { level: r.class_level });
-  return `<tr>
-    <td>${label}</td>
-    <td>${r.total_student.total}</td>
-    <td>${r.drop_out.total}</td>
-    <td>${r.tested.total}</td>
-    <td>${r.incomplete.total}</td>
-    <td>${r.band_0_49.total}</td>
-    <td>${r.band_50_74.total}</td>
-    <td>${r.band_75_100.total}</td>
-    <td>${r.highest_rank_male}/${r.highest_rank_female}</td>
-  </tr>`;
-}
+// Unified staff directory — classroom teachers AND school admins
+// (Principal / Admin VP / Academic VP) together, since a school admin
+// is "a teacher" by general title and shares the same TCH ID sequence.
+// title distinguishes the two: plain "Teacher" vs. the admin's actual
+// title. Column order: photo, Teacher ID, name, school, title, contact,
+// email — per spec. Sorted by school, then by title seniority (not the
+// incidental first-name order the API returns), then by name. A search
+// box above the table filters client-side across name/ID/school/phone/
+// email as the user types, so switching schools isn't the only way to
+// narrow the list.
+function renderTeachersPanel(schools, teachers){
+  const schoolOpts = `<option value="">${t('za_teachers_all_schools')}</option>` +
+    schools.map(s=>`<option value="${s.id}" ${String(s.id)===String(teachersSchoolFilter)?'selected':''}>${s.school_name}</option>`).join('');
 
-function renderAnalysisPanel(data){
-  const schools = data.schools || [];
-  const schoolOpts = schools.map(s=>`<option value="${s.school_id}" ${String(s.school_id)===String(analysisSchoolId)?'selected':''}>${s.school_name}</option>`).join('');
-  const current = schools.find(s=>String(s.school_id)===String(analysisSchoolId)) || schools[0];
+  const sorted = teachers.slice().sort((a,b)=>
+    a.school_name.localeCompare(b.school_name) ||
+    (teacherTitleRank(a.title) - teacherTitleRank(b.title)) ||
+    a.full_name.localeCompare(b.full_name));
 
-  const zoneTotals = schools.reduce((acc, s)=>{
-    acc.total += s.totals.total_student.total;
-    acc.dropout += s.totals.drop_out.total;
-    acc.tested += s.totals.tested.total;
-    acc.passing += s.totals.band_50_74.total + s.totals.band_75_100.total;
-    return acc;
-  }, { total:0, dropout:0, tested:0, passing:0 });
-  const dropoutRate = zoneTotals.total ? (zoneTotals.dropout/zoneTotals.total*100) : null;
-  const passRate = zoneTotals.tested ? (zoneTotals.passing/zoneTotals.tested*100) : null;
+  const avatarCell = tch => tch.avatar_url
+    ? `<img class="avatar-thumb" src="${tch.avatar_url}" alt="">`
+    : `<div class="avatar-thumb avatar-placeholder"><i data-lucide="user"></i></div>`;
 
-  const termTabs = ANALYSIS_TERMS.map(term=>`<button class="tab-btn ${term===analysisTerm?'active':''}" data-term="${term}">${t('za_term_'+term.replace(/\s+/g,'').toLowerCase())}</button>`).join('');
+  const matchesSearch = (tch, term) => !term || [
+    tch.teacher_id, tch.full_name, tch.school_name, tch.title,
+    tch.contact_number, tch.email
+  ].some(v => v && String(v).toLowerCase().includes(term));
 
-  const tableHTML = current ? `
-    <div class="table-wrap"><table>
+  function renderRows(){
+    const term = teachersSearchTerm.trim().toLowerCase();
+    const filtered = sorted.filter(tch => matchesSearch(tch, term));
+    const rows = filtered.length ? filtered.map(tch=>`
       <tr>
-        <th>${t('za_analysis_class')}</th><th>${t('za_analysis_total')}</th><th>${t('za_analysis_dropout')}</th>
-        <th>${t('za_analysis_tested')}</th><th>${t('za_analysis_incomplete')}</th>
-        <th>0–49</th><th>50–74</th><th>75–100</th><th>${t('za_analysis_top_mf')}</th>
-      </tr>
-      ${current.rows.map(analysisRowHTML).join('')}
-      <tr style="font-weight:700;">${analysisRowHTML(current.totals).replace('<tr>','').replace('</tr>','')}</tr>
-    </table></div>` : `<p class="hint">${t('za_schools_empty')}</p>`;
+        <td>${avatarCell(tch)}</td>
+        <td>${tch.teacher_id}</td>
+        <td>${tch.full_name}</td>
+        <td>${tch.school_name}</td>
+        <td>${teacherTitleLabel(tch.title)}</td>
+        <td>${tch.contact_number || '—'}</td>
+        <td>${tch.email || '—'}</td>
+      </tr>`).join('') : `<tr><td colspan="7" class="hint">${term ? t('za_teachers_search_empty') : t('za_schools_empty')}</td></tr>`;
+    const tbody = document.getElementById('teachersTbody');
+    if (tbody) tbody.innerHTML = rows;
+    if (window.lucide) lucide.createIcons();
+  }
 
   document.getElementById('content').innerHTML = `
-  <div class="cards">
-    <div class="card">
-      <div class="icon">📉</div>
-      <div><div class="label">${t('za_analysis_dropout_rate')}</div><div class="value">${dropoutRate!=null ? dropoutRate.toFixed(1)+'%' : '—'}</div></div>
-    </div>
-    <div class="card">
-      <div class="icon">🎯</div>
-      <div><div class="label">${t('za_analysis_pass_rate')}</div><div class="value">${passRate!=null ? Math.round(passRate)+'%' : '—'}</div></div>
-    </div>
-  </div>
   <div class="panel">
-    <h3>📊 ${t('za_analysis_title')}</h3>
-    <div class="tabs">${termTabs}</div>
-    <div class="form-field" style="max-width:320px;margin-bottom:16px;">
-      <label>${t('za_analysis_select_school')}</label>
-      <select id="analysisSchoolSelect">${schoolOpts}</select>
+    <h3><i data-lucide="graduation-cap"></i> ${t('za_teachers_title')}</h3>
+    <div class="filters">
+      <div class="search-box"><i data-lucide="search"></i><input type="text" id="teacherSearchBox" placeholder="${t('za_teachers_search_placeholder')}" value="${teachersSearchTerm}"></div>
+      <select id="teacherSchoolFilter">${schoolOpts}</select>
     </div>
-    ${tableHTML}
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>${t('za_th_photo')}</th>
+        <th>${t('za_th_teacher_id')}</th>
+        <th>${t('za_th_teacher')}</th>
+        <th>${t('za_th_school')}</th>
+        <th>${t('za_th_title')}</th>
+        <th>${t('za_th_contact')}</th>
+        <th>${t('za_th_email')}</th>
+      </tr></thead>
+      <tbody id="teachersTbody"></tbody>
+    </table></div>
   </div>`;
+  renderRows();
 
-  document.querySelectorAll('.tab-btn[data-term]').forEach(btn=>{
-    btn.addEventListener('click', ()=>{
-      analysisTerm = btn.dataset.term;
-      document.getElementById('content').innerHTML = analysisSkeletonHTML();
-      loadAndRenderAnalysis();
-    });
+  document.getElementById('teacherSearchBox').addEventListener('input', e=>{
+    teachersSearchTerm = e.target.value;
+    renderRows();
   });
-  const schoolSelect = document.getElementById('analysisSchoolSelect');
-  if(schoolSelect){
-    schoolSelect.addEventListener('change', ()=>{
-      analysisSchoolId = schoolSelect.value;
-      renderAnalysisPanel(data);
-    });
+
+  document.getElementById('teacherSchoolFilter').addEventListener('change', e=>{
+    teachersSchoolFilter = e.target.value;
+    document.getElementById('content').innerHTML = teachersSkeletonHTML();
+    loadAndRenderTeachers();
+  });
+}
+
+/* ==================================================================
+   Messaging — inbox/sent from admin_messages, School Admin <->
+   zonal_admins side (live from /api/zonal/messages). All three
+   titles get this nav item; replying/composing targets a specific
+   school_admins account (school_id + recipient_id), via
+   /api/zonal/messages/recipients.
+   ================================================================== */
+let msgBox = 'inbox';
+let msgActiveId = null;
+let msgComposeTarget = null; // { school_id, id, full_name } when composing fresh
+
+function messagesSkeletonHTML(){
+  return `<div class="panel"><h3><i data-lucide="mail"></i> ${t('za_messages_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
+}
+
+async function loadAndRenderMessages(){
+  const content = document.getElementById('content');
+  try {
+    const [messages, recipients] = await Promise.all([
+      apiGet('/api/zonal/messages', { box: msgBox }),
+      apiGet('/api/zonal/messages/recipients')
+    ]);
+    renderMessagesPanel(messages, recipients);
+  } catch (err) {
+    content.innerHTML = errorPanel(err);
   }
 }
+
+function renderMessagesPanel(messages, recipients){
+  if(msgActiveId && !messages.find(m=>String(m.message_id)===String(msgActiveId))) msgActiveId = null;
+  const active = msgActiveId ? messages.find(m=>String(m.message_id)===String(msgActiveId)) : null;
+
+  const listItems = messages.length ? messages.map(m=>`
+    <div class="msg-list-item ${!m.is_read && msgBox==='inbox' ? 'unread':''} ${String(m.message_id)===String(msgActiveId)?'active':''}" data-id="${m.message_id}">
+      <div class="ml-from">${msgBox==='sent' ? m.school_name : (m.sender_name || m.school_name)}</div>
+      <div class="ml-subject">${m.subject || t('za_messages_no_subject')}</div>
+      <div class="ml-date">${fmtDate(m.sent_at)}</div>
+    </div>`).join('') : `<p class="hint">${t('za_messages_empty')}</p>`;
+
+  const recipientOpts = recipients.map(r=>`<option value="${r.school_id}|${r.id}">${r.full_name} — ${r.title?teacherTitleLabel(r.title):''}</option>`).join('');
+
+  const detailHTML = msgComposeTarget !== null ? `
+    <div class="msg-detail">
+      <h4>${t('za_messages_compose')}</h4>
+      <div class="form-field" style="margin:12px 0;">
+        <label>${t('za_messages_to')}</label>
+        <select id="composeRecipient">${recipientOpts}</select>
+      </div>
+      <div class="form-field" style="margin-bottom:12px;">
+        <label>${t('za_messages_subject')}</label>
+        <input type="text" id="composeSubject">
+      </div>
+      <div class="msg-reply-box"><textarea id="composeBody" placeholder="${t('za_messages_body_placeholder')}"></textarea></div>
+      <div class="form-actions" style="margin-top:10px;">
+        <button class="btn primary" id="btnSendCompose">${t('za_messages_send')}</button>
+        <button class="btn ghost" id="btnCancelCompose">${t('za_cancel')}</button>
+      </div>
+      <p class="hint" id="composeMsg"></p>
+    </div>`
+  : active ? `
+    <div class="msg-detail">
+      <div>
+        <div style="font-weight:700;font-size:15px;">${active.subject || t('za_messages_no_subject')}</div>
+        <div class="hint" style="margin-top:4px;">
+          ${msgBox==='sent' ? t('za_messages_to')+': '+active.school_name : t('za_messages_from')+': '+(active.sender_name||active.school_name)}
+          &nbsp;·&nbsp; ${fmtDate(active.sent_at)}
+        </div>
+      </div>
+      <div class="msg-detail-body">${active.body}</div>
+      ${msgBox==='inbox' ? `
+      <div class="msg-reply-box">
+        <textarea id="replyBody" placeholder="${t('za_messages_reply_placeholder')}"></textarea>
+        <div class="form-actions" style="margin-top:10px;">
+          <button class="btn primary" id="btnSendReply">${t('za_messages_reply')}</button>
+        </div>
+        <p class="hint" id="replyMsg"></p>
+      </div>` : ''}
+    </div>`
+  : `<div class="msg-detail"><p class="hint">${t('za_messages_select')}</p></div>`;
+
+  document.getElementById('content').innerHTML = `
+  <div class="panel">
+    <h3><i data-lucide="mail"></i> ${t('za_messages_title')}</h3>
+    <div class="tabs">
+      <button class="tab-btn ${msgBox==='inbox'?'active':''}" data-box="inbox">${t('za_messages_inbox')}</button>
+      <button class="tab-btn ${msgBox==='sent'?'active':''}" data-box="sent">${t('za_messages_sent')}</button>
+      <button class="btn ghost sm" id="btnNewMessage" style="margin-left:auto;"><i data-lucide="pencil"></i> ${t('za_messages_compose')}</button>
+    </div>
+    <div class="msg-layout">
+      <div class="msg-list">${listItems}</div>
+      ${detailHTML}
+    </div>
+  </div>`;
+
+  document.querySelectorAll('.tab-btn[data-box]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      msgBox = btn.dataset.box; msgActiveId = null; msgComposeTarget = null;
+      document.getElementById('content').innerHTML = messagesSkeletonHTML();
+      loadAndRenderMessages();
+    });
+  });
+  document.getElementById('btnNewMessage').addEventListener('click', ()=>{
+    msgComposeTarget = {}; msgActiveId = null;
+    renderMessagesPanel(messages, recipients);
+  });
+  document.querySelectorAll('.msg-list-item[data-id]').forEach(el=>{
+    el.addEventListener('click', async ()=>{
+      msgComposeTarget = null;
+      msgActiveId = el.dataset.id;
+      if(msgBox==='inbox'){
+        const m = messages.find(x=>String(x.message_id)===String(msgActiveId));
+        if(m && !m.is_read){ try { await apiPost(`/api/zonal/messages/${msgActiveId}/read`); m.is_read = 1; } catch(e){} }
+      }
+      renderMessagesPanel(messages, recipients);
+    });
+  });
+
+  const cancelBtn = document.getElementById('btnCancelCompose');
+  if(cancelBtn) cancelBtn.addEventListener('click', ()=>{ msgComposeTarget = null; renderMessagesPanel(messages, recipients); });
+
+  const sendComposeBtn = document.getElementById('btnSendCompose');
+  if(sendComposeBtn) sendComposeBtn.addEventListener('click', async ()=>{
+    const sel = document.getElementById('composeRecipient').value;
+    const [school_id, recipient_id] = sel.split('|');
+    const subject = document.getElementById('composeSubject').value.trim();
+    const body = document.getElementById('composeBody').value.trim();
+    const msgEl = document.getElementById('composeMsg');
+    if(!body){ msgEl.textContent = t('za_messages_body_placeholder'); return; }
+    try {
+      await apiPost('/api/zonal/messages', { school_id, recipient_id, subject, body });
+      msgComposeTarget = null; msgBox = 'sent'; msgActiveId = null;
+      document.getElementById('content').innerHTML = messagesSkeletonHTML();
+      loadAndRenderMessages();
+    } catch (err) { msgEl.textContent = err.message; }
+  });
+
+  const sendReplyBtn = document.getElementById('btnSendReply');
+  if(sendReplyBtn) sendReplyBtn.addEventListener('click', async ()=>{
+    const body = document.getElementById('replyBody').value.trim();
+    const msgEl = document.getElementById('replyMsg');
+    if(!body || !active) return;
+    try {
+      await apiPost('/api/zonal/messages', { school_id: active.school_id, recipient_id: active.sender_id, subject: active.subject ? 'Re: '+active.subject : '', body });
+      msgEl.textContent = t('za_saved');
+      document.getElementById('replyBody').value = '';
+    } catch (err) { msgEl.textContent = err.message; }
+  });
+}
+
+/* ==================================================================
+   Ethiopian calendar dashboard widget — client-side mirror of the
+   same Julian-Day-Number conversion and holiday tables server.js
+   uses (isEthiopianHoliday / toEthiopianDate). Shown on every title's
+   dashboard: a small month grid (Ethiopian months, G.C. dates on
+   click-through not needed) plus an upcoming-holidays list, each
+   holiday labeled with both calendars per the portal-wide "Ethiopian
+   first, G.C. in brackets" convention.
+   ================================================================== */
+const ETH_MONTH_KEYS = ['meskerem','tikimt','hidar','tahsas','tir','yekatit','megabit','miazia','ginbot','sene','hamle','nehase','pagume'];
+const JD_EPOCH_OFFSET_AMETE_MIHRET = 1723856;
+
+function gregorianToJdn(year, month, day){
+  const a = Math.floor((14 - month) / 12);
+  const y = year + 4800 - a;
+  const m = month + 12 * a - 3;
+  return day + Math.floor((153 * m + 2) / 5) + 365 * y + Math.floor(y / 4) - Math.floor(y / 100) + Math.floor(y / 400) - 32045;
+}
+function jdnToGregorian(jdn){
+  const d = new Date((jdn - 2440588) * 86400000);
+  return d;
+}
+function toEthiopianDate(dateInput){
+  const d = new Date(dateInput);
+  const jdn = gregorianToJdn(d.getFullYear(), d.getMonth() + 1, d.getDate());
+  const r = (jdn - JD_EPOCH_OFFSET_AMETE_MIHRET) % 1461;
+  const n = (r % 365) + 365 * Math.floor(r / 1460);
+  const year = 4 * Math.floor((jdn - JD_EPOCH_OFFSET_AMETE_MIHRET) / 1461) + Math.floor(r / 365) - Math.floor(r / 1460);
+  const month = Math.floor(n / 30) + 1;
+  const day = (n % 30) + 1;
+  return { year, month, day, monthKey: ETH_MONTH_KEYS[month - 1] };
+}
+function ethiopianToGregorian(year, month, day){
+  // Inverse of toEthiopianDate via the same JDN epoch offset.
+  const n = (month - 1) * 30 + (day - 1);
+  const yearBlock = Math.floor((year - 1) / 4);
+  const yearInBlock = (year - 1) % 4;
+  const jdn = JD_EPOCH_OFFSET_AMETE_MIHRET + yearBlock * 1461 + yearInBlock * 365 + n;
+  return jdnToGregorian(jdn);
+}
+const ETH_FIXED_HOLIDAYS = [
+  { md: [1, 1], key: 'enkutatash' },
+  { md: [1, 17], key: 'meskel' },
+  { md: [12, 13], key: 'buhe' },
+  { md: [4, 29], key: 'genna' },
+  { md: [5, 11], key: 'timkat' },
+  { md: [6, 23], key: 'adwa' },
+  { md: [8, 23], key: 'labor' },
+  { md: [8, 27], key: 'patriots' },
+  { md: [9, 20], key: 'derg' }
+];
+const ETH_MOVABLE_HOLIDAYS = {
+  2026: [
+    { md: [3, 20], key: 'eid_fitr' }, { md: [5, 27], key: 'eid_adha' },
+    { md: [8, 26], key: 'mawlid' }, { md: [4, 3], key: 'good_friday' }, { md: [4, 5], key: 'fasika' }
+  ],
+  2027: [
+    { md: [3, 9], key: 'eid_fitr' }, { md: [5, 16], key: 'eid_adha' },
+    { md: [8, 15], key: 'mawlid' }, { md: [4, 30], key: 'good_friday' }, { md: [5, 2], key: 'fasika' }
+  ]
+};
+function getEthiopianHoliday(date){
+  const d = new Date(date);
+  const ec = toEthiopianDate(d);
+  const fixed = ETH_FIXED_HOLIDAYS.find(h=> h.md[0]===ec.month && h.md[1]===ec.day);
+  if(fixed) return fixed.key;
+  const movable = (ETH_MOVABLE_HOLIDAYS[d.getFullYear()]||[]).find(h=> h.md[0]===d.getMonth()+1 && h.md[1]===d.getDate());
+  return movable ? movable.key : null;
+}
+
+let calViewYear = null, calViewMonth = null;
+
+function renderEthiopianCalendarWidget(){
+  const today = new Date();
+  const todayEc = toEthiopianDate(today);
+  if(calViewYear==null){ calViewYear = todayEc.year; calViewMonth = todayEc.month; }
+
+  const daysInMonth = calViewMonth === 13 ? (isLeapEc(calViewYear) ? 6 : 5) : 30;
+  // First day-of-week (0=Sun) for the 1st of this Ethiopian month.
+  const firstGc = ethiopianToGregorian(calViewYear, calViewMonth, 1);
+  const firstDow = firstGc.getDay();
+
+  const dowLabels = [0,1,2,3,4,5,6].map(i=> t('za_cal_dow_'+i));
+  let cells = '';
+  for(let i=0;i<firstDow;i++) cells += `<div class="cal-day empty"></div>`;
+  for(let day=1; day<=daysInMonth; day++){
+    const gc = ethiopianToGregorian(calViewYear, calViewMonth, day);
+    const isToday = calViewYear===todayEc.year && calViewMonth===todayEc.month && day===todayEc.day;
+    const holidayKey = getEthiopianHoliday(gc);
+    cells += `<div class="cal-day ${isToday?'today':''} ${holidayKey?'holiday':''}" title="${holidayKey ? t('holiday_'+holidayKey) : ''}">${day}</div>`;
+  }
+
+  // Upcoming holidays: scan forward up to 120 days from today.
+  const upcoming = [];
+  for(let i=0;i<120 && upcoming.length<5;i++){
+    const d = new Date(today.getTime() + i*86400000);
+    const key = getEthiopianHoliday(d);
+    if(key){
+      const ec = toEthiopianDate(d);
+      upcoming.push({ key, ec, gc: d });
+    }
+  }
+  const holidayRows = upcoming.length ? upcoming.map(h=>`
+    <div class="cal-holiday-item">
+      <span>${t('holiday_'+h.key)}</span>
+      <span class="ch-date">${h.ec.day} ${t('eth_month_'+h.ec.monthKey)} ${h.ec.year} E.C. (${h.gc.toLocaleDateString('en-GB',{day:'numeric',month:'short'})} GC)</span>
+    </div>`).join('') : `<p class="hint">${t('za_cal_no_upcoming')}</p>`;
+
+  return `
+  <div class="panel">
+    <h3><i data-lucide="calendar-days"></i> ${t('za_cal_title')}</h3>
+    <div class="cal-widget">
+      <div class="cal-widget-cal">
+        <div class="cal-head">
+          <button class="cal-nav-btn" id="calPrevBtn"><i data-lucide="chevron-left"></i></button>
+          <div>
+            <div class="cal-title">${t('eth_month_'+ETH_MONTH_KEYS[calViewMonth-1])} ${calViewYear} E.C.</div>
+            <div class="cal-sub">${firstGc.toLocaleDateString('en-GB',{month:'long',year:'numeric'})} GC</div>
+          </div>
+          <button class="cal-nav-btn" id="calNextBtn"><i data-lucide="chevron-right"></i></button>
+        </div>
+        <div class="cal-grid">
+          ${dowLabels.map(l=>`<div class="cal-dow">${l}</div>`).join('')}
+          ${cells}
+        </div>
+      </div>
+      <div class="cal-holiday-list">
+        <div class="cal-title" style="margin-bottom:10px;">${t('za_cal_upcoming')}</div>
+        ${holidayRows}
+      </div>
+    </div>
+  </div>`;
+}
+function isLeapEc(ecYear){
+  return ((ecYear + 1) % 4) === 0;
+}
+function wireEthiopianCalendarWidget(){
+  const prev = document.getElementById('calPrevBtn');
+  const next = document.getElementById('calNextBtn');
+  if(!prev || !next) return;
+  prev.addEventListener('click', ()=>{
+    calViewMonth--; if(calViewMonth<1){ calViewMonth=13; calViewYear--; }
+    reinjectCalendarWidget();
+  });
+  next.addEventListener('click', ()=>{
+    calViewMonth++; if(calViewMonth>13){ calViewMonth=1; calViewYear++; }
+    reinjectCalendarWidget();
+  });
+}
+function reinjectCalendarWidget(){
+  const holder = document.getElementById('calWidgetHolder');
+  if(!holder) return;
+  holder.outerHTML = `<div id="calWidgetHolder">${renderEthiopianCalendarWidget()}</div>`;
+  wireEthiopianCalendarWidget();
+  if(window.lucide) window.lucide.createIcons();
+}
+
 
 function render(){
   // Guard against activePage pointing at a page this title's nav no
@@ -1368,16 +2088,18 @@ function render(){
   if(activePage==='za_nav_dashboard') { c.innerHTML = dashboardSkeletonHTML(); loadAndRenderDashboard(); }
   else if(activePage==='za_nav_schools') { c.innerHTML = schoolsSkeletonHTML(); loadAndRenderSchools(); }
   else if(activePage==='za_nav_students') { c.innerHTML = studentsSkeletonHTML(); loadAndRenderStudents(); }
-  else if(activePage==='za_nav_performance') { c.innerHTML = performanceSkeletonHTML(); loadAndRenderPerformance(); }
+  else if(activePage==='za_nav_school_performance') { c.innerHTML = performanceSkeletonHTML(); loadAndRenderPerformance(); }
+  else if(activePage==='za_nav_teachers') { c.innerHTML = teachersSkeletonHTML(); loadAndRenderTeachers(); }
   else if(activePage==='za_nav_setup_school') { c.innerHTML = setupSchoolSkeletonHTML(); loadAndRenderSetupSchool(); }
   else if(activePage==='za_nav_approvals') { c.innerHTML = approvalsSkeletonHTML(); loadAndRenderApprovals(); }
   else if(activePage==='za_nav_delegation') { c.innerHTML = delegationSkeletonHTML(); loadAndRenderDelegation(); }
   else if(activePage==='za_nav_subjects') { c.innerHTML = subjectsSkeletonHTML(); loadAndRenderSubjects(); }
   else if(activePage==='za_nav_recruitment') { c.innerHTML = recruitmentSkeletonHTML(); loadAndRenderRecruitment(); }
   else if(activePage==='za_nav_proposals') { c.innerHTML = myProposalsSkeletonHTML(); loadAndRenderMyProposals(); }
-  else if(activePage==='za_nav_signatures') { c.innerHTML = signaturesSkeletonHTML(); loadAndRenderSignatures(); }
-  else if(activePage==='za_nav_analysis') { c.innerHTML = analysisSkeletonHTML(); loadAndRenderAnalysis(); }
-  else c.innerHTML = genericPanel(activePage, '📄');
+  else if(activePage==='za_nav_profile') { c.innerHTML = profileSkeletonHTML(); loadAndRenderProfile(); }
+  else if(activePage==='za_nav_myid') { c.innerHTML = myIdPanelHTML(); }
+  else if(activePage==='za_nav_messages') { c.innerHTML = messagesSkeletonHTML(); loadAndRenderMessages(); }
+  else c.innerHTML = genericPanel(activePage, 'file-text');
 }
 
 /* ---------------- Session bootstrap — GET /api/me -------------------- */
@@ -1434,7 +2156,7 @@ function wireChrome(){
   panel.addEventListener('click', e=> e.stopPropagation());
 
   document.getElementById('logoutBtn').addEventListener('click', async ()=>{
-    if(!confirm(t('za_logout_confirm'))) return;
+    if(!(await showConfirm(t('za_logout_confirm')))) return;
     try { await apiPost('/api/logout'); } catch (err) { /* clearing the cookie server-side is best-effort; redirect regardless */ }
     window.location.href = '/login.html';
   });
@@ -1447,6 +2169,23 @@ function wireChrome(){
   setInterval(loadNotifications, 60000);
 }
 
+// Lucide icons are just <i data-lucide="..."> placeholders until
+// lucide.createIcons() swaps them for real SVGs — rather than calling
+// that after every single render*/load* function in this file (there
+// are dozens), one MutationObserver on the whole document handles it:
+// any DOM change (nav re-render, panel swap, modal open) gets new
+// icons drawn automatically. createIcons() only touches elements that
+// still have the data-lucide attribute, so repeat calls are cheap.
+let lucideRaf = null;
+function scheduleLucideRender(){
+  if(lucideRaf) return;
+  lucideRaf = requestAnimationFrame(()=>{
+    lucideRaf = null;
+    if(window.lucide) window.lucide.createIcons();
+  });
+}
+new MutationObserver(scheduleLucideRender).observe(document.body, { childList: true, subtree: true });
+
 async function boot(){
   try {
     await loadCurrentUser();
@@ -1455,6 +2194,7 @@ async function boot(){
   }
   wireChrome();
   render();
+  scheduleLucideRender();
 }
 
 // i18n.js calls applyTranslations() on DOMContentLoaded for static

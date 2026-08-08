@@ -359,8 +359,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('hr-assign-btn')?.addEventListener('click', saveHomeroom);
     document.getElementById('ta-filter-teacher')?.addEventListener('change', (e) => loadTeacherAssignments(e.target.value));
     document.getElementById('mc-publish-btn')?.addEventListener('click', publishMarkCutoff);
-    document.getElementById('msg-recipient-type')?.addEventListener('change', loadMessageRecipients);
-    document.getElementById('msg-send-btn')?.addEventListener('click', sendAdminMessage);
+    document.getElementById('msg-new-btn')?.addEventListener('click', () => openComposeModal());
     document.getElementById('msg-box-inbox-btn')?.addEventListener('click', () => switchMessageBox('inbox'));
     document.getElementById('msg-box-sent-btn')?.addEventListener('click', () => switchMessageBox('sent'));
     document.getElementById('profile-signature-file')?.addEventListener('change', (e) => uploadAdminDocument(e, 'signature'));
@@ -2405,42 +2404,129 @@ async function sendAdminMessage() {
     });
     const data = await handleJsonResponse(res, t('sa_message_sent'));
     if (!data) return;
-    document.getElementById('msg-subject').value = '';
-    document.getElementById('msg-body').value = '';
+    closeModal();
     if (CURRENT_MESSAGE_BOX === 'sent') loadMessages('sent');
+}
+
+// Compose lives in a modal now (opened by the "New Message" button, or by
+// Reply pre-filled with the original sender) rather than a fixed widget,
+// so the list/detail panes underneath have the full page to themselves.
+function openComposeModal(prefill = {}) {
+    openModal(`
+        <h3 data-i18n="sa_compose_heading">${t('sa_compose_heading')}</h3>
+        <div class="form-row">
+            <div class="form-group">
+                <label data-i18n="sa_recipient_type_label">${t('sa_recipient_type_label')}</label>
+                <select id="msg-recipient-type">
+                    <option value="teachers" data-i18n="sa_recipient_teacher">${t('sa_recipient_teacher')}</option>
+                    <option value="school_admins" data-i18n="sa_recipient_admin">${t('sa_recipient_admin')}</option>
+                    <option value="zonal_admins" data-i18n="sa_recipient_zonal">${t('sa_recipient_zonal')}</option>
+                </select>
+            </div>
+            <div class="form-group" id="msg-recipient-picker-wrap">
+                <label data-i18n="sa_recipient_label">${t('sa_recipient_label')}</label>
+                <select id="msg-recipient-select"></select>
+            </div>
+        </div>
+        <div class="form-group">
+            <label data-i18n="sa_subject_label">${t('sa_subject_label')}</label>
+            <input type="text" id="msg-subject" />
+        </div>
+        <div class="form-group">
+            <label data-i18n="sa_message_label">${t('sa_message_label')}</label>
+            <textarea id="msg-body"></textarea>
+        </div>
+        <div class="form-actions">
+            <button class="btn btn-ghost" onclick="closeModal()" data-i18n="sa_close">${t('sa_close')}</button>
+            <button class="btn btn-accent" id="msg-send-btn" data-i18n="sa_send_btn">${t('sa_send_btn')}</button>
+        </div>
+    `, 'modal-box-wide');
+
+    document.getElementById('msg-recipient-type').addEventListener('change', loadMessageRecipients);
+    document.getElementById('msg-send-btn').addEventListener('click', sendAdminMessage);
+
+    loadMessageRecipients().then(() => {
+        if (prefill.recipient_type) {
+            document.getElementById('msg-recipient-type').value = prefill.recipient_type;
+            loadMessageRecipients();
+        }
+        const recipientSelect = document.getElementById('msg-recipient-select');
+        if (prefill.recipient_id) {
+            if (![...recipientSelect.options].some(o => o.value === String(prefill.recipient_id))) {
+                const opt = document.createElement('option');
+                opt.value = prefill.recipient_id;
+                opt.textContent = prefill.recipient_id;
+                recipientSelect.appendChild(opt);
+            }
+            recipientSelect.value = prefill.recipient_id;
+        }
+        if (prefill.subject) document.getElementById('msg-subject').value = prefill.subject;
+        document.getElementById('msg-body').focus();
+    });
 }
 
 function switchMessageBox(box) {
     CURRENT_MESSAGE_BOX = box;
-    document.getElementById('msg-box-inbox-btn').className = box === 'inbox' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
-    document.getElementById('msg-box-sent-btn').className = box === 'sent' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
-    document.getElementById('msg-box-teachers-btn').className = box === 'teachers' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
+    CURRENT_MESSAGES_CACHE = [];
+    SELECTED_MESSAGE_ID = null;
+    document.getElementById('msg-box-inbox-btn').classList.toggle('active', box === 'inbox');
+    document.getElementById('msg-box-sent-btn').classList.toggle('active', box === 'sent');
+    document.getElementById('msg-box-teachers-btn').classList.toggle('active', box === 'teachers');
+    document.getElementById('sa-message-detail').innerHTML = `<div class="msg-detail-empty" data-i18n="sa_select_message">${t('sa_select_message')}</div>`;
     if (box === 'teachers') loadContactThreads();
     else loadMessages(box);
 }
 
+let CURRENT_MESSAGES_CACHE = [];
+let SELECTED_MESSAGE_ID = null;
+
 async function loadMessages(box) {
     CURRENT_MESSAGE_BOX = box;
-    if (!document.getElementById('msg-recipient-select').innerHTML) loadMessageRecipients();
     const listEl = document.getElementById('sa-messages-list');
     listEl.innerHTML = `<div class="widget-loading">${t('sa_loading')}</div>`;
     const res = await apiFetch(`${API_BASE}/api/admin/messages?box=${box}`);
     if (!res.ok) { listEl.innerHTML = `<div class="widget-empty">${t('sa_load_error')}</div>`; return; }
     const rows = await res.json();
+    CURRENT_MESSAGES_CACHE = rows;
     if (rows.length === 0) { listEl.innerHTML = `<div class="widget-empty">${t('sa_no_data')}</div>`; return; }
-    listEl.innerHTML = rows.map(m => `
-        <div style="padding:12px 4px; border-bottom:1px solid var(--border); ${!m.is_read && box === 'inbox' ? 'font-weight:700;' : ''}">
-            <div style="display:flex; justify-content:space-between;">
-                <span>${escapeHtml(m.subject || t('sa_no_subject'))}</span>
-                <span class="form-hint">${formatEthDateTime(m.sent_at)}</span>
+    listEl.innerHTML = rows.map(m => {
+        const name = box === 'inbox' ? m.sender_id : m.recipient_id;
+        const unread = !m.is_read && box === 'inbox';
+        return `
+        <div class="msg-row${unread ? ' unread' : ''}" data-id="${m.message_id}" onclick="selectMessage(${m.message_id})">
+            <div class="msg-row-top">
+                <span class="msg-row-name">${escapeHtml(name || '—')}</span>
+                <span class="msg-row-date">${formatEthDateTime(m.sent_at)}</span>
             </div>
-            <div class="form-hint">${box === 'inbox' ? escapeHtml(m.sender_type) : escapeHtml(m.recipient_type)}</div>
-            <div>${escapeHtml(m.body)}</div>
-            <div style="margin-top:6px; display:flex; gap:8px;">
-                ${!m.is_read && box === 'inbox' ? `<button class="btn btn-sm btn-ghost" onclick="markMessageRead(${m.message_id})">${t('sa_mark_read')}</button>` : ''}
-                ${box === 'inbox' ? `<button class="btn btn-sm btn-primary" onclick="replyToMessage('${m.sender_type}', '${m.sender_id}', ${JSON.stringify(m.subject || '').replace(/"/g, '&quot;')})">${t('sa_reply_btn')}</button>` : ''}
-            </div>
-        </div>`).join('');
+            <div class="msg-row-subject">${escapeHtml(m.subject || t('sa_no_subject'))}</div>
+            <div class="msg-row-snippet">${escapeHtml(m.body)}</div>
+        </div>`;
+    }).join('');
+}
+
+// Renders the selected message into the right-hand detail pane, and marks
+// it as the visually-active row in the list on the left.
+function selectMessage(message_id) {
+    SELECTED_MESSAGE_ID = message_id;
+    document.querySelectorAll('#sa-messages-list .msg-row').forEach(row => {
+        row.classList.toggle('selected', Number(row.dataset.id) === Number(message_id));
+    });
+    const m = CURRENT_MESSAGES_CACHE.find(x => x.message_id === message_id);
+    const detail = document.getElementById('sa-message-detail');
+    if (!m) { detail.innerHTML = `<div class="msg-detail-empty">${t('sa_select_message')}</div>`; return; }
+    const box = CURRENT_MESSAGE_BOX;
+    const name = box === 'inbox' ? m.sender_id : m.recipient_id;
+    detail.innerHTML = `
+        <div class="msg-detail-header">
+            <h3 class="msg-detail-subject">${escapeHtml(m.subject || t('sa_no_subject'))}</h3>
+            <div class="msg-detail-meta">${escapeHtml(name || '—')} · ${formatEthDateTime(m.sent_at)}</div>
+        </div>
+        <div class="msg-detail-body">${escapeHtml(m.body)}</div>
+        <div class="msg-detail-actions">
+            ${!m.is_read && box === 'inbox' ? `<button class="btn btn-sm btn-ghost" onclick="markMessageRead(${m.message_id})">${t('sa_mark_read')}</button>` : ''}
+            ${box === 'inbox' ? `<button class="btn btn-sm btn-primary" onclick="replyToMessage('${m.sender_type}', '${m.sender_id}', ${JSON.stringify(m.subject || '').replace(/"/g, '&quot;')})">${t('sa_reply_btn')}</button>` : ''}
+        </div>`;
+    if (!m.is_read && box === 'inbox') markMessageRead(message_id);
 }
 
 // ---------- "From Teachers" — the Contact School threads teachers send
@@ -2454,12 +2540,13 @@ async function loadContactThreads() {
     const rows = await res.json();
     if (rows.length === 0) { listEl.innerHTML = `<div class="widget-empty">${t('sa_no_data')}</div>`; return; }
     listEl.innerHTML = rows.map(th => `
-        <div style="padding:12px 4px; border-bottom:1px solid var(--border); cursor:pointer; ${th.unread_count > 0 ? 'font-weight:700;' : ''}" onclick="openContactThreadModal(${th.thread_id})">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-                <span>${escapeHtml(th.subject)} ${th.unread_count > 0 ? `<span class="badge badge-rejected">${th.unread_count}</span>` : ''}</span>
-                <span class="form-hint">${formatEthDateTime(th.updated_at)}</span>
+        <div class="msg-row${th.unread_count > 0 ? ' unread' : ''}" onclick="openContactThreadModal(${th.thread_id})">
+            <div class="msg-row-top">
+                <span class="msg-row-name">${escapeHtml(th.teacher_name)}</span>
+                <span class="msg-row-date">${formatEthDateTime(th.updated_at)}</span>
             </div>
-            <div class="form-hint">${escapeHtml(th.teacher_name)} · ${escapeHtml(th.category)}
+            <div class="msg-row-subject">${escapeHtml(th.subject)} ${th.unread_count > 0 ? `<span class="badge badge-rejected">${th.unread_count}</span>` : ''}</div>
+            <div class="msg-row-snippet">${escapeHtml(th.category)} ·
                 <span class="badge ${th.status === 'Resolved' ? 'badge-closed' : 'badge-open'}">${escapeHtml(th.status)}</span>
             </div>
         </div>`).join('');
@@ -2518,40 +2605,24 @@ async function toggleContactThreadStatus(thread_id, status) {
     loadContactThreads();
 }
 
-// Anyone can reply to a message sent to them: this pre-fills the existing
-// compose widget with the original sender as the recipient (works for a
-// teacher, another school admin, or a zonal admin) and scrolls to it.
+// Anyone can reply to a message sent to them: this pre-fills the compose
+// modal with the original sender as the recipient (works for a teacher,
+// another school admin, or a zonal admin).
 async function replyToMessage(sender_type, sender_id, original_subject) {
-    if (!MESSAGE_RECIPIENTS_CACHE) await loadMessageRecipients();
-
-    const typeSelect = document.getElementById('msg-recipient-type');
-    typeSelect.value = sender_type;
-    await loadMessageRecipients();
-
-    const recipientSelect = document.getElementById('msg-recipient-select');
-    // Make sure the actual sender is selectable even if they aren't the
-    // zone's default "Zonal Admin Bridge" contact (e.g. a different
-    // zonal admin replied) or otherwise weren't already in the list.
-    if (![...recipientSelect.options].some(o => o.value === String(sender_id))) {
-        const opt = document.createElement('option');
-        opt.value = sender_id;
-        opt.textContent = sender_id;
-        recipientSelect.appendChild(opt);
-    }
-    recipientSelect.value = sender_id;
-
-    const subjectInput = document.getElementById('msg-subject');
-    subjectInput.value = original_subject ? `${t('sa_reply_subject_prefix')}${original_subject}` : '';
-
-    const bodyInput = document.getElementById('msg-body');
-    bodyInput.value = '';
-    bodyInput.focus();
-    bodyInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Reply opens the same compose modal as "New Message", pre-filled with
+    // the original sender as the recipient (works for a teacher, another
+    // school admin, or a zonal admin — see openComposeModal's prefill args).
+    openComposeModal({
+        recipient_type: sender_type,
+        recipient_id: sender_id,
+        subject: original_subject ? `${t('sa_reply_subject_prefix')}${original_subject}` : ''
+    });
 }
 
 async function markMessageRead(message_id) {
     await apiFetch(`${API_BASE}/api/admin/messages/${message_id}/read`, { method: 'POST' });
-    loadMessages(CURRENT_MESSAGE_BOX);
+    await loadMessages(CURRENT_MESSAGE_BOX);
+    if (SELECTED_MESSAGE_ID === message_id) selectMessage(message_id);
     refreshUnreadMessagesBadge();
 }
 

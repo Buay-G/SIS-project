@@ -432,25 +432,36 @@ async function getZonalSchoolIds(req) {
     return rows.map(r => r.id);
 }
 
-// Generates the next ID for a given prefix at a given school, drawing
-// from ONE shared sequence across teachers AND school_admins. That's
-// what lets a school admin account carry the same TCH-style ID/prefix a
-// teacher would: whichever table actually holds "TCH0007" for this
-// school, the number is only ever handed out once, so the two tables
-// never collide on the same ID even though neither one has its own
-// dedicated counter.
-async function getNextStaffId(school_id, prefix, digits = 5) {
+// Staff (teacher / school admin) IDs are intentionally a SEPARATE ID
+// space from schools.school_prefix — that prefix is student-only (see
+// the student_id generation further down, which still uses it as-is).
+// Every teacher and school admin, at every school, shares ONE global
+// "TCH" sequence instead — that's what makes a school admin show up as
+// just another TCH#### entry in the unified Teachers directory, since
+// school admins ARE teachers by general title. Bump STAFF_ID_DIGITS if
+// the zone ever needs more than 999 staff IDs; nothing else has to
+// change since the padding is read from here everywhere it's used.
+const STAFF_ID_PREFIX = 'TCH';
+const STAFF_ID_DIGITS = 3;
+
+// Drawing from one shared sequence across teachers AND school_admins is
+// what lets a school admin account carry the same TCH-style ID a
+// teacher would: whichever table actually holds "TCH007" right now, the
+// number is only ever handed out once, so the two tables never collide
+// on the same ID even though neither one has its own dedicated counter.
+// Global (not per-school) on purpose — see STAFF_ID_PREFIX above.
+async function getNextStaffId() {
     const [[teacherRows], [adminRows]] = await Promise.all([
-        pool.query('SELECT teacher_id AS id FROM teachers WHERE school_id = ? AND teacher_id LIKE ?', [school_id, `${prefix}%`]),
-        pool.query('SELECT admin_id AS id FROM school_admins WHERE school_id = ? AND admin_id LIKE ?', [school_id, `${prefix}%`])
+        pool.query('SELECT teacher_id AS id FROM teachers WHERE teacher_id LIKE ?', [`${STAFF_ID_PREFIX}%`]),
+        pool.query('SELECT admin_id AS id FROM school_admins WHERE admin_id LIKE ?', [`${STAFF_ID_PREFIX}%`])
     ]);
     const allIds = [...teacherRows, ...adminRows].map(r => r.id);
     let maxNumber = 0;
     for (const id of allIds) {
-        const numPart = parseInt(id.slice(prefix.length), 10);
+        const numPart = parseInt(id.slice(STAFF_ID_PREFIX.length), 10);
         if (!isNaN(numPart) && numPart > maxNumber) maxNumber = numPart;
     }
-    return `${prefix}${String(maxNumber + 1).padStart(digits, '0')}`;
+    return `${STAFF_ID_PREFIX}${String(maxNumber + 1).padStart(STAFF_ID_DIGITS, '0')}`;
 }
 
 // --- Zonal: schools & school admin accounts ---
@@ -544,28 +555,53 @@ app.delete('/api/zonal/subject-dictionary/:subject_dict_id', requireAuth, requir
 // directly. Restricted to Head of Education, or a Teacher Development Coordinator
 // Head of Education has delegated direct authority to — everyone else
 // (including a non-delegated Development Coordinator) has to go through
-// /api/zonal/proposals instead. The new account's ID shares the school's
-// TCH-style staff sequence with its teachers (see getNextStaffId) — it's
-// not a separate identity space, just a different table for a different
-// set of privileges.
-async function createSchoolAdminAccount({ school_id, first_name, middle_name, last_name, title, contact_number, email, password }) {
-    const [schoolRows] = await pool.query('SELECT id, school_prefix FROM schools WHERE id = ?', [school_id]);
+// /api/zonal/proposals instead. The new account's ID is minted from the
+// global TCH staff sequence it shares with teachers (see getNextStaffId)
+// — it's not a separate identity space, just a different table for a
+// different set of privileges.
+//
+// replace_admin_id is optional: pass the outgoing admin's admin_id when
+// this appointment is meant to REPLACE someone already holding a title
+// at the school (e.g. a new Principal replacing the current one). The
+// outgoing account is deactivated (is_active = FALSE) so they can no
+// longer log in, but their row/history is kept, not deleted — mirrors
+// how the teacher replace-with endpoint deactivates rather than drops
+// the outgoing teacher.
+// Requires this column if it doesn't exist yet:
+//   ALTER TABLE school_admins ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE;
+// and the login query (see /api/login) should reject is_active = FALSE
+// school_admins the same way it should for teachers.
+async function createSchoolAdminAccount({ school_id, first_name, middle_name, last_name, title, contact_number, email, password, replace_admin_id }) {
+    const [schoolRows] = await pool.query('SELECT id FROM schools WHERE id = ?', [school_id]);
     if (schoolRows.length === 0) throw Object.assign(new Error("School not found."), { status: 404 });
-    const { school_prefix } = schoolRows[0];
-    if (!school_prefix) throw Object.assign(new Error("This school has no ID prefix configured yet."), { status: 400 });
 
-    const admin_id = await getNextStaffId(school_id, school_prefix);
+    if (replace_admin_id) {
+        const [outgoingRows] = await pool.query(
+            'SELECT admin_id FROM school_admins WHERE admin_id = ? AND school_id = ?',
+            [replace_admin_id, school_id]
+        );
+        if (outgoingRows.length === 0) {
+            throw Object.assign(new Error("The school admin being replaced wasn't found at this school."), { status: 404 });
+        }
+    }
+
+    const admin_id = await getNextStaffId();
     const hashedPassword = await bcrypt.hash(password, 10);
     await pool.query(
         `INSERT INTO school_admins (admin_id, school_id, first_name, middle_name, last_name, title, contact_number, email, security_password)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [admin_id, school_id, first_name, middle_name || null, last_name, title, contact_number || null, email || null, hashedPassword]
     );
+
+    if (replace_admin_id) {
+        await pool.query('UPDATE school_admins SET is_active = FALSE WHERE admin_id = ? AND school_id = ?', [replace_admin_id, school_id]);
+    }
+
     return admin_id;
 }
 
 app.post('/api/zonal/admin-users', requireAuth, requireCanActInZone, async (req, res) => {
-    const { school_id, first_name, middle_name, last_name, title, contact_number, email, password } = req.body;
+    const { school_id, first_name, middle_name, last_name, title, contact_number, email, password, replace_admin_id } = req.body;
     if (!school_id || !first_name || !last_name || !title || !password) {
         return res.status(400).json({ error: "school_id, first_name, last_name, title, and password are required" });
     }
@@ -574,14 +610,17 @@ app.post('/api/zonal/admin-users', requireAuth, requireCanActInZone, async (req,
         if (!zoneSchoolIds.includes(Number(school_id))) {
             return res.status(403).json({ error: "That school isn't in your zone." });
         }
-        const admin_id = await createSchoolAdminAccount({ school_id, first_name, middle_name, last_name, title, contact_number, email, password });
-        res.json({ message: "School admin account created.", admin_id });
+        const admin_id = await createSchoolAdminAccount({ school_id, first_name, middle_name, last_name, title, contact_number, email, password, replace_admin_id: replace_admin_id || null });
+        res.json({ message: replace_admin_id ? "School admin account created and the outgoing admin was deactivated." : "School admin account created.", admin_id });
     } catch (err) {
         console.error("/api/zonal/admin-users error:", err);
         res.status(err.status || 500).json({ error: err.status ? err.message : "Could not create school admin account" });
     }
 });
 
+// is_active defaults to TRUE for existing rows (see migration note above
+// createSchoolAdminAccount) — filtering it out here means a replaced
+// admin drops out of the roster the same way a deactivated teacher does.
 app.get('/api/zonal/admin-users', requireAuth, requireZonalAdmin, async (req, res) => {
     try {
         const schoolIds = await getZonalSchoolIds(req);
@@ -590,7 +629,7 @@ app.get('/api/zonal/admin-users', requireAuth, requireZonalAdmin, async (req, re
             `SELECT a.admin_id, a.first_name, a.middle_name, a.last_name, a.title, a.school_id, s.school_name
              FROM school_admins a
              JOIN schools s ON s.id = a.school_id
-             WHERE a.school_id IN (?)
+             WHERE a.school_id IN (?) AND (a.is_active IS NULL OR a.is_active = TRUE)
              ORDER BY s.school_name, a.title`,
             [schoolIds]
         );
@@ -604,12 +643,10 @@ app.get('/api/zonal/admin-users', requireAuth, requireZonalAdmin, async (req, re
 // Hires a teacher directly — same authority restriction as appointing a
 // school admin (Head of Education, or a delegated Teacher Development Coordinator).
 async function createTeacherAccount({ school_id, first_name, middle_name, last_name, contact_number, email, password }) {
-    const [schoolRows] = await pool.query('SELECT id, school_prefix FROM schools WHERE id = ?', [school_id]);
+    const [schoolRows] = await pool.query('SELECT id FROM schools WHERE id = ?', [school_id]);
     if (schoolRows.length === 0) throw Object.assign(new Error("School not found."), { status: 404 });
-    const { school_prefix } = schoolRows[0];
-    if (!school_prefix) throw Object.assign(new Error("This school has no ID prefix configured yet."), { status: 400 });
 
-    const teacher_id = await getNextStaffId(school_id, school_prefix);
+    const teacher_id = await getNextStaffId();
     const hashedPassword = await bcrypt.hash(password, 10);
     await pool.query(
         `INSERT INTO teachers (teacher_id, school_id, first_name, middle_name, last_name, contact_number, email, security_password)
@@ -702,6 +739,70 @@ app.get('/api/zonal/incoming-teachers', requireAuth, requireZonalAdmin, async (r
     } catch (err) {
         console.error("/api/zonal/incoming-teachers error:", err);
         res.status(500).json({ error: "Could not load pushed teachers" });
+    }
+});
+
+// Full STAFF roster across every school this zonal_admins account can
+// see (getZonalSchoolIds — whole zone for Head of Education/Teacher
+// Development Coordinator, only the assigned schools for a Supervisor),
+// optionally narrowed to one school via ?school_id=. Backs the Teachers
+// nav page — a read-only directory, not the push-a-teacher workflow
+// above.
+//
+// School admins (Principal / Admin VP / Academic VP) are included
+// alongside classroom teachers here on purpose — they're "teachers" by
+// general title and share the same TCH ID sequence (see
+// getNextStaffId), so this is one unified staff directory rather than
+// two separate lists. `title` distinguishes them: a classroom teacher
+// always shows as "Teacher"; a school admin shows their actual title.
+// Deactivated staff (transferred/replaced out — is_active = FALSE) are
+// excluded, same as /api/zonal/admin-users.
+app.get('/api/zonal/teachers', requireAuth, requireZonalAdmin, async (req, res) => {
+    try {
+        const schoolIds = await getZonalSchoolIds(req);
+        if (schoolIds.length === 0) return res.json([]);
+        let scopedIds = schoolIds;
+        if (req.query.school_id) {
+            const wanted = Number(req.query.school_id);
+            if (!schoolIds.includes(wanted)) return res.status(403).json({ error: "That school isn't in your scope." });
+            scopedIds = [wanted];
+        }
+        const [teacherRows] = await pool.query(
+            `SELECT t.teacher_id AS staff_id, t.school_id, s.school_name, t.first_name, t.middle_name, t.last_name,
+                    t.contact_number, t.email, t.avatar_url, t.homeroom_class_level, t.homeroom_section, t.homeroom_stream,
+                    t.is_active, 'Teacher' AS title
+             FROM teachers t
+             JOIN schools s ON s.id = t.school_id
+             WHERE t.school_id IN (?) AND (t.is_active IS NULL OR t.is_active = TRUE)`,
+            [scopedIds]
+        );
+        const [adminRows] = await pool.query(
+            `SELECT a.admin_id AS staff_id, a.school_id, s.school_name, a.first_name, a.middle_name, a.last_name,
+                    a.contact_number, a.email, a.avatar_url, NULL AS homeroom_class_level, NULL AS homeroom_section, NULL AS homeroom_stream,
+                    a.is_active, a.title AS title
+             FROM school_admins a
+             JOIN schools s ON s.id = a.school_id
+             WHERE a.school_id IN (?) AND (a.is_active IS NULL OR a.is_active = TRUE)`,
+            [scopedIds]
+        );
+        const rows = [...teacherRows, ...adminRows].sort((a, b) =>
+            a.school_name.localeCompare(b.school_name) || a.first_name.localeCompare(b.first_name));
+
+        res.json(rows.map(r => ({
+            teacher_id: r.staff_id,
+            full_name: [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' '),
+            school_id: r.school_id,
+            school_name: r.school_name,
+            title: r.title,
+            contact_number: r.contact_number,
+            email: r.email,
+            avatar_url: r.avatar_url || null,
+            homeroom: r.homeroom_class_level ? `${r.homeroom_class_level}${r.homeroom_section ? '-' + r.homeroom_section : ''}` : null,
+            is_active: r.is_active == null ? true : !!r.is_active
+        })));
+    } catch (err) {
+        console.error("/api/zonal/teachers error:", err);
+        res.status(500).json({ error: "Could not load staff directory" });
     }
 });
 
@@ -917,6 +1018,216 @@ app.get('/api/zonal/performance', requireAuth, requireZonalAdmin, async (req, re
     } catch (err) {
         console.error("/api/zonal/performance error:", err);
         res.status(500).json({ error: "Could not load performance report" });
+    }
+});
+
+// --- Zonal: School Performance (bucketed low / average / good /
+// excellence), for the new "School Performance" nav page. Available to
+// all three zonal_admins titles (Head of Education, Teacher Development
+// Coordinator, Supervisor) — everyone sees the bucket a school falls
+// into and the pie-chart split across the zone/assignment, but only a
+// Supervisor is allowed to open a school and see exactly what's
+// dragging it down (see the /details route below, which is Supervisor-
+// only). Score is a weighted blend of three signals already available
+// from existing tables:
+//   - teacher punctuality (period_attendance_log.teacher_present over
+//     the last 14 days, same window /api/zonal/performance uses)
+//   - marks-upload timeliness (share of teachers whose last marks
+//     upload was within 14 days)
+//   - staffing coverage (share of active class_sections that have at
+//     least one teacher_assignments row — an empty section means "we
+//     don't have a teacher" for that class)
+// Buckets: excellence >=85, good 70-84, average 50-69, low <50.
+async function computeSchoolPerformance(schoolIds) {
+    if (schoolIds.length === 0) return [];
+    const since = toDateOnly(new Date(Date.now() - 14 * 86400000));
+
+    const [schools] = await pool.query('SELECT id, school_name FROM schools WHERE id IN (?)', [schoolIds]);
+    const [teachers] = await pool.query('SELECT teacher_id, school_id, first_name, last_name FROM teachers WHERE school_id IN (?)', [schoolIds]);
+    const [attendance] = await pool.query(
+        `SELECT pal.school_id, ct.teacher_id, pal.teacher_present
+         FROM period_attendance_log pal
+         JOIN class_timetable ct ON ct.timetable_id = pal.timetable_id
+         WHERE pal.school_id IN (?) AND pal.log_date >= ?`,
+        [schoolIds, since]
+    );
+    const [lastMarks] = await pool.query(
+        `SELECT ta.teacher_id, ta.school_id, MAX(m.uploaded_at) AS last_uploaded
+         FROM marks m
+         JOIN students st ON st.student_id = m.student_id AND st.school_id = m.school_id
+         JOIN teacher_assignments ta ON ta.subject_id = m.subject_id AND ta.school_id = m.school_id
+             AND ta.class_level = st.class_level AND ta.section = st.section AND ta.stream = st.stream
+         WHERE m.school_id IN (?)
+         GROUP BY ta.teacher_id, ta.school_id`,
+        [schoolIds]
+    ).catch(() => [[]]);
+    const [sections] = await pool.query(
+        `SELECT id, school_id, class_level, stream, section_name FROM class_sections WHERE school_id IN (?) AND is_active = 1`,
+        [schoolIds]
+    ).catch(() => [[]]);
+    const [assignedSections] = await pool.query(
+        `SELECT DISTINCT school_id, class_level, section, stream FROM teacher_assignments WHERE school_id IN (?)`,
+        [schoolIds]
+    ).catch(() => [[]]);
+
+    const assignedKey = new Set(assignedSections.map(a => `${a.school_id}|${a.class_level}|${a.section}|${a.stream || ''}`));
+
+    const bySchool = {};
+    for (const s of schools) bySchool[s.id] = { school_id: s.id, school_name: s.school_name, teachers: [], attendance: {}, lastUpload: {}, sections: [] };
+    for (const t of teachers) if (bySchool[t.school_id]) bySchool[t.school_id].teachers.push(t);
+    for (const row of attendance) {
+        const b = bySchool[row.school_id]; if (!b) continue;
+        if (!b.attendance[row.teacher_id]) b.attendance[row.teacher_id] = { present: 0, total: 0 };
+        b.attendance[row.teacher_id].total++;
+        if (row.teacher_present) b.attendance[row.teacher_id].present++;
+    }
+    for (const row of lastMarks) { const b = bySchool[row.school_id]; if (b) b.lastUpload[row.teacher_id] = row.last_uploaded; }
+    for (const sec of sections) if (bySchool[sec.school_id]) bySchool[sec.school_id].sections.push(sec);
+
+    return Object.values(bySchool).map(b => {
+        const teacherRows = b.teachers.map(t => {
+            const att = b.attendance[t.teacher_id] || { present: 0, total: 0 };
+            const lastUpload = b.lastUpload[t.teacher_id] || null;
+            const daysSince = lastUpload ? Math.floor((Date.now() - new Date(lastUpload).getTime()) / 86400000) : null;
+            return {
+                teacher_id: t.teacher_id,
+                full_name: `${t.first_name} ${t.last_name}`,
+                attendance_rate: att.total > 0 ? att.present / att.total : null,
+                days_since_marks_upload: daysSince
+            };
+        });
+        const withAttendance = teacherRows.filter(t => t.attendance_rate != null);
+        const teacherAttendanceScore = withAttendance.length
+            ? withAttendance.reduce((sum, t) => sum + t.attendance_rate, 0) / withAttendance.length
+            : null;
+        const timelyMarks = teacherRows.filter(t => t.days_since_marks_upload != null && t.days_since_marks_upload <= 14).length;
+        const marksScore = teacherRows.length ? timelyMarks / teacherRows.length : null;
+        const missingSections = b.sections.filter(sec => !assignedKey.has(`${b.school_id}|${sec.class_level}|${sec.section_name}|${sec.stream || ''}`));
+        const coverageScore = b.sections.length ? 1 - (missingSections.length / b.sections.length) : null;
+
+        const parts = [teacherAttendanceScore, marksScore, coverageScore].filter(v => v != null);
+        const weights = { 0: 0.5, 1: 0.3, 2: 0.2 };
+        let score;
+        if (parts.length === 0) score = null;
+        else {
+            let weightedSum = 0, weightTotal = 0;
+            [teacherAttendanceScore, marksScore, coverageScore].forEach((v, i) => {
+                if (v != null) { weightedSum += v * weights[i]; weightTotal += weights[i]; }
+            });
+            score = Math.round((weightedSum / weightTotal) * 100);
+        }
+        const category = score == null ? 'no_data' : score >= 85 ? 'excellence' : score >= 70 ? 'good' : score >= 50 ? 'average' : 'low';
+
+        return {
+            school_id: b.school_id,
+            school_name: b.school_name,
+            score,
+            category,
+            teacher_count: teacherRows.length,
+            flagged_teachers: teacherRows.filter(t => (t.attendance_rate != null && t.attendance_rate < 0.8) || t.days_since_marks_upload == null || t.days_since_marks_upload > 14).length,
+            missing_teacher_sections: missingSections.length
+        };
+    });
+}
+
+app.get('/api/zonal/school-performance', requireAuth, requireZonalAdmin, async (req, res) => {
+    try {
+        const schoolIds = await getZonalSchoolIds(req);
+        const rows = await computeSchoolPerformance(schoolIds);
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/zonal/school-performance error:", err);
+        res.status(500).json({ error: "Could not load school performance" });
+    }
+});
+
+// Drill-down for exactly where a school's performance problem is —
+// Supervisor-only per the spec (Head of Education/Teacher Development
+// Coordinator see the bucket on the summary page but not this level of
+// detail). Breaks the score down into the three underlying signals plus
+// the actual list of flagged teachers and understaffed sections, so a
+// Supervisor can see whether it's a punctuality problem, a marks-upload
+// problem, or simply "there's no teacher for this class."
+app.get('/api/zonal/school-performance/:school_id/details', requireAuth, requireZonalAdmin, async (req, res) => {
+    if (req.user.title !== 'Supervisor') {
+        return res.status(403).json({ error: "Only a Supervisor can view the detailed performance breakdown for a school." });
+    }
+    try {
+        const schoolIds = await getZonalSchoolIds(req);
+        const wanted = Number(req.params.school_id);
+        if (!schoolIds.includes(wanted)) return res.status(403).json({ error: "That school isn't in your scope." });
+
+        const since = toDateOnly(new Date(Date.now() - 14 * 86400000));
+        const [[school]] = await pool.query('SELECT id, school_name FROM schools WHERE id = ?', [wanted]);
+        const [teachers] = await pool.query('SELECT teacher_id, first_name, last_name FROM teachers WHERE school_id = ?', [wanted]);
+        const [attendance] = await pool.query(
+            `SELECT ct.teacher_id, pal.teacher_present
+             FROM period_attendance_log pal
+             JOIN class_timetable ct ON ct.timetable_id = pal.timetable_id
+             WHERE pal.school_id = ? AND pal.log_date >= ?`,
+            [wanted, since]
+        );
+        const [lastMarks] = await pool.query(
+            `SELECT ta.teacher_id, MAX(m.uploaded_at) AS last_uploaded
+             FROM marks m
+             JOIN students st ON st.student_id = m.student_id AND st.school_id = m.school_id
+             JOIN teacher_assignments ta ON ta.subject_id = m.subject_id AND ta.school_id = m.school_id
+                 AND ta.class_level = st.class_level AND ta.section = st.section AND ta.stream = st.stream
+             WHERE m.school_id = ?
+             GROUP BY ta.teacher_id`,
+            [wanted]
+        ).catch(() => [[]]);
+        const [sections] = await pool.query(
+            `SELECT id, class_level, stream, section_name FROM class_sections WHERE school_id = ? AND is_active = 1`, [wanted]
+        ).catch(() => [[]]);
+        const [assigned] = await pool.query(
+            `SELECT DISTINCT class_level, section, stream FROM teacher_assignments WHERE school_id = ?`, [wanted]
+        ).catch(() => [[]]);
+        const [studentTotals] = await pool.query(
+            `SELECT COUNT(*) AS total, SUM(status = 'Dropped') AS dropped FROM students WHERE school_id = ?`, [wanted]
+        ).catch(() => [[{ total: 0, dropped: 0 }]]);
+
+        const attendanceByTeacher = {};
+        for (const row of attendance) {
+            if (!attendanceByTeacher[row.teacher_id]) attendanceByTeacher[row.teacher_id] = { present: 0, total: 0 };
+            attendanceByTeacher[row.teacher_id].total++;
+            if (row.teacher_present) attendanceByTeacher[row.teacher_id].present++;
+        }
+        const lastUploadByTeacher = {};
+        for (const row of lastMarks) lastUploadByTeacher[row.teacher_id] = row.last_uploaded;
+        const assignedKey = new Set(assigned.map(a => `${a.class_level}|${a.section}|${a.stream || ''}`));
+
+        const teacherRows = teachers.map(t => {
+            const att = attendanceByTeacher[t.teacher_id] || { present: 0, total: 0 };
+            const lastUpload = lastUploadByTeacher[t.teacher_id] || null;
+            const daysSince = lastUpload ? Math.floor((Date.now() - new Date(lastUpload).getTime()) / 86400000) : null;
+            return {
+                teacher_id: t.teacher_id,
+                full_name: `${t.first_name} ${t.last_name}`,
+                attendance_rate: att.total > 0 ? Math.round((att.present / att.total) * 100) : null,
+                days_since_marks_upload: daysSince,
+                punctuality_issue: att.total > 0 && (att.present / att.total) < 0.8,
+                marks_issue: daysSince == null || daysSince > 14
+            };
+        });
+        const missingSections = sections
+            .filter(sec => !assignedKey.has(`${sec.class_level}|${sec.section_name}|${sec.stream || ''}`))
+            .map(sec => ({ class_level: sec.class_level, section: sec.section_name, stream: sec.stream }));
+
+        const total = studentTotals[0]?.total || 0;
+        const dropped = studentTotals[0]?.dropped || 0;
+
+        res.json({
+            school_id: wanted,
+            school_name: school?.school_name || '—',
+            teacher_punctuality: teacherRows.filter(t => t.punctuality_issue),
+            marks_overdue: teacherRows.filter(t => t.marks_issue),
+            no_teacher_assigned: missingSections,
+            student_summary: { total_students: total, dropped_out: dropped, dropout_rate: total ? Math.round((dropped / total) * 1000) / 10 : null }
+        });
+    } catch (err) {
+        console.error("/api/zonal/school-performance/:school_id/details error:", err);
+        res.status(500).json({ error: "Could not load the performance breakdown for this school" });
     }
 });
 
@@ -1752,10 +2063,14 @@ async function uploadZonalDocument(req, res, column, fieldName) {
 app.get('/api/zonal/profile-documents', requireAuth, requireZonalAdmin, async (req, res) => {
     try {
         const [rows] = await pool.query(
-            'SELECT signature_url, stamp_url FROM zonal_admins WHERE admin_id = ?',
+            'SELECT signature_url, stamp_url, id_photo_url FROM zonal_admins WHERE admin_id = ?',
             [req.user.user_id]
         );
-        res.json({ signature_url: rows[0]?.signature_url || null, stamp_url: rows[0]?.stamp_url || null });
+        res.json({
+            signature_url: rows[0]?.signature_url || null,
+            stamp_url: rows[0]?.stamp_url || null,
+            id_photo_url: rows[0]?.id_photo_url || null
+        });
     } catch (err) {
         console.error("/api/zonal/profile-documents error:", err);
         res.status(500).json({ error: "Could not load your signature and stamp" });
@@ -1777,6 +2092,64 @@ app.post('/api/zonal/upload-stamp', requireAuth, requireZonalAdmin, handleUpload
     } catch (err) {
         console.error("/api/zonal/upload-stamp error:", err);
         res.status(500).json({ error: "Could not upload stamp" });
+    }
+});
+
+// ID photo — same self-serve pattern as signature/stamp above, but
+// deliberately NOT gated to Head of Education/Teacher Development
+// Coordinator only (unlike uploadZonalDocument, which 403s a
+// Supervisor) since an ID photo is just part of any account's Profile
+// Settings, not a document-authentication power.
+// Requires this column if it doesn't exist yet:
+//   ALTER TABLE zonal_admins ADD COLUMN id_photo_url VARCHAR(255) NULL;
+app.post('/api/zonal/upload-id-photo', requireAuth, requireZonalAdmin, handleUploadError(upload.single('id_photo')), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+        if (!req.file.mimetype.startsWith('image/')) {
+            fs.unlink(req.file.path, () => { });
+            return res.status(400).json({ error: "ID photo must be an image file (JPEG or PNG)." });
+        }
+        const converted = await convertHeicIfNeeded(req.file);
+        if (converted) req.file = converted;
+        const filePath = `/uploads/${req.file.filename}`;
+        await pool.query('UPDATE zonal_admins SET id_photo_url = ? WHERE admin_id = ?', [filePath, req.user.user_id]);
+        res.json({ id_photo_url: filePath });
+    } catch (err) {
+        console.error("/api/zonal/upload-id-photo error:", err);
+        res.status(500).json({ error: "Could not upload ID photo" });
+    }
+});
+
+// Account Settings — display name and password, self-serve for any
+// zonal_admins title. current_password is required to change the
+// password (not to change the name alone), same "prove you're still
+// you" pattern used elsewhere in this file for security_password
+// changes.
+app.post('/api/zonal/account', requireAuth, requireZonalAdmin, async (req, res) => {
+    const { first_name, last_name, current_password, new_password } = req.body;
+    try {
+        if (first_name || last_name) {
+            const [rows] = await pool.query('SELECT first_name, last_name FROM zonal_admins WHERE admin_id = ?', [req.user.user_id]);
+            if (rows.length === 0) return res.status(404).json({ error: "Account not found." });
+            await pool.query(
+                'UPDATE zonal_admins SET first_name = ?, last_name = ? WHERE admin_id = ?',
+                [first_name?.trim() || rows[0].first_name, last_name?.trim() || rows[0].last_name, req.user.user_id]
+            );
+        }
+        if (new_password) {
+            if (!current_password) return res.status(400).json({ error: "Enter your current password to set a new one." });
+            const [rows] = await pool.query('SELECT password FROM zonal_admins WHERE admin_id = ?', [req.user.user_id]);
+            if (rows.length === 0) return res.status(404).json({ error: "Account not found." });
+            const matches = await bcrypt.compare(current_password, rows[0].password);
+            if (!matches) return res.status(401).json({ error: "Current password is incorrect." });
+            if (new_password.length < 6) return res.status(400).json({ error: "New password must be at least 6 characters." });
+            const hashed = await bcrypt.hash(new_password, 10);
+            await pool.query('UPDATE zonal_admins SET password = ? WHERE admin_id = ?', [hashed, req.user.user_id]);
+        }
+        res.json({ message: "Account updated." });
+    } catch (err) {
+        console.error("/api/zonal/account error:", err);
+        res.status(500).json({ error: "Could not update your account" });
     }
 });
 
@@ -1819,7 +2192,7 @@ app.get('/api/student/me', requireAuth, requireRole('students'), async (req, res
         // uploaded a signature — the frontend should treat that as "no
         // signature available" rather than guessing a filename.
         const [principalRows] = await pool.query(
-            `SELECT signature_url, stamp_url FROM school_admins WHERE school_id = ? AND title = 'Principal' LIMIT 1`,
+            `SELECT signature_url, stamp_url FROM school_admins WHERE school_id = ? AND title = 'Principal' AND (is_active IS NULL OR is_active = TRUE) LIMIT 1`,
             [req.user.school_id]
         );
         profile.principal_signature_url = principalRows[0]?.signature_url || null;
@@ -2849,7 +3222,7 @@ function schoolDaysBetween(startStr, endStr) {
 // just over a different [since, until] window, so the numbers a Principal
 // sees live and the numbers frozen into last semester's archive are always
 // computed the same way.
-async function computeSchoolPerformance(school_id, since, today, currentTerm) {
+async function computeSchoolPerformanceDetail(school_id, since, today, currentTerm) {
     const schoolDays30 = schoolDaysBetween(since, today);
 
     // (1) Academic performance
@@ -2971,7 +3344,7 @@ app.get('/api/principal/school-performance', requireAuth, requirePrincipal, asyn
         const termStartDate = await getTermStartDate(req.user.school_id);
         const since = (termStartDate && termStartDate > rawSince) ? termStartDate : rawSince;
 
-        const snapshot = await computeSchoolPerformance(req.user.school_id, since, today, currentTerm);
+        const snapshot = await computeSchoolPerformanceDetail(req.user.school_id, since, today, currentTerm);
         res.json(snapshot);
     } catch (err) {
         console.error("/api/principal/school-performance error:", err);
@@ -6835,7 +7208,7 @@ async function buildReportCardForStudent(student_id, school_id, req) {
     // from (see /api/student/me). Null-safe: an unfilled Principal row,
     // or one with no signature uploaded yet, just leaves the line blank.
     const [principalRows] = await pool.query(
-        `SELECT first_name, middle_name, last_name, signature_url, stamp_url FROM school_admins WHERE school_id = ? AND title = 'Principal' LIMIT 1`,
+        `SELECT first_name, middle_name, last_name, signature_url, stamp_url FROM school_admins WHERE school_id = ? AND title = 'Principal' AND (is_active IS NULL OR is_active = TRUE) LIMIT 1`,
         [school_id]
     );
     const principalName = principalRows.length > 0
@@ -11154,7 +11527,7 @@ async function archiveSchoolPerformance(school_id, term, termStartDate) {
     // the live widget uses), so what gets frozen is "all of this semester
     // so far", not just its last 30 days.
     const since = termStartDate || toDateOnly(new Date(Date.now() - 30 * 86400000));
-    const snapshot = await computeSchoolPerformance(school_id, since, today, term);
+    const snapshot = await computeSchoolPerformanceDetail(school_id, since, today, term);
     await pool.query(
         `INSERT INTO semester_archives (school_id, term, term_start_date, window_since, window_until, snapshot)
          VALUES (?, ?, ?, ?, ?, ?)`,
@@ -11489,6 +11862,13 @@ app.post('/api/login', async (req, res) => {
         }
 
         if (!user) return res.status(401).json({ error: "ID not found" });
+
+        // A deactivated teacher (transferred/replaced out) or school admin
+        // (replaced out — see replace_admin_id on createSchoolAdminAccount)
+        // keeps their row for history, but can no longer sign in.
+        if ((userRole === 'teachers' || userRole === 'school_admins') && user.is_active === 0) {
+            return res.status(401).json({ error: "This account has been deactivated. Contact your zonal office." });
+        }
 
         if (!user.security_password) {
             console.error(`Login error: ${userRole} record for id ${id} has no security_password set`);
@@ -12631,6 +13011,98 @@ app.post('/api/admin/messages/:id/read', requireAuth, requireRole('school_admins
     }
 });
 
+// --- Zonal side of the same admin_messages hub above. A zonal_admins
+// account isn't scoped to one school_id the way school_admins is, so
+// (unlike the school_admins routes) these are NOT filtered by
+// req.user.school_id — recipient_id alone identifies the conversation,
+// and getZonalSchoolIds() is used instead to keep compose scoped to
+// schools this account can actually see. Only "School Admin ↔ zonal
+// admin" is wired here (per the spec: "receive messages from school
+// admin and respond") — zonal-to-zonal messaging isn't part of this.
+app.get('/api/zonal/messages', requireAuth, requireZonalAdmin, async (req, res) => {
+    const box = req.query.box === 'sent' ? 'sent' : 'inbox';
+    try {
+        const [rows] = box === 'sent'
+            ? await pool.query(
+                `SELECT m.message_id, m.school_id, s.school_name, m.recipient_type, m.recipient_id, m.subject, m.body, m.is_read, m.sent_at
+                 FROM admin_messages m JOIN schools s ON s.id = m.school_id
+                 WHERE m.sender_type = 'zonal_admins' AND m.sender_id = ?
+                 ORDER BY m.sent_at DESC`,
+                [req.user.user_id])
+            : await pool.query(
+                `SELECT m.message_id, m.school_id, s.school_name, m.sender_type, m.sender_id, m.subject, m.body, m.is_read, m.sent_at
+                 FROM admin_messages m JOIN schools s ON s.id = m.school_id
+                 WHERE m.recipient_type = 'zonal_admins' AND m.recipient_id = ?
+                 ORDER BY m.sent_at DESC`,
+                [req.user.user_id]);
+        if (box === 'inbox') {
+            const senderIds = [...new Set(rows.filter(r => r.sender_type === 'school_admins').map(r => r.sender_id))];
+            let names = {};
+            if (senderIds.length) {
+                const [admins] = await pool.query('SELECT admin_id, first_name, last_name FROM school_admins WHERE admin_id IN (?)', [senderIds]);
+                names = Object.fromEntries(admins.map(a => [a.admin_id, [a.first_name, a.last_name].filter(Boolean).join(' ')]));
+            }
+            return res.json(rows.map(r => ({ ...r, sender_name: names[r.sender_id] || r.sender_id })));
+        }
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/zonal/messages GET error:", err);
+        res.status(500).json({ error: "Could not load messages" });
+    }
+});
+
+app.get('/api/zonal/messages/recipients', requireAuth, requireZonalAdmin, async (req, res) => {
+    try {
+        const schoolIds = await getZonalSchoolIds(req);
+        if (schoolIds.length === 0) return res.json([]);
+        const [admins] = await pool.query(
+            `SELECT admin_id AS id, school_id, first_name, last_name, title FROM school_admins WHERE school_id IN (?)`,
+            [schoolIds]
+        );
+        res.json(admins.map(a => ({ id: a.id, school_id: a.school_id, full_name: [a.first_name, a.last_name].filter(Boolean).join(' '), title: a.title })));
+    } catch (err) {
+        console.error("/api/zonal/messages/recipients error:", err);
+        res.status(500).json({ error: "Could not load recipients" });
+    }
+});
+
+app.post('/api/zonal/messages', requireAuth, requireZonalAdmin, async (req, res) => {
+    const { school_id, recipient_id, subject, body } = req.body;
+    if (!school_id || !recipient_id || !body?.trim()) {
+        return res.status(400).json({ error: "school_id, recipient_id, and body are required" });
+    }
+    try {
+        const schoolIds = await getZonalSchoolIds(req);
+        if (!schoolIds.includes(Number(school_id))) return res.status(403).json({ error: "That school isn't in your scope." });
+        const [r] = await pool.query('SELECT admin_id FROM school_admins WHERE admin_id = ? AND school_id = ?', [recipient_id, school_id]);
+        if (r.length === 0) return res.status(404).json({ error: "Admin not found in that school." });
+
+        await pool.query(
+            `INSERT INTO admin_messages (school_id, sender_type, sender_id, recipient_type, recipient_id, subject, body)
+             VALUES (?, 'zonal_admins', ?, 'school_admins', ?, ?, ?)`,
+            [school_id, req.user.user_id, recipient_id, subject?.trim() || null, body.trim()]
+        );
+        res.json({ message: "Message sent." });
+    } catch (err) {
+        console.error("/api/zonal/messages POST error:", err);
+        res.status(500).json({ error: "Could not send message" });
+    }
+});
+
+app.post('/api/zonal/messages/:id/read', requireAuth, requireZonalAdmin, async (req, res) => {
+    try {
+        const [result] = await pool.query(
+            `UPDATE admin_messages SET is_read = 1 WHERE message_id = ? AND recipient_type = 'zonal_admins' AND recipient_id = ?`,
+            [req.params.id, req.user.user_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Message not found." });
+        res.json({ message: "Marked as read." });
+    } catch (err) {
+        console.error("/api/zonal/messages/:id/read error:", err);
+        res.status(500).json({ error: "Could not update message" });
+    }
+});
+
 // ==========================================================
 // Homeroom: flag a student as dropped out (pending Academic VP review)
 // ==========================================================
@@ -12971,7 +13443,7 @@ app.get('/api/principal/analysis-report/pdf', requireAuth, requirePrincipal, asy
             [req.user.school_id]
         );
         const [[principal]] = await pool.query(
-            `SELECT first_name, middle_name, last_name, signature_url FROM school_admins WHERE school_id = ? AND title = 'Principal' LIMIT 1`,
+            `SELECT first_name, middle_name, last_name, signature_url FROM school_admins WHERE school_id = ? AND title = 'Principal' AND (is_active IS NULL OR is_active = TRUE) LIMIT 1`,
             [req.user.school_id]
         );
         const principalName = principal ? [principal.first_name, principal.middle_name, principal.last_name].filter(Boolean).join(' ') : '';

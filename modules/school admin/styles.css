@@ -704,6 +704,60 @@ a { color: inherit; }
     flex-wrap: wrap;
 }
 
+/* =========================================================
+   MESSAGES — two-pane inbox/detail layout (list on the left with
+   Inbox/Sent/From Teachers tabs + a New Message button up top, the
+   selected message's full text on the right).
+   ========================================================= */
+.msg-page-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.msg-page-header h2 { margin: 0; }
+.msg-page-header .btn svg { flex-shrink: 0; }
+.msg-page-header .btn { display: inline-flex; align-items: center; gap: 6px; }
+
+.msg-shell { display: flex; height: 620px; overflow: hidden; }
+.msg-list-pane { width: 340px; flex-shrink: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); min-width: 0; }
+.msg-tabs { display: flex; gap: 18px; padding: 14px 16px 0; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.msg-tab {
+    background: none;
+    border: none;
+    padding: 0 2px 12px;
+    font-weight: 700;
+    font-size: 0.82rem;
+    color: var(--muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    display: inline-flex;
+    align-items: center;
+}
+.msg-tab:hover { color: var(--primary); }
+.msg-tab.active { color: var(--primary); border-bottom-color: var(--accent); }
+
+.msg-list { flex: 1; overflow-y: auto; min-height: 0; }
+.msg-row { padding: 12px 16px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.msg-row:hover { background: #f7faf8; }
+.msg-row.selected { background: var(--info-bg); }
+.msg-row.unread .msg-row-name, .msg-row.unread .msg-row-subject { font-weight: 800; }
+.msg-row-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.msg-row-name { font-weight: 700; font-size: 0.86rem; color: var(--text); }
+.msg-row-date { font-size: 0.68rem; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+.msg-row-subject { font-size: 0.8rem; color: var(--text); margin-top: 2px; }
+.msg-row-snippet { font-size: 0.76rem; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.msg-detail-pane { flex: 1; display: flex; flex-direction: column; padding: 26px 28px; overflow-y: auto; min-width: 0; }
+.msg-detail-empty { margin: auto; color: var(--muted); font-size: 0.9rem; text-align: center; }
+.msg-detail-header { border-bottom: 1px solid var(--border); padding-bottom: 14px; margin-bottom: 16px; }
+.msg-detail-subject { font-size: 1.15rem; font-weight: 800; margin: 0 0 6px; color: var(--text); }
+.msg-detail-meta { font-size: 0.8rem; color: var(--muted); }
+.msg-detail-body { white-space: pre-wrap; line-height: 1.65; font-size: 0.92rem; color: var(--text); flex: 1; }
+.msg-detail-actions { margin-top: 22px; display: flex; gap: 8px; flex-shrink: 0; }
+
+@media (max-width: 760px) {
+    .msg-shell { flex-direction: column; height: auto; max-height: none; }
+    .msg-list-pane { width: 100%; border-right: none; border-bottom: 1px solid var(--border); }
+    .msg-list { max-height: 320px; }
+    .msg-detail-pane { min-height: 260px; }
+}
+
 /* Standard CR-80 card size (2.125in x 3.375in — the real physical
    dimensions of a school/ID card, same as a credit card, portrait
    orientation), so the printed card is true-to-size instead of a

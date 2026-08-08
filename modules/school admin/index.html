@@ -732,6 +732,30 @@
           </li>
           <li>
             <a
+              href="/hub.html"
+              class="nav-link"
+              data-titles="Principal,Admin VP,Academic VP"
+            >
+              <span class="nav-icon"
+                ><svg
+                  class="lucide-icon"
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="m3 11 18-5v12L3 14v-3z" />
+                  <path d="M11.6 16.8a3 3 0 1 1-5.8-1.6" /></svg></span
+              ><span data-i18n="nav_hub">School Hub</span></a
+            >
+          </li>
+          <li>
+            <a
               href="#"
               class="nav-link"
               data-page="profile"
@@ -2297,89 +2321,82 @@
 
         <!-- ===================== MESSAGES (Universal Contact & Messaging Hub) ===================== -->
         <section class="page-content" id="page-messages">
-          <h2 data-i18n="sa_nav_messages">Messages</h2>
+          <div class="msg-page-header">
+            <h2 style="display: flex; align-items: center; gap: 10px">
+              <svg
+                class="lucide-icon"
+                xmlns="http://www.w3.org/2000/svg"
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <rect x="2" y="4" width="20" height="16" rx="2" />
+                <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" /></svg
+              ><span data-i18n="sa_nav_messages">Messages</span>
+            </h2>
+            <button class="btn btn-accent btn-sm" id="msg-new-btn">
+              <svg
+                class="lucide-icon"
+                xmlns="http://www.w3.org/2000/svg"
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path
+                  d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"
+                /></svg
+              ><span data-i18n="sa_new_message_btn">New Message</span>
+            </button>
+          </div>
           <p class="page-subtitle" data-i18n="sa_messages_sub">
             Message teachers, fellow admins in your school, or escalate to your
             Zonal Admin. Messages teachers send to your role show up under "From
             Teachers".
           </p>
 
-          <div class="widget" style="margin-bottom: 18px; max-width: 640px">
-            <h3 data-i18n="sa_compose_heading">Compose</h3>
-            <div class="form-row">
-              <div class="form-group">
-                <label data-i18n="sa_recipient_type_label">Send To</label>
-                <select id="msg-recipient-type">
-                  <option value="teachers" data-i18n="sa_recipient_teacher">
-                    A Teacher
-                  </option>
-                  <option value="school_admins" data-i18n="sa_recipient_admin">
-                    Another Admin
-                  </option>
-                  <option value="zonal_admins" data-i18n="sa_recipient_zonal">
-                    Zonal Admin Bridge
-                  </option>
-                </select>
+          <div class="widget msg-shell" style="padding: 0">
+            <div class="msg-list-pane">
+              <div class="msg-tabs">
+                <button
+                  class="msg-tab active"
+                  id="msg-box-inbox-btn"
+                  data-i18n="sa_inbox_btn"
+                >
+                  Inbox
+                </button>
+                <button
+                  class="msg-tab"
+                  id="msg-box-sent-btn"
+                  data-i18n="sa_sent_btn"
+                >
+                  Sent
+                </button>
+                <button class="msg-tab" id="msg-box-teachers-btn">
+                  <span data-i18n="sa_teacher_requests_btn">From Teachers</span>
+                  <span
+                    class="badge-dot"
+                    id="sa-teacher-threads-badge"
+                    style="display: none; position: static; margin-left: 6px"
+                  ></span>
+                </button>
               </div>
-              <div class="form-group" id="msg-recipient-picker-wrap">
-                <label data-i18n="sa_recipient_label">Recipient</label>
-                <select id="msg-recipient-select"></select>
+              <div class="msg-list" id="sa-messages-list"></div>
+            </div>
+            <div class="msg-detail-pane" id="sa-message-detail">
+              <div class="msg-detail-empty" data-i18n="sa_select_message">
+                Select a message to read it.
               </div>
             </div>
-            <div class="form-group">
-              <label data-i18n="sa_subject_label">Subject (optional)</label>
-              <input type="text" id="msg-subject" />
-            </div>
-            <div class="form-group">
-              <label data-i18n="sa_message_label">Message</label>
-              <textarea id="msg-body"></textarea>
-            </div>
-            <button
-              class="btn btn-accent"
-              id="msg-send-btn"
-              data-i18n="sa_send_btn"
-            >
-              Send
-            </button>
-          </div>
-
-          <div class="widget">
-            <div
-              style="
-                display: flex;
-                gap: 8px;
-                margin-bottom: 14px;
-                align-items: center;
-              "
-            >
-              <button
-                class="btn btn-primary btn-sm"
-                id="msg-box-inbox-btn"
-                data-i18n="sa_inbox_btn"
-              >
-                Inbox
-              </button>
-              <button
-                class="btn btn-ghost btn-sm"
-                id="msg-box-sent-btn"
-                data-i18n="sa_sent_btn"
-              >
-                Sent
-              </button>
-              <button
-                class="btn btn-ghost btn-sm"
-                id="msg-box-teachers-btn"
-                data-i18n="sa_teacher_requests_btn"
-              >
-                From Teachers
-                <span
-                  class="badge-dot"
-                  id="sa-teacher-threads-badge"
-                  style="display: none; position: static; margin-left: 6px"
-                ></span>
-              </button>
-            </div>
-            <div id="sa-messages-list"></div>
           </div>
         </section>
 
