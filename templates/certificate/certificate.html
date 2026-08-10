@@ -168,10 +168,10 @@
         <div class="result-side">
           <div class="panel-title">Result <span class="amh">ውጤት</span></div>
           <div class="result-row">
-            <div class="verdict on">
+            <div class="verdict __RESULT_PROMOTED_CLASS__">
               <span class="box"></span>Promoted <span class="amh">/ አልፏል</span>
             </div>
-            <div class="verdict">
+            <div class="verdict __RESULT_DETAINED_CLASS__">
               <span class="box"></span>Detained <span class="amh">/ ቀርቷል</span>
             </div>
           </div>
@@ -180,7 +180,7 @@
               >Promoted to (Class) Grade
               <span class="amh">/ ወደ የደረሰበት ክፍል</span></span
             >
-            <span class="val">Grade 12</span>
+            <span class="val">__PROMOTED_TO_GRADE_TEXT__</span>
           </div>
         </div>
       </div>
@@ -227,8 +227,10 @@
      (rank) or attendance records (absences) that aren't derivable from
      the subject list alone. Keep this assignment inline — it's the
      server's templating hook, and must stay in the HTML shell so the
-     string-replace in renderCertificateHtml has `__CERT_DATA_JSON__`
-     to find. Everything that reads DATA lives in certificate.js. */
+     string-replace in renderCertificateHtml has the token below (kept
+     out of this comment, deliberately, so a blind whole-document
+     string-replace on the server doesn't also match and rewrite it
+     here) to find. Everything that reads DATA lives in certificate.js. */
       const DATA =
         typeof __CERT_DATA_JSON__ !== "undefined"
           ? __CERT_DATA_JSON__
@@ -257,6 +259,13 @@
               verify_url: "https://newlandschool.et/verify/S1234567",
             };
 
+      // NOTE: renderCertificateHtml() on the server now scopes its
+      // __TOKEN__ replacement to skip <script> blocks entirely (see
+      // replaceOutsideScripts in server.js), specifically so this object
+      // is safe to write with the real __TOKEN__ strings as keys. Do not
+      // "fix" that by renaming these keys — the server-side scoping is
+      // the actual fix; keeping the same names here just makes the
+      // preview -> real-placeholder mapping below trivial (identity map).
       const fallbackData = {
         __REGION_AMH__: "አማራ ክልል",
         __REGION__: "Amhara",
@@ -273,6 +282,9 @@
         __WOREDA__: "Arada",
         __TOWN__: "Bahir Dar",
         __HOMEROOM_TEACHER_NAME__: "Mr. Alemu",
+        __RESULT_PROMOTED_CLASS__: "on",
+        __RESULT_DETAINED_CLASS__: "",
+        __PROMOTED_TO_GRADE_TEXT__: "Grade 11",
       };
 
       function replaceTextPlaceholder(needle, html) {

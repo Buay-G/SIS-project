@@ -118,6 +118,21 @@ function showConfirm(message, { title, confirmText } = {}) {
 
 /* ---------------------------------------------------------------- */
 
+// Inline status messages (form errors/confirmations) used to be prefixed
+// with a raw emoji ('⚠️ '/'✅ ') set via textContent. Renders these as a
+// proper Lucide icon instead so every icon in the app comes from the same
+// icon set. Uses innerHTML (the message text itself is always either a
+// static translation or a server-provided message, never raw user input),
+// and re-runs lucide.createIcons() since the icon markup was just injected.
+function setMsg(el, text, kind){
+  if(!el) return;
+  const icon = kind === 'success' ? 'check-circle-2' : 'alert-triangle';
+  el.innerHTML = `<i data-lucide="${icon}" class="msg-icon ${kind}"></i><span>${text}</span>`;
+  if (window.lucide) lucide.createIcons();
+}
+function setSuccessMsg(el, text){ setMsg(el, text, 'success'); }
+function setErrorMsg(el, text){ setMsg(el, text, 'error'); }
+
 // role/CURRENT_USER are populated from the real GET /api/me for the
 // account behind the auth_token cookie — see loadCurrentUser() near
 // the bottom of this file, which runs once on startup before the
@@ -159,7 +174,7 @@ const NAV = {
       ["za_nav_approvals","check-circle-2"],["za_nav_delegation","id-card"]
     ]},
     {sec:"za_sec_academic", items:[["za_nav_students","users"],["za_nav_teachers","graduation-cap"]]},
-    {sec:"za_sec_oversight", items:[["za_nav_school_performance","bar-chart-3"],["za_nav_messages","mail"],["za_nav_myid","credit-card"],["za_nav_profile","file-signature"]]}
+    {sec:"za_sec_oversight", items:[["za_nav_team","users-round"],["za_nav_school_performance","bar-chart-3"],["za_nav_messages","mail"],["za_nav_myid","credit-card"],["za_nav_profile","file-signature"]]}
   ],
   tdc:[
     {sec:"za_sec_admin", items:[
@@ -167,11 +182,11 @@ const NAV = {
       ["za_nav_recruitment","user-plus"],["za_nav_proposals","clipboard-list"]
     ]},
     {sec:"za_sec_academic", items:[["za_nav_subjects","book-open"],["za_nav_students","users"],["za_nav_teachers","graduation-cap"]]},
-    {sec:"za_sec_oversight", items:[["za_nav_school_performance","bar-chart-3"],["za_nav_messages","mail"],["za_nav_myid","credit-card"],["za_nav_profile","file-signature"]]}
+    {sec:"za_sec_oversight", items:[["za_nav_team","users-round"],["za_nav_school_performance","bar-chart-3"],["za_nav_messages","mail"],["za_nav_myid","credit-card"],["za_nav_profile","file-signature"]]}
   ],
   supervisor:[
     {sec:"za_sec_admin", items:[["za_nav_dashboard","home"],["za_nav_schools","building-2"],["za_nav_teachers","graduation-cap"]]},
-    {sec:"za_sec_oversight", items:[["za_nav_school_performance","bar-chart-3"],["za_nav_messages","mail"],["za_nav_myid","credit-card"]]}
+    {sec:"za_sec_oversight", items:[["za_nav_team","users-round"],["za_nav_school_performance","bar-chart-3"],["za_nav_messages","mail"],["za_nav_myid","credit-card"]]}
   ]
 };
 
@@ -204,15 +219,30 @@ function closeMobileNav(){
   document.getElementById('navOverlay').classList.remove('open');
 }
 
+function goToProfile(){
+  activePage = 'za_nav_profile';
+  render();
+  closeMobileNav();
+}
+
 function renderTopChrome(){
   const meta = ROLE_META[role];
   const name = CURRENT_USER.admin_full_name || CURRENT_USER.user_id;
-  document.getElementById('roleIcon').innerHTML = `<i data-lucide="${meta.icon}"></i>`;
-  document.getElementById('roleTitleTxt').textContent = t(meta.titleKey);
+  // Sidebar footer: name only, no title text and no icon (icon element was removed from index.html)
+  document.getElementById('roleTitleTxt').textContent = name;
   document.getElementById('roleIdTxt').textContent = CURRENT_USER.user_id;
   document.getElementById('whoName').textContent = name;
   document.getElementById('whoRole').textContent = t(meta.titleKey);
-  document.getElementById('avatarInit').textContent = initialsOf(name);
+  // Topbar avatar doubles as the profile-picture button; falls back to
+  // initials when no profile photo has been uploaded yet. This is the
+  // everyday profile photo (avatar_url) — deliberately NOT id_photo_url,
+  // which is the separate photo reserved for the printed ID card.
+  const avatarEl = document.getElementById('avatarInit');
+  if (CURRENT_USER.avatar_url) {
+    avatarEl.innerHTML = `<img src="${API_BASE + CURRENT_USER.avatar_url}" alt="" class="avatar-img" />`;
+  } else {
+    avatarEl.textContent = initialsOf(name);
+  }
   document.getElementById('pageTitle').textContent = t(activePage);
   const ay = CURRENT_USER.academic_year;
   document.getElementById('academicYearBadge').innerHTML = ay
@@ -238,12 +268,24 @@ function errorPanel(err){
    client-side from whichever of those the account fetched — there's
    no single "recent activity" endpoint. */
 function dashboardSkeletonHTML(){
-  return `<div class="panel"><p class="hint">${t('za_loading')}</p></div>`;
+  // The calendar needs no API data (it's pure client-side date math), so it
+  // paints immediately here instead of waiting behind the dashboard's
+  // network calls — that wait was what made the calendar feel slow to load,
+  // when really it was the cards/activity data above it that was slow.
+  return `
+  <div class="panel" id="dashDataPanel"><p class="hint">${t('za_loading')}</p></div>
+  <div id="calWidgetHolder">${renderEthiopianCalendarWidget()}</div>`;
 }
 
 function fmtDate(d){
   if(!d) return '—';
-  return new Date(d).toLocaleDateString(getCurrentLang()==='am' ? 'am-ET' : 'en-US', { year:'numeric', month:'short', day:'numeric' });
+  const dateObj = new Date(d);
+  // Portal-wide convention: Ethiopian date first, G.C. date in brackets
+  // (see the calendar widget below — same toEthiopianDate conversion).
+  const ec = toEthiopianDate(dateObj);
+  const ecMonth = t('eth_month_'+ec.monthKey);
+  const gc = dateObj.toLocaleDateString(getCurrentLang()==='am' ? 'am-ET' : 'en-US', { year:'numeric', month:'short', day:'numeric' });
+  return `${ec.day} ${ecMonth} ${ec.year} (${gc} GC)`;
 }
 
 async function loadAndRenderDashboard(){
@@ -266,12 +308,13 @@ async function loadAndRenderDashboard(){
       renderDashboard({ schools, students, proposals, incoming });
     }
   } catch (err) {
-    content.innerHTML = errorPanel(err);
+    const panel = document.getElementById('dashDataPanel');
+    if (panel) panel.outerHTML = errorPanel(err);
   }
 }
 
 function proposalActivityLine(p, schoolName){
-  const label = p.proposal_type==='hire_teacher' ? t('za_act_proposal_hire') : t('za_act_proposal_admin');
+  const label = proposalTypeLabel(p);
   const status = normStatus(p.status);
   const statusKey = status==='pending' ? 'za_act_status_pending' : status==='approved' ? 'za_act_status_approved' : 'za_act_status_rejected';
   return { school: schoolName || '—', event: `${label} — ${t(statusKey)}`, date: p.reviewed_at || p.created_at };
@@ -345,7 +388,8 @@ function renderDashboard({ schools, students, proposals, incoming, performance }
     ? activity.map(a=>`<tr><td>${a.school}</td><td>${a.event}</td><td>${fmtDate(a.date)}</td></tr>`).join('')
     : `<tr><td colspan="3" class="hint">${t('za_activity_empty')}</td></tr>`;
 
-  document.getElementById('content').innerHTML = `
+  const panel = document.getElementById('dashDataPanel');
+  const dataHTML = `
   <div class="welcome">
     <h2>${t(meta.welcomeKey)}</h2>
     <p>${t('za_welcome_sub')}</p>
@@ -358,9 +402,10 @@ function renderDashboard({ schools, students, proposals, incoming, performance }
       ${activityRows}
     </table>
     ${role==='supervisor' ? `<div class="hint">${t('za_locked_note')}</div>` : ''}
-  </div>
-  <div id="calWidgetHolder">${renderEthiopianCalendarWidget()}</div>`;
-  wireEthiopianCalendarWidget();
+  </div>`;
+  if (panel) panel.outerHTML = dataHTML;
+  else document.getElementById('content').insertAdjacentHTML('afterbegin', dataHTML);
+  if (window.lucide) window.lucide.createIcons();
 }
 
 /* ---------------- Total Students — live from /api/zonal/students ---- */
@@ -699,31 +744,31 @@ function renderSetupSchoolPanel(regions){
     <p class="hint" style="margin-bottom:16px;">${t('za_setup_hint')}</p>
     <div class="form-grid">
       <div class="form-field">
-        <label>${t('za_f_school_name')}</label>
+        <label for="f_name">${t('za_f_school_name')}</label>
         <input type="text" id="f_name" placeholder="e.g. Newland Secondary School">
       </div>
       <div class="form-field">
-        <label>${t('za_f_school_prefix')}</label>
+        <label for="f_prefix">${t('za_f_school_prefix')}</label>
         <input type="text" id="f_prefix" placeholder="e.g. NLS">
       </div>
       <div class="form-field">
-        <label>${t('za_f_moe_code')}</label>
+        <label for="f_moe">${t('za_f_moe_code')}</label>
         <input type="text" id="f_moe" placeholder="e.g. 1203010102">
       </div>
       <div class="form-field">
-        <label>${t('za_f_region')}</label>
+        <label for="f_region">${t('za_f_region')}</label>
         <select id="f_region"><option value="">${t('za_pick_region')}</option>${regionOpts}</select>
       </div>
       <div class="form-field">
-        <label>${t('za_f_zone')}</label>
+        <label for="f_zone">${t('za_f_zone')}</label>
         <select id="f_zone" disabled><option value="">${t('za_pick_zone')}</option></select>
       </div>
       <div class="form-field">
-        <label>${t('za_f_woreda')}</label>
+        <label for="f_woreda">${t('za_f_woreda')}</label>
         <select id="f_woreda" disabled><option value="">${t('za_pick_woreda')}</option></select>
       </div>
       <div class="form-field">
-        <label>${t('za_f_kebele')}</label>
+        <label for="f_kebele">${t('za_f_kebele')}</label>
         <select id="f_kebele" disabled><option value="">${t('za_pick_kebele')}</option></select>
       </div>
     </div>
@@ -760,7 +805,7 @@ function wireCascadingSelects(){
       const zones = await apiGet('/api/zonal/lookup/zones', { region_id: regionEl.value });
       fillSelect(zoneEl, zones, 'zone_id', 'zone_name', t('za_pick_zone'));
       zoneEl.disabled = zones.length===0;
-    } catch (err) { document.getElementById('setupFormMsg').textContent = '⚠️ ' + err.message; }
+    } catch (err) { setErrorMsg(document.getElementById('setupFormMsg'), err.message); }
   });
 
   zoneEl.addEventListener('change', async ()=>{
@@ -771,7 +816,7 @@ function wireCascadingSelects(){
       const woredas = await apiGet('/api/zonal/lookup/woredas', { zone_id: zoneEl.value });
       fillSelect(woredaEl, woredas, 'woreda_id', 'woreda_name', t('za_pick_woreda'));
       woredaEl.disabled = woredas.length===0;
-    } catch (err) { document.getElementById('setupFormMsg').textContent = '⚠️ ' + err.message; }
+    } catch (err) { setErrorMsg(document.getElementById('setupFormMsg'), err.message); }
   });
 
   woredaEl.addEventListener('change', async ()=>{
@@ -781,7 +826,7 @@ function wireCascadingSelects(){
       const kebeles = await apiGet('/api/zonal/lookup/kebeles', { woreda_id: woredaEl.value });
       fillSelect(kebeleEl, kebeles, 'kebele_id', 'kebele_name', t('za_pick_kebele'));
       kebeleEl.disabled = kebeles.length===0;
-    } catch (err) { document.getElementById('setupFormMsg').textContent = '⚠️ ' + err.message; }
+    } catch (err) { setErrorMsg(document.getElementById('setupFormMsg'), err.message); }
   });
 }
 
@@ -796,14 +841,14 @@ async function submitNewSchool(){
     kebele_id: document.getElementById('f_kebele').value || null
   };
   if(!body.school_name || !body.school_prefix){
-    msg.textContent = '⚠️ ' + t('za_setup_required');
+    setErrorMsg(msg, t('za_setup_required'));
     return;
   }
   try {
     const result = await apiPost('/api/zonal/schools', body);
-    msg.textContent = '✅ ' + result.message;
+    setSuccessMsg(msg, result.message);
   } catch (err) {
-    msg.textContent = '⚠️ ' + err.message;
+    setErrorMsg(msg, err.message);
   }
 }
 
@@ -876,12 +921,16 @@ async function loadAndRenderApprovals(){
 }
 
 function proposalTypeLabel(p){
-  return p.proposal_type==='hire_teacher' ? t('za_act_proposal_hire') : t('za_act_proposal_admin');
+  if(p.proposal_type==='hire_teacher') return t('za_act_proposal_hire');
+  if(p.proposal_type==='transfer_teacher') return t('za_act_proposal_transfer');
+  if(p.proposal_type==='assign_supervisor') return t('za_act_proposal_supervisor');
+  return t('za_act_proposal_admin');
 }
 
 function proposalSubjectLine(p){
   const payload = p.payload || {};
-  const name = [payload.first_name, payload.last_name].filter(Boolean).join(' ');
+  if(p.proposal_type==='transfer_teacher') return payload.teacher_name || payload.teacher_id || '—';
+  const name = [payload.first_name, payload.middle_name, payload.last_name].filter(Boolean).join(' ');
   return name || '—';
 }
 
@@ -933,21 +982,21 @@ function renderApprovalsPanel(schools, proposals){
       let successText;
       if(btn.dataset.act==='approve'){
         const result = await apiPost(`/api/zonal/proposals/${id}/approve`);
-        successText = '✅ ' + result.message;
+        successText = result.message;
       } else {
         const reason = prompt(t('sa_prompt_rejection_reason')) || '';
         await apiPost(`/api/zonal/proposals/${id}/reject`, { reason });
-        successText = '✅ ' + t('za_proposal_rejected');
+        successText = t('za_proposal_rejected');
       }
       // Reload FIRST (this rebuilds #approvalsMsg from scratch), then set
       // the confirmation text on the freshly-rendered element — otherwise
       // the reload wipes the message before the user ever sees it.
       await loadAndRenderApprovals();
       const msg = document.getElementById('approvalsMsg');
-      if(msg) msg.textContent = successText;
+      if(msg) setSuccessMsg(msg, successText);
     } catch (err) {
       const msg = document.getElementById('approvalsMsg');
-      if(msg) msg.textContent = '⚠️ ' + err.message;
+      if(msg) setErrorMsg(msg, err.message);
     }
   });
 }
@@ -998,22 +1047,85 @@ function renderDelegationPanel(coordinators){
         const result = await apiPost(`/api/zonal/teamleader/${toggle.dataset.id}/delegate`, { can_act_independently: toggle.checked });
         await loadAndRenderDelegation();
         const newMsg = document.getElementById('delegationMsg');
-        if(newMsg) newMsg.textContent = '✅ ' + result.message;
+        if(newMsg) setSuccessMsg(newMsg, result.message);
       } catch (err) {
         toggle.checked = !toggle.checked;
         const msg = document.getElementById('delegationMsg');
-        if(msg) msg.textContent = '⚠️ ' + err.message;
+        if(msg) setErrorMsg(msg, err.message);
       }
     });
   });
 }
 
 /* ==================================================================
-   Subject Dictionary (HoE + TDC view; add/delete restricted to HoE or
-   a delegated TDC — server enforces this via requireCanActInZone, the
-   UI just hides the form for anyone it would 403 on) — live from:
-     GET    /api/zonal/subject-dictionary   -> [{subject_dict_id, subject_name}]
+   Team — a zone-wide "who is who" directory: every Head of Education,
+   Development Coordinator, and Supervisor in the zone, with the
+   school(s) they're assigned to. Read-only, available to all three
+   titles. — live from GET /api/zonal/team.
+   ================================================================== */
+function teamSkeletonHTML(){
+  return `<div class="panel"><h3><i data-lucide="users-round"></i> ${t('za_team_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
+}
+
+async function loadAndRenderTeam(){
+  const content = document.getElementById('content');
+  try {
+    const team = await apiGet('/api/zonal/team');
+    renderTeamPanel(team);
+  } catch (err) {
+    content.innerHTML = errorPanel(err);
+  }
+}
+
+function renderTeamPanel(team){
+  const groups = [
+    { title: 'Head of Education', key: 'za_role_hoe', icon: 'shield-check' },
+    { title: 'Teacher Development Coordinator', key: 'za_role_tdc', icon: 'user-cog' },
+    { title: 'Supervisor', key: 'za_role_supervisor', icon: 'eye' }
+  ];
+
+  const sectionsHTML = groups.map(g => {
+    const members = team.filter(m => m.title === g.title);
+    const cardsHTML = members.length ? members.map(m => `
+      <div class="team-card">
+        <div class="team-card-avatar">${initialsOf(m.full_name)}</div>
+        <div class="team-card-body">
+          <div class="team-card-name">${m.full_name}</div>
+          <div class="team-card-id">${m.admin_id}</div>
+          ${m.zone_wide
+            ? `<div class="team-card-schools"><i data-lucide="globe"></i><span>${t('za_team_zone_wide')}</span></div>`
+            : `<div class="team-card-schools"><i data-lucide="building-2"></i><span>${m.schools.length ? m.schools.map(s=>s.school_name).join(', ') : t('za_team_no_schools')}</span></div>`
+          }
+        </div>
+      </div>`).join('') : `<p class="hint">${t('za_team_group_empty')}</p>`;
+    return `
+    <div class="panel">
+      <h3><i data-lucide="${g.icon}"></i> ${t(g.key)} <span class="team-group-count">${members.length}</span></h3>
+      <div class="team-card-grid">${cardsHTML}</div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('content').innerHTML = `
+  <div class="panel">
+    <h3><i data-lucide="users-round"></i> ${t('za_team_title')}</h3>
+    <p class="hint">${t('za_team_hint')}</p>
+  </div>
+  ${sectionsHTML}`;
+  if (window.lucide) lucide.createIcons();
+}
+
+/* ==================================================================
+   Subject Dictionary — adding/editing/removing subjects is the
+   Development Coordinator's job (delegated or not — requireTdcOrHoe on
+   the server, not requireCanActInZone). A Development Coordinator's
+   add/edit lands as 'pending' and stays invisible to schools until the
+   Head of Education approves it; the Head of Education's own add/edit
+   is auto-approved. — live from:
+     GET    /api/zonal/subject-dictionary   -> [{subject_dict_id, subject_name, status, ...}]
      POST   /api/zonal/subject-dictionary    body:{subject_name}
+     PUT    /api/zonal/subject-dictionary/:id  body:{subject_name}
+     POST   /api/zonal/subject-dictionary/:id/approve  (Head of Education only)
+     POST   /api/zonal/subject-dictionary/:id/reject   (Head of Education only)
      DELETE /api/zonal/subject-dictionary/:subject_dict_id
    ================================================================== */
 function subjectsSkeletonHTML(){
@@ -1034,17 +1146,36 @@ function canActInZone(){
   return CURRENT_USER && (CURRENT_USER.title==='Head of Education' || (CURRENT_USER.title==='Teacher Development Coordinator' && CURRENT_USER.can_act_independently));
 }
 
+// Subject Dictionary uses its own, wider permission than the rest of
+// this page's "direct authority" pages: any Development Coordinator
+// (delegated or not) can add/edit/remove — only *approving* a pending
+// entry is Head-of-Education-only.
+function canManageSubjects(){
+  return CURRENT_USER && (CURRENT_USER.title==='Head of Education' || CURRENT_USER.title==='Teacher Development Coordinator');
+}
+function isHoe(){
+  return CURRENT_USER && CURRENT_USER.title==='Head of Education';
+}
+
 function renderSubjectsPanel(subjects){
+  const manage = canManageSubjects();
+  const hoe = isHoe();
   const rows = subjects.length ? subjects.map(s=>`
     <tr data-id="${s.subject_dict_id}">
-      <td>${s.subject_name}</td>
-      <td>${canActInZone() ? `<button class="btn danger sm" data-act="delete" data-id="${s.subject_dict_id}">${t('za_delete')}</button>` : ''}</td>
-    </tr>`).join('') : `<tr><td colspan="2" class="hint">${t('za_subjects_empty')}</td></tr>`;
+      <td class="subjectNameCell">${s.subject_name}</td>
+      <td>${s.status === 'approved' ? `<span class="pill ok">${t('za_subject_status_approved')}</span>` : `<span class="pill warn">${t('za_subject_status_pending')}</span>`}</td>
+      <td>
+        ${manage ? `<button class="btn sm" data-act="edit" data-id="${s.subject_dict_id}" data-name="${s.subject_name}">${t('za_edit')}</button>` : ''}
+        ${manage ? `<button class="btn danger sm" data-act="delete" data-id="${s.subject_dict_id}">${t('za_delete')}</button>` : ''}
+        ${hoe && s.status === 'pending' ? `<button class="btn sm" data-act="approve" data-id="${s.subject_dict_id}">${t('za_approve')}</button>` : ''}
+        ${hoe && s.status === 'pending' ? `<button class="btn danger sm" data-act="reject" data-id="${s.subject_dict_id}">${t('za_reject')}</button>` : ''}
+      </td>
+    </tr>`).join('') : `<tr><td colspan="3" class="hint">${t('za_subjects_empty')}</td></tr>`;
 
-  const formHTML = canActInZone() ? `
+  const formHTML = manage ? `
     <div class="form-grid">
       <div class="form-field">
-        <label>${t('za_f_subject_name')}</label>
+        <label for="f_subj_name">${t('za_f_subject_name')}</label>
         <input type="text" id="f_subj_name" placeholder="e.g. Mathematics">
       </div>
     </div>
@@ -1062,22 +1193,37 @@ function renderSubjectsPanel(subjects){
   <div class="panel">
     <h3><i data-lucide="book-open"></i> ${t('za_subjects_list')}</h3>
     <div class="table-wrap"><table>
-      <tr><th>${t('za_f_subject_name')}</th><th>${t('za_th_action')}</th></tr>
+      <tr><th>${t('za_f_subject_name')}</th><th>${t('za_th_status')}</th><th>${t('za_th_action')}</th></tr>
       ${rows}
     </table></div>
   </div>`;
+  if (window.lucide) lucide.createIcons();
 
-  if(canActInZone()){
+  let editingId = null;
+
+  if(manage){
     document.getElementById('btnSaveSubject').addEventListener('click', async ()=>{
       const msg = document.getElementById('subjectFormMsg');
       const subject_name = document.getElementById('f_subj_name').value.trim();
-      if(!subject_name){ msg.textContent = '⚠️ ' + t('za_subjects_required'); return; }
+      if(!subject_name){ setErrorMsg(msg, t('za_subjects_required')); return; }
       try {
-        await apiPost('/api/zonal/subject-dictionary', { subject_name });
-        loadAndRenderSubjects();
+        const result = editingId
+          ? await apiPut(`/api/zonal/subject-dictionary/${editingId}`, { subject_name })
+          : await apiPost('/api/zonal/subject-dictionary', { subject_name });
+        await loadAndRenderSubjects();
+        const newMsg = document.getElementById('subjectFormMsg');
+        if(newMsg) setSuccessMsg(newMsg, result.message);
       } catch (err) {
-        msg.textContent = '⚠️ ' + err.message;
+        setErrorMsg(msg, err.message);
       }
+    });
+    document.querySelectorAll('button[data-act="edit"]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        editingId = btn.dataset.id;
+        document.getElementById('f_subj_name').value = btn.dataset.name;
+        document.getElementById('btnSaveSubject').textContent = t('za_save_changes');
+        document.getElementById('f_subj_name').focus();
+      });
     });
     document.querySelectorAll('button[data-act="delete"]').forEach(btn=>{
       btn.addEventListener('click', async ()=>{
@@ -1086,25 +1232,59 @@ function renderSubjectsPanel(subjects){
           await apiDelete(`/api/zonal/subject-dictionary/${btn.dataset.id}`);
           loadAndRenderSubjects();
         } catch (err) {
-          document.getElementById('subjectFormMsg').textContent = '⚠️ ' + err.message;
+          setErrorMsg(document.getElementById('subjectFormMsg'), err.message);
         }
       });
     });
+    if(hoe){
+      document.querySelectorAll('button[data-act="approve"]').forEach(btn=>{
+        btn.addEventListener('click', async ()=>{
+          try {
+            const result = await apiPost(`/api/zonal/subject-dictionary/${btn.dataset.id}/approve`, {});
+            await loadAndRenderSubjects();
+            const newMsg = document.getElementById('subjectFormMsg');
+            if(newMsg) setSuccessMsg(newMsg, result.message);
+          } catch (err) {
+            setErrorMsg(document.getElementById('subjectFormMsg'), err.message);
+          }
+        });
+      });
+      document.querySelectorAll('button[data-act="reject"]').forEach(btn=>{
+        btn.addEventListener('click', async ()=>{
+          if(!(await showConfirm(t('za_subjects_reject_confirm')))) return;
+          try {
+            const result = await apiPost(`/api/zonal/subject-dictionary/${btn.dataset.id}/reject`, {});
+            await loadAndRenderSubjects();
+            const newMsg = document.getElementById('subjectFormMsg');
+            if(newMsg) setSuccessMsg(newMsg, result.message);
+          } catch (err) {
+            setErrorMsg(document.getElementById('subjectFormMsg'), err.message);
+          }
+        });
+      });
+    }
   }
 }
 
 /* ==================================================================
-   Teacher Recruitment (Teacher Development Coordinator) — live from:
+   Recruitment (Teacher Development Coordinator) — live from:
      GET  /api/zonal/schools
      GET  /api/zonal/incoming-teachers   -> [{incoming_id, school_id,
           school_name, first_name, middle_name, last_name, status,
           teacher_id, decline_reason, created_at, decided_at}]
-     POST /api/zonal/teachers             body:{school_id, first_name,
+     GET  /api/zonal/proposals           -> includes pushed_at/pushed_by
+     POST /api/zonal/proposals/:id/push  -> the final step for a proposal
+          the Head of Education has already approved (hire_teacher,
+          appoint_school_admin, transfer_teacher, assign_supervisor all
+          go through this one action) — see the split of
+          /api/zonal/proposals/:id/approve into approve + push on the
+          server. A candidate never needs re-describing here since it
+          was already described once in My Proposals.
+     POST /api/zonal/teachers            body:{school_id, first_name,
           middle_name, last_name, contact_number, email, zonal_recruitment_code}
-          — only works if canActInZone(); otherwise this pushes as a
-          proposal instead (POST /api/zonal/proposals, proposal_type
-          'hire_teacher') which only reaches the school once the Head
-          of Education approves it.
+          — only works if canActInZone(); a direct hire that never goes
+          through a proposal at all, so it's not duplicate work and stays
+          as its own form below.
    ================================================================== */
 function recruitmentSkeletonHTML(){
   return `<div class="panel"><h3><i data-lucide="user-plus"></i> ${t('za_recruitment_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
@@ -1113,11 +1293,18 @@ function recruitmentSkeletonHTML(){
 async function loadAndRenderRecruitment(){
   const content = document.getElementById('content');
   try {
-    const [schools, incoming] = await Promise.all([
+    const [schools, incoming, proposals] = await Promise.all([
       apiGet('/api/zonal/schools'),
-      apiGet('/api/zonal/incoming-teachers')
+      apiGet('/api/zonal/incoming-teachers'),
+      apiGet('/api/zonal/proposals')
     ]);
-    renderRecruitmentPanel(schools, incoming);
+    // Rejected hire proposals never produce an incoming_teachers row (see
+    // the hire_teacher branch of /api/zonal/proposals/:id/push — a push
+    // only happens on approval), so they're invisible in `incoming`
+    // above. Pull them in separately so a rejected candidate's name still
+    // shows up here, with a way to push them again.
+    const rejectedHires = proposals.filter(p => p.proposal_type === 'hire_teacher' && normStatus(p.status) === 'rejected');
+    renderRecruitmentPanel(schools, incoming, rejectedHires, proposals);
   } catch (err) {
     content.innerHTML = errorPanel(err);
   }
@@ -1129,25 +1316,66 @@ const INCOMING_STATUS_PILL = { pending:'warn', accepted:'ok', declined:'bad' };
 // Head of Education) can push a candidate straight to a school here —
 // no approval needed, so the form belongs on this page.
 //
-// A non-delegated Development Coordinator, on the other hand, already
-// describes the candidate once in My Proposals. The moment the Head of
-// Education approves that proposal, the server pushes it to the school
-// automatically (see the hire_teacher branch of
-// /api/zonal/proposals/:id/approve) — there's no second "push" action
-// left for them to take. Making them fill out the same name/phone/email
-// fields a second time here was pure duplicate work, so for this group
-// the page is now a read-only tracker: it just lists what they've sent,
-// whether that arrived via a direct push or an approved proposal.
-function renderRecruitmentPanel(schools, incoming){
+// A non-delegated Development Coordinator describes the candidate (or
+// admin appointment / transfer / supervisor assignment) once in My
+// Proposals. Once the Head of Education approves it, it lands in the
+// "Ready to Push" table below for the Development Coordinator to push —
+// the final step that actually creates the account, sends the transfer,
+// or delivers the hire to the school. Making them fill out the same
+// name/phone/email fields a second time here would be pure duplicate
+// work, so this page never re-collects that information.
+function renderRecruitmentPanel(schools, incoming, rejectedHires, proposals){
   const schoolOpts = schools.map(s=>`<option value="${s.id}">${s.school_name}</option>`).join('');
   const direct = canActInZone();
+  const isTDC = CURRENT_USER.title === 'Teacher Development Coordinator';
+  const schoolName = id => (schools.find(s=>String(s.id)===String(id)) || {}).school_name || '—';
 
-  const rows = incoming.length ? incoming.slice().sort((a,b)=> new Date(b.created_at)-new Date(a.created_at)).map(i=>`
+  // Approved by the Head of Education, not yet pushed — this is the
+  // queue a Teacher Development Coordinator works from.
+  const readyToPush = (proposals||[]).filter(p => normStatus(p.status)==='approved' && !p.pushed_at)
+    .sort((a,b)=> new Date(a.reviewed_at||a.created_at) - new Date(b.reviewed_at||b.created_at));
+
+  const readyRows = readyToPush.length ? readyToPush.map(p=>`
+    <tr data-proposal-id="${p.proposal_id}">
+      <td>${proposalTypeLabel(p)}</td>
+      <td>${proposalSubjectLine(p)}</td>
+      <td>${p.proposal_type==='assign_supervisor' ? t('za_f_delegated_schools') : schoolName(p.school_id)}</td>
+      <td><button class="btn primary sm" data-act="push-proposal" data-id="${p.proposal_id}">${t('za_th_push')}</button></td>
+    </tr>`).join('') : `<tr><td colspan="4" class="hint">${t('za_recruitment_ready_empty')}</td></tr>`;
+
+  const pushedRows = incoming.slice().sort((a,b)=> new Date(b.created_at)-new Date(a.created_at)).map(i=>`
     <tr>
       <td>${[i.first_name, i.middle_name, i.last_name].filter(Boolean).join(' ')}</td><td>${i.school_name}</td>
       <td><span class="pill ${INCOMING_STATUS_PILL[normStatus(i.status)]||'warn'}">${t('za_incoming_status_'+normStatus(i.status))}</span></td>
-      <td>${fmtDate(i.created_at)}</td>
-    </tr>`).join('') : `<tr><td colspan="4" class="hint">${t('za_recruitment_empty')}</td></tr>`;
+      <td>${fmtDate(i.created_at)}</td><td></td>
+    </tr>`);
+  // appoint_school_admin / assign_supervisor pushes create an account
+  // directly rather than an incoming_teachers row, so they never show up
+  // in `incoming` above — pull the completed ones in here so the
+  // activity table still has a record of them.
+  const completedNonTeacherRows = (proposals||[])
+    .filter(p => p.pushed_at && (p.proposal_type==='appoint_school_admin' || p.proposal_type==='assign_supervisor'))
+    .sort((a,b)=> new Date(b.pushed_at)-new Date(a.pushed_at))
+    .map(p=>`
+    <tr>
+      <td>${proposalSubjectLine(p)}</td><td>${p.proposal_type==='assign_supervisor' ? t('za_f_delegated_schools') : schoolName(p.school_id)}</td>
+      <td><span class="pill ok">${t('za_act_status_approved')}</span></td>
+      <td>${fmtDate(p.pushed_at)}</td><td></td>
+    </tr>`);
+  // Rejected proposals: same table, candidate name from the proposal
+  // payload (there's no incoming_teachers row to read it from), a
+  // "Rejected" pill, and a Push-again button to retry with the same
+  // details — pre-fills the direct form for a direct-act user, or
+  // resubmits a fresh proposal for one who isn't.
+  const rejectedRows = rejectedHires.slice().sort((a,b)=> new Date(b.created_at)-new Date(a.created_at)).map(p=>`
+    <tr data-proposal-id="${p.proposal_id}">
+      <td>${proposalSubjectLine(p)}</td><td>${(schools.find(s=>String(s.id)===String(p.school_id))||{}).school_name || '—'}</td>
+      <td><span class="pill bad">${t('za_act_status_rejected')}</span></td>
+      <td>${fmtDate(p.created_at)}</td>
+      <td><button class="btn sm" data-act="push-again" data-id="${p.proposal_id}">${t('za_recruitment_push_again')}</button></td>
+    </tr>`);
+  const allRows = [...pushedRows, ...completedNonTeacherRows, ...rejectedRows];
+  const rows = allRows.length ? allRows.join('') : `<tr><td colspan="5" class="hint">${t('za_recruitment_empty')}</td></tr>`;
 
   const formPanel = direct ? `
   <div class="panel">
@@ -1155,31 +1383,49 @@ function renderRecruitmentPanel(schools, incoming){
     <p class="hint" style="margin-bottom:14px;">${t('za_recruitment_hint_direct')}</p>
     <div class="form-grid">
       <div class="form-field">
-        <label>${t('za_f_first_name')}</label>
+        <label for="f_cand_first">${t('za_f_first_name')}</label>
         <input type="text" id="f_cand_first" placeholder="e.g. Abebe">
       </div>
       <div class="form-field">
-        <label>${t('za_f_middle_name')}</label>
+        <label for="f_cand_middle">${t('za_f_middle_name')}</label>
         <input type="text" id="f_cand_middle" placeholder="${t('za_optional')}">
       </div>
       <div class="form-field">
-        <label>${t('za_f_last_name')}</label>
+        <label for="f_cand_last">${t('za_f_last_name')}</label>
         <input type="text" id="f_cand_last" placeholder="e.g. Kebede">
       </div>
       <div class="form-field">
-        <label>${t('za_f_candidate_phone')}</label>
+        <label for="f_cand_sex">${t('za_f_sex')}</label>
+        <select id="f_cand_sex">
+          <option value="">${t('za_pick_option')}</option>
+          <option value="Male">${t('za_sex_male')}</option>
+          <option value="Female">${t('za_sex_female')}</option>
+        </select>
+      </div>
+      <div class="form-field">
+        <label for="f_cand_education_level">${t('za_f_education_level')}</label>
+        <select id="f_cand_education_level">
+          <option value="">${t('za_pick_option')}</option>
+          <option value="TVET / College Diploma">${t('za_edu_tvet_diploma')}</option>
+          <option value="Bachelor's Degree">${t('za_edu_bachelors')}</option>
+          <option value="Master's Degree">${t('za_edu_masters')}</option>
+          <option value="PhD / Doctoral Degree">${t('za_edu_phd')}</option>
+        </select>
+      </div>
+      <div class="form-field">
+        <label for="f_cand_phone">${t('za_f_candidate_phone')}</label>
         <input type="text" id="f_cand_phone" placeholder="e.g. 09xxxxxxxx">
       </div>
       <div class="form-field">
-        <label>${t('za_f_candidate_email')}</label>
+        <label for="f_cand_email">${t('za_f_candidate_email')}</label>
         <input type="email" id="f_cand_email" placeholder="${t('za_optional')}">
       </div>
       <div class="form-field">
-        <label>${t('za_f_recruitment_code')}</label>
+        <label for="f_cand_code">${t('za_f_recruitment_code')}</label>
         <input type="text" id="f_cand_code" placeholder="${t('za_optional')}">
       </div>
       <div class="form-field">
-        <label>${t('za_f_target_school')}</label>
+        <label for="f_cand_school">${t('za_f_target_school')}</label>
         <select id="f_cand_school"><option value="">${t('za_pick_school')}</option>${schoolOpts}</select>
       </div>
     </div>
@@ -1187,31 +1433,82 @@ function renderRecruitmentPanel(schools, incoming){
       <button class="btn primary" id="btnPushCandidate">${t('za_recruitment_push')}</button>
     </div>
     <p class="hint" id="recruitmentMsg"></p>
-  </div>` : `
+  </div>` : '';
+
+  const readyPanel = isTDC ? `
   <div class="panel">
-    <h3><i data-lucide="user-plus"></i> ${t('za_recruitment_title')}</h3>
-    <p class="hint" style="margin-bottom:14px;">${t('za_recruitment_hint_track')}</p>
-    <div class="form-actions">
-      <button class="btn primary" id="btnGoToProposals">${t('za_recruitment_go_to_proposals')}</button>
-    </div>
-  </div>`;
+    <h3><i data-lucide="send"></i> ${t('za_recruitment_ready_title')}</h3>
+    <p class="hint" style="margin-bottom:14px;">${t('za_recruitment_ready_hint')}</p>
+    <div class="table-wrap"><table>
+      <tr><th>${t('za_th_type')}</th><th>${t('za_th_name')}</th><th>${t('za_th_school')}</th><th></th></tr>
+      ${readyRows}
+    </table></div>
+    <p class="hint" id="pushMsg"></p>
+  </div>` : '';
 
   document.getElementById('content').innerHTML = `
+  ${readyPanel}
   ${formPanel}
   <div class="panel">
     <h3><i data-lucide="clipboard-list"></i> ${t('za_recruitment_pushed_title')}</h3>
     <div class="table-wrap"><table>
-      <tr><th>${t('za_th_name')}</th><th>${t('za_th_school')}</th><th>${t('za_th_status')}</th><th>${t('za_th_pushed')}</th></tr>
+      <tr><th>${t('za_th_name')}</th><th>${t('za_th_school')}</th><th>${t('za_th_status')}</th><th>${t('za_th_pushed')}</th><th></th></tr>
       ${rows}
     </table></div>
   </div>`;
   if (window.lucide) lucide.createIcons();
 
-  if(!direct){
-    document.getElementById('btnGoToProposals').addEventListener('click', ()=>{
-      activePage = 'za_nav_proposals';
-      render();
+  if(isTDC){
+    document.querySelectorAll('button[data-act="push-proposal"]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        btn.disabled = true;
+        const pushMsg = document.getElementById('pushMsg');
+        try {
+          const result = await apiPost(`/api/zonal/proposals/${btn.dataset.id}/push`);
+          await loadAndRenderRecruitment();
+          const newMsg = document.getElementById('pushMsg');
+          if(newMsg) setSuccessMsg(newMsg, result.message);
+        } catch (err) {
+          btn.disabled = false;
+          if(pushMsg) setErrorMsg(pushMsg, err.message);
+        }
+      });
     });
+  }
+
+  document.querySelectorAll('button[data-act="push-again"]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const proposal = rejectedHires.find(p => String(p.proposal_id) === String(btn.dataset.id));
+      if(!proposal) return;
+      const payload = proposal.payload || {};
+      if(direct){
+        // Prefill the direct-push form above with the same details so
+        // they can review/correct before pushing straight to the school.
+        document.getElementById('f_cand_first').value = payload.first_name || '';
+        document.getElementById('f_cand_middle').value = payload.middle_name || '';
+        document.getElementById('f_cand_last').value = payload.last_name || '';
+        document.getElementById('f_cand_sex').value = payload.sex || '';
+        document.getElementById('f_cand_education_level').value = payload.education_level || '';
+        document.getElementById('f_cand_phone').value = payload.contact_number || '';
+        document.getElementById('f_cand_email').value = payload.email || '';
+        document.getElementById('f_cand_code').value = payload.zonal_recruitment_code || '';
+        document.getElementById('f_cand_school').value = proposal.school_id;
+        document.getElementById('f_cand_first').scrollIntoView({ behavior:'smooth', block:'center' });
+        return;
+      }
+      try {
+        const result = await apiPost('/api/zonal/proposals', { proposal_type: 'hire_teacher', school_id: proposal.school_id, payload });
+        await loadAndRenderRecruitment();
+        const newMsg = document.getElementById('recruitmentMsg') || document.getElementById('pushMsg');
+        if(newMsg) setSuccessMsg(newMsg, result.message);
+      } catch (err) {
+        const msg = document.getElementById('recruitmentMsg') || document.getElementById('pushMsg');
+        if(msg) setErrorMsg(msg, err.message);
+      }
+    });
+  });
+
+  if(!direct){
     return;
   }
 
@@ -1220,25 +1517,27 @@ function renderRecruitmentPanel(schools, incoming){
     const first_name = document.getElementById('f_cand_first').value.trim();
     const middle_name = document.getElementById('f_cand_middle').value.trim() || null;
     const last_name = document.getElementById('f_cand_last').value.trim();
+    const sex = document.getElementById('f_cand_sex').value || null;
+    const education_level = document.getElementById('f_cand_education_level').value || null;
     const contact_number = document.getElementById('f_cand_phone').value.trim() || null;
     const email = document.getElementById('f_cand_email').value.trim() || null;
     const zonal_recruitment_code = document.getElementById('f_cand_code').value.trim() || null;
     const school_id = document.getElementById('f_cand_school').value;
     if(!first_name || !last_name || !school_id){
-      msg.textContent = '⚠️ ' + t('za_recruitment_required');
+      setErrorMsg(msg, t('za_recruitment_required'));
       return;
     }
     try {
-      const result = await apiPost('/api/zonal/teachers', { school_id, first_name, middle_name, last_name, contact_number, email, zonal_recruitment_code });
-      const successText = '✅ ' + result.message;
+      const result = await apiPost('/api/zonal/teachers', { school_id, first_name, middle_name, last_name, sex, education_level, contact_number, email, zonal_recruitment_code });
+      const successText = result.message;
       // Reload FIRST (rebuilds #recruitmentMsg), then set the confirmation
       // text on the new element — setting it before the reload gets wiped
       // out instantly when the panel re-renders.
       await loadAndRenderRecruitment();
       const newMsg = document.getElementById('recruitmentMsg');
-      if(newMsg) newMsg.textContent = successText;
+      if(newMsg) setSuccessMsg(newMsg, successText);
     } catch (err) {
-      msg.textContent = '⚠️ ' + err.message;
+      setErrorMsg(msg, err.message);
     }
   });
 }
@@ -1248,7 +1547,10 @@ function renderRecruitmentPanel(schools, incoming){
      GET  /api/zonal/proposals   (server scopes this to the caller's
           own submissions since their title isn't Head of Education)
      POST /api/zonal/proposals   body:{proposal_type:'hire_teacher'|
-          'appoint_school_admin', school_id, payload}
+          'appoint_school_admin'|'transfer_teacher'|'assign_supervisor',
+          school_id, payload} — assign_supervisor omits school_id and
+          carries its schools as payload.school_ids instead (see the
+          submit handler below and the server's own comment on this route).
    ================================================================== */
 function myProposalsSkeletonHTML(){
   return `<div class="panel"><h3><i data-lucide="file-pen-line"></i> ${t('za_my_proposals_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
@@ -1257,12 +1559,13 @@ function myProposalsSkeletonHTML(){
 async function loadAndRenderMyProposals(){
   const content = document.getElementById('content');
   try {
-    const [schools, proposals, admins] = await Promise.all([
+    const [schools, proposals, admins, teachers] = await Promise.all([
       apiGet('/api/zonal/schools'),
       apiGet('/api/zonal/proposals'),
-      apiGet('/api/zonal/admin-users')
+      apiGet('/api/zonal/admin-users'),
+      apiGet('/api/zonal/teachers')
     ]);
-    renderMyProposalsPanel(schools, proposals, admins);
+    renderMyProposalsPanel(schools, proposals, admins, teachers.filter(t=>t.title==='Teacher'));
   } catch (err) {
     content.innerHTML = errorPanel(err);
   }
@@ -1271,29 +1574,47 @@ async function loadAndRenderMyProposals(){
 const PROPOSAL_STATUS_PILL = { pending:'warn', approved:'ok', rejected:'bad' };
 const SCHOOL_ADMIN_TITLES = ['Principal','Academic VP','Admin VP'];
 
-function myProposalTypeFieldsHTML(){
+function myProposalTypeFieldsHTML(teachers){
   return `
     <div id="fields_hire_teacher">
       <div class="form-grid">
-        <div class="form-field"><label>${t('za_f_first_name')}</label><input type="text" id="mp_first"></div>
-        <div class="form-field"><label>${t('za_f_middle_name')}</label><input type="text" id="mp_middle" placeholder="${t('za_optional')}"></div>
-        <div class="form-field"><label>${t('za_f_last_name')}</label><input type="text" id="mp_last"></div>
-        <div class="form-field"><label>${t('za_f_candidate_phone')}</label><input type="text" id="mp_phone" placeholder="${t('za_optional')}"></div>
-        <div class="form-field"><label>${t('za_f_candidate_email')}</label><input type="email" id="mp_email" placeholder="${t('za_optional')}"></div>
-        <div class="form-field"><label>${t('za_f_recruitment_code')}</label><input type="text" id="mp_code" placeholder="${t('za_optional')}"></div>
+        <div class="form-field"><label for="mp_first">${t('za_f_first_name')}</label><input type="text" id="mp_first"></div>
+        <div class="form-field"><label for="mp_middle">${t('za_f_middle_name')}</label><input type="text" id="mp_middle" placeholder="${t('za_optional')}"></div>
+        <div class="form-field"><label for="mp_last">${t('za_f_last_name')}</label><input type="text" id="mp_last"></div>
+        <div class="form-field">
+          <label for="mp_sex">${t('za_f_sex')}</label>
+          <select id="mp_sex">
+            <option value="">${t('za_pick_option')}</option>
+            <option value="Male">${t('za_sex_male')}</option>
+            <option value="Female">${t('za_sex_female')}</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label for="mp_education_level">${t('za_f_education_level')}</label>
+          <select id="mp_education_level">
+            <option value="">${t('za_pick_option')}</option>
+            <option value="TVET / College Diploma">${t('za_edu_tvet_diploma')}</option>
+            <option value="Bachelor's Degree">${t('za_edu_bachelors')}</option>
+            <option value="Master's Degree">${t('za_edu_masters')}</option>
+            <option value="PhD / Doctoral Degree">${t('za_edu_phd')}</option>
+          </select>
+        </div>
+        <div class="form-field"><label for="mp_phone">${t('za_f_candidate_phone')}</label><input type="text" id="mp_phone" placeholder="${t('za_optional')}"></div>
+        <div class="form-field"><label for="mp_email">${t('za_f_candidate_email')}</label><input type="email" id="mp_email" placeholder="${t('za_optional')}"></div>
+        <div class="form-field"><label for="mp_code">${t('za_f_recruitment_code')}</label><input type="text" id="mp_code" placeholder="${t('za_optional')}"></div>
       </div>
     </div>
     <div id="fields_appoint_school_admin" style="display:none;">
       <div class="form-grid">
-        <div class="form-field"><label>${t('za_f_first_name')}</label><input type="text" id="mp_a_first"></div>
-        <div class="form-field"><label>${t('za_f_middle_name')}</label><input type="text" id="mp_a_middle" placeholder="${t('za_optional')}"></div>
-        <div class="form-field"><label>${t('za_f_last_name')}</label><input type="text" id="mp_a_last"></div>
-        <div class="form-field"><label>${t('za_f_admin_title')}</label>
+        <div class="form-field"><label for="mp_a_first">${t('za_f_first_name')}</label><input type="text" id="mp_a_first"></div>
+        <div class="form-field"><label for="mp_a_middle">${t('za_f_middle_name')}</label><input type="text" id="mp_a_middle" placeholder="${t('za_optional')}"></div>
+        <div class="form-field"><label for="mp_a_last">${t('za_f_last_name')}</label><input type="text" id="mp_a_last"></div>
+        <div class="form-field"><label for="mp_a_title">${t('za_f_admin_title')}</label>
           <select id="mp_a_title">${SCHOOL_ADMIN_TITLES.map(x=>`<option value="${x}">${teacherTitleLabel(x)}</option>`).join('')}</select>
         </div>
-        <div class="form-field"><label>${t('za_f_candidate_phone')}</label><input type="text" id="mp_a_phone" placeholder="${t('za_optional')}"></div>
-        <div class="form-field"><label>${t('za_f_candidate_email')}</label><input type="email" id="mp_a_email" placeholder="${t('za_optional')}"></div>
-        <div class="form-field"><label>${t('za_f_password')}</label><input type="password" id="mp_a_password"></div>
+        <div class="form-field"><label for="mp_a_phone">${t('za_f_candidate_phone')}</label><input type="text" id="mp_a_phone" placeholder="${t('za_optional')}"></div>
+        <div class="form-field"><label for="mp_a_email">${t('za_f_candidate_email')}</label><input type="email" id="mp_a_email" placeholder="${t('za_optional')}"></div>
+        <div class="form-field"><label for="mp_a_password">${t('za_f_password')}</label><input type="password" id="mp_a_password"></div>
       </div>
       <div id="replaceAdminBox" style="display:none;margin-top:10px;padding:10px;border:1px solid var(--border,#333);border-radius:8px;">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
@@ -1301,7 +1622,56 @@ function myProposalTypeFieldsHTML(){
           <span id="replaceAdminLabel"></span>
         </label>
       </div>
+    </div>
+    <div id="fields_transfer_teacher" style="display:none;">
+      <p class="hint" style="margin-bottom:10px;">${t('za_transfer_hint')}</p>
+      <div class="table-wrap" style="max-height:320px;overflow-y:auto;">
+        <table>
+          <thead><tr>
+            <th></th><th>${t('za_th_teacher_id')}</th><th>${t('za_th_teacher')}</th><th>${t('za_th_school')}</th>
+          </tr></thead>
+          <tbody id="transferTeacherTbody">
+            <tr><td colspan="4" class="hint">${t('za_transfer_pick_school_first')}</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div id="fields_assign_supervisor" style="display:none;">
+      <div class="form-grid">
+        <div class="form-field"><label for="mp_s_first">${t('za_f_first_name')}</label><input type="text" id="mp_s_first"></div>
+        <div class="form-field"><label for="mp_s_middle">${t('za_f_middle_name')}</label><input type="text" id="mp_s_middle" placeholder="${t('za_optional')}"></div>
+        <div class="form-field"><label for="mp_s_last">${t('za_f_last_name')}</label><input type="text" id="mp_s_last"></div>
+        <div class="form-field"><label for="mp_s_phone">${t('za_f_candidate_phone')}</label><input type="text" id="mp_s_phone" placeholder="${t('za_optional')}"></div>
+        <div class="form-field"><label for="mp_s_email">${t('za_f_candidate_email')}</label><input type="email" id="mp_s_email" placeholder="${t('za_optional')}"></div>
+      </div>
+      <div class="form-field" style="margin-top:10px;">
+        <label>${t('za_f_delegated_schools')}</label>
+        <p class="hint" style="margin:4px 0 8px;">${t('za_supervisor_schools_hint')}</p>
+        <div id="supervisorSchoolsList" class="checklist"></div>
+      </div>
     </div>`;
+}
+
+// Populates the transfer-tab teacher table once a destination school is
+// picked: every teacher NOT already at that school, each with a checkbox
+// so more than one can be selected before submitting. Called on school
+// change (see renderMyProposalsPanel) and re-called whenever the tab is
+// switched to Transfer Teacher so it reflects whatever's already picked.
+function renderTransferTeacherTable(teachers, destSchoolId){
+  const tbody = document.getElementById('transferTeacherTbody');
+  if (!tbody) return;
+  if (!destSchoolId) {
+    tbody.innerHTML = `<tr><td colspan="4" class="hint">${t('za_transfer_pick_school_first')}</td></tr>`;
+    return;
+  }
+  const eligible = (teachers||[]).filter(tc => String(tc.school_id) !== String(destSchoolId));
+  tbody.innerHTML = eligible.length ? eligible.map(tc=>`
+    <tr>
+      <td><input type="checkbox" class="transferTeacherCheck" value="${tc.teacher_id}" data-name="${tc.full_name}"></td>
+      <td>${tc.teacher_id}</td>
+      <td>${tc.full_name}</td>
+      <td>${tc.school_name}</td>
+    </tr>`).join('') : `<tr><td colspan="4" class="hint">${t('za_transfer_none_eligible')}</td></tr>`;
 }
 
 // A school can only hold one Principal / one Academic VP / one Admin VP
@@ -1324,7 +1694,7 @@ function updateReplaceAdminBox(admins){
   const existing = school_id ? currentAdminFor(admins, school_id, title) : null;
   if (existing) {
     box.style.display = '';
-    label.textContent = t('za_replace_admin_question').replace('{name}', existing.first_name + ' ' + existing.last_name).replace('{title}', teacherTitleLabel(title));
+    label.textContent = t('za_replace_admin_question').replace('{name}', [existing.first_name, existing.middle_name, existing.last_name].filter(Boolean).join(' ')).replace('{title}', teacherTitleLabel(title));
     box.dataset.replaceId = existing.admin_id;
   } else {
     box.style.display = 'none';
@@ -1333,7 +1703,22 @@ function updateReplaceAdminBox(admins){
   }
 }
 
-function renderMyProposalsPanel(schools, proposals, admins){
+// Populates the supervisor-assignment checklist of every school in the
+// zone, so a Development Coordinator can hand a Supervisor one or more
+// schools in a single proposal — mirrors renderTransferTeacherTable's
+// pattern, just without a destination-school gate since there's nothing
+// to filter against yet.
+function renderSupervisorSchoolsChecklist(schools){
+  const list = document.getElementById('supervisorSchoolsList');
+  if (!list) return;
+  list.innerHTML = schools.length ? schools.map(s=>`
+    <label class="checklist-row">
+      <input type="checkbox" class="supervisorSchoolCheck" value="${s.id}">
+      <span>${s.school_name}</span>
+    </label>`).join('') : `<p class="hint">${t('za_no_schools')}</p>`;
+}
+
+function renderMyProposalsPanel(schools, proposals, admins, teachers){
   const schoolName = id => (schools.find(s=>String(s.id)===String(id)) || {}).school_name || '—';
   const schoolOpts = schools.map(s=>`<option value="${s.id}">${s.school_name}</option>`).join('');
 
@@ -1351,12 +1736,14 @@ function renderMyProposalsPanel(schools, proposals, admins){
     <div class="tabs">
       <button class="tab-btn active" data-type="hire_teacher">${t('za_act_proposal_hire')}</button>
       <button class="tab-btn" data-type="appoint_school_admin">${t('za_act_proposal_admin')}</button>
+      <button class="tab-btn" data-type="transfer_teacher">${t('za_act_proposal_transfer')}</button>
+      <button class="tab-btn" data-type="assign_supervisor">${t('za_act_proposal_supervisor')}</button>
     </div>
-    <div class="form-field" style="max-width:320px;margin-bottom:14px;">
-      <label>${t('za_f_target_school')}</label>
+    <div class="form-field" id="mp_school_wrap" style="max-width:320px;margin-bottom:14px;">
+      <label id="mp_school_label" for="mp_school">${t('za_f_target_school')}</label>
       <select id="mp_school"><option value="">${t('za_pick_school')}</option>${schoolOpts}</select>
     </div>
-    ${myProposalTypeFieldsHTML()}
+    ${myProposalTypeFieldsHTML(teachers)}
     <div class="form-actions">
       <button class="btn primary" id="btnSubmitProposal">${t('za_my_proposals_submit')}</button>
     </div>
@@ -1371,6 +1758,7 @@ function renderMyProposalsPanel(schools, proposals, admins){
   </div>`;
 
   let activeType = 'hire_teacher';
+  renderSupervisorSchoolsChecklist(schools);
   document.querySelectorAll('.tab-btn').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
@@ -1378,39 +1766,68 @@ function renderMyProposalsPanel(schools, proposals, admins){
       activeType = btn.dataset.type;
       document.getElementById('fields_hire_teacher').style.display = activeType==='hire_teacher' ? '' : 'none';
       document.getElementById('fields_appoint_school_admin').style.display = activeType==='appoint_school_admin' ? '' : 'none';
+      document.getElementById('fields_transfer_teacher').style.display = activeType==='transfer_teacher' ? '' : 'none';
+      document.getElementById('fields_assign_supervisor').style.display = activeType==='assign_supervisor' ? '' : 'none';
+      // assign_supervisor picks its schools via the checklist above, not
+      // the single mp_school selector every other proposal type uses.
+      document.getElementById('mp_school_wrap').style.display = activeType==='assign_supervisor' ? 'none' : '';
+      document.getElementById('mp_school_label').textContent = activeType==='transfer_teacher' ? t('za_f_destination_school') : t('za_f_target_school');
       if(activeType==='appoint_school_admin') updateReplaceAdminBox(admins);
+      if(activeType==='transfer_teacher') renderTransferTeacherTable(teachers, document.getElementById('mp_school').value);
     });
   });
 
   // Whenever the target school or the admin title changes, re-check
-  // whether that seat is already filled at that school.
-  document.getElementById('mp_school').addEventListener('change', ()=>{
+  // whether that seat is already filled at that school. For the transfer
+  // tab, re-filter the eligible-teachers table to whatever the newly
+  // picked destination school excludes.
+  document.getElementById('mp_school').addEventListener('change', (e)=>{
     if(activeType==='appoint_school_admin') updateReplaceAdminBox(admins);
+    if(activeType==='transfer_teacher') renderTransferTeacherTable(teachers, e.target.value);
   });
   document.getElementById('mp_a_title').addEventListener('change', ()=> updateReplaceAdminBox(admins));
 
   document.getElementById('btnSubmitProposal').addEventListener('click', async ()=>{
     const msg = document.getElementById('proposalFormMsg');
     const school_id = document.getElementById('mp_school').value;
-    if(!school_id){ msg.textContent = '⚠️ ' + t('za_pick_school'); return; }
+    if(activeType!=='assign_supervisor' && !school_id){ setErrorMsg(msg, t('za_pick_school')); return; }
 
-    let payload;
+    let payload, transferPayloads, supervisorSchoolIds;
     if(activeType==='hire_teacher'){
       const first_name = document.getElementById('mp_first').value.trim();
       const last_name = document.getElementById('mp_last').value.trim();
-      if(!first_name || !last_name){ msg.textContent = '⚠️ ' + t('za_recruitment_required'); return; }
+      if(!first_name || !last_name){ setErrorMsg(msg, t('za_recruitment_required')); return; }
       payload = {
         first_name, last_name,
         middle_name: document.getElementById('mp_middle').value.trim() || null,
+        sex: document.getElementById('mp_sex').value || null,
+        education_level: document.getElementById('mp_education_level').value || null,
         contact_number: document.getElementById('mp_phone').value.trim() || null,
         email: document.getElementById('mp_email').value.trim() || null,
         zonal_recruitment_code: document.getElementById('mp_code').value.trim() || null
+      };
+    } else if(activeType==='transfer_teacher'){
+      const checked = Array.from(document.querySelectorAll('.transferTeacherCheck:checked'));
+      if(!checked.length){ setErrorMsg(msg, t('za_transfer_pick_teachers')); return; }
+      transferPayloads = checked.map(cb => ({ teacher_id: cb.value, teacher_name: cb.dataset.name }));
+    } else if(activeType==='assign_supervisor'){
+      const first_name = document.getElementById('mp_s_first').value.trim();
+      const last_name = document.getElementById('mp_s_last').value.trim();
+      supervisorSchoolIds = Array.from(document.querySelectorAll('.supervisorSchoolCheck:checked')).map(cb=>cb.value);
+      if(!first_name || !last_name){ setErrorMsg(msg, t('za_my_proposals_admin_required')); return; }
+      if(!supervisorSchoolIds.length){ setErrorMsg(msg, t('za_supervisor_pick_schools')); return; }
+      payload = {
+        first_name, last_name,
+        middle_name: document.getElementById('mp_s_middle').value.trim() || null,
+        contact_number: document.getElementById('mp_s_phone').value.trim() || null,
+        email: document.getElementById('mp_s_email').value.trim() || null,
+        school_ids: supervisorSchoolIds
       };
     } else {
       const first_name = document.getElementById('mp_a_first').value.trim();
       const last_name = document.getElementById('mp_a_last').value.trim();
       const password = document.getElementById('mp_a_password').value;
-      if(!first_name || !last_name || !password){ msg.textContent = '⚠️ ' + t('za_my_proposals_admin_required'); return; }
+      if(!first_name || !last_name || !password){ setErrorMsg(msg, t('za_my_proposals_admin_required')); return; }
       const replaceBox = document.getElementById('replaceAdminBox');
       const wantsReplace = document.getElementById('mp_a_replace_check').checked;
       payload = {
@@ -1424,15 +1841,35 @@ function renderMyProposalsPanel(schools, proposals, admins){
     }
 
     try {
-      const result = await apiPost('/api/zonal/proposals', { proposal_type: activeType, school_id, payload });
+      let successText;
+      if (activeType === 'transfer_teacher') {
+        // One proposal per selected teacher — the backend's proposal
+        // payload is single-teacher, so a multi-select submits several
+        // proposals in parallel rather than inventing a batch payload
+        // shape the approval side doesn't understand yet.
+        await Promise.all(transferPayloads.map(payload =>
+          apiPost('/api/zonal/proposals', { proposal_type: activeType, school_id, payload })
+        ));
+        successText = transferPayloads.length === 1
+          ? t('za_transfer_proposal_submitted_one')
+          : t('za_transfer_proposal_submitted_many').replace('{count}', transferPayloads.length);
+      } else if (activeType === 'assign_supervisor') {
+        // No top-level school_id for this type — the server derives it
+        // from payload.school_ids[0] (see POST /api/zonal/proposals).
+        const result = await apiPost('/api/zonal/proposals', { proposal_type: activeType, payload });
+        successText = result.message;
+      } else {
+        const result = await apiPost('/api/zonal/proposals', { proposal_type: activeType, school_id, payload });
+        successText = result.message;
+      }
       // Reload FIRST (rebuilds #proposalFormMsg), then set the confirmation
       // text on the new element — otherwise the reload wipes the message
       // before the user ever sees it.
       await loadAndRenderMyProposals();
       const newMsg = document.getElementById('proposalFormMsg');
-      if(newMsg) newMsg.textContent = '✅ ' + result.message;
+      if(newMsg) setSuccessMsg(newMsg, successText);
     } catch (err) {
-      msg.textContent = '⚠️ ' + err.message;
+      setErrorMsg(msg, err.message);
     }
   });
 }
@@ -1467,8 +1904,13 @@ async function loadAndRenderProfile(){
 
 function renderProfilePanel(data){
   const name = CURRENT_USER.admin_full_name || CURRENT_USER.user_id || '';
-  const photoBlock = data.id_photo_url
-    ? `<img class="identity-photo-img" src="${data.id_photo_url}" alt="${name}">`
+  // This is the everyday profile picture shown in the sidebar/topbar
+  // (avatar_url) — deliberately NOT id_photo_url, which is the separate
+  // photo reserved for the printed ID card (see the "ID Photo" box below
+  // and My ID). Mirrors the same avatar_url/id_photo_url split used for
+  // teachers and school admins.
+  const photoBlock = data.avatar_url
+    ? `<img class="identity-photo-img" src="${data.avatar_url}" alt="${name}">`
     : `<div class="identity-photo-placeholder">${initialsOf(name)}</div>`;
 
   document.getElementById('content').innerHTML = `
@@ -1495,7 +1937,7 @@ function renderProfilePanel(data){
     <p class="hint" style="margin-bottom:14px;">${t('za_signatures_hint')}</p>
     <div class="sig-grid">
       <div>
-        <label style="display:block;font-size:12px;font-weight:700;color:var(--text-dim);margin-bottom:8px;">${t('za_signature_label')}</label>
+        <label for="f_sig_file" style="display:block;font-size:12px;font-weight:700;color:var(--text-dim);margin-bottom:8px;">${t('za_signature_label')}</label>
         <div class="upload-box">
           ${data.signature_url ? `<img src="${data.signature_url}" alt="signature">` : `<span class="hint">${t('za_no_signature')}</span>`}
           <input type="file" accept="image/*" id="f_sig_file" style="display:none;">
@@ -1503,7 +1945,7 @@ function renderProfilePanel(data){
         </div>
       </div>
       <div>
-        <label style="display:block;font-size:12px;font-weight:700;color:var(--text-dim);margin-bottom:8px;">${t('za_seal_label')}</label>
+        <label for="f_seal_file" style="display:block;font-size:12px;font-weight:700;color:var(--text-dim);margin-bottom:8px;">${t('za_seal_label')}</label>
         <div class="upload-box">
           ${data.stamp_url ? `<img src="${data.stamp_url}" alt="stamp">` : `<span class="hint">${t('za_no_seal')}</span>`}
           <input type="file" accept="image/*" id="f_seal_file" style="display:none;">
@@ -1511,7 +1953,7 @@ function renderProfilePanel(data){
         </div>
       </div>
       <div>
-        <label style="display:block;font-size:12px;font-weight:700;color:var(--text-dim);margin-bottom:8px;">${t('za_id_photo_label')}</label>
+        <label for="f_idphoto_file" style="display:block;font-size:12px;font-weight:700;color:var(--text-dim);margin-bottom:8px;">${t('za_id_photo_label')}</label>
         <div class="upload-box">
           ${data.id_photo_url ? `<img src="${data.id_photo_url}" alt="id photo">` : `<span class="hint">${t('za_no_id_photo')}</span>`}
           <input type="file" accept="image/*" id="f_idphoto_file" style="display:none;">
@@ -1525,11 +1967,11 @@ function renderProfilePanel(data){
     <h3><i data-lucide="settings"></i> ${t('za_account_settings_title')}</h3>
     <div class="form-grid">
       <div class="form-field">
-        <label>${t('za_first_name')}</label>
+        <label for="f_acct_first">${t('za_first_name')}</label>
         <input type="text" id="f_acct_first" value="${(CURRENT_USER.admin_full_name||'').split(' ')[0]||''}">
       </div>
       <div class="form-field">
-        <label>${t('za_last_name')}</label>
+        <label for="f_acct_last">${t('za_last_name')}</label>
         <input type="text" id="f_acct_last" value="${(CURRENT_USER.admin_full_name||'').split(' ').slice(1).join(' ')||''}">
       </div>
     </div>
@@ -1538,11 +1980,11 @@ function renderProfilePanel(data){
     </div>
     <div class="form-grid">
       <div class="form-field">
-        <label>${t('za_current_password')}</label>
+        <label for="f_acct_curpw">${t('za_current_password')}</label>
         <input type="password" id="f_acct_curpw">
       </div>
       <div class="form-field">
-        <label>${t('za_new_password')}</label>
+        <label for="f_acct_newpw">${t('za_new_password')}</label>
         <input type="password" id="f_acct_newpw">
       </div>
     </div>
@@ -1552,7 +1994,7 @@ function renderProfilePanel(data){
     <p class="hint" id="acctMsg"></p>
   </div>`;
 
-  wireSignatureUpload('f_identity_photo_file', 'btnUploadIdentityPhoto', '/api/zonal/upload-id-photo', 'id_photo', 'identityMsg');
+  wireSignatureUpload('f_identity_photo_file', 'btnUploadIdentityPhoto', '/api/zonal/upload-avatar', 'avatar', 'identityMsg');
   wireSignatureUpload('f_sig_file', 'btnUploadSig', '/api/zonal/upload-signature', 'signature');
   wireSignatureUpload('f_seal_file', 'btnUploadSeal', '/api/zonal/upload-stamp', 'stamp');
   wireSignatureUpload('f_idphoto_file', 'btnUploadIdPhoto', '/api/zonal/upload-id-photo', 'id_photo');
@@ -1607,6 +2049,13 @@ function wireSignatureUpload(fileId, btnId, path, fieldName, msgId){
     if(file.size > 2*1024*1024){ msg.textContent = t('za_signature_too_large'); return; }
     try {
       await uploadZonalFile(path, fieldName, file);
+      // Avatar changes also need to refresh the topbar/sidebar, which read
+      // from CURRENT_USER rather than the profile page's own fetch.
+      if (fieldName === 'avatar') {
+        CURRENT_USER = await apiGet('/api/me');
+        renderTopChrome();
+        if (window.lucide) window.lucide.createIcons();
+      }
       await loadAndRenderProfile();
       const newMsg = document.getElementById(msgId || 'signatureMsg');
       if(newMsg) newMsg.textContent = t('za_saved');
@@ -1617,33 +2066,185 @@ function wireSignatureUpload(fileId, btnId, path, fieldName, msgId){
 }
 
 /* ==================================================================
-   My ID — placeholder for the digital ID card (front/back). No
-   backend data yet; this just reserves the page and layout so the
-   real card design can be dropped in later.
+   My ID — flip card (front/back), mirrors the school-admin/teacher
+   portals' "My ID" design 1:1, backed by /api/zonal/id-card. A zonal
+   admin isn't tied to one school, so the card reads their ZONE and
+   TITLE (Head of Education / Teacher Development Coordinator /
+   Supervisor) instead of a school name and fixed role label. Fetched
+   once per page visit and re-rendered (not re-fetched) on language
+   switch — only the static labels change, not the underlying data.
    ================================================================== */
+let zonalIdCardData = null;
+
+function myIdSkeletonHTML(){
+  return `<div class="panel"><h3><i data-lucide="credit-card"></i> ${t('za_myid_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
+}
+
+async function loadAndRenderMyId(){
+  const c = document.getElementById('content');
+  if (zonalIdCardData) { c.innerHTML = myIdPanelHTML(); renderZonalIdCard(zonalIdCardData); return; }
+  try {
+    const data = await apiGet('/api/zonal/id-card');
+    zonalIdCardData = data;
+    c.innerHTML = myIdPanelHTML();
+    renderZonalIdCard(data);
+  } catch (err) {
+    c.innerHTML = errorPanel(err);
+  }
+}
+
 function myIdPanelHTML(){
   return `
   <div class="panel">
     <h3><i data-lucide="credit-card"></i> ${t('za_myid_title')}</h3>
     <p class="hint" style="margin-bottom:18px;">${t('za_myid_hint')}</p>
-    <div class="id-card-row">
-      <div class="id-card-slot">
-        <div class="id-card-slot-label">${t('za_myid_front')}</div>
-        <div class="id-card-slot-body">
-          <i data-lucide="image"></i>
-          <p>${t('za_myid_coming_soon')}</p>
-        </div>
-      </div>
-      <div class="id-card-slot">
-        <div class="id-card-slot-label">${t('za_myid_back')}</div>
-        <div class="id-card-slot-body">
-          <i data-lucide="image"></i>
-          <p>${t('za_myid_coming_soon')}</p>
+
+    <div id="idcard-error" style="display:none;color:var(--danger);font-size:0.9rem;margin-bottom:16px;"></div>
+
+    <div class="idcard-wrap" id="idcard-wrap" style="display:none">
+      <div class="idcard-scene">
+        <div class="idcard-flipper" id="idcard-flipper">
+          <div class="idcard-face idcard-front">
+            <div class="idcard-front-top">
+              <div class="idcard-front-top-content">
+                <div class="idcard-logo-badge"><img src="/assets/images/gflag.jpg" alt=""></div>
+                <div class="idcard-brand-text">
+                  <div class="idcard-zone-line" id="idcard-zone-front">—</div>
+                  <div class="idcard-brand-school">GAMBELLA CITY EDUC. OFFICE</div>
+                </div>
+              </div>
+            </div>
+            <div class="idcard-photo-ring">
+              <img id="idcard-photo" src="" alt="" style="display:none"
+                   onerror="this.style.display='none'; document.getElementById('idcard-photo-placeholder').style.display='flex';">
+              <div id="idcard-photo-placeholder" class="idcard-photo-placeholder" aria-hidden="true">
+                <svg width="46" height="46" viewBox="0 0 24 24" fill="#8a6d8a">
+                  <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7"/>
+                </svg>
+              </div>
+            </div>
+            <div class="idcard-front-bottom">
+              <div class="idcard-name" id="idcard-name">—</div>
+              <div class="idcard-role" id="idcard-title-role">—</div>
+              <div class="idcard-detail-rows">
+                <div class="idcard-detail-row">
+                  <span class="idcard-detail-label">ADMIN ID</span><span id="idcard-admin-id">—</span>
+                </div>
+                <div class="idcard-detail-row">
+                  <span class="idcard-detail-label">ZONE</span><span id="idcard-zone-name">—</span>
+                </div>
+                <div class="idcard-detail-row">
+                  <span class="idcard-detail-label">VALID UNTIL</span><span id="idcard-valid-until">—</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="idcard-face idcard-back">
+            <div class="idcard-back-header">
+              <div class="idcard-back-header-content">
+                <div class="idcard-logo-badge"><img src="/assets/images/gflag.jpg" alt=""></div>
+                <div class="idcard-brand-text idcard-brand-text-dark">
+                  <div class="idcard-zone-line" id="idcard-zone-back">—</div>
+                  <div class="idcard-brand-school">GAMBELLA CITY EDUC. OFFICE</div>
+                </div>
+              </div>
+            </div>
+            <div class="idcard-back-body">
+              <div class="idcard-contact-title">CONTACT INFORMATION</div>
+              <div class="idcard-contact-row">
+                <span class="idcard-contact-label">PHONE</span><span id="idcard-phone">—</span>
+              </div>
+              <div class="idcard-contact-row">
+                <span class="idcard-contact-label">EMAIL</span><span id="idcard-email">—</span>
+              </div>
+              <div class="idcard-qrcode" id="idcard-qrcode" aria-hidden="true"></div>
+              <div class="idcard-signature">
+                <img id="idcard-hoe-signature" class="idcard-signature-img" src="" alt="" style="display:none">
+                <div class="idcard-signature-line"></div>
+                <div class="idcard-signature-label">HEAD OF EDUCATION</div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
+
+    <div class="idcard-actions" id="idcard-actions" style="display:none">
+      <button type="button" class="btn primary" onclick="flipIdCard()">${t('za_idcard_flip')}</button>
+      <button type="button" class="btn" onclick="printIdCard()">${t('za_idcard_print')}</button>
+    </div>
   </div>`;
 }
+
+function renderZonalIdCard(data){
+  const wrap = document.getElementById('idcard-wrap');
+  const actions = document.getElementById('idcard-actions');
+  const errorEl = document.getElementById('idcard-error');
+  if (!wrap) return;
+
+  if (errorEl) errorEl.style.display = 'none';
+  wrap.style.display = 'flex';
+  if (actions) actions.style.display = 'flex';
+
+  const setText = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
+  const zoneLabel = data.zone ? data.zone.toUpperCase() : '—';
+  setText('idcard-zone-front', zoneLabel);
+  setText('idcard-zone-back', zoneLabel);
+  setText('idcard-zone-name', data.zone || '—');
+  setText('idcard-name', data.full_name || '—');
+  setText('idcard-admin-id', data.admin_id || '—');
+  setText('idcard-title-role', data.title ? data.title.toUpperCase() : '—');
+  setText('idcard-valid-until', data.valid_until || '—');
+  setText('idcard-phone', data.contact_number || '—');
+  setText('idcard-email', data.email || '—');
+
+  // NOTE: data.avatar_url here is the id-card endpoint's own field, which
+  // the server already resolves as id_photo_url || avatar_url — i.e. the
+  // dedicated ID photo takes priority over the everyday profile photo.
+  // Don't confuse this with CURRENT_USER.avatar_url used for the topbar.
+  const photo = document.getElementById('idcard-photo');
+  const placeholder = document.getElementById('idcard-photo-placeholder');
+  if (data.avatar_url && photo) {
+    photo.src = API_BASE + data.avatar_url;
+    photo.alt = data.full_name ? `Photo of ${data.full_name}` : 'Admin photo';
+    photo.style.display = 'block';
+    if (placeholder) placeholder.style.display = 'none';
+  } else {
+    if (photo) photo.style.display = 'none';
+    if (placeholder) placeholder.style.display = 'flex';
+  }
+
+  const hoeSig = document.getElementById('idcard-hoe-signature');
+  if (hoeSig) {
+    if (data.hoe_signature_url) {
+      hoeSig.src = API_BASE + data.hoe_signature_url;
+      hoeSig.style.display = 'block';
+    } else {
+      hoeSig.style.display = 'none';
+    }
+  }
+
+  renderIdCardQrCode(data.qr_payload || data.admin_id || '');
+}
+
+function renderIdCardQrCode(payload){
+  const container = document.getElementById('idcard-qrcode');
+  if (!container) return;
+  container.innerHTML = '';
+  if (typeof qrcode !== 'function' || !payload) return;
+  const qr = qrcode(4, 'M');
+  qr.addData(String(payload));
+  qr.make();
+  container.innerHTML = qr.createSvgTag(4, 2);
+}
+
+window.flipIdCard = () => {
+  const flipper = document.getElementById('idcard-flipper');
+  if (flipper) flipper.classList.toggle('idcard-flipped');
+};
+
+window.printIdCard = () => { window.print(); };
 
 /* ==================================================================
    Teachers directory (all three titles) — live from
@@ -1717,19 +2318,36 @@ function renderTeachersPanel(schools, teachers){
     tch.contact_number, tch.email
   ].some(v => v && String(v).toLowerCase().includes(term));
 
+  function renderTotals(){
+    // Only classroom teachers have a recorded sex (school admins don't
+    // collect it — see /api/zonal/teachers), so these counts are over the
+    // 'Teacher' title specifically, not the whole staff directory.
+    const classroomTeachers = sorted.filter(tch => tch.title === 'Teacher');
+    const total = classroomTeachers.length;
+    const male = classroomTeachers.filter(tch => tch.sex === 'Male').length;
+    const female = classroomTeachers.filter(tch => tch.sex === 'Female').length;
+    return `
+    <div class="totals-strip">
+      <div class="totals-chip"><i data-lucide="users"></i><span>${t('za_teachers_total')}</span><b>${total}</b></div>
+      <div class="totals-chip"><i data-lucide="user"></i><span>${t('za_teachers_male')}</span><b>${male}</b></div>
+      <div class="totals-chip"><i data-lucide="user"></i><span>${t('za_teachers_female')}</span><b>${female}</b></div>
+    </div>`;
+  }
+
   function renderRows(){
     const term = teachersSearchTerm.trim().toLowerCase();
     const filtered = sorted.filter(tch => matchesSearch(tch, term));
     const rows = filtered.length ? filtered.map(tch=>`
       <tr>
-        <td>${avatarCell(tch)}</td>
-        <td>${tch.teacher_id}</td>
-        <td>${tch.full_name}</td>
+        <td class="sticky-col">${avatarCell(tch)}</td>
+        <td class="sticky-col sticky-col-2">${tch.teacher_id}</td>
+        <td class="sticky-col sticky-col-3">${tch.full_name}</td>
         <td>${tch.school_name}</td>
         <td>${teacherTitleLabel(tch.title)}</td>
         <td>${tch.contact_number || '—'}</td>
         <td>${tch.email || '—'}</td>
-      </tr>`).join('') : `<tr><td colspan="7" class="hint">${term ? t('za_teachers_search_empty') : t('za_schools_empty')}</td></tr>`;
+        <td>${tch.is_active ? `<span class="pill ok">${t('za_status_active')}</span>` : `<span class="pill bad">${t('za_status_inactive')}</span>`}</td>
+      </tr>`).join('') : `<tr><td colspan="8" class="hint">${term ? t('za_teachers_search_empty') : t('za_schools_empty')}</td></tr>`;
     const tbody = document.getElementById('teachersTbody');
     if (tbody) tbody.innerHTML = rows;
     if (window.lucide) lucide.createIcons();
@@ -1738,19 +2356,22 @@ function renderTeachersPanel(schools, teachers){
   document.getElementById('content').innerHTML = `
   <div class="panel">
     <h3><i data-lucide="graduation-cap"></i> ${t('za_teachers_title')}</h3>
+    ${renderTotals()}
     <div class="filters">
       <div class="search-box"><i data-lucide="search"></i><input type="text" id="teacherSearchBox" placeholder="${t('za_teachers_search_placeholder')}" value="${teachersSearchTerm}"></div>
       <select id="teacherSchoolFilter">${schoolOpts}</select>
     </div>
-    <div class="table-wrap"><table>
+    <div class="table-wrap sticky-head">
+      <table class="sticky-col-table">
       <thead><tr>
-        <th>${t('za_th_photo')}</th>
-        <th>${t('za_th_teacher_id')}</th>
-        <th>${t('za_th_teacher')}</th>
+        <th class="sticky-col">${t('za_th_photo')}</th>
+        <th class="sticky-col sticky-col-2">${t('za_th_teacher_id')}</th>
+        <th class="sticky-col sticky-col-3">${t('za_th_teacher')}</th>
         <th>${t('za_th_school')}</th>
         <th>${t('za_th_title')}</th>
         <th>${t('za_th_contact')}</th>
         <th>${t('za_th_email')}</th>
+        <th>${t('za_th_status')}</th>
       </tr></thead>
       <tbody id="teachersTbody"></tbody>
     </table></div>
@@ -1814,11 +2435,11 @@ function renderMessagesPanel(messages, recipients){
     <div class="msg-detail">
       <h4>${t('za_messages_compose')}</h4>
       <div class="form-field" style="margin:12px 0;">
-        <label>${t('za_messages_to')}</label>
+        <label for="composeRecipient">${t('za_messages_to')}</label>
         <select id="composeRecipient">${recipientOpts}</select>
       </div>
       <div class="form-field" style="margin-bottom:12px;">
-        <label>${t('za_messages_subject')}</label>
+        <label for="composeSubject">${t('za_messages_subject')}</label>
         <input type="text" id="composeSubject">
       </div>
       <div class="msg-reply-box"><textarea id="composeBody" placeholder="${t('za_messages_body_placeholder')}"></textarea></div>
@@ -1987,91 +2608,51 @@ function getEthiopianHoliday(date){
   const movable = (ETH_MOVABLE_HOLIDAYS[d.getFullYear()]||[]).find(h=> h.md[0]===d.getMonth()+1 && h.md[1]===d.getDate());
   return movable ? movable.key : null;
 }
-
-let calViewYear = null, calViewMonth = null;
+// Islamic holidays follow the lunar Hijri calendar, so their Gregorian
+// date each year is a projection, not a fixed conversion like the other
+// entries — flagged "(tentative)" in the upcoming-holidays list.
+const ETH_TENTATIVE_HOLIDAY_KEYS = ['eid_fitr', 'eid_adha', 'mawlid'];
 
 function renderEthiopianCalendarWidget(){
   const today = new Date();
   const todayEc = toEthiopianDate(today);
-  if(calViewYear==null){ calViewYear = todayEc.year; calViewMonth = todayEc.month; }
 
-  const daysInMonth = calViewMonth === 13 ? (isLeapEc(calViewYear) ? 6 : 5) : 30;
-  // First day-of-week (0=Sun) for the 1st of this Ethiopian month.
-  const firstGc = ethiopianToGregorian(calViewYear, calViewMonth, 1);
-  const firstDow = firstGc.getDay();
-
-  const dowLabels = [0,1,2,3,4,5,6].map(i=> t('za_cal_dow_'+i));
-  let cells = '';
-  for(let i=0;i<firstDow;i++) cells += `<div class="cal-day empty"></div>`;
-  for(let day=1; day<=daysInMonth; day++){
-    const gc = ethiopianToGregorian(calViewYear, calViewMonth, day);
-    const isToday = calViewYear===todayEc.year && calViewMonth===todayEc.month && day===todayEc.day;
-    const holidayKey = getEthiopianHoliday(gc);
-    cells += `<div class="cal-day ${isToday?'today':''} ${holidayKey?'holiday':''}" title="${holidayKey ? t('holiday_'+holidayKey) : ''}">${day}</div>`;
-  }
-
-  // Upcoming holidays: scan forward up to 120 days from today.
+  // Upcoming holidays: scan forward up to just over a year so holidays
+  // that roll into the next Gregorian year (Genna, Timkat) still show,
+  // capped at 6 rows.
   const upcoming = [];
-  for(let i=0;i<120 && upcoming.length<5;i++){
+  for(let i=0;i<400 && upcoming.length<6;i++){
     const d = new Date(today.getTime() + i*86400000);
     const key = getEthiopianHoliday(d);
     if(key){
-      const ec = toEthiopianDate(d);
-      upcoming.push({ key, ec, gc: d });
+      const daysAway = Math.round((d - today) / 86400000);
+      upcoming.push({ key, gc: d, daysAway });
     }
   }
   const holidayRows = upcoming.length ? upcoming.map(h=>`
-    <div class="cal-holiday-item">
-      <span>${t('holiday_'+h.key)}</span>
-      <span class="ch-date">${h.ec.day} ${t('eth_month_'+h.ec.monthKey)} ${h.ec.year} E.C. (${h.gc.toLocaleDateString('en-GB',{day:'numeric',month:'short'})} GC)</span>
+    <div class="cal-holiday-row">
+      <span class="cal-holiday-date-badge">${h.gc.toLocaleDateString('en-US',{month:'short',day:'numeric'})}</span>
+      <span class="cal-holiday-name">${t('holiday_'+h.key)}${ETH_TENTATIVE_HOLIDAY_KEYS.includes(h.key) ? ` <span class="cal-holiday-tentative">(${t('za_cal_tentative')})</span>` : ''}</span>
+      <span class="cal-holiday-days">${h.daysAway === 1 ? t('za_cal_in_day') : t('za_cal_in_days', {n: h.daysAway})}</span>
     </div>`).join('') : `<p class="hint">${t('za_cal_no_upcoming')}</p>`;
 
   return `
   <div class="panel">
     <h3><i data-lucide="calendar-days"></i> ${t('za_cal_title')}</h3>
-    <div class="cal-widget">
-      <div class="cal-widget-cal">
-        <div class="cal-head">
-          <button class="cal-nav-btn" id="calPrevBtn"><i data-lucide="chevron-left"></i></button>
-          <div>
-            <div class="cal-title">${t('eth_month_'+ETH_MONTH_KEYS[calViewMonth-1])} ${calViewYear} E.C.</div>
-            <div class="cal-sub">${firstGc.toLocaleDateString('en-GB',{month:'long',year:'numeric'})} GC</div>
-          </div>
-          <button class="cal-nav-btn" id="calNextBtn"><i data-lucide="chevron-right"></i></button>
-        </div>
-        <div class="cal-grid">
-          ${dowLabels.map(l=>`<div class="cal-dow">${l}</div>`).join('')}
-          ${cells}
-        </div>
-      </div>
-      <div class="cal-holiday-list">
-        <div class="cal-title" style="margin-bottom:10px;">${t('za_cal_upcoming')}</div>
-        ${holidayRows}
-      </div>
+    <div class="cal-today-box">
+      <span class="cal-today-big">${todayEc.day} ${t('eth_month_'+todayEc.monthKey)} ${todayEc.year}</span>
+      <span class="cal-today-sub">${today.toLocaleDateString('en-US',{weekday:'long'})} · GC: ${today.toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})}</span>
+    </div>
+    <div class="cal-upcoming-label">${t('za_cal_upcoming')}</div>
+    <div class="cal-holiday-simple-list">
+      ${holidayRows}
     </div>
   </div>`;
-}
-function isLeapEc(ecYear){
-  return ((ecYear + 1) % 4) === 0;
-}
-function wireEthiopianCalendarWidget(){
-  const prev = document.getElementById('calPrevBtn');
-  const next = document.getElementById('calNextBtn');
-  if(!prev || !next) return;
-  prev.addEventListener('click', ()=>{
-    calViewMonth--; if(calViewMonth<1){ calViewMonth=13; calViewYear--; }
-    reinjectCalendarWidget();
-  });
-  next.addEventListener('click', ()=>{
-    calViewMonth++; if(calViewMonth>13){ calViewMonth=1; calViewYear++; }
-    reinjectCalendarWidget();
-  });
 }
 function reinjectCalendarWidget(){
   const holder = document.getElementById('calWidgetHolder');
   if(!holder) return;
   holder.outerHTML = `<div id="calWidgetHolder">${renderEthiopianCalendarWidget()}</div>`;
-  wireEthiopianCalendarWidget();
   if(window.lucide) window.lucide.createIcons();
 }
 
@@ -2093,11 +2674,12 @@ function render(){
   else if(activePage==='za_nav_setup_school') { c.innerHTML = setupSchoolSkeletonHTML(); loadAndRenderSetupSchool(); }
   else if(activePage==='za_nav_approvals') { c.innerHTML = approvalsSkeletonHTML(); loadAndRenderApprovals(); }
   else if(activePage==='za_nav_delegation') { c.innerHTML = delegationSkeletonHTML(); loadAndRenderDelegation(); }
+  else if(activePage==='za_nav_team') { c.innerHTML = teamSkeletonHTML(); loadAndRenderTeam(); }
   else if(activePage==='za_nav_subjects') { c.innerHTML = subjectsSkeletonHTML(); loadAndRenderSubjects(); }
   else if(activePage==='za_nav_recruitment') { c.innerHTML = recruitmentSkeletonHTML(); loadAndRenderRecruitment(); }
   else if(activePage==='za_nav_proposals') { c.innerHTML = myProposalsSkeletonHTML(); loadAndRenderMyProposals(); }
   else if(activePage==='za_nav_profile') { c.innerHTML = profileSkeletonHTML(); loadAndRenderProfile(); }
-  else if(activePage==='za_nav_myid') { c.innerHTML = myIdPanelHTML(); }
+  else if(activePage==='za_nav_myid') { c.innerHTML = myIdSkeletonHTML(); loadAndRenderMyId(); }
   else if(activePage==='za_nav_messages') { c.innerHTML = messagesSkeletonHTML(); loadAndRenderMessages(); }
   else c.innerHTML = genericPanel(activePage, 'file-text');
 }

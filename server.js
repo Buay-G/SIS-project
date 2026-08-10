@@ -110,6 +110,28 @@ function isSchoolDay(date) {
 function toDateOnly(d) {
     return d.toISOString().slice(0, 10); // YYYY-MM-DD
 }
+
+// Normalizes a person's name to ALL CAPS ("Akim Gatkal-Gatluak" /
+// "akim gatkal-gatluak" -> "AKIM GATKAL-GATLUAK") before it's stored,
+// no matter how it was typed, and no matter which role's form it came
+// through. Every place in this file that inserts or updates a
+// first/middle/last name (students, teachers, incoming teachers,
+// school admins, zonal admins) runs the value through this first, so
+// the database ends up with one consistent style instead of whatever
+// casing whoever was typing happened to use — which is also what
+// report cards, ID cards, and every roster/dropdown display, so
+// fixing it here fixes all of those at once instead of needing a
+// display-side fix in every place a name is shown.
+// Amharic script has no case distinction, so .toUpperCase() is a
+// no-op on Amharic name fields — they pass through unchanged rather
+// than being at risk from a transform that wasn't built for that
+// script.
+function normalizeName(name) {
+    if (name == null) return name;
+    const str = String(name).trim().replace(/\s+/g, ' ');
+    if (!str) return str;
+    return str.toUpperCase();
+}
 const JWT_EXPIRES_IN = '30m'; // short-lived on purpose — see refresh notes below
 
 function issueAuthToken(res, { user_id, role, school_id, zone, zone_id, title, is_class_monitor, can_act_independently }) {
@@ -341,16 +363,27 @@ async function requireRegistrarOnly(req, res, next) {
 //     proposal_id INT AUTO_INCREMENT PRIMARY KEY,
 //     zone_id INT NOT NULL,
 //     proposed_by VARCHAR(20) NOT NULL, -- zonal_admins.admin_id
-//     proposal_type ENUM('hire_teacher','appoint_school_admin') NOT NULL,
+//     proposal_type ENUM('hire_teacher','appoint_school_admin','transfer_teacher','assign_supervisor') NOT NULL,
 //     school_id INT NOT NULL,
 //     payload JSON NOT NULL,
 //     status ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
 //     rejection_reason VARCHAR(255) NULL,
 //     reviewed_by VARCHAR(20) NULL,
 //     reviewed_at DATETIME NULL,
+//     pushed_by VARCHAR(20) NULL,   -- zonal_admins.admin_id (Teacher Development Coordinator) who pushed it
+//     pushed_at DATETIME NULL,      -- set once the approved proposal is actually pushed — see POST /api/zonal/proposals/:id/push
 //     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 //     FOREIGN KEY (zone_id) REFERENCES zones(zone_id)
 //   );
+//
+//   -- If zonal_proposals already exists from before pushing was split out
+//   -- as its own step, add the two columns instead of recreating the table:
+//   --   ALTER TABLE zonal_proposals ADD COLUMN pushed_by VARCHAR(20) NULL, ADD COLUMN pushed_at DATETIME NULL;
+//
+//   -- If zonal_proposals already exists from before 'assign_supervisor'
+//   -- was added, widen the enum instead of recreating the table:
+//   --   ALTER TABLE zonal_proposals MODIFY proposal_type
+//   --     ENUM('hire_teacher','appoint_school_admin','transfer_teacher','assign_supervisor') NOT NULL;
 //
 //   -- The zone's curriculum subject list — the Head of Education sets
 //   -- which subjects exist for their zone (e.g. Nuer/Dha-Anywaa mother-
@@ -412,6 +445,19 @@ function requireCanActInZone(req, res, next) {
             ? "You don't have delegated authority to do this directly — submit a proposal instead."
             : "This action is restricted to the Head of Education."
     });
+}
+
+// Subject Dictionary uses a wider permission than requireCanActInZone:
+// ANY Teacher Development Coordinator — delegated or not — can add/edit/
+// remove dictionary entries, since curating the zone's subject list is
+// squarely their job. Only *approving* a pending entry is Head-of-
+// Education-only (requireHeadOfEducation, used directly on those routes).
+function requireTdcOrHoe(req, res, next) {
+    if (!req.user || req.user.role !== 'zonal_admins') {
+        return res.status(403).json({ error: "This action is restricted to zonal admin accounts." });
+    }
+    if (req.user.title === 'Head of Education' || req.user.title === 'Teacher Development Coordinator') return next();
+    return res.status(403).json({ error: "This action is restricted to the Head of Education or Development Coordinator." });
 }
 
 // Returns the school IDs this zonal_admins account can see/act on:
@@ -489,17 +535,26 @@ app.get('/api/zonal/schools', requireAuth, requireZonalAdmin, async (req, res) =
 });
 
 // --- Zonal: subject dictionary ---
-// The zone's curriculum subject list. GET is available to all three
-// zonal_admins titles (view-only for Teacher Development Coordinator/Supervisor,
-// same as /api/zonal/schools) — Supervisors aren't scoped to specific
-// schools here since the dictionary belongs to the whole zone, not to
-// any one school. Adding/removing subjects is a zone-wide curriculum
-// decision, so it's restricted the same way hiring/appointing is:
-// Head of Education, or a Teacher Development Coordinator with delegated authority.
+// The zone's curriculum subject list. Adding/editing/removing subjects
+// is the Development Coordinator's job (delegated or not — requireTdcOrHoe,
+// not requireCanActInZone: this is deliberately wider than the zone's
+// other "direct authority" actions). A Development Coordinator's add/edit
+// lands as 'pending' and stays invisible to schools (see the approved-only
+// filter on /api/academic-vp/subject-dictionary below) until the Head of
+// Education approves it; the Head of Education's own add/edit is
+// auto-approved. GET returns every row regardless of status — it's the
+// internal zonal-admin view, available to all three titles.
+//
+// ADD THESE COLUMNS if subject_dictionary already exists without them:
+//   ALTER TABLE subject_dictionary
+//     ADD COLUMN status ENUM('pending','approved') NOT NULL DEFAULT 'approved',
+//     ADD COLUMN added_by VARCHAR(50) NULL,
+//     ADD COLUMN approved_by VARCHAR(50) NULL,
+//     ADD COLUMN approved_at DATETIME NULL;
 app.get('/api/zonal/subject-dictionary', requireAuth, requireZonalAdmin, async (req, res) => {
     try {
         const [subjects] = await pool.query(
-            'SELECT subject_dict_id, subject_name FROM subject_dictionary WHERE zone_id = ? ORDER BY subject_name',
+            'SELECT subject_dict_id, subject_name, status, added_by, approved_by, approved_at FROM subject_dictionary WHERE zone_id = ? ORDER BY subject_name',
             [req.user.zone_id]
         );
         res.json(subjects);
@@ -509,24 +564,85 @@ app.get('/api/zonal/subject-dictionary', requireAuth, requireZonalAdmin, async (
     }
 });
 
-app.post('/api/zonal/subject-dictionary', requireAuth, requireCanActInZone, async (req, res) => {
+app.post('/api/zonal/subject-dictionary', requireAuth, requireTdcOrHoe, async (req, res) => {
     const { subject_name } = req.body;
     if (!subject_name || !subject_name.trim()) return res.status(400).json({ error: "subject_name is required" });
     try {
+        const cleanName = normalizeName(subject_name);
         const [existing] = await pool.query(
             'SELECT subject_dict_id FROM subject_dictionary WHERE zone_id = ? AND subject_name = ?',
-            [req.user.zone_id, subject_name.trim()]
+            [req.user.zone_id, cleanName]
         );
         if (existing.length > 0) return res.status(409).json({ error: "This subject is already in the dictionary." });
 
+        const isHoe = req.user.title === 'Head of Education';
         const [insertResult] = await pool.query(
-            'INSERT INTO subject_dictionary (zone_id, subject_name) VALUES (?, ?)',
-            [req.user.zone_id, subject_name.trim()]
+            `INSERT INTO subject_dictionary (zone_id, subject_name, status, added_by, approved_by, approved_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [req.user.zone_id, cleanName, isHoe ? 'approved' : 'pending', req.user.user_id, isHoe ? req.user.user_id : null, isHoe ? new Date() : null]
         );
-        res.json({ message: "Subject added to dictionary.", subject_dict_id: insertResult.insertId });
+        res.json({
+            message: isHoe ? "Subject added to dictionary." : "Subject submitted — it won't be visible to schools until the Head of Education approves it.",
+            subject_dict_id: insertResult.insertId
+        });
     } catch (err) {
         console.error("/api/zonal/subject-dictionary POST error:", err);
         res.status(500).json({ error: "Could not add subject" });
+    }
+});
+
+app.put('/api/zonal/subject-dictionary/:subject_dict_id', requireAuth, requireTdcOrHoe, async (req, res) => {
+    const { subject_name } = req.body;
+    if (!subject_name || !subject_name.trim()) return res.status(400).json({ error: "subject_name is required" });
+    try {
+        const cleanName = normalizeName(subject_name);
+        const [dupe] = await pool.query(
+            'SELECT subject_dict_id FROM subject_dictionary WHERE zone_id = ? AND subject_name = ? AND subject_dict_id != ?',
+            [req.user.zone_id, cleanName, req.params.subject_dict_id]
+        );
+        if (dupe.length > 0) return res.status(409).json({ error: "This subject is already in the dictionary." });
+
+        const isHoe = req.user.title === 'Head of Education';
+        const [result] = await pool.query(
+            `UPDATE subject_dictionary
+             SET subject_name = ?, status = ?, added_by = ?, approved_by = ?, approved_at = ?
+             WHERE subject_dict_id = ? AND zone_id = ?`,
+            [cleanName, isHoe ? 'approved' : 'pending', req.user.user_id, isHoe ? req.user.user_id : null, isHoe ? new Date() : null, req.params.subject_dict_id, req.user.zone_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Subject not found in your zone's dictionary." });
+        res.json({ message: isHoe ? "Subject updated." : "Subject updated — it needs Head of Education approval again before schools can see it." });
+    } catch (err) {
+        console.error("/api/zonal/subject-dictionary PUT error:", err);
+        res.status(500).json({ error: "Could not update subject" });
+    }
+});
+
+app.post('/api/zonal/subject-dictionary/:subject_dict_id/approve', requireAuth, requireHeadOfEducation, async (req, res) => {
+    try {
+        const [result] = await pool.query(
+            `UPDATE subject_dictionary SET status = 'approved', approved_by = ?, approved_at = NOW()
+             WHERE subject_dict_id = ? AND zone_id = ? AND status = 'pending'`,
+            [req.user.user_id, req.params.subject_dict_id, req.user.zone_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Subject not found or already decided." });
+        res.json({ message: "Subject approved — now visible to schools." });
+    } catch (err) {
+        console.error("/api/zonal/subject-dictionary/:id/approve error:", err);
+        res.status(500).json({ error: "Could not approve subject" });
+    }
+});
+
+app.post('/api/zonal/subject-dictionary/:subject_dict_id/reject', requireAuth, requireHeadOfEducation, async (req, res) => {
+    try {
+        const [result] = await pool.query(
+            `DELETE FROM subject_dictionary WHERE subject_dict_id = ? AND zone_id = ? AND status = 'pending'`,
+            [req.params.subject_dict_id, req.user.zone_id]
+        );
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Subject not found or already decided." });
+        res.json({ message: "Subject rejected." });
+    } catch (err) {
+        console.error("/api/zonal/subject-dictionary/:id/reject error:", err);
+        res.status(500).json({ error: "Could not reject subject" });
     }
 });
 
@@ -537,7 +653,7 @@ app.post('/api/zonal/subject-dictionary', requireAuth, requireCanActInZone, asyn
 // a school that's already teaching a subject shouldn't lose its
 // existing configuration just because the zone stops listing it, e.g.
 // while the zone is transitioning a subject out.
-app.delete('/api/zonal/subject-dictionary/:subject_dict_id', requireAuth, requireCanActInZone, async (req, res) => {
+app.delete('/api/zonal/subject-dictionary/:subject_dict_id', requireAuth, requireTdcOrHoe, async (req, res) => {
     try {
         const [result] = await pool.query(
             'DELETE FROM subject_dictionary WHERE subject_dict_id = ? AND zone_id = ?',
@@ -590,7 +706,7 @@ async function createSchoolAdminAccount({ school_id, first_name, middle_name, la
     await pool.query(
         `INSERT INTO school_admins (admin_id, school_id, first_name, middle_name, last_name, title, contact_number, email, security_password)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [admin_id, school_id, first_name, middle_name || null, last_name, title, contact_number || null, email || null, hashedPassword]
+        [admin_id, school_id, normalizeName(first_name), normalizeName(middle_name) || null, normalizeName(last_name), title, contact_number || null, email || null, hashedPassword]
     );
 
     if (replace_admin_id) {
@@ -598,6 +714,71 @@ async function createSchoolAdminAccount({ school_id, first_name, middle_name, la
     }
 
     return admin_id;
+}
+
+// --- Zonal: Supervisor account creation ---
+// Supervisors have no account-creation power at all (see the zonal-admin
+// overview above), so a Supervisor account is only ever minted here, as
+// the result of a Teacher Development Coordinator's 'assign_supervisor'
+// proposal being approved by the Head of Education (see the
+// assign_supervisor branch of /api/zonal/proposals/:id/approve below).
+// Every new Supervisor gets the same default password — the same
+// pattern the student portal uses for a password reset — and is
+// expected to change it from Profile Settings after first login.
+const DEFAULT_SUPERVISOR_PASSWORD = '1122';
+
+// Supervisor IDs live in the same zonal_admins.admin_id space as every
+// other zonal admin (e.g. 'GCEO-HOE-001'), but on their own '-SUP-'
+// sequence, scoped per zone via zones.zone_prefix — separate from
+// STAFF_ID_PREFIX/getNextStaffId above, which is for teachers/school
+// admins only.
+async function getNextSupervisorId(zone_id) {
+    const [[zoneRows], [adminRows]] = await Promise.all([
+        pool.query('SELECT zone_prefix FROM zone WHERE zone_id = ?', [zone_id]),
+        pool.query(`SELECT admin_id FROM zonal_admins WHERE zone_id = ? AND admin_id LIKE '%-SUP-%'`, [zone_id])
+    ]);
+    if (zoneRows.length === 0) throw Object.assign(new Error("Zone not found."), { status: 404 });
+    const prefix = zoneRows[0].zone_prefix;
+    let maxNumber = 0;
+    adminRows.forEach(r => {
+        const m = /-SUP-(\d+)$/.exec(r.admin_id);
+        if (m) {
+            const n = parseInt(m[1], 10);
+            if (!isNaN(n) && n > maxNumber) maxNumber = n;
+        }
+    });
+    return `${prefix}-SUP-${String(maxNumber + 1).padStart(3, '0')}`;
+}
+
+// school_ids: every school this Supervisor is being delegated — at
+// least one required. Each becomes its own zone_admin_schools row, which
+// is what scopes their whole account (getZonalSchoolIds, /api/zonal/team,
+// /api/zonal/performance) once they log in.
+async function createSupervisorAccount({ zone_id, school_ids, first_name, middle_name, last_name, contact_number, email }) {
+    if (!Array.isArray(school_ids) || school_ids.length === 0) {
+        throw Object.assign(new Error("At least one delegated school is required."), { status: 400 });
+    }
+    const [schoolRows] = await pool.query(
+        'SELECT id FROM schools WHERE id IN (?) AND zone_id = ?',
+        [school_ids, zone_id]
+    );
+    if (schoolRows.length !== school_ids.length) {
+        throw Object.assign(new Error("One or more delegated schools weren't found in this zone."), { status: 404 });
+    }
+
+    const admin_id = await getNextSupervisorId(zone_id);
+    const hashedPassword = await bcrypt.hash(DEFAULT_SUPERVISOR_PASSWORD, 10);
+    await pool.query(
+        `INSERT INTO zonal_admins (admin_id, zone_id, title, first_name, middle_name, last_name, contact_number, email, security_password, can_act_independently)
+         VALUES (?, ?, 'Supervisor', ?, ?, ?, ?, ?, ?, FALSE)`,
+        [admin_id, zone_id, normalizeName(first_name), normalizeName(middle_name) || null, normalizeName(last_name), contact_number || null, email || null, hashedPassword]
+    );
+    await pool.query(
+        `INSERT INTO zone_admin_schools (admin_id, school_id) VALUES ${school_ids.map(() => '(?, ?)').join(', ')}`,
+        school_ids.flatMap(id => [admin_id, id])
+    );
+
+    return { admin_id, default_password: DEFAULT_SUPERVISOR_PASSWORD };
 }
 
 app.post('/api/zonal/admin-users', requireAuth, requireCanActInZone, async (req, res) => {
@@ -642,16 +823,19 @@ app.get('/api/zonal/admin-users', requireAuth, requireZonalAdmin, async (req, re
 
 // Hires a teacher directly — same authority restriction as appointing a
 // school admin (Head of Education, or a delegated Teacher Development Coordinator).
-async function createTeacherAccount({ school_id, first_name, middle_name, last_name, contact_number, email, password }) {
+// NOTE: sex/education_level need columns on `teachers` if not already present:
+//   ALTER TABLE teachers ADD COLUMN sex ENUM('Male','Female') NULL AFTER last_name;
+//   ALTER TABLE teachers ADD COLUMN education_level ENUM('TVET / College Diploma','Bachelor''s Degree','Master''s Degree','PhD / Doctoral Degree') NULL AFTER sex;
+async function createTeacherAccount({ school_id, first_name, middle_name, last_name, sex, education_level, contact_number, email, password }) {
     const [schoolRows] = await pool.query('SELECT id FROM schools WHERE id = ?', [school_id]);
     if (schoolRows.length === 0) throw Object.assign(new Error("School not found."), { status: 404 });
 
     const teacher_id = await getNextStaffId();
     const hashedPassword = await bcrypt.hash(password, 10);
     await pool.query(
-        `INSERT INTO teachers (teacher_id, school_id, first_name, middle_name, last_name, contact_number, email, security_password)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [teacher_id, school_id, first_name, middle_name || null, last_name, contact_number || null, email || null, hashedPassword]
+        `INSERT INTO teachers (teacher_id, school_id, first_name, middle_name, last_name, sex, education_level, contact_number, email, security_password)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [teacher_id, school_id, normalizeName(first_name), normalizeName(middle_name) || null, normalizeName(last_name), sex || null, education_level || null, contact_number || null, email || null, hashedPassword]
     );
     return teacher_id;
 }
@@ -677,6 +861,8 @@ async function createTeacherAccount({ school_id, first_name, middle_name, last_n
 //     first_name VARCHAR(100) NOT NULL,
 //     middle_name VARCHAR(100) NULL,
 //     last_name VARCHAR(100) NOT NULL,
+//     sex ENUM('Male','Female') NULL,
+//     education_level ENUM('TVET / College Diploma','Bachelor''s Degree','Master''s Degree','PhD / Doctoral Degree') NULL,
 //     contact_number VARCHAR(30) NULL,
 //     email VARCHAR(150) NULL,
 //     zonal_recruitment_code VARCHAR(50) NULL,
@@ -686,21 +872,31 @@ async function createTeacherAccount({ school_id, first_name, middle_name, last_n
 //     decided_at DATETIME NULL,
 //     decline_reason VARCHAR(255) NULL,
 //     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     transferred_from_teacher_id VARCHAR(50) NULL, -- set only for a TRANSFER (not a new hire):
+//       the teacher already exists with this ID. On accept, the Principal does NOT set a
+//       password and no new account is minted — see the transferred_from_teacher_id branch
+//       of /api/principal/incoming-teachers/:id/accept below, which just re-points the
+//       existing teachers.school_id row so the teacher keeps their existing credentials.
+//     transferred_from_school_id INT NULL, -- the school they're being transferred out of, for display only
 //     FOREIGN KEY (school_id) REFERENCES schools(id)
 //   );
-async function pushIncomingTeacher({ school_id, pushed_by, first_name, middle_name, last_name, contact_number, email, zonal_recruitment_code }) {
+// ADD THESE COLUMNS if incoming_teachers already exists without them:
+//   ALTER TABLE incoming_teachers
+//     ADD COLUMN transferred_from_teacher_id VARCHAR(50) NULL,
+//     ADD COLUMN transferred_from_school_id INT NULL;
+async function pushIncomingTeacher({ school_id, pushed_by, first_name, middle_name, last_name, sex, education_level, contact_number, email, zonal_recruitment_code, transferred_from_teacher_id, transferred_from_school_id }) {
     const [schoolRows] = await pool.query('SELECT id FROM schools WHERE id = ?', [school_id]);
     if (schoolRows.length === 0) throw Object.assign(new Error("School not found."), { status: 404 });
     const [result] = await pool.query(
-        `INSERT INTO incoming_teachers (school_id, pushed_by, first_name, middle_name, last_name, contact_number, email, zonal_recruitment_code)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [school_id, pushed_by, first_name, middle_name || null, last_name, contact_number || null, email || null, zonal_recruitment_code || null]
+        `INSERT INTO incoming_teachers (school_id, pushed_by, first_name, middle_name, last_name, sex, education_level, contact_number, email, zonal_recruitment_code, transferred_from_teacher_id, transferred_from_school_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [school_id, pushed_by, normalizeName(first_name), normalizeName(middle_name) || null, normalizeName(last_name), sex || null, education_level || null, contact_number || null, email || null, zonal_recruitment_code || null, transferred_from_teacher_id || null, transferred_from_school_id || null]
     );
     return result.insertId;
 }
 
 app.post('/api/zonal/teachers', requireAuth, requireCanActInZone, async (req, res) => {
-    const { school_id, first_name, middle_name, last_name, contact_number, email, zonal_recruitment_code } = req.body;
+    const { school_id, first_name, middle_name, last_name, sex, education_level, contact_number, email, zonal_recruitment_code } = req.body;
     if (!school_id || !first_name || !last_name) {
         return res.status(400).json({ error: "school_id, first_name, and last_name are required" });
     }
@@ -710,7 +906,7 @@ app.post('/api/zonal/teachers', requireAuth, requireCanActInZone, async (req, re
             return res.status(403).json({ error: "That school isn't in your zone." });
         }
         const incoming_id = await pushIncomingTeacher({
-            school_id, pushed_by: req.user.user_id, first_name, middle_name, last_name, contact_number, email, zonal_recruitment_code
+            school_id, pushed_by: req.user.user_id, first_name, middle_name, last_name, sex, education_level, contact_number, email, zonal_recruitment_code
         });
         res.json({ message: "Teacher pushed to the school. Their Principal will review and accept before the account goes live.", incoming_id });
     } catch (err) {
@@ -770,7 +966,7 @@ app.get('/api/zonal/teachers', requireAuth, requireZonalAdmin, async (req, res) 
         const [teacherRows] = await pool.query(
             `SELECT t.teacher_id AS staff_id, t.school_id, s.school_name, t.first_name, t.middle_name, t.last_name,
                     t.contact_number, t.email, t.avatar_url, t.homeroom_class_level, t.homeroom_section, t.homeroom_stream,
-                    t.is_active, 'Teacher' AS title
+                    t.is_active, 'Teacher' AS title, t.sex AS sex
              FROM teachers t
              JOIN schools s ON s.id = t.school_id
              WHERE t.school_id IN (?) AND (t.is_active IS NULL OR t.is_active = TRUE)`,
@@ -779,7 +975,7 @@ app.get('/api/zonal/teachers', requireAuth, requireZonalAdmin, async (req, res) 
         const [adminRows] = await pool.query(
             `SELECT a.admin_id AS staff_id, a.school_id, s.school_name, a.first_name, a.middle_name, a.last_name,
                     a.contact_number, a.email, a.avatar_url, NULL AS homeroom_class_level, NULL AS homeroom_section, NULL AS homeroom_stream,
-                    a.is_active, a.title AS title
+                    a.is_active, a.title AS title, NULL AS sex
              FROM school_admins a
              JOIN schools s ON s.id = a.school_id
              WHERE a.school_id IN (?) AND (a.is_active IS NULL OR a.is_active = TRUE)`,
@@ -798,7 +994,8 @@ app.get('/api/zonal/teachers', requireAuth, requireZonalAdmin, async (req, res) 
             email: r.email,
             avatar_url: r.avatar_url || null,
             homeroom: r.homeroom_class_level ? `${r.homeroom_class_level}${r.homeroom_section ? '-' + r.homeroom_section : ''}` : null,
-            is_active: r.is_active == null ? true : !!r.is_active
+            is_active: r.is_active == null ? true : !!r.is_active,
+            sex: r.sex || null
         })));
     } catch (err) {
         console.error("/api/zonal/teachers error:", err);
@@ -815,17 +1012,32 @@ app.post('/api/zonal/proposals', requireAuth, requireZonalAdmin, async (req, res
     if (req.user.title !== 'Teacher Development Coordinator') {
         return res.status(403).json({ error: "Only the Teacher Development Coordinator submits proposals — Head of Education acts directly, and Supervisors don't have hiring/appointing authority at all." });
     }
-    const { proposal_type, school_id, payload } = req.body;
+    const { proposal_type, payload } = req.body;
+    if (!['hire_teacher', 'appoint_school_admin', 'transfer_teacher', 'assign_supervisor'].includes(proposal_type)) {
+        return res.status(400).json({ error: "proposal_type must be 'hire_teacher', 'appoint_school_admin', 'transfer_teacher', or 'assign_supervisor'" });
+    }
+    // assign_supervisor can delegate more than one school, so it carries
+    // its schools as payload.school_ids rather than the single top-level
+    // school_id every other proposal_type uses. The zonal_proposals table
+    // still only has one school_id column, so the first delegated school
+    // is stored there for the roster/approvals-queue views to key off of;
+    // the full list travels in payload and is what actually gets used on
+    // approval (see createSupervisorAccount).
+    let school_id = req.body.school_id;
+    if (proposal_type === 'assign_supervisor') {
+        if (!payload || !Array.isArray(payload.school_ids) || payload.school_ids.length === 0) {
+            return res.status(400).json({ error: "payload.school_ids (at least one delegated school) is required" });
+        }
+        school_id = payload.school_ids[0];
+    }
     if (!proposal_type || !school_id || !payload) {
         return res.status(400).json({ error: "proposal_type, school_id, and payload are required" });
     }
-    if (!['hire_teacher', 'appoint_school_admin'].includes(proposal_type)) {
-        return res.status(400).json({ error: "proposal_type must be 'hire_teacher' or 'appoint_school_admin'" });
-    }
     try {
         const zoneSchoolIds = await getZonalSchoolIds(req);
-        if (!zoneSchoolIds.includes(Number(school_id))) {
-            return res.status(403).json({ error: "That school isn't in your zone." });
+        const schoolsToCheck = proposal_type === 'assign_supervisor' ? payload.school_ids : [school_id];
+        if (!schoolsToCheck.every(id => zoneSchoolIds.includes(Number(id)))) {
+            return res.status(403).json({ error: "One or more of those schools aren't in your zone." });
         }
         await pool.query(
             `INSERT INTO zonal_proposals (zone_id, proposed_by, proposal_type, school_id, payload)
@@ -850,7 +1062,7 @@ app.get('/api/zonal/proposals', requireAuth, requireZonalAdmin, async (req, res)
             params.push(req.user.user_id);
         }
         const [rows] = await pool.query(
-            `SELECT proposal_id, proposed_by, proposal_type, school_id, payload, status, rejection_reason, reviewed_by, reviewed_at, created_at
+            `SELECT proposal_id, proposed_by, proposal_type, school_id, payload, status, rejection_reason, reviewed_by, reviewed_at, pushed_at, pushed_by, created_at
              FROM zonal_proposals ${whereClause} ORDER BY created_at DESC`,
             params
         );
@@ -861,36 +1073,97 @@ app.get('/api/zonal/proposals', requireAuth, requireZonalAdmin, async (req, res)
     }
 });
 
+// Head of Education approves or rejects a proposal here. Approval used to
+// also execute the account creation / teacher push in the same request —
+// it no longer does. Approving now only marks the proposal approved; the
+// actual push (creating the teacher/admin/transfer/supervisor) is a
+// separate, later action a Teacher Development Coordinator takes from the
+// Recruitment page — see POST /api/zonal/proposals/:id/push below. This
+// keeps "the Head of Education signed off on this" and "this has actually
+// gone out" as two distinct, auditable steps instead of one click doing both.
 app.post('/api/zonal/proposals/:id/approve', requireAuth, requireHeadOfEducation, async (req, res) => {
     try {
-        const [rows] = await pool.query(
-            `SELECT * FROM zonal_proposals WHERE proposal_id = ? AND zone_id = ? AND status = 'pending'`,
-            [req.params.id, req.user.zone_id]
+        const [result] = await pool.query(
+            `UPDATE zonal_proposals SET status = 'approved', reviewed_by = ?, reviewed_at = NOW()
+             WHERE proposal_id = ? AND zone_id = ? AND status = 'pending'`,
+            [req.user.user_id, req.params.id, req.user.zone_id]
         );
-        if (rows.length === 0) return res.status(404).json({ error: "Proposal not found or already reviewed." });
-        const proposal = rows[0];
-        const payload = typeof proposal.payload === 'string' ? JSON.parse(proposal.payload) : proposal.payload;
-
-        let resultId, message;
-        if (proposal.proposal_type === 'hire_teacher') {
-            // Approval doesn't create a live teacher account anymore — it
-            // pushes the candidate to the school, same as a direct hire via
-            // /api/zonal/teachers. The Principal still has to accept it.
-            resultId = await pushIncomingTeacher({ school_id: proposal.school_id, pushed_by: proposal.proposed_by, ...payload });
-            message = "Proposal approved and pushed to the school. Their Principal will review and accept before the account goes live.";
-        } else {
-            resultId = await createSchoolAdminAccount({ school_id: proposal.school_id, ...payload });
-            message = "Proposal approved and account created.";
-        }
-
-        await pool.query(
-            `UPDATE zonal_proposals SET status = 'approved', reviewed_by = ?, reviewed_at = NOW() WHERE proposal_id = ?`,
-            [req.user.user_id, proposal.proposal_id]
-        );
-        res.json({ message, id: resultId });
+        if (result.affectedRows === 0) return res.status(404).json({ error: "Proposal not found or already reviewed." });
+        res.json({ message: "Proposal approved. It's now ready to be pushed from the Recruitment page." });
     } catch (err) {
         console.error("/api/zonal/proposals/:id/approve error:", err);
         res.status(err.status || 500).json({ error: err.status ? err.message : "Could not approve proposal" });
+    }
+});
+
+// The actual push — this is what used to live inline inside the approve
+// handler above. Only a Teacher Development Coordinator may push (same
+// restriction as who may submit a proposal in the first place; see POST
+// /api/zonal/proposals), and only a proposal that's already been approved
+// by the Head of Education and hasn't been pushed yet.
+// Requires these columns if they don't exist yet:
+//   ALTER TABLE zonal_proposals ADD COLUMN pushed_at DATETIME NULL, ADD COLUMN pushed_by VARCHAR(20) NULL;
+app.post('/api/zonal/proposals/:id/push', requireAuth, requireZonalAdmin, async (req, res) => {
+    if (req.user.title !== 'Teacher Development Coordinator') {
+        return res.status(403).json({ error: "Only the Teacher Development Coordinator pushes approved proposals." });
+    }
+    try {
+        const [rows] = await pool.query(
+            `SELECT * FROM zonal_proposals WHERE proposal_id = ? AND zone_id = ? AND status = 'approved' AND pushed_at IS NULL`,
+            [req.params.id, req.user.zone_id]
+        );
+        if (rows.length === 0) return res.status(404).json({ error: "Proposal not found, not yet approved, or already pushed." });
+        const proposal = rows[0];
+        const payload = typeof proposal.payload === 'string' ? JSON.parse(proposal.payload) : proposal.payload;
+
+        let resultId, message, extra = {};
+        if (proposal.proposal_type === 'hire_teacher') {
+            // Doesn't create a live teacher account directly — it pushes the
+            // candidate to the school, same as a direct hire via
+            // /api/zonal/teachers. The Principal still has to accept it.
+            resultId = await pushIncomingTeacher({ school_id: proposal.school_id, pushed_by: proposal.proposed_by, ...payload });
+            message = "Pushed to the school. Their Principal will review and accept before the account goes live.";
+        } else if (proposal.proposal_type === 'transfer_teacher') {
+            // Not a new hire, but still goes through the destination
+            // school's Principal — same acceptance gate as a hire (see
+            // /api/principal/incoming-teachers/:id/accept). The Principal
+            // won't need to set a password: the teacher keeps their
+            // existing ID and credentials once accepted.
+            const [teacherRows] = await pool.query(
+                'SELECT teacher_id, school_id, first_name, middle_name, last_name, sex, education_level, contact_number, email FROM teachers WHERE teacher_id = ?',
+                [payload.teacher_id]
+            );
+            if (teacherRows.length === 0) throw Object.assign(new Error("Teacher not found."), { status: 404 });
+            const teacher = teacherRows[0];
+            if (Number(proposal.school_id) === teacher.school_id) {
+                throw Object.assign(new Error("Teacher is already at that school."), { status: 400 });
+            }
+            resultId = await pushIncomingTeacher({
+                school_id: proposal.school_id, pushed_by: proposal.proposed_by,
+                first_name: teacher.first_name, middle_name: teacher.middle_name, last_name: teacher.last_name,
+                sex: teacher.sex, education_level: teacher.education_level,
+                contact_number: teacher.contact_number, email: teacher.email,
+                transferred_from_teacher_id: teacher.teacher_id, transferred_from_school_id: teacher.school_id
+            });
+            message = `Transfer pushed to the new school. ${[teacher.first_name, teacher.middle_name, teacher.last_name].filter(Boolean).join(' ')}'s Principal will review and accept — they'll keep their existing ID (${teacher.teacher_id}) and password.`;
+        } else if (proposal.proposal_type === 'assign_supervisor') {
+            const created = await createSupervisorAccount({ zone_id: req.user.zone_id, ...payload });
+            resultId = created.admin_id;
+            extra = { default_password: created.default_password };
+            message = `Supervisor account created and schools assigned. Share ID ${created.admin_id} and the default password (${created.default_password}) with them — they'll be asked to change it after first login.`;
+        } else {
+            resultId = await createSchoolAdminAccount({ school_id: proposal.school_id, ...payload });
+            message = "Account created.";
+        }
+
+        await pool.query(
+            `UPDATE zonal_proposals SET pushed_at = NOW(), pushed_by = ? WHERE proposal_id = ?`,
+            [req.user.user_id, proposal.proposal_id]
+        );
+        res.json({ message, id: resultId, ...extra });
+    } catch (err) {
+        console.error("/api/zonal/proposals/:id/push error:", err);
+        res.status(err.status || 500).json({ error: err.status ? err.message : "Could not push proposal" });
     }
 });
 
@@ -948,6 +1221,50 @@ app.post('/api/zonal/teamleader/:id/delegate', requireAuth, requireHeadOfEducati
     }
 });
 
+// --- Zonal: Team directory ---
+// Every zonal_admins account in the zone (Head of Education, every
+// Teacher Development Coordinator, every Supervisor) with the school(s)
+// they're assigned to — "who is who" for the whole zone team, in one
+// place. Available to all three titles (requireZonalAdmin, not
+// requireHeadOfEducation — unlike /api/zonal/teamleaders above, which is
+// the Head-of-Education-only delegation list). Head of Education and
+// Development Coordinator aren't scoped to individual schools in
+// zone_admin_schools the way a Supervisor is — they act zone-wide — so
+// their "assigned schools" is just every school in the zone.
+app.get('/api/zonal/team', requireAuth, requireZonalAdmin, async (req, res) => {
+    try {
+        const [admins] = await pool.query(
+            `SELECT admin_id, first_name, middle_name, last_name, title, contact_number, email
+             FROM zonal_admins WHERE zone_id = ?
+             ORDER BY FIELD(title, 'Head of Education','Teacher Development Coordinator','Supervisor'), first_name`,
+            [req.user.zone_id]
+        );
+        const [allSchools] = await pool.query(
+            'SELECT id, school_name FROM schools WHERE zone_id = ? ORDER BY school_name',
+            [req.user.zone_id]
+        );
+        const [assignedRows] = await pool.query(
+            `SELECT za.admin_id, s.id AS school_id, s.school_name
+             FROM zone_admin_schools za JOIN schools s ON s.id = za.school_id
+             WHERE za.admin_id IN (?)`,
+            [admins.length ? admins.map(a => a.admin_id) : [null]]
+        );
+        const assignedBySupervisor = {};
+        assignedRows.forEach(r => {
+            (assignedBySupervisor[r.admin_id] = assignedBySupervisor[r.admin_id] || []).push({ id: r.school_id, school_name: r.school_name });
+        });
+        res.json(admins.map(a => ({
+            ...a,
+            full_name: [a.first_name, a.middle_name, a.last_name].filter(Boolean).join(' '),
+            schools: a.title === 'Supervisor' ? (assignedBySupervisor[a.admin_id] || []) : allSchools,
+            zone_wide: a.title !== 'Supervisor'
+        })));
+    } catch (err) {
+        console.error("/api/zonal/team error:", err);
+        res.status(500).json({ error: "Could not load the team directory" });
+    }
+});
+
 // --- Zonal: Supervisor performance view ---
 // Read-only, scoped to the Supervisor's individually assigned schools
 // (or, for Head of Education/Development Coordinator, every school in the zone).
@@ -967,7 +1284,7 @@ app.get('/api/zonal/performance', requireAuth, requireZonalAdmin, async (req, re
         const since = toDateOnly(new Date(Date.now() - 14 * 86400000));
 
         const [teachers] = await pool.query(
-            `SELECT teacher_id, school_id, first_name, last_name FROM teachers WHERE school_id IN (?)`,
+            `SELECT teacher_id, school_id, first_name, middle_name, last_name FROM teachers WHERE school_id IN (?)`,
             [schoolIds]
         );
 
@@ -1004,7 +1321,7 @@ app.get('/api/zonal/performance', requireAuth, requireZonalAdmin, async (req, re
             const daysSinceUpload = lastUpload ? Math.floor((Date.now() - new Date(lastUpload).getTime()) / 86400000) : null;
             return {
                 teacher_id: t.teacher_id,
-                full_name: `${t.first_name} ${t.last_name}`,
+                full_name: [t.first_name, t.middle_name, t.last_name].filter(Boolean).join(' '),
                 school_id: t.school_id,
                 periods_logged_last_14_days: att.total,
                 periods_present_last_14_days: att.present,
@@ -1043,7 +1360,7 @@ async function computeSchoolPerformance(schoolIds) {
     const since = toDateOnly(new Date(Date.now() - 14 * 86400000));
 
     const [schools] = await pool.query('SELECT id, school_name FROM schools WHERE id IN (?)', [schoolIds]);
-    const [teachers] = await pool.query('SELECT teacher_id, school_id, first_name, last_name FROM teachers WHERE school_id IN (?)', [schoolIds]);
+    const [teachers] = await pool.query('SELECT teacher_id, school_id, first_name, middle_name, last_name FROM teachers WHERE school_id IN (?)', [schoolIds]);
     const [attendance] = await pool.query(
         `SELECT pal.school_id, ct.teacher_id, pal.teacher_present
          FROM period_attendance_log pal
@@ -1091,7 +1408,7 @@ async function computeSchoolPerformance(schoolIds) {
             const daysSince = lastUpload ? Math.floor((Date.now() - new Date(lastUpload).getTime()) / 86400000) : null;
             return {
                 teacher_id: t.teacher_id,
-                full_name: `${t.first_name} ${t.last_name}`,
+                full_name: [t.first_name, t.middle_name, t.last_name].filter(Boolean).join(' '),
                 attendance_rate: att.total > 0 ? att.present / att.total : null,
                 days_since_marks_upload: daysSince
             };
@@ -1159,7 +1476,7 @@ app.get('/api/zonal/school-performance/:school_id/details', requireAuth, require
 
         const since = toDateOnly(new Date(Date.now() - 14 * 86400000));
         const [[school]] = await pool.query('SELECT id, school_name FROM schools WHERE id = ?', [wanted]);
-        const [teachers] = await pool.query('SELECT teacher_id, first_name, last_name FROM teachers WHERE school_id = ?', [wanted]);
+        const [teachers] = await pool.query('SELECT teacher_id, first_name, middle_name, last_name FROM teachers WHERE school_id = ?', [wanted]);
         const [attendance] = await pool.query(
             `SELECT ct.teacher_id, pal.teacher_present
              FROM period_attendance_log pal
@@ -1203,7 +1520,7 @@ app.get('/api/zonal/school-performance/:school_id/details', requireAuth, require
             const daysSince = lastUpload ? Math.floor((Date.now() - new Date(lastUpload).getTime()) / 86400000) : null;
             return {
                 teacher_id: t.teacher_id,
-                full_name: `${t.first_name} ${t.last_name}`,
+                full_name: [t.first_name, t.middle_name, t.last_name].filter(Boolean).join(' '),
                 attendance_rate: att.total > 0 ? Math.round((att.present / att.total) * 100) : null,
                 days_since_marks_upload: daysSince,
                 punctuality_issue: att.total > 0 && (att.present / att.total) < 0.8,
@@ -1315,7 +1632,7 @@ app.post('/api/zonal/schools', requireAuth, requireCanActInZone, async (req, res
         const [result] = await pool.query(
             `INSERT INTO schools (school_name, school_prefix, moe_school_code, region_id, zone_id, woreda_id, kebele_id)
              VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [school_name.trim(), school_prefix.trim().toUpperCase(), moe_school_code || null, region_id || null, req.user.zone_id, woreda_id || null, kebele_id || null]
+            [normalizeName(school_name), school_prefix.trim().toUpperCase(), moe_school_code || null, region_id || null, req.user.zone_id, woreda_id || null, kebele_id || null]
         );
         res.json({ message: "School registered.", school_id: result.insertId });
     } catch (err) {
@@ -1338,19 +1655,51 @@ app.get('/api/zonal/generate-assignment-code', requireAuth, requireCanActInZone,
 
 // --- Zonal: transfer an existing, already-employed teacher to a
 // different school in the same zone ---
-// Distinct from /api/zonal/teachers above (which pushes a brand-new HIRE
-// candidate through Principal acceptance): this moves someone who
-// already has a live teachers row. It still goes through the
-// destination Principal as an incoming_teachers record so they
-// explicitly accept before it goes live — same acceptance gate as a
-// fresh hire — rather than silently relocating the account. The
-// outgoing teacher's row at their CURRENT school is deactivated here;
-// what happens to their in-progress classes/homeroom at that school is
-// the origin Principal's call, via the replace-with endpoint below.
-// Requires these columns if they don't exist yet:
-//   ALTER TABLE incoming_teachers ADD COLUMN transferred_from_teacher_id VARCHAR(50) NULL, ADD COLUMN transferred_from_school_id INT NULL;
-//   ALTER TABLE teachers ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE;
-// and the teacher login query should filter WHERE is_active = TRUE.
+// A transfer is NOT a new hire — the teacher already exists in the
+// database and already has working credentials — but it still goes
+// through the same Principal-acceptance gate as a hire (see the
+// "Teacher intake" block above): the destination school's Principal
+// gets it in their incoming queue and accepts/declines it, same UI as
+// a hire. The one difference is on accept: no new account is minted
+// and no password is set — see the transferred_from_teacher_id branch
+// of /api/principal/incoming-teachers/:id/accept, which just re-points
+// the existing teachers.school_id row so the teacher keeps logging in
+// with their exact same ID and password.
+//
+// transferTeacherToSchool is the low-level "re-point school_id" step —
+// used once the Principal accepts (see the incoming-teachers accept
+// route), not called directly from here anymore.
+async function transferTeacherToSchool({ teacher_id, to_school_id, zoneSchoolIds }) {
+    const [teacherRows] = await pool.query(
+        'SELECT teacher_id, school_id, first_name, middle_name, last_name FROM teachers WHERE teacher_id = ?',
+        [teacher_id]
+    );
+    if (teacherRows.length === 0) throw Object.assign(new Error("Teacher not found."), { status: 404 });
+    const teacher = teacherRows[0];
+
+    if (zoneSchoolIds) {
+        if (!zoneSchoolIds.includes(teacher.school_id)) {
+            throw Object.assign(new Error("That teacher's current school isn't in your zone."), { status: 403 });
+        }
+        if (!zoneSchoolIds.includes(Number(to_school_id))) {
+            throw Object.assign(new Error("The destination school isn't in your zone."), { status: 403 });
+        }
+    }
+    if (Number(to_school_id) === teacher.school_id) {
+        throw Object.assign(new Error("Teacher is already at that school."), { status: 400 });
+    }
+
+    await pool.query('UPDATE teachers SET school_id = ? WHERE teacher_id = ?', [to_school_id, teacher.teacher_id]);
+    return teacher;
+}
+
+// Direct-act (Head of Education, or a delegated Development Coordinator)
+// path: pushes a transfer request straight to the destination school's
+// Principal, same as pushIncomingTeacher for a hire. A non-delegated
+// Development Coordinator can't call this (requireCanActInZone) — they
+// use POST /api/zonal/proposals with proposal_type 'transfer_teacher'
+// instead, which lands here too once the Head of Education approves it
+// (see the transfer_teacher branch of /api/zonal/proposals/:id/approve).
 app.post('/api/zonal/teachers/:teacher_id/transfer', requireAuth, requireCanActInZone, async (req, res) => {
     const { teacher_id } = req.params;
     const { to_school_id } = req.body;
@@ -1358,12 +1707,11 @@ app.post('/api/zonal/teachers/:teacher_id/transfer', requireAuth, requireCanActI
     try {
         const zoneSchoolIds = await getZonalSchoolIds(req);
         const [teacherRows] = await pool.query(
-            'SELECT teacher_id, school_id, first_name, middle_name, last_name, contact_number, email FROM teachers WHERE teacher_id = ?',
+            'SELECT teacher_id, school_id, first_name, middle_name, last_name, sex, education_level, contact_number, email FROM teachers WHERE teacher_id = ?',
             [teacher_id]
         );
         if (teacherRows.length === 0) return res.status(404).json({ error: "Teacher not found." });
         const teacher = teacherRows[0];
-
         if (!zoneSchoolIds.includes(teacher.school_id)) {
             return res.status(403).json({ error: "That teacher's current school isn't in your zone." });
         }
@@ -1373,21 +1721,20 @@ app.post('/api/zonal/teachers/:teacher_id/transfer', requireAuth, requireCanActI
         if (Number(to_school_id) === teacher.school_id) {
             return res.status(400).json({ error: "Teacher is already at that school." });
         }
-
-        const [result] = await pool.query(
-            `INSERT INTO incoming_teachers (school_id, pushed_by, first_name, middle_name, last_name, contact_number, email, transferred_from_teacher_id, transferred_from_school_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [to_school_id, req.user.user_id, teacher.first_name, teacher.middle_name, teacher.last_name, teacher.contact_number, teacher.email, teacher.teacher_id, teacher.school_id]
-        );
-        await pool.query('UPDATE teachers SET is_active = FALSE WHERE teacher_id = ?', [teacher.teacher_id]);
-
+        const incoming_id = await pushIncomingTeacher({
+            school_id: to_school_id, pushed_by: req.user.user_id,
+            first_name: teacher.first_name, middle_name: teacher.middle_name, last_name: teacher.last_name,
+            sex: teacher.sex, education_level: teacher.education_level,
+            contact_number: teacher.contact_number, email: teacher.email,
+            transferred_from_teacher_id: teacher.teacher_id, transferred_from_school_id: teacher.school_id
+        });
         res.json({
-            message: "Transfer pushed to the destination school. Their Principal will review and accept before it goes live.",
-            incoming_id: result.insertId
+            message: `${[teacher.first_name, teacher.middle_name, teacher.last_name].filter(Boolean).join(' ')} has been sent to the new school. Their Principal will review and accept before the transfer takes effect — they'll keep their existing ID (${teacher.teacher_id}) and password.`,
+            incoming_id
         });
     } catch (err) {
         console.error("/api/zonal/teachers/:teacher_id/transfer error:", err);
-        res.status(500).json({ error: "Could not initiate transfer" });
+        res.status(err.status || 500).json({ error: err.status ? err.message : "Could not transfer teacher" });
     }
 });
 
@@ -1851,7 +2198,7 @@ app.post('/api/register', requireAuth, requireRegistrarOrRecorder, async (req, r
         // runs the Placement Wizard for this grade/stream. See
         // GET/POST /api/registrar/unassigned-queue and /trigger-placement.
         const sql = `INSERT INTO students (student_id, school_id, school_name, first_name, middle_name, last_name, sex, class_level, stream, section, phone_number, fayda_number, status, lms_username, email_address, assigned_computer, security_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`;
-        await conn.query(sql, [student_id, school_id, school_name, first_name, middle_name, last_name, sex, class_level, stream, phone_number, fayda_number, status, lms_username, email_address, assigned_pc, security_password]);
+        await conn.query(sql, [student_id, school_id, school_name, normalizeName(first_name), normalizeName(middle_name), normalizeName(last_name), sex, class_level, stream, phone_number, fayda_number, status, lms_username, email_address, assigned_pc, security_password]);
 
         await conn.commit();
 
@@ -2063,13 +2410,14 @@ async function uploadZonalDocument(req, res, column, fieldName) {
 app.get('/api/zonal/profile-documents', requireAuth, requireZonalAdmin, async (req, res) => {
     try {
         const [rows] = await pool.query(
-            'SELECT signature_url, stamp_url, id_photo_url FROM zonal_admins WHERE admin_id = ?',
+            'SELECT signature_url, stamp_url, id_photo_url, avatar_url FROM zonal_admins WHERE admin_id = ?',
             [req.user.user_id]
         );
         res.json({
             signature_url: rows[0]?.signature_url || null,
             stamp_url: rows[0]?.stamp_url || null,
-            id_photo_url: rows[0]?.id_photo_url || null
+            id_photo_url: rows[0]?.id_photo_url || null,
+            avatar_url: rows[0]?.avatar_url || null
         });
     } catch (err) {
         console.error("/api/zonal/profile-documents error:", err);
@@ -2120,31 +2468,62 @@ app.post('/api/zonal/upload-id-photo', requireAuth, requireZonalAdmin, handleUpl
     }
 });
 
+// Avatar / profile picture — the casual photo shown in the sidebar/topbar
+// (CURRENT_USER.avatar_url on the client), same self-serve pattern as
+// teachers' and school_admins' avatar_url. Deliberately a separate column
+// from id_photo_url (the ID-card-only photo above) and from
+// signature_url/stamp_url (which stay gated to Head of Education /
+// Teacher Development Coordinator via uploadZonalDocument) — any zonal
+// admin, including a Supervisor, can set their own avatar.
+// Requires this column if it doesn't exist yet:
+//   ALTER TABLE zonal_admins ADD COLUMN avatar_url VARCHAR(255) NULL;
+app.post('/api/zonal/upload-avatar', requireAuth, requireZonalAdmin, handleUploadError(upload.single('avatar')), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+        if (!req.file.mimetype.startsWith('image/')) {
+            fs.unlink(req.file.path, () => { });
+            return res.status(400).json({ error: "Profile picture must be an image file (JPEG or PNG)." });
+        }
+        const converted = await convertHeicIfNeeded(req.file);
+        if (converted) req.file = converted;
+        const filePath = `/uploads/${req.file.filename}`;
+        await pool.query('UPDATE zonal_admins SET avatar_url = ? WHERE admin_id = ?', [filePath, req.user.user_id]);
+        res.json({ avatar_url: filePath });
+    } catch (err) {
+        console.error("/api/zonal/upload-avatar error:", err);
+        res.status(500).json({ error: "Could not upload profile picture" });
+    }
+});
+
 // Account Settings — display name and password, self-serve for any
 // zonal_admins title. current_password is required to change the
 // password (not to change the name alone), same "prove you're still
 // you" pattern used elsewhere in this file for security_password
 // changes.
+// NOTE: zonal_admins predates this file's "ADD THIS if it doesn't exist
+// yet" migration-comment convention, so if middle_name isn't already a
+// column there, run:
+//   ALTER TABLE zonal_admins ADD COLUMN middle_name VARCHAR(100) NULL AFTER first_name;
 app.post('/api/zonal/account', requireAuth, requireZonalAdmin, async (req, res) => {
-    const { first_name, last_name, current_password, new_password } = req.body;
+    const { first_name, middle_name, last_name, current_password, new_password } = req.body;
     try {
-        if (first_name || last_name) {
-            const [rows] = await pool.query('SELECT first_name, last_name FROM zonal_admins WHERE admin_id = ?', [req.user.user_id]);
+        if (first_name || middle_name || last_name) {
+            const [rows] = await pool.query('SELECT first_name, middle_name, last_name FROM zonal_admins WHERE admin_id = ?', [req.user.user_id]);
             if (rows.length === 0) return res.status(404).json({ error: "Account not found." });
             await pool.query(
-                'UPDATE zonal_admins SET first_name = ?, last_name = ? WHERE admin_id = ?',
-                [first_name?.trim() || rows[0].first_name, last_name?.trim() || rows[0].last_name, req.user.user_id]
+                'UPDATE zonal_admins SET first_name = ?, middle_name = ?, last_name = ? WHERE admin_id = ?',
+                [normalizeName(first_name?.trim()) || rows[0].first_name, normalizeName(middle_name?.trim()) || rows[0].middle_name, normalizeName(last_name?.trim()) || rows[0].last_name, req.user.user_id]
             );
         }
         if (new_password) {
             if (!current_password) return res.status(400).json({ error: "Enter your current password to set a new one." });
-            const [rows] = await pool.query('SELECT password FROM zonal_admins WHERE admin_id = ?', [req.user.user_id]);
+            const [rows] = await pool.query('SELECT security_password FROM zonal_admins WHERE admin_id = ?', [req.user.user_id]);
             if (rows.length === 0) return res.status(404).json({ error: "Account not found." });
-            const matches = await bcrypt.compare(current_password, rows[0].password);
+            const matches = await bcrypt.compare(current_password, rows[0].security_password);
             if (!matches) return res.status(401).json({ error: "Current password is incorrect." });
             if (new_password.length < 6) return res.status(400).json({ error: "New password must be at least 6 characters." });
             const hashed = await bcrypt.hash(new_password, 10);
-            await pool.query('UPDATE zonal_admins SET password = ? WHERE admin_id = ?', [hashed, req.user.user_id]);
+            await pool.query('UPDATE zonal_admins SET security_password = ? WHERE admin_id = ?', [hashed, req.user.user_id]);
         }
         res.json({ message: "Account updated." });
     } catch (err) {
@@ -3902,6 +4281,26 @@ function buildPhotoHtml(photoUrl) {
     }
 }
 
+// Token replacement (region, student name, etc.) must never reach inside
+// <script>...</script> blocks. certificate.html's inline script carries
+// its own client-only "fallback" preview object (for opening the file
+// directly without the server) that legitimately uses these same
+// __TOKEN__ strings as object keys — a blind whole-document replace
+// would rewrite those keys into invalid JS (e.g. turning
+// "__REGION_AMH__: ..." into "Amhara: ..."), throwing a SyntaxError that
+// kills the whole inline script before DATA ever gets assigned. That in
+// turn breaks everything downstream in certificate.js (marks table, QR
+// code) since it starts with `const SUBJECTS = DATA.subjects`. Splitting
+// out the <script> blocks first and only replacing in what's left keeps
+// token substitution scoped to actual template markup, where it belongs.
+function replaceOutsideScripts(html, token, value) {
+    const parts = html.split(/(<script[\s\S]*?<\/script>)/);
+    for (let i = 0; i < parts.length; i++) {
+        if (i % 2 === 0) parts[i] = parts[i].split(token).join(value); // even = outside <script>
+    }
+    return parts.join('');
+}
+
 function escapeHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -4002,10 +4401,13 @@ function renderCertificateHtml(data) {
         __PRINCIPAL_NAME__: escapeHtml(data.principal_name || '—'),
         __PRINCIPAL_SIGNATURE_HTML__: data.principal_signature_html || '',
         __SCHOOL_SEAL_HTML__: data.school_seal_html || '<div class="seal-ring">School<br>Seal</div>',
-        __PRINCIPAL_STAMP_WATERMARK_HTML__: data.principal_stamp_watermark_html || ''
+        __PRINCIPAL_STAMP_WATERMARK_HTML__: data.principal_stamp_watermark_html || '',
+        __RESULT_PROMOTED_CLASS__: data.result_promoted_class || '',
+        __RESULT_DETAINED_CLASS__: data.result_detained_class || '',
+        __PROMOTED_TO_GRADE_TEXT__: escapeHtml(data.promoted_to_grade_text || '—')
     };
     for (const [token, value] of Object.entries(tokens)) {
-        html = html.split(token).join(value);
+        html = replaceOutsideScripts(html, token, value);
     }
 
     // Subjects/rank/absences travel as one JSON blob rather than flat
@@ -4508,7 +4910,7 @@ function dedupeSubjectsForStream(allSubjects, streamBucket) {
 async function filterToZoneDictionary(subjectRows, school_id) {
     const zone_id = await getSchoolZoneId(school_id);
     if (!zone_id) return subjectRows; // no zone assigned yet — nothing to filter against
-    const [dictRows] = await pool.query('SELECT subject_name FROM subject_dictionary WHERE zone_id = ?', [zone_id]);
+    const [dictRows] = await pool.query("SELECT subject_name FROM subject_dictionary WHERE zone_id = ? AND status = 'approved'", [zone_id]);
     if (dictRows.length === 0) return subjectRows; // dictionary not set up yet — don't hide everything a school already configured
     const dictNames = new Set(dictRows.map(r => r.subject_name.trim().toLowerCase()));
     return subjectRows.filter(s => dictNames.has(s.subject_name.trim().toLowerCase()));
@@ -4729,6 +5131,7 @@ app.get('/api/student/certificate.pdf', requireAuth, requireRole('students'), as
             }
         });
 
+        const promotionResult = await getPromotionResultForCertificate(req.user.user_id, req.user.school_id, latest.class_level);
         const html = renderCertificateHtml({
             school_name: s.school_name,
             region: s.region,
@@ -4750,6 +5153,9 @@ app.get('/api/student/certificate.pdf', requireAuth, requireRole('students'), as
             absent_days_s2: s2 ? s2.days_absent : null,
             rank: latest.rank,
             class_size: latest.class_size,
+            result_promoted_class: promotionResult.result_promoted_class,
+            result_detained_class: promotionResult.result_detained_class,
+            promoted_to_grade_text: promotionResult.promoted_to_grade_text,
             verify_url: `${req.protocol}://${req.get('host')}/verify/${s.student_id}`
         });
 
@@ -4763,7 +5169,16 @@ app.get('/api/student/certificate.pdf', requireAuth, requireRole('students'), as
         page.on('pageerror', err => console.error(`/api/student/certificate.pdf render error (student ${req.user.user_id}):`, err));
         page.on('console', msg => { if (msg.type() === 'error') console.error(`/api/student/certificate.pdf console error (student ${req.user.user_id}):`, msg.text()); });
         try {
+            // Print media must be active BEFORE setContent() runs the page's
+            // own script, so certificate.js's one-page fit check measures
+            // the actual print layout (not the on-screen preview sizing).
+            await page.emulateMediaType('print');
             await page.setContent(html, { waitUntil: 'networkidle0' });
+            // Blocks until the Amharic web font has actually loaded AND
+            // certificate.js's fitToOnePage() (which waits on this same
+            // promise, registered earlier) has already applied its zoom —
+            // see the comment on fitToOnePage in certificate.js.
+            await page.evaluate(() => document.fonts.ready);
             const pdfBuffer = await page.pdf({ printBackground: true, preferCSSPageSize: true });
             res.setHeader('Content-Type', 'application/pdf');
             res.setHeader('Content-Disposition', `attachment; filename="Certificate-${s.student_id}.pdf"`);
@@ -5627,7 +6042,7 @@ app.put('/api/update/:id', requireAuth, requireRegistrarOrRecorder, async (req, 
         // stays Active through an info update regardless of that field.
         const finalStatus = 'Active';
         const sql = `UPDATE students SET first_name=?, middle_name=?, last_name=?, phone_number=?, fayda_number=?, sex=?, class_level=?, stream=?, status=? WHERE student_id=? AND school_id=?`;
-        const [result] = await pool.query(sql, [first_name, middle_name, last_name, phone_number, fayda_number, sex, class_level, stream, finalStatus, req.params.id, req.user.school_id]);
+        const [result] = await pool.query(sql, [normalizeName(first_name), normalizeName(middle_name), normalizeName(last_name), phone_number, fayda_number, sex, class_level, stream, finalStatus, req.params.id, req.user.school_id]);
         if (result.affectedRows === 0) {
             return res.status(404).json({ error: "Student not found in your school." });
         }
@@ -5649,6 +6064,35 @@ async function computePromotionEligibility(student_id, school_id, class_level) {
     else if (year_average === null) category = 'No marks on record yet';
     else category = year_average >= cutoff_mark ? 'Eligible for Promotion' : 'Detained/Retained';
     return { year_average, cutoff_mark, category };
+}
+
+// The report card's Promoted/Detained checkboxes and "Promoted to Grade"
+// line must reflect the REGISTRAR'S actual decision (promotion_audit_log),
+// not a freshly recomputed eligibility guess — a registrar can legally
+// override the automatic cutoff recommendation (PUT /api/promote/:id
+// requires a written reason for that), so re-deriving from the cutoff
+// here could disagree with what was actually decided for this student.
+// If no decision has been logged yet for this class level (report card
+// printed before end-of-year promotion has been run, or a lower grade
+// that doesn't have one filed), both boxes stay unchecked and the grade
+// line reads "—" rather than asserting an outcome nobody has decided —
+// same "print blank rather than fabricate" rule the rest of this sheet
+// already follows for missing marks.
+async function getPromotionResultForCertificate(student_id, school_id, class_level) {
+    const [rows] = await pool.query(
+        `SELECT action, to_class_level FROM promotion_audit_log
+         WHERE student_id = ? AND school_id = ? AND from_class_level = ?
+         ORDER BY decided_at DESC LIMIT 1`,
+        [student_id, school_id, class_level]
+    );
+    if (rows.length === 0) {
+        return { result_promoted_class: '', result_detained_class: '', promoted_to_grade_text: '—' };
+    }
+    const decided = rows[0];
+    if (decided.action === 'promote') {
+        return { result_promoted_class: 'on', result_detained_class: '', promoted_to_grade_text: `Grade ${decided.to_class_level}` };
+    }
+    return { result_promoted_class: '', result_detained_class: 'on', promoted_to_grade_text: `Repeats Grade ${class_level}` };
 }
 
 app.get('/api/registrar/promotion-eligibility/:id', requireAuth, requireRegistrarOnly, async (req, res) => {
@@ -5739,7 +6183,7 @@ app.post('/api/registrar/sections', requireAuth, requireRegistrarOnly, async (re
         }
         await pool.query(
             'INSERT INTO class_sections (school_id, class_level, stream, section_name, max_capacity, is_active) VALUES (?, ?, ?, ?, ?, TRUE)',
-            [req.user.school_id, class_level, stream, section_name, max_capacity || null]
+            [req.user.school_id, class_level, stream, normalizeName(section_name), max_capacity || null]
         );
         res.json({ message: "Section added." });
     } catch (err) {
@@ -6115,7 +6559,7 @@ async function insertTransferredStudent(conn, school_id, fields) {
     await conn.query(
         `INSERT INTO students (student_id, school_id, school_name, first_name, middle_name, last_name, sex, class_level, stream, section, phone_number, fayda_number, status, lms_username, email_address, assigned_computer, security_password)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
-        [student_id, school_id, school_name, fields.first_name, fields.middle_name, fields.last_name, fields.sex,
+        [student_id, school_id, school_name, normalizeName(fields.first_name), normalizeName(fields.middle_name), normalizeName(fields.last_name), fields.sex,
             fields.class_level, fields.stream, fields.phone_number || null, fields.fayda_number || null, status,
             lms_username, email_address, assigned_pc, security_password]
     );
@@ -7250,6 +7694,7 @@ async function buildReportCardForStudent(student_id, school_id, req) {
     });
 
     const verify_code = await logDocumentIssuance(school_id, student_id, 'report_card', req.user.user_id, latest.class_level);
+    const promotionResult = await getPromotionResultForCertificate(student_id, school_id, latest.class_level);
     const html = renderCertificateHtml({
         school_name: s.school_name, region: s.region, zone: s.zone, woreda: s.woreda, town: s.woreda,
         photo_html: buildPhotoHtml(s.id_photo_url), student_id: s.student_id,
@@ -7262,6 +7707,9 @@ async function buildReportCardForStudent(student_id, school_id, req) {
         subjects: mergedSubjects,
         conduct: null, absent_days_s1: s1 ? s1.days_absent : null, absent_days_s2: s2 ? s2.days_absent : null,
         rank: latest.rank, class_size: latest.class_size,
+        result_promoted_class: promotionResult.result_promoted_class,
+        result_detained_class: promotionResult.result_detained_class,
+        promoted_to_grade_text: promotionResult.promoted_to_grade_text,
         verify_url: `${req.protocol}://${req.get('host')}/verify/document/${verify_code}`
     });
     return { ok: true, html, verify_code, class_level: latest.class_level };
@@ -7286,6 +7734,7 @@ app.get('/api/registrar/documents/report-card/:student_id/pdf', requireAuth, req
                     { en: 'Sample Stream-Only Subject', amh: null, s1: null, s2: null, applicable: false }
                 ],
                 conduct: null, absent_days_s1: 0, absent_days_s2: 0, rank: 1, class_size: 30,
+                result_promoted_class: 'on', result_detained_class: '', promoted_to_grade_text: 'Grade 11',
                 verify_url: `${req.protocol}://${req.get('host')}/verify/document/SAMPLE`
             });
         } else {
@@ -7303,7 +7752,10 @@ app.get('/api/registrar/documents/report-card/:student_id/pdf', requireAuth, req
         page.on('pageerror', err => console.error(`/api/registrar/documents/report-card render error (student ${req.params.student_id}):`, err));
         page.on('console', msg => { if (msg.type() === 'error') console.error(`/api/registrar/documents/report-card console error (student ${req.params.student_id}):`, msg.text()); });
         try {
+            // See the matching comment on /api/student/certificate.pdf.
+            await page.emulateMediaType('print');
             await page.setContent(html, { waitUntil: 'networkidle0' });
+            await page.evaluate(() => document.fonts.ready);
             const pdfBuffer = await page.pdf({ printBackground: true, preferCSSPageSize: true });
             res.setHeader('Content-Type', 'application/pdf');
             const disposition = isSample ? 'inline' : 'attachment';
@@ -7349,7 +7801,10 @@ app.get('/api/registrar/documents/report-card/bulk/pdf', requireAuth, requireReg
             }
             const page = await browser.newPage();
             try {
+                // See the matching comment on /api/student/certificate.pdf.
+                await page.emulateMediaType('print');
                 await page.setContent(result.html, { waitUntil: 'networkidle0' });
+                await page.evaluate(() => document.fonts.ready);
                 const pdfBytes = await page.pdf({ printBackground: true, preferCSSPageSize: true });
                 const src = await PDFDocument.load(pdfBytes);
                 const copiedPages = await merged.copyPages(src, src.getPageIndices());
@@ -7978,8 +8433,12 @@ app.get('/api/academic-vp/subject-dictionary', requireAuth, requireAdminTitle('A
     try {
         const zone_id = await getSchoolZoneId(req.user.school_id);
         if (!zone_id) return res.json([]);
+        // Only 'approved' entries — a Development Coordinator's pending
+        // add/edit stays invisible here until the Head of Education
+        // approves it (see the Subject Dictionary approval workflow,
+        // /api/zonal/subject-dictionary above).
         const [subjects] = await pool.query(
-            'SELECT subject_name FROM subject_dictionary WHERE zone_id = ? ORDER BY subject_name',
+            "SELECT subject_name FROM subject_dictionary WHERE zone_id = ? AND status = 'approved' ORDER BY subject_name",
             [zone_id]
         );
         res.json(subjects.map(s => s.subject_name));
@@ -8000,7 +8459,7 @@ app.post('/api/academic-vp/subjects', requireAuth, requireAdminTitle('Academic V
     const zone_id = await getSchoolZoneId(req.user.school_id);
     if (!zone_id) return res.status(400).json({ error: "Your school isn't assigned to a zone yet — contact your zonal admin." });
     const [[dictMatch]] = await pool.query(
-        'SELECT subject_dict_id FROM subject_dictionary WHERE zone_id = ? AND subject_name = ?',
+        "SELECT subject_dict_id FROM subject_dictionary WHERE zone_id = ? AND subject_name = ? AND status = 'approved'",
         [zone_id, subject_name.trim()]
     );
     if (!dictMatch) {
@@ -8635,6 +9094,61 @@ app.get('/api/admin/id-card', requireAuth, requireRole('school_admins'), async (
         });
     } catch (err) {
         console.error("/api/admin/id-card error:", err);
+        res.status(500).json({ error: "Could not load ID card data" });
+    }
+});
+
+// GET /api/zonal/id-card — mirrors /api/admin/id-card 1:1, just backed by
+// zonal_admins instead of school_admins. A zonal admin isn't tied to one
+// school, so the card shows their ZONE instead of a school name.
+app.get('/api/zonal/id-card', requireAuth, requireZonalAdmin, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT a.first_name, a.middle_name, a.last_name, a.admin_id, a.title,
+                    a.contact_number, a.email, a.avatar_url, a.id_photo_url,
+                    a.signature_url, a.zone_id, z.zone_name
+             FROM zonal_admins a
+             LEFT JOIN zone z ON z.zone_id = a.zone_id
+             WHERE a.admin_id = ?`,
+            [req.user.user_id]
+        );
+        if (rows.length === 0) return res.status(404).json({ error: "Admin not found" });
+
+        const row0 = rows[0];
+
+        // Same 2-year validity convention as the teacher/school-admin ID cards.
+        const validUntilDate = new Date();
+        validUntilDate.setFullYear(validUntilDate.getFullYear() + 2);
+        const validUntil = `${String(validUntilDate.getMonth() + 1).padStart(2, '0')}/${String(validUntilDate.getDate()).padStart(2, '0')}/${validUntilDate.getFullYear()}`;
+
+        // The Head of Education signs off on every zonal admin's ID card in
+        // the zone — including their own, which just reuses their own
+        // uploaded signature rather than looking itself up.
+        let hoe_signature_url = null;
+        if (row0.title === 'Head of Education') {
+            hoe_signature_url = row0.signature_url || null;
+        } else if (row0.zone_id) {
+            const [hoeRows] = await pool.query(
+                `SELECT signature_url FROM zonal_admins WHERE zone_id = ? AND title = 'Head of Education' LIMIT 1`,
+                [row0.zone_id]
+            ).catch(() => [[]]);
+            if (hoeRows && hoeRows.length > 0) hoe_signature_url = hoeRows[0].signature_url || null;
+        }
+
+        res.json({
+            full_name: [row0.first_name, row0.middle_name, row0.last_name].filter(Boolean).join(' '),
+            admin_id: row0.admin_id,
+            title: row0.title,
+            contact_number: row0.contact_number,
+            email: row0.email,
+            avatar_url: row0.id_photo_url || row0.avatar_url || null,
+            zone: row0.zone_name || null,
+            valid_until: validUntil,
+            hoe_signature_url,
+            qr_payload: signQrPayload(String(row0.admin_id))
+        });
+    } catch (err) {
+        console.error("/api/zonal/id-card error:", err);
         res.status(500).json({ error: "Could not load ID card data" });
     }
 });
@@ -10761,7 +11275,7 @@ app.get('/api/academic-vp/marks-review', requireAuth, requireAdminTitle('Academi
     try {
         const term = await getCurrentTerm(req.user.school_id);
         const [rows] = await pool.query(
-            `SELECT t.teacher_id, t.first_name, t.last_name,
+            `SELECT t.teacher_id, t.first_name, t.middle_name, t.last_name,
                     t.homeroom_class_level AS class_level, t.homeroom_section AS section, t.homeroom_stream AS stream,
                     p.pushed_at,
                     SUM(CASE WHEN sts.status = 'Incomplete' THEN 1 ELSE 0 END) AS incomplete_count,
@@ -10776,13 +11290,13 @@ app.get('/api/academic-vp/marks-review', requireAuth, requireAdminTitle('Academi
                  AND sts.class_level = t.homeroom_class_level AND sts.section = t.homeroom_section AND sts.stream = t.homeroom_stream
                  AND sts.term = ?
              WHERE t.school_id = ? AND t.homeroom_class_level IS NOT NULL
-             GROUP BY t.teacher_id, t.first_name, t.last_name, t.homeroom_class_level, t.homeroom_section, t.homeroom_stream, p.pushed_at
+             GROUP BY t.teacher_id, t.first_name, t.middle_name, t.last_name, t.homeroom_class_level, t.homeroom_section, t.homeroom_stream, p.pushed_at
              ORDER BY t.homeroom_class_level, t.homeroom_section`,
             [term, term, req.user.school_id]
         );
         res.json(rows.map(r => ({
             teacher_id: r.teacher_id,
-            full_name: `${r.first_name} ${r.last_name}`,
+            full_name: [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' '),
             class_level: r.class_level,
             section: r.section,
             stream: r.stream,
@@ -11891,7 +12405,7 @@ app.post('/api/login', async (req, res) => {
             if (schoolRows.length > 0) school_name = schoolRows[0].school_name;
         }
         if (userRole === 'zonal_admins' && user.zone_id) {
-            const [zoneRows] = await pool.query('SELECT zone_name FROM zones WHERE zone_id = ?', [user.zone_id]).catch(() => [[]]);
+            const [zoneRows] = await pool.query('SELECT zone_name FROM zone WHERE zone_id = ?', [user.zone_id]).catch(() => [[]]);
             if (zoneRows && zoneRows.length > 0) zone_name = zoneRows[0].zone_name;
         }
 
@@ -11949,7 +12463,7 @@ app.get('/api/me', requireAuth, async (req, res) => {
 
         let zone_name = null;
         if (req.user.role === 'zonal_admins' && req.user.zone_id) {
-            const [zoneRows] = await pool.query('SELECT zone_name FROM zones WHERE zone_id = ?', [req.user.zone_id]).catch(() => [[]]);
+            const [zoneRows] = await pool.query('SELECT zone_name FROM zone WHERE zone_id = ?', [req.user.zone_id]).catch(() => [[]]);
             if (zoneRows && zoneRows.length > 0) zone_name = zoneRows[0].zone_name;
         }
 
@@ -11961,7 +12475,7 @@ app.get('/api/me', requireAuth, async (req, res) => {
             // zonal dashboard's top bar can show a real name instead of the
             // account ID.
             const [zaRows] = await pool.query(
-                'SELECT first_name, last_name FROM zonal_admins WHERE admin_id = ?',
+                'SELECT first_name, middle_name, last_name FROM zonal_admins WHERE admin_id = ?',
                 [req.user.user_id]
             ).catch(() => [[]]);
             if (zaRows && zaRows.length > 0) {
@@ -12001,6 +12515,19 @@ app.get('/api/me', requireAuth, async (req, res) => {
                 avatar_url = adminRows[0].avatar_url || null;
                 id_photo_url = adminRows[0].id_photo_url || null;
                 admin_full_name = [adminRows[0].first_name, adminRows[0].middle_name, adminRows[0].last_name].filter(Boolean).join(' ') || null;
+            }
+        } else if (req.user.role === 'zonal_admins') {
+            // Same self-serve avatar_url/id_photo_url split as school_admins
+            // above — see /api/zonal/upload-avatar and /api/zonal/upload-id-photo.
+            // This used to be missing entirely, so a zonal admin's topbar
+            // avatar always fell back to initials with no way to change it.
+            const [zaPhotoRows] = await pool.query(
+                'SELECT avatar_url, id_photo_url FROM zonal_admins WHERE admin_id = ?',
+                [req.user.user_id]
+            ).catch(() => [[]]);
+            if (zaPhotoRows && zaPhotoRows.length > 0) {
+                avatar_url = zaPhotoRows[0].avatar_url || null;
+                id_photo_url = zaPhotoRows[0].id_photo_url || null;
             }
         }
         // is_registrar drives app.js's full-admin nav (Section Setup,
@@ -12244,19 +12771,46 @@ app.get('/api/teacher/student-performance', requireAuth, async (req, res) => {
 // 1 from the spec) or declines (e.g. wrong school, duplicate, changed
 // mind). Only ever this school's own queue — school_id is always taken
 // from the Principal's own token, never from the request.
+// --- (1) Teacher Setup, Stage 1a: incoming teachers pushed by Zonal ---
+// The zonal-recruitment-code path from the spec now works like this:
+// zonal registers the teacher on their end and pushes them to this
+// school (POST /api/zonal/teachers, or a Development Coordinator's proposal once Head
+// of Education approves it) — landing here as a pending row. Nothing in
+// `teachers` exists yet and nobody can log in yet; the Principal reviews
+// the queue and either accepts (which mints the real Teacher ID and sets
+// the login credentials, i.e. does the "core credentials" part of Stage
+// 1 from the spec) or declines (e.g. wrong school, duplicate, changed
+// mind). Only ever this school's own queue — school_id is always taken
+// from the Principal's own token, never from the request.
+//
+// A row with transferred_from_teacher_id set is NOT a new hire — it's an
+// existing teacher being transferred in from another school in the zone
+// (see /api/zonal/teachers/:teacher_id/transfer and the transfer_teacher
+// branch of /api/zonal/proposals/:id/approve). is_transfer flags this for
+// the UI so it can skip asking for a password, since accepting a transfer
+// reuses the teacher's existing credentials — see the accept route below.
 app.get('/api/principal/incoming-teachers', requireAuth, requirePrincipal, async (req, res) => {
     try {
         const [rows] = await pool.query(
             `SELECT incoming_id, first_name, middle_name, last_name, contact_number, email,
-                    zonal_recruitment_code, status, teacher_id, decline_reason, created_at
+                    zonal_recruitment_code, status, teacher_id, decline_reason, created_at,
+                    transferred_from_teacher_id, transferred_from_school_id
              FROM incoming_teachers
              WHERE school_id = ?
              ORDER BY (status = 'pending') DESC, created_at DESC`,
             [req.user.school_id]
         );
+        const fromSchoolIds = [...new Set(rows.map(r => r.transferred_from_school_id).filter(Boolean))];
+        let fromSchoolNames = {};
+        if (fromSchoolIds.length) {
+            const [schoolRows] = await pool.query('SELECT id, school_name FROM schools WHERE id IN (?)', [fromSchoolIds]);
+            fromSchoolNames = Object.fromEntries(schoolRows.map(s => [s.id, s.school_name]));
+        }
         res.json(rows.map(r => ({
             ...r,
-            full_name: [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' ')
+            full_name: [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' '),
+            is_transfer: !!r.transferred_from_teacher_id,
+            transferred_from_school_name: r.transferred_from_school_id ? (fromSchoolNames[r.transferred_from_school_id] || null) : null
         })));
     } catch (err) {
         console.error("/api/principal/incoming-teachers GET error:", err);
@@ -12266,7 +12820,6 @@ app.get('/api/principal/incoming-teachers', requireAuth, requirePrincipal, async
 
 app.post('/api/principal/incoming-teachers/:id/accept', requireAuth, requirePrincipal, async (req, res) => {
     const { password, contact_number, email } = req.body;
-    if (!password) return res.status(400).json({ error: "A login password is required to activate this teacher's account." });
     try {
         const [rows] = await pool.query(
             `SELECT * FROM incoming_teachers WHERE incoming_id = ? AND school_id = ? AND status = 'pending'`,
@@ -12275,21 +12828,41 @@ app.post('/api/principal/incoming-teachers/:id/accept', requireAuth, requirePrin
         if (rows.length === 0) return res.status(404).json({ error: "Incoming teacher not found or already decided." });
         const incoming = rows[0];
 
-        const teacher_id = await createTeacherAccount({
-            school_id: req.user.school_id,
-            first_name: incoming.first_name,
-            middle_name: incoming.middle_name,
-            last_name: incoming.last_name,
-            contact_number: contact_number || incoming.contact_number,
-            email: email || incoming.email,
-            password
-        });
+        let teacher_id;
+        if (incoming.transferred_from_teacher_id) {
+            // Transfer, not a hire: the teacher already has a working
+            // account. Accepting just re-points their existing
+            // teachers.school_id row to this school — no password, no
+            // new account. They keep logging in with their same ID and
+            // password.
+            const teacher = await transferTeacherToSchool({
+                teacher_id: incoming.transferred_from_teacher_id,
+                to_school_id: req.user.school_id
+            });
+            teacher_id = teacher.teacher_id;
+        } else {
+            if (!password) return res.status(400).json({ error: "A login password is required to activate this teacher's account." });
+            teacher_id = await createTeacherAccount({
+                school_id: req.user.school_id,
+                first_name: incoming.first_name,
+                middle_name: incoming.middle_name,
+                last_name: incoming.last_name,
+                contact_number: contact_number || incoming.contact_number,
+                email: email || incoming.email,
+                password
+            });
+        }
 
         await pool.query(
             `UPDATE incoming_teachers SET status = 'accepted', teacher_id = ?, decided_by = ?, decided_at = NOW() WHERE incoming_id = ?`,
             [teacher_id, req.user.user_id, incoming.incoming_id]
         );
-        res.json({ message: "Teacher accepted and activated. Academic VP can now assign their teaching load.", teacher_id });
+        res.json({
+            message: incoming.transferred_from_teacher_id
+                ? "Transfer accepted. This teacher now belongs to your school with their existing ID and password — no new account needed."
+                : "Teacher accepted and activated. Academic VP can now assign their teaching load.",
+            teacher_id
+        });
     } catch (err) {
         console.error("/api/principal/incoming-teachers/:id/accept error:", err);
         res.status(err.status || 500).json({ error: err.status ? err.message : "Could not accept incoming teacher" });
@@ -12636,7 +13209,7 @@ app.get('/api/principal/teacher-audit', requireAuth, requireAdminTitle('Principa
         const currentTerm = await getCurrentTerm(req.user.school_id);
 
         const [teachers] = await pool.query(
-            `SELECT teacher_id, first_name, last_name FROM teachers WHERE school_id = ?`,
+            `SELECT teacher_id, first_name, middle_name, last_name FROM teachers WHERE school_id = ?`,
             [req.user.school_id]
         );
         if (teachers.length === 0) return res.json({ cutoff, current_term: currentTerm, teachers: [] });
@@ -12683,7 +13256,7 @@ app.get('/api/principal/teacher-audit', requireAuth, requireAdminTitle('Principa
 
             return {
                 teacher_id: t.teacher_id,
-                full_name: [t.first_name, t.last_name].filter(Boolean).join(' '),
+                full_name: [t.first_name, t.middle_name, t.last_name].filter(Boolean).join(' '),
                 absent_days_30d,
                 punctuality_rate,
                 avg_score,
@@ -12705,7 +13278,7 @@ app.get('/api/principal/teacher-audit', requireAuth, requireAdminTitle('Principa
 app.get('/api/principal/teacher-audit/:teacher_id', requireAuth, requireAdminTitle('Principal', 'Academic VP'), async (req, res) => {
     const { teacher_id } = req.params;
     try {
-        const [teacherRows] = await pool.query('SELECT teacher_id, first_name, last_name FROM teachers WHERE teacher_id = ? AND school_id = ?', [teacher_id, req.user.school_id]);
+        const [teacherRows] = await pool.query('SELECT teacher_id, first_name, middle_name, last_name FROM teachers WHERE teacher_id = ? AND school_id = ?', [teacher_id, req.user.school_id]);
         if (teacherRows.length === 0) return res.status(404).json({ error: "Teacher not found in your school." });
 
         const since = toDateOnly(new Date(Date.now() - 30 * 86400000));
@@ -12901,7 +13474,7 @@ app.post('/api/admin/upload-school-seal', requireAuth, requireAdminTitle('Princi
 app.get('/api/admin/messages/recipients', requireAuth, requireRole('school_admins'), async (req, res) => {
     try {
         const [teachers] = await pool.query(
-            `SELECT teacher_id AS id, first_name, last_name FROM teachers WHERE school_id = ?`,
+            `SELECT teacher_id AS id, first_name, middle_name, last_name FROM teachers WHERE school_id = ?`,
             [req.user.school_id]
         );
         const [admins] = await pool.query(
@@ -12912,14 +13485,14 @@ app.get('/api/admin/messages/recipients', requireAuth, requireRole('school_admin
         let zonal_contact = null;
         if (schoolRows[0]?.zone_id) {
             const [zonalRows] = await pool.query(
-                `SELECT admin_id AS id, first_name, last_name FROM zonal_admins WHERE zone_id = ? AND title = 'Head of Education' LIMIT 1`,
+                `SELECT admin_id AS id, first_name, middle_name, last_name FROM zonal_admins WHERE zone_id = ? AND title = 'Head of Education' LIMIT 1`,
                 [schoolRows[0].zone_id]
             );
             if (zonalRows.length > 0) zonal_contact = { id: zonalRows[0].id, full_name: [zonalRows[0].first_name, zonalRows[0].last_name].filter(Boolean).join(' ') };
         }
 
         res.json({
-            teachers: teachers.map(t => ({ id: t.id, full_name: [t.first_name, t.last_name].filter(Boolean).join(' ') })),
+            teachers: teachers.map(t => ({ id: t.id, full_name: [t.first_name, t.middle_name, t.last_name].filter(Boolean).join(' ') })),
             admins: admins.map(a => ({ id: a.id, full_name: [a.first_name, a.last_name].filter(Boolean).join(' '), title: a.title })),
             zonal_contact
         });
@@ -13514,7 +14087,7 @@ app.get('/api/school/teacher-leaderboard', requireAuth, requireAdminTitle('Princ
     const MIN_LOGGED_PERIODS = 5;
     try {
         const since = toDateOnly(new Date(Date.now() - 30 * 86400000));
-        const [teachers] = await pool.query('SELECT teacher_id, first_name, last_name FROM teachers WHERE school_id = ?', [req.user.school_id]);
+        const [teachers] = await pool.query('SELECT teacher_id, first_name, middle_name, last_name FROM teachers WHERE school_id = ?', [req.user.school_id]);
         if (teachers.length === 0) return res.json([]);
 
         const [punctualityRows] = await pool.query(
@@ -13542,7 +14115,7 @@ app.get('/api/school/teacher-leaderboard', requireAuth, requireAdminTitle('Princ
                 const p = punctualityByTeacher.get(t.teacher_id);
                 return {
                     teacher_id: t.teacher_id,
-                    full_name: [t.first_name, t.last_name].filter(Boolean).join(' '),
+                    full_name: [t.first_name, t.middle_name, t.last_name].filter(Boolean).join(' '),
                     punctuality_rate: p?.rate ?? null,
                     periods_logged_30d: p?.total ?? 0,
                     absent_days_30d: absenceByTeacher.get(t.teacher_id) || 0

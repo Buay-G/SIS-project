@@ -6,6 +6,7 @@
     <title>Gambella City Education Office</title>
     <link rel="stylesheet" href="styles.css" />
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
   </head>
   <body>
     <div class="nav-overlay" id="navOverlay"></div>
@@ -28,7 +29,6 @@
       <div class="side-footer">
         <div class="role-card">
           <div class="role-title">
-            <span id="roleIcon"><i data-lucide="graduation-cap"></i></span>
             <span id="roleTitleTxt">Head of Education</span>
           </div>
           <div class="role-id">ID <b id="roleIdTxt">GCEO-HOE-001</b></div>
@@ -88,7 +88,16 @@
             </div>
           </div>
           <div class="who">
-            <div class="avatar" id="avatarInit">–</div>
+            <button
+              class="avatar profile-pic-btn"
+              id="avatarInit"
+              type="button"
+              onclick="goToProfile()"
+              aria-label="Open profile settings"
+              title="Profile settings"
+            >
+              –
+            </button>
             <div>
               <div class="who-name" id="whoName">…</div>
               <div class="who-role" id="whoRole">…</div>

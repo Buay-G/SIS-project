@@ -39,9 +39,20 @@ const s1Total = sum(taken, s => s.s1);
 const s2Total = sum(taken, s => s.s2);
 // Total of the Average column = sum of each subject's own average.
 const avgColTotal = r1(sum(taken, s => (s.s1 + s.s2) / 2));
-const s1Avg = s1Total / taken.length;
-const s2Avg = s2Total / taken.length;
-const yearAvg = (s1Avg + s2Avg) / 2;
+// No subject has both semesters scored yet (a freshly-issued sheet
+// before marks are synced) — s1Total/taken.length would be 0/0 = NaN,
+// which does two bad things downstream: it prints the literal text
+// "NaN" on the document, and descriptor(NaN) falls through every
+// `>=` check (NaN comparisons are always false) to the LAST branch,
+// mislabeling a student with zero data as "Poor" rather than showing
+// nothing is on file yet. Treating "no subjects taken" as null instead
+// of computing keeps both the totals row and the rating row honest —
+// same "print blank rather than fabricate/misreport" rule the rest of
+// this sheet already follows for missing scores.
+const s1Avg = taken.length ? s1Total / taken.length : null;
+const s2Avg = taken.length ? s2Total / taken.length : null;
+const yearAvg = (s1Avg != null && s2Avg != null) ? (s1Avg + s2Avg) / 2 : null;
+const naDash = v => v == null ? '—' : v;
 
 let rows = SUBJECTS.map(s => {
   // A subject flagged not-applicable (outside the student's stream) is
@@ -61,16 +72,20 @@ let rows = SUBJECTS.map(s => {
   </tr>`;
 }).join("");
 
-const absentTotal = (ABSENT_DAYS_S1 ?? 0) + (ABSENT_DAYS_S2 ?? 0);
+// Same null-vs-zero distinction as the averages above: if BOTH semesters'
+// absence counts are unrecorded, the total is "not on file", not
+// literally zero days absent — those mean different things on a report
+// card, so don't collapse them.
+const absentTotal = (ABSENT_DAYS_S1 == null && ABSENT_DAYS_S2 == null) ? null : (ABSENT_DAYS_S1 ?? 0) + (ABSENT_DAYS_S2 ?? 0);
 
 rows += `<tr class="summary">
     <td class="subject">Total <span class="amh">/ ድምር</span></td>
-    <td>${s1Total}</td><td>${s2Total}</td><td>${avgColTotal}</td><td class="rating">—</td>
+    <td>${naDash(taken.length ? s1Total : null)}</td><td>${naDash(taken.length ? s2Total : null)}</td><td>${naDash(taken.length ? avgColTotal : null)}</td><td class="rating">—</td>
   </tr>
   <tr class="summary">
     <td class="subject">Average <span class="amh">/ አማካይ</span></td>
-    <td>${r1(s1Avg)}</td><td>${r1(s2Avg)}</td><td>${r1(yearAvg)}</td>
-    <td class="rating">${descriptor(yearAvg)}</td>
+    <td>${naDash(s1Avg != null ? r1(s1Avg) : null)}</td><td>${naDash(s2Avg != null ? r1(s2Avg) : null)}</td><td>${naDash(yearAvg != null ? r1(yearAvg) : null)}</td>
+    <td class="rating">${yearAvg != null ? descriptor(yearAvg) : '—'}</td>
   </tr>
   <tr>
     <td class="subject">Conduct <span class="amh">/ ስነ ምግባር</span></td>
@@ -78,7 +93,7 @@ rows += `<tr class="summary">
   </tr>
   <tr>
     <td class="subject">Days Absent <span class="amh">/ የቀሩበት ቀናት</span></td>
-    <td>${ABSENT_DAYS_S1 ?? '—'}</td><td>${ABSENT_DAYS_S2 ?? '—'}</td><td>${absentTotal}</td><td class="rating">—</td>
+    <td>${ABSENT_DAYS_S1 ?? '—'}</td><td>${ABSENT_DAYS_S2 ?? '—'}</td><td>${naDash(absentTotal)}</td><td class="rating">—</td>
   </tr>
   <tr class="rank">
     <td class="subject">Rank <span class="amh">/ ደረጃ</span></td>
@@ -86,6 +101,19 @@ rows += `<tr class="summary">
   </tr>`;
 
 document.getElementById("marks-body").innerHTML = rows;
+
+// Sizing for the student-info panel, header, and table type is deliberately
+// larger by default (see certificate.css) so a report card with few
+// subjects doesn't leave a mostly-blank page. A student with a long
+// subject list (a full 14-item stream sheet is the realistic max) needs
+// noticeably tighter rows for everything to still fit on one printed
+// page, though — the same font size that looks right for 6 rows runs
+// well past one page at 14. This class is the switch between those two
+// cases; certificate.css's print rules define what "compact" tightens.
+// The threshold is set below the realistic max (14) with headroom, not
+// at it, since summary rows (Total/Average/Conduct/Days Absent/Rank)
+// add to the printed row count too, on top of the subject rows.
+document.body.classList.toggle("many-subjects", SUBJECTS.length > 9);
 
 /* ===================== QR Code generator ===================== */
 /* Self-contained QR encoder (byte mode, algorithmic — no external library).
@@ -437,4 +465,66 @@ qrcodegen.render(
    window.print() produces exactly one clean landscape page. */
 function printPage() {
   window.print();
+}
+
+/* ===================== Fit to one printed page =====================
+   The "many-subjects" compact class above buys back some height for a
+   long subject list, but it's a fixed-tier guess — it can't know the
+   actual rendered height (which also depends on things it can't see:
+   how long the school/region names are, whether the Amharic font's
+   real line metrics run taller than assumed, how many bio fields have
+   long values that wrap to a second line, etc). Guessing wrong in
+   either direction is bad: too little compaction and the signature
+   strip spills onto an unbordered second page (the exact bug this is
+   fixing); too much and short report cards print needlessly tiny.
+
+   So instead of guessing, this measures the ACTUAL rendered height of
+   #page-1 against the real one-page budget (--page-content-h, defined
+   once in certificate.css) and, only if it doesn't fit, shrinks the
+   whole sheet with CSS `zoom`. zoom is used deliberately instead of
+   `transform:scale()` — zoom rescales the element's own box (so the
+   parent, and the page's pagination math, see the smaller size too),
+   where transform only rescales what's painted. That's the same
+   reasoning already noted in certificate.css's print block re: why a
+   visual-only scale doesn't fix page-break overflow.
+
+   For this to measure the layout that will actually be printed (not
+   the on-screen preview layout, which uses different font sizes/
+   padding under @media print), the server must call
+   page.emulateMediaType('print') BEFORE page.setContent() so print
+   styles are already active while this script runs — see
+   renderCertificateHtml's callers in server.js. */
+function fitToOnePage(){
+  const sheet = document.getElementById("page-1");
+  if (!sheet) return;
+
+  const PX_PER_MM = 96 / 25.4; // CSS px is fixed at 96/in regardless of media/DPI
+  const availMm = parseFloat(
+    getComputedStyle(document.documentElement).getPropertyValue("--page-content-h")
+  ) || 281;
+  const availablePx = availMm * PX_PER_MM;
+
+  const naturalPx = sheet.getBoundingClientRect().height;
+  if (naturalPx <= availablePx) return; // already fits — leave it full size
+
+  // 0.985 leaves a hair of slack for sub-pixel rounding; 0.55 is a
+  // floor so a pathological case (e.g. every subject's Amharic name is
+  // unusually long) degrades to "small but legible" rather than
+  // shrinking to nothing while still overflowing.
+  const scale = Math.max(0.55, Math.min(1, (availablePx / naturalPx) * 0.985));
+  sheet.style.zoom = scale;
+}
+
+// document.fonts.ready (not just DOMContentLoaded) matters here: the
+// Amharic spans throughout the sheet only get their real metrics once
+// Noto Serif Ethiopic has actually loaded, and measuring against
+// fallback-font metrics beforehand would compute the wrong scale.
+// Server-side, page.evaluate(() => document.fonts.ready) is awaited
+// AFTER setContent() and BEFORE page.pdf(), so Puppeteer doesn't
+// generate the PDF until this handler (registered first, so it runs
+// first once the promise settles) has already applied the zoom.
+if (document.fonts && document.fonts.ready) {
+  document.fonts.ready.then(fitToOnePage);
+} else {
+  fitToOnePage();
 }

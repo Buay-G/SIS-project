@@ -19,6 +19,15 @@
   --lg: 1.15rem;
 
   --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s6: 24px; --s8: 32px;
+
+  /* Single source of truth for "how tall is one printable page's
+     content box". Must equal the @page rule's height (297mm, A4
+     portrait) minus its top+bottom margin (8mm + 8mm) — see @page
+     below. certificate.js reads this same variable at runtime to
+     decide whether the sheet needs to shrink to keep everything on
+     one page, so this number only ever has to be correct in one
+     place instead of kept in sync by hand between the CSS and JS. */
+  --page-content-h: 281mm;
 }
 
 *{ box-sizing:border-box; }
@@ -49,8 +58,8 @@ body{
   width:100%;
   max-width:210mm;
 }
-#page-1{ width:100%; max-width:210mm; min-height:297mm; padding:9mm 7mm 7mm; }
-#page-2{ width:100%; max-width:210mm; min-height:297mm; padding:9mm 7mm 7mm; }
+#page-1{ width:100%; max-width:210mm; min-height:297mm; padding:9mm 7mm 7mm; border:1.25px solid var(--line); }
+#page-2{ width:100%; max-width:210mm; min-height:297mm; padding:9mm 7mm 7mm; border:1.25px solid var(--line); }
 
 /* ================= HEADER ================= */
 .head{
@@ -211,6 +220,16 @@ tr.summary td.rating{ color:var(--seal-deep); font-weight:700; }
    "not taken" rather than "no score recorded yet". */
 tr.not-applicable td{ text-decoration:line-through; color:var(--ink-faint); opacity:0.65; }
 tr.not-applicable td.subject .en, tr.not-applicable td.subject .amh{ color:inherit; }
+
+/* On screen these rows show struck-through for context (a subject
+   outside the student's stream is still visible, just marked as N/A).
+   On the printed sheet that context isn't useful — a parent doesn't
+   need to see subjects their child never took — so they're dropped
+   entirely rather than just faded, which also shortens the table and
+   helps everything fit on one printed page. */
+@media print{
+  tr.not-applicable{ display:none !important; }
+}
 tr.rank td{ background:oklch(0.93 0.03 78) !important; color:oklch(0.36 0.07 60); font-weight:700; }
 tr.rank td.subject{ color:oklch(0.36 0.07 60); }
 
@@ -325,8 +344,13 @@ tr.rank td.subject{ color:oklch(0.36 0.07 60); }
 
 /* Both pages are portrait A4 now — one single, uniform page setup, so
    there's no longer a "the browser only lets you pick one orientation
-   per print job" conflict between page 1 and page 2. */
-@page{ size:A4 portrait; margin:4mm; }
+   per print job" conflict between page 1 and page 2.
+   This @page margin is the ONLY page-edge margin — .sheet/#page-1 below
+   are full-bleed to it (no extra width reduction, no padding stacked on
+   top), so there's a single, predictable gap around the content instead
+   of the page margin, a narrowed/centered .sheet, AND page padding all
+   adding up. */
+@page{ size:A4 portrait; margin:8mm 10mm; }
 
 @media print{
   html, body{
@@ -337,57 +361,107 @@ tr.rank td.subject{ color:oklch(0.36 0.07 60); }
     background:none;
     print-color-adjust:exact;
     -webkit-print-color-adjust:exact;
-    font-size:0.82rem;
-    line-height:1.18;
+    font-size:0.95rem;
+    line-height:1.3;
+  }
+
+  /* Explicit belt-and-braces on top of the html/body rule above: every
+     element gets the color-adjust hint directly rather than relying
+     purely on inheritance, so header/footer backgrounds, table header
+     fill, the seal ring, and photo/logo borders all print instead of
+     silently going white in browsers that don't propagate it. */
+  *{
+    print-color-adjust:exact !important;
+    -webkit-print-color-adjust:exact !important;
   }
 
   .toolbar{ display:none !important; }
+  /* No transform:scale() here on purpose. A visual scale doesn't shrink
+     the box the browser reserves for page-break math — it's computed
+     from the unscaled layout size — so content that's a hair over one
+     page's worth still overflows onto a near-blank second page even
+     though it visually "fits" once scaled down. Sizing directly to the
+     @page content box (100%, no extra width/max-width reduction, no
+     margin) avoids that mismatch entirely.
+
+     min-height is deliberately set to the full A4 content height (297mm
+     page minus the 8mm+8mm top/bottom @page margin = 281mm) rather than
+     "auto". With auto, a report card whose data is short (few subjects,
+     short bios) only fills the top portion of the sheet and leaves a
+     large dead-white gap below before the page border — which is what
+     was happening. Stretching the flex column to the full printable
+     height and pushing the footer/signature block to the bottom (via
+     .foot's margin-top:auto below) fills the page like a real printed
+     certificate instead. This is still just a minimum: a report card
+     with enough subjects/content to need more than one page's worth of
+     space grows past it and page-breaks normally — it doesn't force
+     truncation or overflow the way the old scale hack did. */
   .sheet{
     box-shadow:none;
-    margin:0 auto;
-    width:calc(100% - 6mm);
-    max-width:calc(210mm - 6mm);
-    transform:scale(0.985);
-    transform-origin:top center;
-    min-height:auto !important;
-    height:auto !important;
-    max-height:none !important;
+    margin:0;
+    width:100%;
+    max-width:none;
+    min-height:var(--page-content-h);
+    max-height:none;
     padding:0;
-    display:block !important;
+    display:flex !important;
+    flex-direction:column;
     overflow:visible;
     page-break-inside:avoid;
     page-break-after:avoid;
   }
 
+  /* #page-1 is the element certificate.js measures and, if needed,
+     shrinks (via CSS zoom) to guarantee everything — header through
+     the signature strip — lands inside one page. Because zoom scales
+     the element's own box together with its content, the border below
+     always ends up wrapping exactly the content that actually printed,
+     on exactly one page, instead of a border that stops mid-sheet while
+     the signature strip spills onto a second, borderless page. */
   #page-1, #page-2{
-    padding:2mm 4mm 1.5mm;
-    min-height:auto !important;
+    padding:4mm;
+    border:1.25px solid var(--line);
+    min-height:var(--page-content-h);
     max-height:none !important;
     page-break-after:avoid;
+    transform-origin:top left;
   }
 
+  /* The font/spacing sizes below were originally tuned for the worst
+     case — a very long subject list plus full bio data — squeezed as
+     small as possible to guarantee everything fit on one page. That was
+     the right instinct back when a short report card (few subjects, no
+     absences/rank yet) had nowhere for the leftover space to go except a
+     blank gap. Now that .foot's margin-top:auto (above) already absorbs
+     whatever's left over, the table/bio content itself can run larger —
+     closer to how a real, deliberately laid-out certificate looks —
+     without reopening the overflow risk the small sizes were guarding
+     against. These are moved up roughly one notch (not maxed out), so a
+     school with an unusually long subject list still has headroom;
+     still worth a real print check after deploying, same as any of the
+     print-layout changes in this file. */
   .head{
-    padding-bottom:var(--s1);
-    gap:4px;
+    padding-bottom:var(--s2);
+    gap:6px;
   }
-  .head-text .region{ font-size:0.58rem; }
-  .head-text .school-amh{ font-size:0.84rem; }
-  .head-text .school{ font-size:0.92rem; }
-  .head-text .doctype{ font-size:0.54rem; padding:1px 5px; }
+  .head-text .region{ font-size:0.66rem; }
+  .head-text .school-amh{ font-size:0.98rem; }
+  .head-text .school{ font-size:1.08rem; }
+  .head-text .doctype{ font-size:0.62rem; padding:2px 7px; }
 
   .body-land{
     display:grid;
-    grid-template-columns: minmax(180px, 280px) 1fr;
+    grid-template-columns: minmax(200px, 320px) 1fr;
     grid-template-areas: "details table";
-    gap:4px 8px;
+    gap:8px 14px;
     min-width:0;
   }
 
-  .photo-row{ gap:4px; }
-  .photo{ width:60px; height:72px; }
-  .field-grid{ row-gap:2px; }
-  .field label{ font-size:0.64rem; }
-  .field .val{ font-size:0.78rem; padding:1px 0; }
+  .photo-row{ gap:6px; }
+  .photo{ width:74px; height:88px; }
+  .field-grid{ row-gap:5px; }
+  .field label{ font-size:0.72rem; }
+  .field .val{ font-size:0.9rem; padding:2px 0; }
 
   .table-wrap{ grid-area:table; }
 
@@ -403,10 +477,10 @@ tr.rank td.subject{ color:oklch(0.36 0.07 60); }
     min-width:0;
   }
 
-  .qr-cell{ padding:2px 0 0; gap:6px; }
-  .qr-box{ width:62px; height:62px; }
-  .qr-meta .qr-title{ font-size:0.78rem; }
-  .qr-meta .qr-sub{ font-size:0.68rem; line-height:1.15; }
+  .qr-cell{ padding:4px 0 0; gap:10px; }
+  .qr-box{ width:78px; height:78px; }
+  .qr-meta .qr-title{ font-size:0.88rem; }
+  .qr-meta .qr-sub{ font-size:0.76rem; line-height:1.25; }
 
   .table-wrap{
     overflow:visible;
@@ -415,58 +489,88 @@ tr.rank td.subject{ color:oklch(0.36 0.07 60); }
   }
 
   table.marks th, table.marks td{
-    padding:1px 3px;
+    padding:3px 6px;
   }
-  table.marks thead th{ font-size:0.64rem; }
-  table.marks thead th .amh{ font-size:0.6rem; }
-  table.marks tbody td.rating{ font-size:0.72rem; }
-  table.marks tbody td.subject{ font-size:0.74rem; }
-  table.marks tbody td{ line-height:1.1; }
+  table.marks thead th{ font-size:0.76rem; }
+  table.marks thead th .amh{ font-size:0.68rem; }
+  table.marks tbody td.rating{ font-size:0.84rem; }
+  table.marks tbody td.subject{ font-size:0.86rem; }
+  table.marks tbody td{ line-height:1.25; }
 
   .foot{
-    margin-top:2px;
-    gap:0;
+    margin-top:auto !important;
+    gap:var(--s3);
   }
-  .legend{ gap:1px 4px; font-size:0.72rem; }
-  .legend .note{ margin-top:1px; font-size:0.68rem; }
+  .legend{ gap:3px 8px; font-size:0.82rem; }
+  .legend .note{ margin-top:3px; font-size:0.76rem; }
 
-  .result-row{ gap:1px; }
-  .verdict{ padding:2px 5px; font-size:0.8rem; }
-  .promoted-to{ gap:2px; font-size:0.82rem; }
-  .promoted-to .val{ padding:0 1px 1px; }
+  .result-row{ gap:6px; }
+  .verdict{ padding:4px 10px; font-size:0.92rem; }
+  .promoted-to{ gap:6px; font-size:0.94rem; }
+  .promoted-to .val{ padding:0 3px 3px; }
 
   .sign-strip{
     display:grid !important;
     grid-template-columns:1fr auto 1fr !important;
     justify-items:stretch !important;
     align-items:start !important;
-    gap:2px !important;
-    padding-top:var(--s1) !important;
-    margin-top:var(--s2) !important;
+    gap:6px !important;
+    padding-top:var(--s3) !important;
+    margin-top:var(--s5) !important;
   }
   .sign-strip .slot{ display:flex !important; flex-direction:column !important; gap:2px !important; width:100% !important; }
   .sign-strip .slot:nth-child(1){ justify-self:start !important; align-items:flex-start !important; text-align:left !important; }
   .sign-strip .slot:nth-child(3){ justify-self:end !important; align-items:flex-end !important; text-align:right !important; }
   .seal-slot{ justify-self:center !important; }
-  .role-head{ font-size:0.66rem; }
-  .sig-name{ font-size:0.8rem; }
-  .sig-field .rule{ height:0.95em; width:90px; }
-  .sig-field .cap{ font-size:0.66rem; }
-  .seal-ring{ width:48px; height:48px; font-size:0.56rem; }
+  .role-head{ font-size:0.76rem; }
+  .sig-name{ font-size:0.94rem; }
+  .sig-field .rule{ height:1.1em; width:110px; }
+  .sig-field .cap{ font-size:0.76rem; }
+  .seal-ring{ width:62px; height:62px; font-size:0.64rem; }
 
-  .head, .qr-cell, .foot, .sign-strip{
+  .head, .qr-cell, .foot, .sign-strip, .table-wrap, table.marks{
     page-break-inside:avoid;
     break-inside:avoid;
   }
 
-  table.marks{ page-break-inside:auto; }
   table.marks thead{ display:table-header-group; }
   table.marks tr{ page-break-inside:avoid; break-inside:avoid; }
 
   .qr-box svg{ border-color:transparent; }
+
+  /* Compact mode: earlier this shrank the header, photo, QR, legend,
+     result box, and signature block too — but none of those scale with
+     subject count, so shrinking them only made a long report card look
+     smaller everywhere without actually buying back much page height,
+     which is exactly why the last version left a big gap even on a
+     14-subject sheet. table.marks is the one thing whose height is
+     multiplied by every subject row, so it's the only thing that needs
+     to shrink here — everything else stays at the fuller default size
+     above and keeps filling the page properly regardless of subject
+     count. */
+  body.many-subjects table.marks th, body.many-subjects table.marks td{ padding:1.5px 5px; }
+  body.many-subjects table.marks thead th{ font-size:0.7rem; }
+  body.many-subjects table.marks thead th .amh{ font-size:0.64rem; }
+  body.many-subjects table.marks tbody td.rating{ font-size:0.78rem; }
+  body.many-subjects table.marks tbody td.subject{ font-size:0.8rem; }
+  body.many-subjects table.marks tbody td{ line-height:1.15; }
 }
 
-@media (max-width: 900px){
+/* "screen and" is required here, not optional styling — a bare
+   `@media (max-width: 900px)` with no media-type qualifier matches ANY
+   media type once the width condition is true, including print. An A4
+   page is ~794px wide at 96dpi, which IS under 900px, so this "mobile
+   phone" breakpoint was also silently firing during PDF generation
+   (Puppeteer renders with preferCSSPageSize:true against the @page A4
+   size) — undoing the @media print fixes above on every single render:
+   #page-1/#page-2's min-height:auto here overwrote the print block's
+   min-height:281mm (equal specificity, later in the file wins), and its
+   padding:var(--s6) var(--s4) reintroduced the exact padding-stacking
+   gap that block was written to eliminate. This is why the "fill the
+   page" and margin fixes appeared to have no effect no matter how many
+   times the print rules themselves were adjusted — a later, unrelated
+   rule was overriding them on every PDF, every time. */
+@media screen and (max-width: 900px){
   body{ padding:var(--s4) var(--s2); }
   #page-1, #page-2{ width:100%; min-height:auto; padding:var(--s6) var(--s4); }
   .toolbar{ width:100%; }
@@ -476,7 +580,7 @@ tr.rank td.subject{ color:oklch(0.36 0.07 60); }
   .head{ grid-template-columns:48px 1fr 48px; }
   .sign-strip{ grid-template-columns:1fr; gap:var(--s6); }
 }
-@media (max-width: 560px){
+@media screen and (max-width: 560px){
   .field-grid{ grid-template-columns:1fr; }
   .photo-row{ flex-direction:column; align-items:flex-start; }
 }
