@@ -275,7 +275,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 textbooks: loadTextbooks,
                 absence: loadAbsenceTabs,
                 'student-absence-escalations': loadStudentAbsenceEscalations,
-                timetable: () => {},
+                timetable: initTimetablePage,
                 'teacher-assignments': loadTeacherAssignments,
                 'marks-review': loadMarksReview,
                 'mark-cutoff': loadMarkCutoffPage,
@@ -326,19 +326,39 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('grant-leave-btn')?.addEventListener('click', grantTeacherLeave);
     document.getElementById('tt-load-btn')?.addEventListener('click', loadTimetable);
     document.getElementById('tt-add-btn')?.addEventListener('click', addTimetableSlot);
-    document.getElementById('tt-class-level')?.addEventListener('change', (e) =>
-        updateStreamOptionsForLevel(document.getElementById('tt-stream'), e.target.value));
+    document.getElementById('tt-class-level')?.addEventListener('change', (e) => {
+        updateStreamOptionsForLevel(document.getElementById('tt-stream'), e.target.value);
+        renderTtSectionOptions();
+        refreshTimetableSubjectOptions();
+        refreshTimetableTeacherDisplay();
+    });
+    document.getElementById('tt-stream')?.addEventListener('change', () => {
+        renderTtSectionOptions();
+        refreshTimetableSubjectOptions();
+        refreshTimetableTeacherDisplay();
+    });
+    document.getElementById('tt-section')?.addEventListener('change', refreshTimetableTeacherDisplay);
+    document.getElementById('tt-subject-id')?.addEventListener('change', refreshTimetableTeacherDisplay);
+    document.getElementById('tt-start-time')?.addEventListener('input', (e) =>
+        showEthiopianTimeHint('tt-start-time-eth', e.target.value));
+    document.getElementById('tt-end-time')?.addEventListener('input', (e) =>
+        showEthiopianTimeHint('tt-end-time-eth', e.target.value));
     document.getElementById('ta-class-level')?.addEventListener('change', (e) => {
         updateStreamOptionsForLevel(document.getElementById('ta-stream'), e.target.value);
+        renderTaSectionCheckboxes();
         refreshAssignmentSubjectOptions();
     });
-    document.getElementById('ta-stream')?.addEventListener('change', refreshAssignmentSubjectOptions);
+    document.getElementById('ta-stream')?.addEventListener('change', () => {
+        renderTaSectionCheckboxes();
+        refreshAssignmentSubjectOptions();
+    });
     document.getElementById('hr-class-level')?.addEventListener('change', (e) =>
         updateStreamOptionsForLevel(document.getElementById('hr-stream'), e.target.value));
     wireTeacherSearch('ta-teacher-search', 'ta-teacher-search-btn', 'ta-teacher-search-results', 'ta-teacher-select');
     wireTeacherSearch('hr-teacher-search', 'hr-teacher-search-btn', 'hr-teacher-search-results', 'hr-teacher-select');
-    document.getElementById('subj-add-btn')?.addEventListener('click', addSubjectConfig);
-    populateSubjectCatalogOptions();
+    document.getElementById('subj-edit-btn')?.addEventListener('click', requestSubjectConfigEdit);
+    document.getElementById('subj-save-btn')?.addEventListener('click', saveSubjectConfigGrid);
+    document.getElementById('subj-remove-orphaned-btn')?.addEventListener('click', removeOrphanedSubjects);
     document.getElementById('semester-start-btn')?.addEventListener('click', startSemester);
     document.getElementById('semester-close-btn')?.addEventListener('click', closeSemester);
     document.getElementById('send-warning-btn')?.addEventListener('click', sendConductWarning);
@@ -1007,24 +1027,158 @@ async function decideStudentAbsence(request_id, action) {
 // ==========================================================
 // TIMETABLE (Academic VP)
 // ==========================================================
+// Class/section options come from the Registrar's own Section Setup
+// (class_sections table, same source the Subject & Teaching Assignment
+// page uses) — so Class Level/Section here can only ever be a
+// combination the Registrar actually configured. Subjects come from this
+// school's own Subject Configuration grid (ticked from the zone/TDC
+// subject dictionary), filtered to the selected stream.
+let TT_CLASS_SECTIONS_CACHE = [];
+let TT_SUBJECTS_CACHE = [];
+
+async function initTimetablePage() {
+    const [sectionsRes, subjectsRes] = await Promise.all([
+        apiFetch(`${API_BASE}/api/academic-vp/class-sections`),
+        apiFetch(`${API_BASE}/api/academic-vp/subjects`)
+    ]);
+    TT_CLASS_SECTIONS_CACHE = sectionsRes.ok ? await sectionsRes.json() : [];
+    TT_SUBJECTS_CACHE = subjectsRes.ok ? await subjectsRes.json() : [];
+
+    const levelSelect = document.getElementById('tt-class-level');
+    if (levelSelect) {
+        const levels = [...new Set(TT_CLASS_SECTIONS_CACHE.map(s => String(s.class_level)))]
+            .sort((a, b) => Number(a) - Number(b));
+        const current = levelSelect.value;
+        levelSelect.innerHTML = `<option value="">${t('sa_select_class_level')}</option>`
+            + levels.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('');
+        if (levels.includes(current)) levelSelect.value = current;
+    }
+    renderTtSectionOptions();
+    refreshTimetableSubjectOptions();
+    refreshTimetableTeacherDisplay();
+}
+
+// Section dropdown narrows to whatever the Registrar actually set up for
+// the selected Class Level (and Stream, once Grade 11/12 picks one) —
+// same normalizeStreamCode() bridge used by the Teaching Assignment page,
+// since the Registrar's own form stores stream as free text.
+function renderTtSectionOptions() {
+    const sectionSelect = document.getElementById('tt-section');
+    if (!sectionSelect) return;
+    const level = document.getElementById('tt-class-level')?.value || '';
+    const stream = document.getElementById('tt-stream')?.value || '';
+    if (!level) {
+        sectionSelect.innerHTML = `<option value="">${t('sa_select_section')}</option>`;
+        return;
+    }
+    let sections = TT_CLASS_SECTIONS_CACHE.filter(s => String(s.class_level) === String(level));
+    if (stream) sections = sections.filter(s => !s.stream || normalizeStreamCode(s.stream) === normalizeStreamCode(stream));
+    const names = [...new Set(sections.map(s => s.section_name))].sort();
+    const current = sectionSelect.value;
+    sectionSelect.innerHTML = `<option value="">${t('sa_select_section')}</option>`
+        + names.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
+    if (names.includes(current)) sectionSelect.value = current;
+}
+
+// Subjects narrow to the selected stream, same rule as the Teaching
+// Assignment form: a subject configured for "All Streams" (stream = null)
+// always shows, on top of whichever specific stream is chosen. The
+// Academic VP never types a subject here — it's only ever one they've
+// already ticked in Subject Configuration (sourced from the zone/TDC
+// subject dictionary).
+function refreshTimetableSubjectOptions() {
+    const subjectSelect = document.getElementById('tt-subject-id');
+    if (!subjectSelect) return;
+    const level = document.getElementById('tt-class-level')?.value || '';
+    const stream = document.getElementById('tt-stream')?.value || '';
+    if (!level) {
+        subjectSelect.innerHTML = `<option value="">${t('sa_tt_select_class_section_first')}</option>`;
+        return;
+    }
+    const list = stream
+        ? TT_SUBJECTS_CACHE.filter(s => !s.stream || s.stream === stream)
+        : TT_SUBJECTS_CACHE;
+    const current = subjectSelect.value;
+    subjectSelect.innerHTML = list.length
+        ? (`<option value="">${t('sa_select_subject')}</option>` +
+           list.map(s => `<option value="${s.subject_id}">${escapeHtml(s.subject_name)}${s.stream ? ' (' + escapeHtml(s.stream) + ')' : ''}</option>`).join(''))
+        : `<option value="">${t('sa_no_subject_for_stream')}</option>`;
+    if (list.some(s => s.subject_id === current)) subjectSelect.value = current;
+}
+
+// Teacher is never typed in — it's whoever is already linked (via the
+// Teaching Assignment page) to teach the selected subject in the selected
+// class/section. Purely a display lookup; the actual teacher_id used when
+// the slot is saved is resolved server-side from the same data.
+async function refreshTimetableTeacherDisplay() {
+    const display = document.getElementById('tt-teacher-display');
+    if (!display) return;
+    const class_level = document.getElementById('tt-class-level')?.value || '';
+    const section = document.getElementById('tt-section')?.value || '';
+    const subject_id = document.getElementById('tt-subject-id')?.value || '';
+    if (!class_level || !section || !subject_id) {
+        display.classList.add('is-empty');
+        display.textContent = t('sa_tt_teacher_placeholder');
+        return;
+    }
+    display.classList.add('is-empty');
+    display.textContent = t('sa_loading');
+    const res = await apiFetch(`${API_BASE}/api/academic-vp/teacher-assignments?class_level=${encodeURIComponent(class_level)}&section=${encodeURIComponent(section)}&subject_id=${encodeURIComponent(subject_id)}`);
+    const rows = res.ok ? await res.json() : [];
+    if (rows.length === 0) {
+        display.classList.add('is-empty');
+        display.textContent = t('sa_tt_teacher_none');
+    } else {
+        display.classList.remove('is-empty');
+        display.textContent = rows[0].teacher_name;
+    }
+}
+
+// ---------- Ethiopian clock-time display ----------
+// Ethiopia runs a 12-hour clock offset 6 hours from the standard/GC clock
+// (07:00 standard = 1:00 Ethiopian morning, 13:00 standard = 7:00
+// Ethiopian day, etc.) — a fixed, non-negotiable offset, not a timezone
+// conversion. Storage/comparison (start_time < end_time, etc.) all stay on
+// the standard 24-hour value the <input type="time"> already gives; this
+// only computes a friendly Ethiopian-time label alongside it.
+function toEthiopianTimeLabel(hhmm) {
+    if (!hhmm) return '';
+    const [hStr, mStr] = hhmm.split(':');
+    const h = Number(hStr), m = Number(mStr);
+    if (Number.isNaN(h) || Number.isNaN(m)) return '';
+    let ethHour = (h - 6 + 24) % 12;
+    if (ethHour === 0) ethHour = 12;
+    const isDay = h >= 6 && h < 18;
+    const period = isDay ? t('sa_eth_time_day') : t('sa_eth_time_night');
+    return `${ethHour}:${String(m).padStart(2, '0')} ${period}`;
+}
+
+function showEthiopianTimeHint(hintElId, hhmm) {
+    const el = document.getElementById(hintElId);
+    if (!el) return;
+    const label = toEthiopianTimeLabel(hhmm);
+    el.textContent = label ? `${t('sa_eth_time_label')}: ${label}` : '';
+}
+
 async function loadTimetable() {
     const class_level = document.getElementById('tt-class-level').value.trim();
     const section = document.getElementById('tt-section').value.trim();
     const stream = document.getElementById('tt-stream').value.trim();
     const tbody = document.getElementById('sa-timetable-tbody');
     if (!class_level || !section || !stream) return showToast(t('sa_err_class_fields_required'), 'error');
-    tbody.innerHTML = `<tr><td colspan="5">${t('sa_loading')}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6">${t('sa_loading')}</td></tr>`;
     const res = await apiFetch(`${API_BASE}/api/admin/timetable?class_level=${encodeURIComponent(class_level)}&section=${encodeURIComponent(section)}&stream=${encodeURIComponent(stream)}`);
-    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="5">${t('sa_load_error')}</td></tr>`; return; }
+    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_load_error')}</td></tr>`; return; }
     const rows = await res.json();
     const dayNames = ['', t('sa_monday'), t('sa_tuesday'), t('sa_wednesday'), t('sa_thursday'), t('sa_friday')];
-    if (rows.length === 0) { tbody.innerHTML = `<tr><td colspan="5">${t('sa_no_data')}</td></tr>`; return; }
+    if (rows.length === 0) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_no_data')}</td></tr>`; return; }
     tbody.innerHTML = rows.map(r => `
         <tr>
             <td>${dayNames[r.day_of_week] || r.day_of_week}</td>
             <td>${r.start_time} - ${r.end_time}</td>
+            <td>${toEthiopianTimeLabel(r.start_time)} - ${toEthiopianTimeLabel(r.end_time)}</td>
             <td>${escapeHtml(r.subject_name)}</td>
-            <td>${r.teacher_id || '—'}</td>
+            <td>${r.teacher_name ? escapeHtml(r.teacher_name) : '—'}</td>
             <td><button class="btn btn-sm btn-danger" onclick="deleteTimetableSlot(${r.timetable_id})">${t('sa_delete')}</button></td>
         </tr>`).join('');
 }
@@ -1035,15 +1189,16 @@ async function addTimetableSlot() {
     const stream = document.getElementById('tt-stream').value.trim();
     const day_of_week = document.getElementById('tt-day').value;
     const subject_id = document.getElementById('tt-subject-id').value.trim();
-    const teacher_id = document.getElementById('tt-teacher-id').value.trim();
     const start_time = document.getElementById('tt-start-time').value;
     const end_time = document.getElementById('tt-end-time').value;
     if (!class_level || !section || !stream || !subject_id || !start_time || !end_time) {
         return showToast(t('sa_err_slot_fields_required'), 'error');
     }
+    // teacher_id is deliberately not sent — the server resolves it from
+    // whoever is actually assigned to teach this subject in this section.
     const res = await apiFetch(`${API_BASE}/api/admin/timetable`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ class_level, section, stream, day_of_week: Number(day_of_week), subject_id, teacher_id: teacher_id || null, start_time, end_time })
+        body: JSON.stringify({ class_level, section, stream, day_of_week: Number(day_of_week), subject_id, start_time, end_time })
     });
     await handleJsonResponse(res, t('sa_slot_added'));
     loadTimetable();
@@ -1087,7 +1242,28 @@ async function loadSemesterStatus() {
     document.getElementById('semester-term-select').value = data.current_term;
 }
 
+// Starting or closing the semester is a whole-school action (it resets the
+// attendance-counting clock, freezes marks, etc.), so it re-locks behind
+// the Academic VP's own login password first — same one-time re-auth gate
+// as unlocking Subject Configuration for edit (verify-password doesn't
+// issue a new session, it just confirms the password again).
+async function verifyAcademicVpPassword(promptMessage) {
+    const password = await showPasswordPromptModal(promptMessage);
+    if (!password) return false;
+    const res = await apiFetch(`${API_BASE}/api/academic-vp/subjects/verify-password`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password })
+    });
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        showToast(data.error || t('sa_incorrect_password'), 'error');
+        return false;
+    }
+    return true;
+}
+
 async function startSemester() {
+    if (!(await verifyAcademicVpPassword(t('sa_semester_start_password_prompt')))) return;
     const term = document.getElementById('semester-term-select').value;
     const res = await apiFetch(`${API_BASE}/api/term/set`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ term })
@@ -1098,6 +1274,7 @@ async function startSemester() {
 }
 
 async function closeSemester() {
+    if (!(await verifyAcademicVpPassword(t('sa_semester_close_password_prompt')))) return;
     const res = await apiFetch(`${API_BASE}/api/term/close`, { method: 'POST' });
     await handleJsonResponse(res, t('sa_semester_closed'));
     loadSemesterStatus();
@@ -1718,6 +1895,10 @@ async function openBatchModal(batch) {
 // Grade 9 & 10 only ever run "General" (no stream split yet); Grade 11 &
 // 12 split into Natural or Social Science. Used by the Timetable form and
 // the Subject & Teaching Assignment / Homeroom forms alike.
+// No blank "Select stream..." placeholder for 11/12 anymore — a
+// placeholder step here just adds an extra click and confused people, so
+// the dropdown now always lands on a real choice (Natural, first) the
+// moment the class level is picked; switching to Social is one click away.
 function updateStreamOptionsForLevel(streamSelect, level) {
     if (!streamSelect) return;
     if (level === '9' || level === '10') {
@@ -1726,9 +1907,9 @@ function updateStreamOptionsForLevel(streamSelect, level) {
         streamSelect.disabled = true;
     } else if (level === '11' || level === '12') {
         streamSelect.innerHTML = `
-            <option value="">${t('sa_select_stream')}</option>
             <option value="Natural">${t('sa_stream_natural')}</option>
             <option value="Social">${t('sa_stream_social')}</option>`;
+        streamSelect.value = 'Natural';
         streamSelect.disabled = false;
     } else {
         streamSelect.innerHTML = `<option value="">${t('sa_select_class_level')}</option>`;
@@ -1848,7 +2029,7 @@ function openAcceptIncomingModal(incoming_id) {
         <p class="page-subtitle">${t('sa_accept_incoming_hint')}</p>
         <div class="form-group">
             <label>${t('sa_temp_password_label')}</label>
-            <input type="text" id="accept-incoming-password" />
+            <input type="text" id="accept-incoming-password" value="1122" />
         </div>
         <div class="form-actions">
             <button class="btn btn-accent" onclick="acceptIncomingTeacher(${incoming_id})">${t('sa_accept')}</button>
@@ -1910,7 +2091,7 @@ async function loadTeacherAssignments(filterTeacherId) {
     });
 
     refreshAssignmentSubjectOptions();
-    if (canAssign) loadSubjectConfig();
+    if (canAssign) { loadSubjectConfig(); loadClassSectionsForAssignment(); }
 
     const filterSelect = document.getElementById('ta-filter-teacher');
     if (filterSelect) {
@@ -2024,6 +2205,69 @@ async function revokeRegistrar(teacher_id) {
     loadTeacherAssignments();
 }
 
+// Classes/sections actually configured by the Registrar (class_sections
+// table) — replaces the old hardcoded "9/10/11/12" and "A/B/C/D" options
+// in Class Level and Section, so Academic VP can only ever pick a
+// combination that really exists at this school.
+let TA_CLASS_SECTIONS_CACHE = [];
+
+async function loadClassSectionsForAssignment() {
+    const res = await apiFetch(`${API_BASE}/api/academic-vp/class-sections`);
+    TA_CLASS_SECTIONS_CACHE = res.ok ? await res.json() : [];
+
+    const levelSelect = document.getElementById('ta-class-level');
+    if (levelSelect) {
+        const levels = [...new Set(TA_CLASS_SECTIONS_CACHE.map(s => String(s.class_level)))]
+            .sort((a, b) => Number(a) - Number(b));
+        const current = levelSelect.value;
+        levelSelect.innerHTML = `<option value="">${t('sa_select_class_level')}</option>`
+            + levels.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('');
+        if (levels.includes(current)) levelSelect.value = current;
+    }
+    renderTaSectionCheckboxes();
+}
+
+// The Registrar's own Section Setup form stores stream as free text
+// (e.g. "Natural Science"), while this form's Stream dropdown uses the
+// short code ("Natural") that the rest of the app (subjects, teacher
+// assignments) is built around. Same class_sections.stream column, two
+// different spellings — normalize both sides before comparing so a
+// section the Registrar configured under "Natural Science" still shows
+// up once "Natural" is picked here.
+function normalizeStreamCode(raw) {
+    const s = (raw || '').toLowerCase();
+    if (s.startsWith('natural')) return 'Natural';
+    if (s.startsWith('social')) return 'Social';
+    if (s.startsWith('general')) return 'General';
+    return raw || '';
+}
+
+// Renders the Section tick-list for whatever Class Level (and, for
+// Grade 11/12, Stream) is currently picked — ticking A, C, and D but
+// leaving B unticked assigns the teacher to those three sections in one
+// submit (see saveTeacherAssignment below), instead of one dropdown pick
+// at a time.
+function renderTaSectionCheckboxes() {
+    const box = document.getElementById('ta-section-checkboxes');
+    if (!box) return;
+    const level = document.getElementById('ta-class-level')?.value || '';
+    const stream = document.getElementById('ta-stream')?.value || '';
+    if (!level) {
+        box.innerHTML = `<span class="form-hint" data-i18n="sa_select_class_level_first">${t('sa_select_class_level_first')}</span>`;
+        return;
+    }
+    let sections = TA_CLASS_SECTIONS_CACHE.filter(s => String(s.class_level) === String(level));
+    if (stream) sections = sections.filter(s => !s.stream || normalizeStreamCode(s.stream) === normalizeStreamCode(stream));
+    if (sections.length === 0) {
+        box.innerHTML = `<span class="form-hint">${t('sa_no_data')}</span>`;
+        return;
+    }
+    const names = [...new Set(sections.map(s => s.section_name))].sort();
+    box.innerHTML = names.map(name => `
+        <label><input type="checkbox" class="ta-section-cb" value="${escapeHtml(name)}"> ${escapeHtml(name)}</label>
+    `).join('');
+}
+
 // Subjects narrow to whatever the currently-selected stream can teach:
 // a subject configured for "All Streams" (stream = null) always shows, on
 // top of whichever specific stream (General/Natural/Social) is chosen.
@@ -2044,22 +2288,32 @@ async function saveTeacherAssignment() {
     const teacher_id = document.getElementById('ta-teacher-select').value;
     const subject_id = document.getElementById('ta-subject-select').value;
     const class_level = document.getElementById('ta-class-level').value.trim();
-    const section = document.getElementById('ta-section').value.trim();
     const stream = document.getElementById('ta-stream').value.trim();
+    const sections = [...document.querySelectorAll('.ta-section-cb:checked')].map(cb => cb.value);
     if (!teacher_id) return showToast(t('sa_err_teacher_not_selected'), 'error');
-    if (!subject_id || !class_level || !section) return showToast(t('sa_err_assignment_required'), 'error');
+    if (!subject_id || !class_level || sections.length === 0) return showToast(t('sa_err_assignment_required'), 'error');
 
-    const res = await apiFetch(`${API_BASE}/api/academic-vp/teacher-assignments`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ teacher_id, subject_id, class_level, section, stream: stream || null })
-    });
-    const data = await handleJsonResponse(res, t('sa_assignment_saved'));
-    if (!data) return;
+    let successCount = 0;
+    const errors = [];
+    for (const section of sections) {
+        const res = await apiFetch(`${API_BASE}/api/academic-vp/teacher-assignments`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ teacher_id, subject_id, class_level, section, stream: stream || null })
+        });
+        if (res.ok) {
+            successCount++;
+        } else {
+            const data = await res.json().catch(() => ({}));
+            errors.push(`${section}: ${data.error || res.status}`);
+        }
+    }
+    if (successCount > 0) showToast(t('sa_assignment_saved'), 'success');
+    if (errors.length > 0) showToast(errors.join(' · '), 'error');
     document.getElementById('ta-teacher-select').value = '';
     document.getElementById('ta-teacher-search-results').innerHTML = '';
     document.getElementById('ta-class-level').value = '';
-    document.getElementById('ta-section').value = '';
     updateStreamOptionsForLevel(document.getElementById('ta-stream'), '');
+    renderTaSectionCheckboxes();
     loadTeacherAssignments();
 }
 
@@ -2068,99 +2322,179 @@ async function saveTeacherAssignment() {
 // actually teaches, tagged by stream, so they surface in the Subject &
 // Teaching Assignment form and the Timetable builder.
 //
-// Subject Name is a dropdown, not free text, populated from
-// /api/academic-vp/subject-dictionary — the zone's own subject
-// dictionary, set by the Head of Education for the zone this school
-// belongs to (see /api/zonal/subject-dictionary). There's no
-// hardcoded list here anymore: two schools in different zones can see
-// two different subject lists (e.g. only the zone that teaches Nuer or
-// Dha-Anywaa as a mother tongue offers it), and the zone can add or
-// retire a subject without a code change. A mistyped/inconsistent
-// subject_name (e.g. "Phisics" vs "Physics") still can't sneak into
-// Subject Configuration, since the dropdown only ever offers exactly
-// what the dictionary contains and the server re-validates it.
-// A subject that's taught in more than one stream (Math, English, IT,
-// etc.) is meant to be added once PER stream it's taught in — there's
-// no "All Streams" shortcut (see subj-stream below); the
-// certificate/report-card/transcript generation already merges same-
-// named rows per student's own stream, so this doesn't reintroduce the
-// duplicate-subject-row bug.
-async function populateSubjectCatalogOptions() {
-    const select = document.getElementById('subj-name');
-    if (!select) return;
-    const placeholder = select.querySelector('option[value=""]');
-    try {
-        const res = await apiFetch(`${API_BASE}/api/academic-vp/subject-dictionary`);
-        const names = res.ok ? await res.json() : [];
-        select.innerHTML = '';
-        if (placeholder) select.appendChild(placeholder);
-        if (names.length === 0) {
-            const empty = document.createElement('option');
-            empty.value = '';
-            empty.disabled = true;
-            empty.textContent = t('sa_no_subject_dictionary');
-            select.appendChild(empty);
-            return;
-        }
-        names.forEach(name => {
-            const opt = document.createElement('option');
-            opt.value = name;
-            opt.textContent = name;
-            select.appendChild(opt);
-        });
-    } catch (err) {
-        console.error('populateSubjectCatalogOptions error:', err);
+// Shown as a grid: one row per subject in the zone's own subject
+// dictionary (set by the Head of Education, see
+// /api/zonal/subject-dictionary — a school can't invent a subject name
+// here, only tick which of ITS streams already exist in that zone list),
+// one checkbox column per stream (General / Natural / Social). The grid
+// stays read-only until "Edit" is clicked and the Academic VP re-enters
+// their own login password (/api/academic-vp/subjects/verify-password);
+// "Save" then bulk-writes the whole grid in one call
+// (/api/academic-vp/subjects/bulk-save).
+let SUBJ_CONFIG_DICTIONARY = [];   // subject names from the zone dictionary
+let SUBJ_CONFIG_EXISTING = [];     // already-configured {subject_id, subject_name, stream} rows
+let SUBJ_CONFIG_UNLOCKED = false;
+
+function subjConfigStreamKey(name, stream) {
+    return `${name}\u0000${stream}`;
+}
+
+function renderSubjectConfigGrid() {
+    const tbody = document.getElementById('sa-subject-config-tbody');
+    if (!tbody) return;
+    // Row set = zone dictionary names, plus any already-configured name
+    // that's since dropped out of the dictionary (so it stays visible
+    // and editable instead of silently disappearing).
+    const dictSet = new Set(SUBJ_CONFIG_DICTIONARY);
+    const names = [...new Set([
+        ...SUBJ_CONFIG_DICTIONARY,
+        ...SUBJ_CONFIG_EXISTING.map(s => s.subject_name)
+    ])].sort();
+    if (names.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="4">${t('sa_no_subject_dictionary')}</td></tr>`;
+        updateOrphanedSubjectsUi();
+        return;
     }
+    const existingSet = new Set(SUBJ_CONFIG_EXISTING.map(s => subjConfigStreamKey(s.subject_name, s.stream)));
+    tbody.innerHTML = names.map(name => `
+        <tr>
+            <td>${escapeHtml(name)}${dictSet.has(name) ? '' : ` <span class="badge badge-pending" title="${escapeHtml(t('sa_subj_not_in_dictionary_title'))}">${t('sa_subj_not_in_dictionary_badge')}</span>`}</td>
+            ${['General', 'Natural', 'Social'].map(stream => `
+                <td style="text-align:center">
+                    <input type="checkbox" class="subj-config-cb"
+                        data-subject-name="${escapeHtml(name)}" data-stream="${stream}"
+                        ${existingSet.has(subjConfigStreamKey(name, stream)) ? 'checked' : ''}
+                        ${SUBJ_CONFIG_UNLOCKED ? '' : 'disabled'}>
+                </td>`).join('')}
+        </tr>`).join('');
+    updateOrphanedSubjectsUi();
+}
+
+// Subjects this school has already configured under a name that's no
+// longer (or never was, if the dictionary changed after they were added)
+// in the zone's subject dictionary — e.g. the TDC renamed or removed the
+// entry after this school ticked it. These stay editable in the grid
+// (see the row-set comment above) but are otherwise invisible unless
+// flagged, so the Academic VP has a way to spot and clear them out in
+// one action instead of hunting row by row.
+function getOrphanedSubjectNames() {
+    const dictSet = new Set(SUBJ_CONFIG_DICTIONARY);
+    return [...new Set(SUBJ_CONFIG_EXISTING.map(s => s.subject_name).filter(name => !dictSet.has(name)))].sort();
+}
+
+function updateOrphanedSubjectsUi() {
+    const btn = document.getElementById('subj-remove-orphaned-btn');
+    const hint = document.getElementById('subj-orphaned-hint');
+    if (!btn || !hint) return;
+    const orphaned = getOrphanedSubjectNames();
+    if (orphaned.length === 0) {
+        btn.style.display = 'none';
+        hint.style.display = 'none';
+        return;
+    }
+    btn.style.display = '';
+    hint.style.display = '';
+    hint.textContent = t('sa_subj_orphaned_hint', { names: orphaned.join(', ') });
 }
 
 async function loadSubjectConfig() {
     const tbody = document.getElementById('sa-subject-config-tbody');
     if (!tbody) return;
-    tbody.innerHTML = `<tr><td colspan="3">${t('sa_loading')}</td></tr>`;
-    const res = await apiFetch(`${API_BASE}/api/academic-vp/subjects`);
-    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="3">${t('sa_load_error')}</td></tr>`; return; }
-    const subjects = await res.json();
-    TA_SUBJECTS_CACHE = subjects;
+    tbody.innerHTML = `<tr><td colspan="4">${t('sa_loading')}</td></tr>`;
+    const [dictRes, subjRes] = await Promise.all([
+        apiFetch(`${API_BASE}/api/academic-vp/subject-dictionary`),
+        apiFetch(`${API_BASE}/api/academic-vp/subjects`)
+    ]);
+    if (!subjRes.ok) { tbody.innerHTML = `<tr><td colspan="4">${t('sa_load_error')}</td></tr>`; return; }
+    SUBJ_CONFIG_DICTIONARY = dictRes.ok ? await dictRes.json() : [];
+    SUBJ_CONFIG_EXISTING = await subjRes.json();
+    TA_SUBJECTS_CACHE = SUBJ_CONFIG_EXISTING;
     refreshAssignmentSubjectOptions();
-    if (subjects.length === 0) { tbody.innerHTML = `<tr><td colspan="3">${t('sa_no_data')}</td></tr>`; return; }
-    // "All Streams" (stream = null) can no longer be created from this
-    // form, but a row saved under the old behavior may still exist —
-    // this label keeps any such legacy row readable instead of showing
-    // a blank stream.
-    const streamLabel = s => s.stream === 'General' ? t('sa_stream_general')
-        : s.stream === 'Natural' ? t('sa_stream_natural')
-        : s.stream === 'Social' ? t('sa_stream_social')
-        : t('sa_stream_all');
-    tbody.innerHTML = subjects.map(s => `
-        <tr>
-            <td>${escapeHtml(s.subject_name)}</td>
-            <td>${streamLabel(s)}</td>
-            <td><button class="btn btn-sm btn-danger" onclick="deleteSubjectConfig('${s.subject_id}')">${t('sa_remove')}</button></td>
-        </tr>`).join('');
+    renderSubjectConfigGrid();
 }
 
-async function addSubjectConfig() {
-    const subject_name = document.getElementById('subj-name').value.trim();
-    const stream = document.getElementById('subj-stream').value;
-    if (!subject_name || !stream) return showToast(t('sa_err_subject_fields_required'), 'error');
-
-    const res = await apiFetch(`${API_BASE}/api/academic-vp/subjects`, {
+// "Edit" re-locks behind the Academic VP's own login password before the
+// grid becomes tickable — a lightweight re-auth gate, not a new session.
+async function requestSubjectConfigEdit() {
+    const password = await showPasswordPromptModal(t('sa_reenter_password_prompt'));
+    if (!password) return;
+    const res = await apiFetch(`${API_BASE}/api/academic-vp/subjects/verify-password`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subject_name, stream })
+        body: JSON.stringify({ password })
     });
-    const data = await handleJsonResponse(res, t('sa_subject_added'));
-    if (!data) return;
-    document.getElementById('subj-name').value = '';
-    document.getElementById('subj-stream').value = '';
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        showToast(data.error || t('sa_incorrect_password'), 'error');
+        return;
+    }
+    SUBJ_CONFIG_UNLOCKED = true;
+    document.getElementById('subj-edit-btn').style.display = 'none';
+    document.getElementById('subj-save-btn').style.display = '';
+    renderSubjectConfigGrid();
+}
+
+async function saveSubjectConfigGrid() {
+    const byName = new Map();
+    document.querySelectorAll('.subj-config-cb').forEach(cb => {
+        const name = cb.dataset.subjectName;
+        if (!byName.has(name)) byName.set(name, []);
+        if (cb.checked) byName.get(name).push(cb.dataset.stream);
+    });
+    const config = [...byName.entries()].map(([subject_name, streams]) => ({ subject_name, streams }));
+
+    const res = await apiFetch(`${API_BASE}/api/academic-vp/subjects/bulk-save`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { showToast(data.error || t('sa_save_error'), 'error'); return; }
+    if (data.skipped && data.skipped.length > 0) {
+        showToast(t('sa_subject_config_partial_save'), 'warning');
+    } else {
+        showToast(t('sa_subject_config_saved'), 'success');
+    }
+    SUBJ_CONFIG_UNLOCKED = false;
+    document.getElementById('subj-edit-btn').style.display = '';
+    document.getElementById('subj-save-btn').style.display = 'none';
     loadSubjectConfig();
 }
 
-async function deleteSubjectConfig(subject_id) {
-    if (!(await showConfirmModal(t('sa_confirm_remove_subject'), { danger: true }))) return;
-    const res = await apiFetch(`${API_BASE}/api/academic-vp/subjects/${encodeURIComponent(subject_id)}`, { method: 'DELETE' });
-    await handleJsonResponse(res, t('sa_subject_removed'));
+// One-click cleanup for subjects this school configured under a name
+// that's since fallen out of the zone dictionary (renamed/removed by the
+// TDC, wrong zone at the time, etc. — see getOrphanedSubjectNames above).
+// Reuses the exact same bulk-save endpoint a normal grid Save hits, just
+// with every orphaned (subject_name, stream) pair left out of the target
+// config — so it gets the same "skip if a teacher is already assigned to
+// it" safety net for free, and reported back the same way.
+async function removeOrphanedSubjects() {
+    const orphaned = getOrphanedSubjectNames();
+    if (orphaned.length === 0) return;
+    if (!(await showConfirmModal(t('sa_subj_remove_orphaned_confirm', { names: orphaned.join(', ') }), { danger: true }))) return;
+    if (!(await verifyAcademicVpPassword(t('sa_reenter_password_prompt')))) return;
+
+    const orphanedSet = new Set(orphaned);
+    const byName = new Map();
+    for (const s of SUBJ_CONFIG_EXISTING) {
+        if (orphanedSet.has(s.subject_name)) continue;
+        if (!byName.has(s.subject_name)) byName.set(s.subject_name, []);
+        byName.get(s.subject_name).push(s.stream);
+    }
+    const config = [...byName.entries()].map(([subject_name, streams]) => ({ subject_name, streams }));
+
+    const res = await apiFetch(`${API_BASE}/api/academic-vp/subjects/bulk-save`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { showToast(data.error || t('sa_save_error'), 'error'); return; }
+    if (data.skipped && data.skipped.length > 0) {
+        showToast(t('sa_subj_orphaned_removed_partial'), 'warning');
+    } else {
+        showToast(t('sa_subj_orphaned_removed'), 'success');
+    }
     loadSubjectConfig();
 }
+
 
 async function removeTeacherAssignment(teacher_id, class_level, section, subject_id) {
     const res = await apiFetch(`${API_BASE}/api/academic-vp/teacher-assignments`, {
@@ -2339,6 +2673,31 @@ function showPromptModal(message, { placeholder = '', required = false, multilin
     });
 }
 
+// Same shape as showPromptModal, but a masked password field — used for
+// re-authentication gates like unlocking Subject Configuration for edit.
+function showPasswordPromptModal(message) {
+    return new Promise(resolve => {
+        openModal(`
+            <h3>${escapeHtml(message)}</h3>
+            <input id="sa-password-prompt-field" class="form-control" type="password" style="width:100%; margin:12px 0;" autocomplete="current-password">
+            <div class="form-actions">
+                <button class="btn btn-ghost" id="sa-password-prompt-cancel-btn">${t('sa_cancel')}</button>
+                <button class="btn btn-primary" id="sa-password-prompt-ok-btn">${t('sa_confirm_ok')}</button>
+            </div>`);
+        const input = document.getElementById('sa-password-prompt-field');
+        input.focus();
+        let settled = false;
+        const finish = (val) => { if (settled) return; settled = true; closeModal(); resolve(val); };
+        const submit = () => finish(input.value);
+        document.getElementById('sa-password-prompt-ok-btn').onclick = submit;
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+        document.getElementById('sa-password-prompt-cancel-btn').onclick = () => finish(null);
+        document.getElementById('sa-generic-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'sa-generic-modal') finish(null);
+        });
+    });
+}
+
 // Small set of labeled buttons instead of a free-text prompt, for
 // decisions that only make sense as one of a fixed set of values.
 function showChoiceModal(message, choices) {
@@ -2383,11 +2742,17 @@ async function loadMessageRecipients() {
         wrap.style.display = '';
         select.innerHTML = MESSAGE_RECIPIENTS_CACHE.admins.map(x => `<option value="${x.id}">${escapeHtml(x.full_name)} (${escapeHtml(x.title)})</option>`).join('') || `<option value="">${t('sa_no_data')}</option>`;
     } else {
-        // Zonal Admin Bridge — auto-routes to the zone's Head of Education, no picker needed
-        wrap.style.display = 'none';
-        select.innerHTML = MESSAGE_RECIPIENTS_CACHE.zonal_contact
-            ? `<option value="${MESSAGE_RECIPIENTS_CACHE.zonal_contact.id}">${escapeHtml(MESSAGE_RECIPIENTS_CACHE.zonal_contact.full_name)}</option>`
-            : '';
+        // Zonal Admin Bridge — now a real picker (Head of Education,
+        // Team Leaders, Development Coordinators, etc.), defaulting to
+        // the Head of Education when there's more than one option.
+        const contacts = MESSAGE_RECIPIENTS_CACHE.zonal_contacts || [];
+        if (contacts.length > 0) {
+            wrap.style.display = '';
+            select.innerHTML = contacts.map(x => `<option value="${x.id}" ${MESSAGE_RECIPIENTS_CACHE.zonal_contact?.id === x.id ? 'selected' : ''}>${escapeHtml(x.full_name)}${x.title ? ' (' + escapeHtml(x.title) + ')' : ''}</option>`).join('');
+        } else {
+            wrap.style.display = 'none';
+            select.innerHTML = '';
+        }
     }
 }
 

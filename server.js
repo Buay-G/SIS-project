@@ -496,18 +496,52 @@ const STAFF_ID_DIGITS = 3;
 // number is only ever handed out once, so the two tables never collide
 // on the same ID even though neither one has its own dedicated counter.
 // Global (not per-school) on purpose — see STAFF_ID_PREFIX above.
+//
+// This used to be "read the max of both tables, then +1 in JS" — two
+// plain SELECTs with no lock between them and the eventual INSERT. Two
+// requests landing close together (e.g. a teacher hire and a Principal
+// appointment submitted seconds apart) could both read the same max and
+// both mint the same TCH### before either row existed to stop them.
+// MySQL doesn't catch that, because a duplicate across two DIFFERENT
+// tables isn't something either table's own PRIMARY KEY can enforce.
+//
+// Fixed by handing out numbers from a dedicated one-row counter table
+// instead of recomputing a max every time. The UPDATE below is a single
+// atomic statement — MySQL row-locks it for the instant it runs — so two
+// concurrent calls can never both read the same "next" value.
+//
+// One-time setup required:
+//   CREATE TABLE IF NOT EXISTS staff_id_seq (
+//     id TINYINT PRIMARY KEY,
+//     next_val INT NOT NULL
+//   );
+//   INSERT INTO staff_id_seq (id, next_val)
+//   SELECT 1, COALESCE(MAX(n), 0) + 1 FROM (
+//     SELECT CAST(SUBSTRING(teacher_id, 4) AS UNSIGNED) AS n
+//       FROM teachers WHERE teacher_id LIKE 'TCH%'
+//     UNION ALL
+//     SELECT CAST(SUBSTRING(admin_id, 4) AS UNSIGNED) AS n
+//       FROM school_admins WHERE admin_id LIKE 'TCH%'
+//   ) existing_ids
+//   WHERE NOT EXISTS (SELECT 1 FROM staff_id_seq WHERE id = 1);
+// (Run this once against your existing DB before deploying this version —
+// it seeds the counter to start above the highest TCH### already in use,
+// so it can never hand out an ID that collides with existing data.)
 async function getNextStaffId() {
-    const [[teacherRows], [adminRows]] = await Promise.all([
-        pool.query('SELECT teacher_id AS id FROM teachers WHERE teacher_id LIKE ?', [`${STAFF_ID_PREFIX}%`]),
-        pool.query('SELECT admin_id AS id FROM school_admins WHERE admin_id LIKE ?', [`${STAFF_ID_PREFIX}%`])
-    ]);
-    const allIds = [...teacherRows, ...adminRows].map(r => r.id);
-    let maxNumber = 0;
-    for (const id of allIds) {
-        const numPart = parseInt(id.slice(STAFF_ID_PREFIX.length), 10);
-        if (!isNaN(numPart) && numPart > maxNumber) maxNumber = numPart;
+    const conn = await pool.getConnection();
+    try {
+        // LAST_INSERT_ID(expr) is a MySQL trick: it sets this connection's
+        // "last insert id" to whatever `expr` evaluates to, as part of the
+        // same atomic UPDATE. Reading it back right after (same connection)
+        // is safe even under concurrency — there's no gap between "read the
+        // current value" and "claim it" for another request to land in.
+        await conn.query(`UPDATE staff_id_seq SET next_val = LAST_INSERT_ID(next_val + 1) WHERE id = 1`);
+        const [rows] = await conn.query(`SELECT LAST_INSERT_ID() AS id`);
+        const nextNumber = rows[0].id;
+        return `${STAFF_ID_PREFIX}${String(nextNumber).padStart(STAFF_ID_DIGITS, '0')}`;
+    } finally {
+        conn.release();
     }
-    return `${STAFF_ID_PREFIX}${String(maxNumber + 1).padStart(STAFF_ID_DIGITS, '0')}`;
 }
 
 // --- Zonal: schools & school admin accounts ---
@@ -519,7 +553,7 @@ app.get('/api/zonal/schools', requireAuth, requireZonalAdmin, async (req, res) =
         const schoolIds = await getZonalSchoolIds(req);
         if (schoolIds.length === 0) return res.json([]);
         const [schools] = await pool.query(
-            `SELECT sc.id, sc.school_name, sc.school_prefix, sc.moe_school_code,
+            `SELECT sc.id, sc.school_name, sc.school_level, sc.school_prefix, sc.moe_school_code,
                     w.woreda_name AS woreda, r.region_name AS region
              FROM schools sc
              LEFT JOIN woreda w ON w.woreda_id = sc.woreda_id
@@ -538,12 +572,10 @@ app.get('/api/zonal/schools', requireAuth, requireZonalAdmin, async (req, res) =
 // The zone's curriculum subject list. Adding/editing/removing subjects
 // is the Development Coordinator's job (delegated or not — requireTdcOrHoe,
 // not requireCanActInZone: this is deliberately wider than the zone's
-// other "direct authority" actions). A Development Coordinator's add/edit
-// lands as 'pending' and stays invisible to schools (see the approved-only
-// filter on /api/academic-vp/subject-dictionary below) until the Head of
-// Education approves it; the Head of Education's own add/edit is
-// auto-approved. GET returns every row regardless of status — it's the
-// internal zonal-admin view, available to all three titles.
+// other "direct authority" actions). Every add/edit is auto-approved and
+// visible to Academic VPs immediately — there's no Head of Education
+// review step. GET returns every row — it's the internal zonal-admin
+// view, available to all three titles.
 //
 // ADD THESE COLUMNS if subject_dictionary already exists without them:
 //   ALTER TABLE subject_dictionary
@@ -551,6 +583,10 @@ app.get('/api/zonal/schools', requireAuth, requireZonalAdmin, async (req, res) =
 //     ADD COLUMN added_by VARCHAR(50) NULL,
 //     ADD COLUMN approved_by VARCHAR(50) NULL,
 //     ADD COLUMN approved_at DATETIME NULL;
+// (status/approved_by/approved_at are kept — every row is written as
+// 'approved' now, but the columns stay so nothing already in the table
+// needs a migration, and so the /approve and /reject endpoints below
+// still work if this ever needs to be turned back on.)
 app.get('/api/zonal/subject-dictionary', requireAuth, requireZonalAdmin, async (req, res) => {
     try {
         const [subjects] = await pool.query(
@@ -575,14 +611,13 @@ app.post('/api/zonal/subject-dictionary', requireAuth, requireTdcOrHoe, async (r
         );
         if (existing.length > 0) return res.status(409).json({ error: "This subject is already in the dictionary." });
 
-        const isHoe = req.user.title === 'Head of Education';
         const [insertResult] = await pool.query(
             `INSERT INTO subject_dictionary (zone_id, subject_name, status, added_by, approved_by, approved_at)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [req.user.zone_id, cleanName, isHoe ? 'approved' : 'pending', req.user.user_id, isHoe ? req.user.user_id : null, isHoe ? new Date() : null]
+             VALUES (?, ?, 'approved', ?, ?, ?)`,
+            [req.user.zone_id, cleanName, req.user.user_id, req.user.user_id, new Date()]
         );
         res.json({
-            message: isHoe ? "Subject added to dictionary." : "Subject submitted — it won't be visible to schools until the Head of Education approves it.",
+            message: "Subject added — visible to Academic VPs now.",
             subject_dict_id: insertResult.insertId
         });
     } catch (err) {
@@ -602,15 +637,14 @@ app.put('/api/zonal/subject-dictionary/:subject_dict_id', requireAuth, requireTd
         );
         if (dupe.length > 0) return res.status(409).json({ error: "This subject is already in the dictionary." });
 
-        const isHoe = req.user.title === 'Head of Education';
         const [result] = await pool.query(
             `UPDATE subject_dictionary
-             SET subject_name = ?, status = ?, added_by = ?, approved_by = ?, approved_at = ?
+             SET subject_name = ?, status = 'approved', added_by = ?, approved_by = ?, approved_at = ?
              WHERE subject_dict_id = ? AND zone_id = ?`,
-            [cleanName, isHoe ? 'approved' : 'pending', req.user.user_id, isHoe ? req.user.user_id : null, isHoe ? new Date() : null, req.params.subject_dict_id, req.user.zone_id]
+            [cleanName, req.user.user_id, req.user.user_id, new Date(), req.params.subject_dict_id, req.user.zone_id]
         );
         if (result.affectedRows === 0) return res.status(404).json({ error: "Subject not found in your zone's dictionary." });
-        res.json({ message: isHoe ? "Subject updated." : "Subject updated — it needs Head of Education approval again before schools can see it." });
+        res.json({ message: "Subject updated." });
     } catch (err) {
         console.error("/api/zonal/subject-dictionary PUT error:", err);
         res.status(500).json({ error: "Could not update subject" });
@@ -683,11 +717,13 @@ app.delete('/api/zonal/subject-dictionary/:subject_dict_id', requireAuth, requir
 // longer log in, but their row/history is kept, not deleted — mirrors
 // how the teacher replace-with endpoint deactivates rather than drops
 // the outgoing teacher.
-// Requires this column if it doesn't exist yet:
+// Requires these columns if they don't exist yet:
 //   ALTER TABLE school_admins ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE;
+//   ALTER TABLE school_admins ADD COLUMN sex ENUM('Male','Female') NULL AFTER last_name;
+//   ALTER TABLE school_admins ADD COLUMN education_level ENUM('TVET / College Diploma','Bachelor''s Degree','Master''s Degree','PhD / Doctoral Degree') NULL AFTER sex;
 // and the login query (see /api/login) should reject is_active = FALSE
 // school_admins the same way it should for teachers.
-async function createSchoolAdminAccount({ school_id, first_name, middle_name, last_name, title, contact_number, email, password, replace_admin_id }) {
+async function createSchoolAdminAccount({ school_id, first_name, middle_name, last_name, title, sex, education_level, contact_number, email, password, replace_admin_id }) {
     const [schoolRows] = await pool.query('SELECT id FROM schools WHERE id = ?', [school_id]);
     if (schoolRows.length === 0) throw Object.assign(new Error("School not found."), { status: 404 });
 
@@ -704,9 +740,9 @@ async function createSchoolAdminAccount({ school_id, first_name, middle_name, la
     const admin_id = await getNextStaffId();
     const hashedPassword = await bcrypt.hash(password, 10);
     await pool.query(
-        `INSERT INTO school_admins (admin_id, school_id, first_name, middle_name, last_name, title, contact_number, email, security_password)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [admin_id, school_id, normalizeName(first_name), normalizeName(middle_name) || null, normalizeName(last_name), title, contact_number || null, email || null, hashedPassword]
+        `INSERT INTO school_admins (admin_id, school_id, first_name, middle_name, last_name, title, sex, education_level, contact_number, email, security_password)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [admin_id, school_id, normalizeName(first_name), normalizeName(middle_name) || null, normalizeName(last_name), title, sex || null, education_level || null, contact_number || null, email || null, hashedPassword]
     );
 
     if (replace_admin_id) {
@@ -782,7 +818,7 @@ async function createSupervisorAccount({ zone_id, school_ids, first_name, middle
 }
 
 app.post('/api/zonal/admin-users', requireAuth, requireCanActInZone, async (req, res) => {
-    const { school_id, first_name, middle_name, last_name, title, contact_number, email, password, replace_admin_id } = req.body;
+    const { school_id, first_name, middle_name, last_name, title, sex, education_level, contact_number, email, password, replace_admin_id } = req.body;
     if (!school_id || !first_name || !last_name || !title || !password) {
         return res.status(400).json({ error: "school_id, first_name, last_name, title, and password are required" });
     }
@@ -791,7 +827,7 @@ app.post('/api/zonal/admin-users', requireAuth, requireCanActInZone, async (req,
         if (!zoneSchoolIds.includes(Number(school_id))) {
             return res.status(403).json({ error: "That school isn't in your zone." });
         }
-        const admin_id = await createSchoolAdminAccount({ school_id, first_name, middle_name, last_name, title, contact_number, email, password, replace_admin_id: replace_admin_id || null });
+        const admin_id = await createSchoolAdminAccount({ school_id, first_name, middle_name, last_name, title, sex, education_level, contact_number, email, password, replace_admin_id: replace_admin_id || null });
         res.json({ message: replace_admin_id ? "School admin account created and the outgoing admin was deactivated." : "School admin account created.", admin_id });
     } catch (err) {
         console.error("/api/zonal/admin-users error:", err);
@@ -807,7 +843,7 @@ app.get('/api/zonal/admin-users', requireAuth, requireZonalAdmin, async (req, re
         const schoolIds = await getZonalSchoolIds(req);
         if (schoolIds.length === 0) return res.json([]);
         const [rows] = await pool.query(
-            `SELECT a.admin_id, a.first_name, a.middle_name, a.last_name, a.title, a.school_id, s.school_name
+            `SELECT a.admin_id, a.first_name, a.middle_name, a.last_name, a.title, a.school_id, s.school_name, s.school_level
              FROM school_admins a
              JOIN schools s ON s.id = a.school_id
              WHERE a.school_id IN (?) AND (a.is_active IS NULL OR a.is_active = TRUE)
@@ -923,7 +959,7 @@ app.get('/api/zonal/incoming-teachers', requireAuth, requireZonalAdmin, async (r
         const schoolIds = await getZonalSchoolIds(req);
         if (schoolIds.length === 0) return res.json([]);
         const [rows] = await pool.query(
-            `SELECT it.incoming_id, it.school_id, s.school_name, it.first_name, it.middle_name, it.last_name,
+            `SELECT it.incoming_id, it.school_id, s.school_name, s.school_level, it.first_name, it.middle_name, it.last_name,
                     it.status, it.teacher_id, it.decline_reason, it.created_at, it.decided_at
              FROM incoming_teachers it
              JOIN schools s ON s.id = it.school_id
@@ -964,18 +1000,18 @@ app.get('/api/zonal/teachers', requireAuth, requireZonalAdmin, async (req, res) 
             scopedIds = [wanted];
         }
         const [teacherRows] = await pool.query(
-            `SELECT t.teacher_id AS staff_id, t.school_id, s.school_name, t.first_name, t.middle_name, t.last_name,
+            `SELECT t.teacher_id AS staff_id, t.school_id, s.school_name, s.school_level, t.first_name, t.middle_name, t.last_name,
                     t.contact_number, t.email, t.avatar_url, t.homeroom_class_level, t.homeroom_section, t.homeroom_stream,
-                    t.is_active, 'Teacher' AS title, t.sex AS sex
+                    t.is_active, 'Teacher' AS title, t.sex AS sex, t.education_level AS education_level
              FROM teachers t
              JOIN schools s ON s.id = t.school_id
              WHERE t.school_id IN (?) AND (t.is_active IS NULL OR t.is_active = TRUE)`,
             [scopedIds]
         );
         const [adminRows] = await pool.query(
-            `SELECT a.admin_id AS staff_id, a.school_id, s.school_name, a.first_name, a.middle_name, a.last_name,
+            `SELECT a.admin_id AS staff_id, a.school_id, s.school_name, s.school_level, a.first_name, a.middle_name, a.last_name,
                     a.contact_number, a.email, a.avatar_url, NULL AS homeroom_class_level, NULL AS homeroom_section, NULL AS homeroom_stream,
-                    a.is_active, a.title AS title, NULL AS sex
+                    a.is_active, a.title AS title, a.sex AS sex, a.education_level AS education_level
              FROM school_admins a
              JOIN schools s ON s.id = a.school_id
              WHERE a.school_id IN (?) AND (a.is_active IS NULL OR a.is_active = TRUE)`,
@@ -989,13 +1025,15 @@ app.get('/api/zonal/teachers', requireAuth, requireZonalAdmin, async (req, res) 
             full_name: [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' '),
             school_id: r.school_id,
             school_name: r.school_name,
+            school_level: r.school_level,
             title: r.title,
             contact_number: r.contact_number,
             email: r.email,
             avatar_url: r.avatar_url || null,
             homeroom: r.homeroom_class_level ? `${r.homeroom_class_level}${r.homeroom_section ? '-' + r.homeroom_section : ''}` : null,
             is_active: r.is_active == null ? true : !!r.is_active,
-            sex: r.sex || null
+            sex: r.sex || null,
+            education_level: r.education_level || null
         })));
     } catch (err) {
         console.error("/api/zonal/teachers error:", err);
@@ -1240,18 +1278,18 @@ app.get('/api/zonal/team', requireAuth, requireZonalAdmin, async (req, res) => {
             [req.user.zone_id]
         );
         const [allSchools] = await pool.query(
-            'SELECT id, school_name FROM schools WHERE zone_id = ? ORDER BY school_name',
+            'SELECT id, school_name, school_level FROM schools WHERE zone_id = ? ORDER BY school_name',
             [req.user.zone_id]
         );
         const [assignedRows] = await pool.query(
-            `SELECT za.admin_id, s.id AS school_id, s.school_name
+            `SELECT za.admin_id, s.id AS school_id, s.school_name, s.school_level
              FROM zone_admin_schools za JOIN schools s ON s.id = za.school_id
              WHERE za.admin_id IN (?)`,
             [admins.length ? admins.map(a => a.admin_id) : [null]]
         );
         const assignedBySupervisor = {};
         assignedRows.forEach(r => {
-            (assignedBySupervisor[r.admin_id] = assignedBySupervisor[r.admin_id] || []).push({ id: r.school_id, school_name: r.school_name });
+            (assignedBySupervisor[r.admin_id] = assignedBySupervisor[r.admin_id] || []).push({ id: r.school_id, school_name: r.school_name, school_level: r.school_level });
         });
         res.json(admins.map(a => ({
             ...a,
@@ -1300,7 +1338,7 @@ app.get('/api/zonal/performance', requireAuth, requireZonalAdmin, async (req, re
              FROM marks m
              JOIN students st ON st.student_id = m.student_id AND st.school_id = m.school_id
              JOIN teacher_assignments ta ON ta.subject_id = m.subject_id AND ta.school_id = m.school_id
-                 AND ta.class_level = st.class_level AND ta.section = st.section AND ta.stream = st.stream
+                 AND ta.class_level = st.class_level AND ta.section = st.section AND st.stream LIKE CONCAT(ta.stream, '%')
              WHERE m.school_id IN (?)
              GROUP BY ta.teacher_id`,
             [schoolIds]
@@ -1359,7 +1397,7 @@ async function computeSchoolPerformance(schoolIds) {
     if (schoolIds.length === 0) return [];
     const since = toDateOnly(new Date(Date.now() - 14 * 86400000));
 
-    const [schools] = await pool.query('SELECT id, school_name FROM schools WHERE id IN (?)', [schoolIds]);
+    const [schools] = await pool.query('SELECT id, school_name, school_level FROM schools WHERE id IN (?)', [schoolIds]);
     const [teachers] = await pool.query('SELECT teacher_id, school_id, first_name, middle_name, last_name FROM teachers WHERE school_id IN (?)', [schoolIds]);
     const [attendance] = await pool.query(
         `SELECT pal.school_id, ct.teacher_id, pal.teacher_present
@@ -1373,7 +1411,7 @@ async function computeSchoolPerformance(schoolIds) {
          FROM marks m
          JOIN students st ON st.student_id = m.student_id AND st.school_id = m.school_id
          JOIN teacher_assignments ta ON ta.subject_id = m.subject_id AND ta.school_id = m.school_id
-             AND ta.class_level = st.class_level AND ta.section = st.section AND ta.stream = st.stream
+             AND ta.class_level = st.class_level AND ta.section = st.section AND st.stream LIKE CONCAT(ta.stream, '%')
          WHERE m.school_id IN (?)
          GROUP BY ta.teacher_id, ta.school_id`,
         [schoolIds]
@@ -1390,7 +1428,7 @@ async function computeSchoolPerformance(schoolIds) {
     const assignedKey = new Set(assignedSections.map(a => `${a.school_id}|${a.class_level}|${a.section}|${a.stream || ''}`));
 
     const bySchool = {};
-    for (const s of schools) bySchool[s.id] = { school_id: s.id, school_name: s.school_name, teachers: [], attendance: {}, lastUpload: {}, sections: [] };
+    for (const s of schools) bySchool[s.id] = { school_id: s.id, school_name: s.school_name, school_level: s.school_level, teachers: [], attendance: {}, lastUpload: {}, sections: [] };
     for (const t of teachers) if (bySchool[t.school_id]) bySchool[t.school_id].teachers.push(t);
     for (const row of attendance) {
         const b = bySchool[row.school_id]; if (!b) continue;
@@ -1438,6 +1476,7 @@ async function computeSchoolPerformance(schoolIds) {
         return {
             school_id: b.school_id,
             school_name: b.school_name,
+            school_level: b.school_level,
             score,
             category,
             teacher_count: teacherRows.length,
@@ -1475,7 +1514,7 @@ app.get('/api/zonal/school-performance/:school_id/details', requireAuth, require
         if (!schoolIds.includes(wanted)) return res.status(403).json({ error: "That school isn't in your scope." });
 
         const since = toDateOnly(new Date(Date.now() - 14 * 86400000));
-        const [[school]] = await pool.query('SELECT id, school_name FROM schools WHERE id = ?', [wanted]);
+        const [[school]] = await pool.query('SELECT id, school_name, school_level FROM schools WHERE id = ?', [wanted]);
         const [teachers] = await pool.query('SELECT teacher_id, first_name, middle_name, last_name FROM teachers WHERE school_id = ?', [wanted]);
         const [attendance] = await pool.query(
             `SELECT ct.teacher_id, pal.teacher_present
@@ -1489,7 +1528,7 @@ app.get('/api/zonal/school-performance/:school_id/details', requireAuth, require
              FROM marks m
              JOIN students st ON st.student_id = m.student_id AND st.school_id = m.school_id
              JOIN teacher_assignments ta ON ta.subject_id = m.subject_id AND ta.school_id = m.school_id
-                 AND ta.class_level = st.class_level AND ta.section = st.section AND ta.stream = st.stream
+                 AND ta.class_level = st.class_level AND ta.section = st.section AND st.stream LIKE CONCAT(ta.stream, '%')
              WHERE m.school_id = ?
              GROUP BY ta.teacher_id`,
             [wanted]
@@ -1537,6 +1576,7 @@ app.get('/api/zonal/school-performance/:school_id/details', requireAuth, require
         res.json({
             school_id: wanted,
             school_name: school?.school_name || '—',
+            school_level: school?.school_level || null,
             teacher_punctuality: teacherRows.filter(t => t.punctuality_issue),
             marks_overdue: teacherRows.filter(t => t.marks_issue),
             no_teacher_assigned: missingSections,
@@ -1619,25 +1659,66 @@ app.get('/api/zonal/lookup/kebeles', requireAuth, requireZonalAdmin, async (req,
 // above). zone_id is deliberately NOT taken from the request body: it's
 // always the caller's own req.user.zone_id, so a zonal admin can never
 // register a school into someone else's zone.
-// Requires this column if it doesn't exist yet (region_id/zone_id/
+// Requires these columns if they don't exist yet (region_id/zone_id/
 // woreda_id already exist on schools — see the joins throughout this
 // file):
 //   ALTER TABLE schools ADD COLUMN kebele_id INT NULL, ADD FOREIGN KEY (kebele_id) REFERENCES kebele(kebele_id);
+//   ALTER TABLE schools ADD COLUMN school_level ENUM('PRIMARY SCHOOL','SECONDARY SCHOOL') NOT NULL DEFAULT 'SECONDARY SCHOOL' AFTER school_name;
+//
+// school_prefix is no longer typed in by the person registering the
+// school — it's derived here from the name + level, so "Birhan" +
+// SECONDARY SCHOOL always becomes BSS, "Newland" + PRIMARY SCHOOL always
+// becomes NPS, with no risk of someone fat-fingering a prefix that
+// collides with (or looks nothing like) the school's own name.
+// Multi-word names use one initial per word (e.g. "Gambella City" -> GC
+// + level code).
+const SCHOOL_LEVELS = ['PRIMARY SCHOOL', 'SECONDARY SCHOOL'];
+function buildSchoolPrefixBase(school_name, school_level) {
+    const initials = school_name.trim().split(/\s+/).filter(Boolean).map(w => w[0].toUpperCase()).join('');
+    const levelCode = school_level === 'PRIMARY SCHOOL' ? 'PS' : 'SS';
+    return initials + levelCode;
+}
+
+// If the derived prefix is already taken (e.g. two schools in the zone
+// both start with "N" and are both SECONDARY SCHOOL -> both want "NSS"),
+// this appends 2, 3, 4... until it finds one that's free, so
+// registration never fails just because two schools share an initial.
+// The UNIQUE constraint on school_prefix (see the ER_DUP_ENTRY catch
+// below) is the real safety net if two requests race for the same base
+// prefix at once.
+async function getNextAvailableSchoolPrefix(basePrefix) {
+    const [existingRows] = await pool.query(
+        'SELECT school_prefix FROM schools WHERE school_prefix = ? OR school_prefix LIKE ?',
+        [basePrefix, `${basePrefix}%`]
+    );
+    const taken = new Set(existingRows.map(r => r.school_prefix));
+    if (!taken.has(basePrefix)) return basePrefix;
+    let n = 2;
+    while (taken.has(`${basePrefix}${n}`)) n++;
+    return `${basePrefix}${n}`;
+}
+
 app.post('/api/zonal/schools', requireAuth, requireCanActInZone, async (req, res) => {
-    const { school_name, school_prefix, moe_school_code, region_id, woreda_id, kebele_id } = req.body;
-    if (!school_name || !school_prefix) {
-        return res.status(400).json({ error: "school_name and school_prefix are required" });
+    const { school_name, school_level, moe_school_code, region_id, woreda_id, kebele_id } = req.body;
+    if (!school_name || !school_level) {
+        return res.status(400).json({ error: "school_name and school_level are required" });
+    }
+    if (!SCHOOL_LEVELS.includes(school_level)) {
+        return res.status(400).json({ error: "school_level must be PRIMARY SCHOOL or SECONDARY SCHOOL" });
     }
     try {
+        const cleanName = normalizeName(school_name);
+        const basePrefix = buildSchoolPrefixBase(cleanName, school_level);
+        const school_prefix = await getNextAvailableSchoolPrefix(basePrefix);
         const [result] = await pool.query(
-            `INSERT INTO schools (school_name, school_prefix, moe_school_code, region_id, zone_id, woreda_id, kebele_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [normalizeName(school_name), school_prefix.trim().toUpperCase(), moe_school_code || null, region_id || null, req.user.zone_id, woreda_id || null, kebele_id || null]
+            `INSERT INTO schools (school_name, school_level, school_prefix, moe_school_code, region_id, zone_id, woreda_id, kebele_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [cleanName, school_level, school_prefix, moe_school_code || null, region_id || null, req.user.zone_id, woreda_id || null, kebele_id || null]
         );
-        res.json({ message: "School registered.", school_id: result.insertId });
+        res.json({ message: `School registered as ${school_prefix}.`, school_id: result.insertId, school_prefix });
     } catch (err) {
         console.error("/api/zonal/schools POST error:", err);
-        if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: "A school with that prefix or MOE code already exists." });
+        if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: "A school with that prefix or MOE code already exists — try again." });
         res.status(500).json({ error: "Could not register school" });
     }
 });
@@ -2091,9 +2172,17 @@ async function getSemesterStatus(school_id) {
 // been pushed to the homeroom teacher. Once pushed, that combination is
 // locked — no further marks of any type can be added or edited for it.
 async function isPushedAndLocked(subject_id, class_level, section, stream, term, school_id) {
+    // pushed_reports.stream is always stored as the short bucket code (see
+    // the INSERT in /api/teacher/push-report below, which uses the same
+    // teacher_assignments-sourced value). But this function is also called
+    // from /api/add-mark with the STUDENT's long-form stream instead — so
+    // `stream = ?` silently never matched for Grade 11/12 when called from
+    // there, meaning a locked/pushed report could fail to block further
+    // mark entry. `? LIKE CONCAT(stream, '%')` matches correctly whichever
+    // form the caller passes in.
     const [rows] = await pool.query(
         `SELECT push_id FROM pushed_reports
-         WHERE subject_id = ? AND class_level = ? AND section = ? AND stream = ? AND term = ? AND school_id = ?`,
+         WHERE subject_id = ? AND class_level = ? AND section = ? AND ? LIKE CONCAT(stream, '%') AND term = ? AND school_id = ?`,
         [subject_id, class_level, section, stream, term, school_id]
     );
     return rows.length > 0;
@@ -2111,16 +2200,23 @@ async function isPushedAndLocked(subject_id, class_level, section, stream, term,
 // gap and is also what makes "request access to another subject" actually
 // mean something rather than being purely cosmetic.
 async function hasSubjectAccess(teacher_id, school_id, subject_id, class_level, section, stream) {
+    // `stream` here is the STUDENT's stream (the long descriptive label,
+    // e.g. "Natural Science") passed in by callers like /api/add-mark.
+    // teacher_assignments.stream stores the short bucket code ("Natural")
+    // instead, so comparing with `=` never matched for Grade 11/12 and
+    // blocked every save with a false "not assigned" 403. Flip the
+    // comparison so the long student-side value is checked as starting
+    // with the short assignment-side value.
     const [assigned] = await pool.query(
         `SELECT 1 FROM teacher_assignments
-         WHERE teacher_id = ? AND school_id = ? AND subject_id = ? AND class_level = ? AND section = ? AND stream = ?`,
+         WHERE teacher_id = ? AND school_id = ? AND subject_id = ? AND class_level = ? AND section = ? AND ? LIKE CONCAT(stream, '%')`,
         [teacher_id, school_id, subject_id, class_level, section, stream]
     );
     if (assigned.length > 0) return true;
 
     const [approved] = await pool.query(
         `SELECT 1 FROM subject_entry_requests
-         WHERE teacher_id = ? AND school_id = ? AND subject_id = ? AND class_level = ? AND section = ? AND stream = ? AND status = 'approved'`,
+         WHERE teacher_id = ? AND school_id = ? AND subject_id = ? AND class_level = ? AND section = ? AND ? LIKE CONCAT(stream, '%') AND status = 'approved'`,
         [teacher_id, school_id, subject_id, class_level, section, stream]
     );
     return approved.length > 0;
@@ -2801,7 +2897,7 @@ app.get('/api/teacher/mark-appeals', requireAuth, requireRole('teachers'), async
              JOIN students st ON st.student_id = ma.student_id AND st.school_id = ma.school_id
              JOIN subjects s ON s.subject_id = ma.subject_id AND s.school_id = ma.school_id
              JOIN teacher_assignments ta ON ta.subject_id = ma.subject_id AND ta.school_id = ma.school_id
-                    AND ta.class_level = st.class_level AND ta.section = st.section AND ta.stream = st.stream
+                    AND ta.class_level = st.class_level AND ta.section = st.section AND st.stream LIKE CONCAT(ta.stream, '%')
              WHERE ma.school_id = ? AND ma.status = 'pending' AND ta.teacher_id = ?
              ORDER BY ma.requested_at ASC`,
             [req.user.school_id, req.user.user_id]
@@ -2821,7 +2917,7 @@ app.post('/api/teacher/mark-appeals/:id/approve', requireAuth, requireRole('teac
              FROM mark_appeals ma
              JOIN students st ON st.student_id = ma.student_id AND st.school_id = ma.school_id
              JOIN teacher_assignments ta ON ta.subject_id = ma.subject_id AND ta.school_id = ma.school_id
-                    AND ta.class_level = st.class_level AND ta.section = st.section AND ta.stream = st.stream
+                    AND ta.class_level = st.class_level AND ta.section = st.section AND st.stream LIKE CONCAT(ta.stream, '%')
              WHERE ma.appeal_id = ? AND ma.school_id = ? AND ma.status = 'pending' AND ta.teacher_id = ?`,
             [req.params.id, req.user.school_id, req.user.user_id]
         );
@@ -2863,7 +2959,7 @@ app.post('/api/teacher/mark-appeals/:id/reject', requireAuth, requireRole('teach
              FROM mark_appeals ma
              JOIN students st ON st.student_id = ma.student_id AND st.school_id = ma.school_id
              JOIN teacher_assignments ta ON ta.subject_id = ma.subject_id AND ta.school_id = ma.school_id
-                    AND ta.class_level = st.class_level AND ta.section = st.section AND ta.stream = st.stream
+                    AND ta.class_level = st.class_level AND ta.section = st.section AND st.stream LIKE CONCAT(ta.stream, '%')
              WHERE ma.appeal_id = ? AND ma.school_id = ? AND ma.status = 'pending' AND ta.teacher_id = ?`,
             [req.params.id, req.user.school_id, req.user.user_id]
         );
@@ -3915,12 +4011,13 @@ app.get('/api/admin/teacher-punctuality', requireAuth, requireAdminTitle('Admin 
 });
 
 // --- Admin: manage the class timetable ---
-// Open to any school_admins account for now — there's no dedicated
-// "Academic Coordinator" title distinction yet, though title is on
-// req.user if you want to add one later. This is a bare CRUD with no timetable-builder UI
-// behind it yet either; it exists so the table can actually be populated
-// (e.g. via a quick admin script or Postman) before the teacher/admin
-// site has a proper screen for it.
+// Backs the Timetable builder screen (Academic VP). Class level/section
+// come from the Registrar's own class_sections setup (see
+// /api/academic-vp/class-sections), subject comes from this school's
+// subject configuration, and teacher is always resolved server-side from
+// teacher_assignments — never taken from the client — so a slot always
+// reflects whoever is really assigned to teach that subject in that
+// section.
 app.get('/api/admin/timetable', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
     const { class_level, section, stream } = req.query;
     if (!class_level || !section || !stream) {
@@ -3929,14 +4026,18 @@ app.get('/api/admin/timetable', requireAuth, requireAdminTitle('Academic VP'), a
     try {
         const [rows] = await pool.query(
             `SELECT ct.timetable_id, ct.day_of_week, ct.start_time, ct.end_time, ct.subject_id, ct.teacher_id,
-                    s.subject_name
+                    s.subject_name, t.first_name AS teacher_first_name, t.last_name AS teacher_last_name
              FROM class_timetable ct
              JOIN subjects s ON s.subject_id = ct.subject_id AND s.school_id = ct.school_id
+             LEFT JOIN teachers t ON t.teacher_id = ct.teacher_id AND t.school_id = ct.school_id
              WHERE ct.school_id = ? AND ct.class_level = ? AND ct.section = ? AND ct.stream = ?
              ORDER BY ct.day_of_week, ct.start_time`,
             [req.user.school_id, class_level, section, stream]
         );
-        res.json(rows);
+        res.json(rows.map(r => ({
+            ...r,
+            teacher_name: r.teacher_first_name ? [r.teacher_first_name, r.teacher_last_name].filter(Boolean).join(' ') : null
+        })));
     } catch (err) {
         console.error("/api/admin/timetable GET error:", err);
         res.status(500).json({ error: "Could not load timetable" });
@@ -3944,7 +4045,7 @@ app.get('/api/admin/timetable', requireAuth, requireAdminTitle('Academic VP'), a
 });
 
 app.post('/api/admin/timetable', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
-    const { class_level, section, stream, day_of_week, subject_id, teacher_id, start_time, end_time } = req.body;
+    const { class_level, section, stream, day_of_week, subject_id, start_time, end_time } = req.body;
     if (!class_level || !section || !stream || !day_of_week || !subject_id || !start_time || !end_time) {
         return res.status(400).json({ error: "class_level, section, stream, day_of_week, subject_id, start_time, and end_time are required." });
     }
@@ -3955,12 +4056,23 @@ app.post('/api/admin/timetable', requireAuth, requireAdminTitle('Academic VP'), 
         return res.status(400).json({ error: "end_time must be after start_time." });
     }
     try {
+        // The teacher is never taken from the request body — it's always
+        // whoever is actually assigned (via teacher_assignments) to teach
+        // this subject in this class/section, so a slot can't be created
+        // for a teacher who isn't really scheduled to teach it here. If
+        // nobody's assigned yet, the slot is still created with no teacher.
+        const [[assignment]] = await pool.query(
+            `SELECT teacher_id FROM teacher_assignments
+             WHERE school_id = ? AND class_level = ? AND section = ? AND subject_id = ? LIMIT 1`,
+            [req.user.school_id, class_level, section, subject_id]
+        );
+        const teacher_id = assignment ? assignment.teacher_id : null;
         const [result] = await pool.query(
             `INSERT INTO class_timetable (school_id, class_level, section, stream, day_of_week, subject_id, teacher_id, start_time, end_time)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [req.user.school_id, class_level, section, stream, day_of_week, subject_id, teacher_id || null, start_time, end_time]
+            [req.user.school_id, class_level, section, stream, day_of_week, subject_id, teacher_id, start_time, end_time]
         );
-        res.json({ message: "Timetable slot added.", timetable_id: result.insertId });
+        res.json({ message: "Timetable slot added.", timetable_id: result.insertId, teacher_id });
     } catch (err) {
         console.error("/api/admin/timetable POST error:", err);
         res.status(500).json({ error: "Could not add timetable slot" });
@@ -8314,7 +8426,7 @@ app.get('/api/student-stats', requireAuth, async (req, res) => {
                 INNER JOIN teacher_assignments ta
                     ON s.class_level = ta.class_level
                     AND s.section = ta.section
-                    AND s.stream = ta.stream
+                    AND s.stream LIKE CONCAT(ta.stream, '%')
                     AND s.school_id = ta.school_id
                 WHERE ta.teacher_id = ? AND ta.school_id = ?
             `;
@@ -8322,7 +8434,7 @@ app.get('/api/student-stats', requireAuth, async (req, res) => {
 
             if (class_level) { sql += ' AND s.class_level = ?'; params.push(class_level); }
             if (section) { sql += ' AND s.section = ?'; params.push(section); }
-            if (stream) { sql += ' AND s.stream = ?'; params.push(stream); }
+            if (stream) { sql += ' AND s.stream LIKE CONCAT(?, '%')'; params.push(stream); }
         } else {
             sql = `SELECT COUNT(*) as total, SUM(CASE WHEN sex = 'Female' THEN 1 ELSE 0 END) as female, SUM(CASE WHEN sex = 'Male' THEN 1 ELSE 0 END) as male FROM students WHERE school_id = ?`;
             params = [req.user.school_id];
@@ -8408,6 +8520,25 @@ app.get('/api/subjects', requireAuth, async (req, res) => {
 // Social. GET is the same data /api/subjects already serves (kept as its
 // own admin-scoped route here since the Subject Configuration widget
 // wants the full unfiltered list every time, not stream-scoped).
+// Read-only list of the classes/sections the Registrar has actually set
+// up for this school (see /api/registrar/sections above, same
+// class_sections table) — feeds the Class Level / Section pickers in
+// Subject & Teaching Assignment and Assign Homeroom, so Academic VP can
+// never assign a teacher to a class/section/stream combo the Registrar
+// hasn't configured.
+app.get('/api/academic-vp/class-sections', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            'SELECT class_level, stream, section_name FROM class_sections WHERE school_id = ? AND is_active = TRUE ORDER BY class_level, stream, section_name',
+            [req.user.school_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/academic-vp/class-sections error:", err);
+        res.status(500).json({ error: "Could not load classes/sections." });
+    }
+});
+
 app.get('/api/academic-vp/subjects', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
     try {
         const [rows] = await pool.query(
@@ -8433,10 +8564,11 @@ app.get('/api/academic-vp/subject-dictionary', requireAuth, requireAdminTitle('A
     try {
         const zone_id = await getSchoolZoneId(req.user.school_id);
         if (!zone_id) return res.json([]);
-        // Only 'approved' entries — a Development Coordinator's pending
-        // add/edit stays invisible here until the Head of Education
-        // approves it (see the Subject Dictionary approval workflow,
-        // /api/zonal/subject-dictionary above).
+        // Every subject added via /api/zonal/subject-dictionary is
+        // auto-approved now (no Head of Education review step), so this
+        // is effectively the zone's full subject list. The status filter
+        // stays here as a harmless safety net in case a row is ever
+        // manually set back to 'pending'.
         const [subjects] = await pool.query(
             "SELECT subject_name FROM subject_dictionary WHERE zone_id = ? AND status = 'approved' ORDER BY subject_name",
             [zone_id]
@@ -8522,6 +8654,110 @@ app.delete('/api/academic-vp/subjects/:subject_id', requireAuth, requireAdminTit
         res.status(500).json({ error: "Could not remove subject" });
     }
 });
+
+// Re-authentication gate for the Subject Configuration grid: the grid
+// stays read-only until the Academic VP re-enters their own login
+// password here. Doesn't issue a new token or session — this is a
+// one-time unlock for the current page view, checked against the same
+// school_admins.security_password used at login.
+app.post('/api/academic-vp/subjects/verify-password', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    const { password } = req.body;
+    if (!password) return res.status(400).json({ error: "Password is required." });
+    try {
+        const [[row]] = await pool.query(
+            'SELECT security_password FROM school_admins WHERE admin_id = ?',
+            [req.user.user_id]
+        );
+        if (!row || !row.security_password) return res.status(500).json({ error: "Account has no password set." });
+        const match = await bcrypt.compare(password, row.security_password);
+        if (!match) return res.status(401).json({ error: "Incorrect password." });
+        res.json({ ok: true });
+    } catch (err) {
+        console.error("/api/academic-vp/subjects/verify-password error:", err);
+        res.status(500).json({ error: "Could not verify password." });
+    }
+});
+
+// Bulk save for the Subject Configuration grid — one row per subject in
+// the zone's dictionary, one checkbox column per stream (General,
+// Natural, Social). Body: { config: [{ subject_name, streams: [...] }] }.
+// A checked box that isn't already a row gets inserted; an unchecked box
+// that IS an existing row gets deleted, unless it's already assigned to
+// a teacher (same guard as the single DELETE route above) — those are
+// left in place and reported back in `skipped` rather than blocking the
+// rest of the save.
+app.post('/api/academic-vp/subjects/bulk-save', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    const { config } = req.body;
+    if (!Array.isArray(config)) return res.status(400).json({ error: "config must be an array." });
+    const VALID_STREAMS = ['General', 'Natural', 'Social'];
+
+    // Build the target set of (subject_name, stream) pairs the grid wants.
+    const targetPairs = new Set();
+    for (const row of config) {
+        const name = (row.subject_name || '').trim();
+        if (!name) continue;
+        for (const stream of (row.streams || [])) {
+            if (VALID_STREAMS.includes(stream)) targetPairs.add(`${name}\u0000${stream}`);
+        }
+    }
+
+    try {
+        const [existing] = await pool.query(
+            'SELECT subject_id, subject_name, stream FROM subjects WHERE school_id = ?',
+            [req.user.school_id]
+        );
+        const existingPairs = new Map(existing.map(r => [`${r.subject_name}\u0000${r.stream}`, r.subject_id]));
+
+        const skipped = [];
+
+        // Remove rows that are no longer checked.
+        for (const row of existing) {
+            const key = `${row.subject_name}\u0000${row.stream}`;
+            if (targetPairs.has(key)) continue;
+            const [inUse] = await pool.query(
+                'SELECT 1 FROM teacher_assignments WHERE subject_id = ? AND school_id = ? LIMIT 1',
+                [row.subject_id, req.user.school_id]
+            );
+            if (inUse.length > 0) {
+                skipped.push({ subject_name: row.subject_name, stream: row.stream });
+                continue;
+            }
+            try {
+                await pool.query('DELETE FROM subjects WHERE subject_id = ? AND school_id = ?', [row.subject_id, req.user.school_id]);
+            } catch (delErr) {
+                if (delErr.code === 'ER_ROW_IS_REFERENCED_2' || delErr.code === 'ER_ROW_IS_REFERENCED' || delErr.errno === 1451) {
+                    skipped.push({ subject_name: row.subject_name, stream: row.stream });
+                } else {
+                    throw delErr;
+                }
+            }
+        }
+
+        // Add newly checked pairs, validated against the zone's dictionary
+        // the same way the single-add POST route does.
+        const zone_id = await getSchoolZoneId(req.user.school_id);
+        const [dictRows] = zone_id
+            ? await pool.query("SELECT subject_name FROM subject_dictionary WHERE zone_id = ? AND status = 'approved'", [zone_id])
+            : [[]];
+        const dictNames = new Set(dictRows.map(r => r.subject_name));
+
+        for (const key of targetPairs) {
+            if (existingPairs.has(key)) continue;
+            const [name, stream] = key.split('\u0000');
+            if (!dictNames.has(name)) continue; // not (or no longer) in the zone dictionary — skip silently
+            await pool.query(
+                'INSERT INTO subjects (school_id, subject_name, stream) VALUES (?, ?, ?)',
+                [req.user.school_id, name, stream]
+            );
+        }
+
+        res.json({ message: "Subject configuration saved.", skipped });
+    } catch (err) {
+        console.error("/api/academic-vp/subjects/bulk-save error:", err);
+        res.status(500).json({ error: "Could not save subject configuration." });
+    }
+});
+
 // Teacher notification/security preferences — in-memory only (not persisted).
 // GET: returns the saved preference map for a teacher (empty object if none yet)
 app.get('/api/teacher/preferences', requireAuth, (req, res) => {
@@ -8997,7 +9233,7 @@ app.get('/api/teacher/id-card', requireAuth, async (req, res) => {
         const [rows] = await pool.query(
             `SELECT t.first_name, t.middle_name, t.last_name, t.teacher_id, t.contact_number, t.email, t.avatar_url, t.id_photo_url, t.additional_role,
                     ta.stream, s.subject_name,
-                    sc.school_name, z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region, sc.moe_school_code
+                    sc.school_name, sc.school_level, z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region, sc.moe_school_code
              FROM teachers t
              LEFT JOIN teacher_assignments ta ON t.teacher_id = ta.teacher_id AND t.school_id = ta.school_id
              LEFT JOIN subjects s ON ta.subject_id = s.subject_id AND ta.school_id = s.school_id
@@ -9034,6 +9270,7 @@ app.get('/api/teacher/id-card', requireAuth, async (req, res) => {
             subjects,
             subject: subjects.length > 0 ? subjects.join(', ') : null,
             school_name: row0.school_name,
+            school_level: row0.school_level,
             school_address: schoolAddress,
             zone: row0.zone || null,
             woreda: row0.woreda || null,
@@ -9054,7 +9291,7 @@ app.get('/api/admin/id-card', requireAuth, requireRole('school_admins'), async (
     try {
         const [rows] = await pool.query(
             `SELECT a.first_name, a.middle_name, a.last_name, a.admin_id, a.title, a.contact_number, a.email, a.avatar_url, a.id_photo_url,
-                    sc.school_name, z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region, sc.moe_school_code
+                    sc.school_name, sc.school_level, z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region, sc.moe_school_code
              FROM school_admins a
              LEFT JOIN schools sc ON sc.id = a.school_id
              LEFT JOIN zone z ON z.zone_id = sc.zone_id
@@ -9085,6 +9322,7 @@ app.get('/api/admin/id-card', requireAuth, requireRole('school_admins'), async (
             // existing cards don't suddenly go blank.
             avatar_url: row0.id_photo_url || row0.avatar_url || null,
             school_name: row0.school_name,
+            school_level: row0.school_level,
             school_address: schoolAddress,
             zone: row0.zone || null,
             woreda: row0.woreda || null,
@@ -9210,7 +9448,7 @@ app.get('/api/teacher/performance', requireAuth, async (req, res) => {
             // labels (e.g. "Grade 10 Section A"), silently inflating or
             // corrupting this teacher's completion percentage.
             const [[{ total }]] = await pool.query(
-                `SELECT COUNT(*) as total FROM students WHERE class_level = ? AND section = ? AND stream = ? AND school_id = ?`,
+                `SELECT COUNT(*) as total FROM students WHERE class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?`,
                 [a.class_level, a.section, a.stream, req.user.school_id]
             );
             if (total === 0) continue;
@@ -9220,7 +9458,7 @@ app.get('/api/teacher/performance', requireAuth, async (req, res) => {
                  FROM marks m
                  JOIN students st ON st.student_id = m.student_id AND st.school_id = m.school_id
                  WHERE m.subject_id = ? AND m.term = ? AND m.school_id = ?
-                   AND st.class_level = ? AND st.section = ? AND st.stream = ?
+                   AND st.class_level = ? AND st.section = ? AND st.stream LIKE CONCAT(?, '%')
                  GROUP BY m.type`,
                 [a.subject_id, currentTerm, req.user.school_id, a.class_level, a.section, a.stream]
             );
@@ -9329,7 +9567,7 @@ app.post('/api/teacher/push-report', requireAuth, async (req, res) => {
              FROM students st
              JOIN marks m ON m.student_id = st.student_id AND m.school_id = st.school_id
              WHERE m.subject_id = ? AND m.term = ? AND m.school_id = ?
-               AND st.class_level = ? AND st.section = ? AND st.stream = ?
+               AND st.class_level = ? AND st.section = ? AND st.stream LIKE CONCAT(?, '%')
              GROUP BY st.student_id`,
             [subject_id, term, req.user.school_id, class_level, section, stream]
         );
@@ -9422,7 +9660,7 @@ app.get('/api/homeroom/student-report/:student_id', requireAuth, requireRole('te
         }
         const [studentRows] = await pool.query(
             `SELECT student_id FROM students
-             WHERE student_id = ? AND school_id = ? AND class_level = ? AND section = ? AND stream = ?`,
+             WHERE student_id = ? AND school_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%')`,
             [req.params.student_id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
         );
         if (studentRows.length === 0) {
@@ -10066,6 +10304,18 @@ function getSchoolYear() {
 // Shared by every /api/homeroom/textbooks/* route: confirms the caller is
 // actually a homeroom teacher and returns which section they're homeroom
 // for. Returns null if they aren't one (caller should respond 403).
+//
+// homeroom.stream returned here is the short bucket code stored on the
+// teacher's row: 'General' | 'Natural' | 'Social'. students.stream holds a
+// longer descriptive label instead (e.g. "Natural Science", "Social
+// Science") — see the same mismatch called out around streamBucketFor().
+// A plain `stream = ?` against homeroom.stream therefore only ever matches
+// Grade 9/10 ("General" is spelled the same both places) and silently
+// returns zero rows for Grade 11/12, whose homeroom teachers would see an
+// empty roster even though their students exist. Every query below that
+// filters `students`/`st` by homeroom.stream uses
+// `stream LIKE CONCAT(?, '%')` instead of `stream = ?` so 'Natural' still
+// matches "Natural Science" (and 'General' still matches itself exactly).
 async function getHomeroomSectionOrNull(teacher_id, school_id) {
     const [teacherRows] = await pool.query(
         'SELECT homeroom_class_level, homeroom_section, homeroom_stream FROM teachers WHERE teacher_id = ? AND school_id = ?',
@@ -10101,7 +10351,7 @@ app.post('/api/homeroom/reset-student-password', requireAuth, async (req, res) =
         }
 
         const [studentRows] = await pool.query(
-            'SELECT student_id, first_name, last_name FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream = ? AND school_id = ?',
+            'SELECT student_id, first_name, last_name FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?',
             [student_id, homeroom.class_level, homeroom.section, homeroom.stream, req.user.school_id]
         );
         if (studentRows.length === 0) {
@@ -10140,7 +10390,7 @@ app.get('/api/homeroom/section-roster', requireAuth, async (req, res) => {
 
         const [students] = await pool.query(
             `SELECT student_id, first_name, last_name, is_class_monitor FROM students
-             WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ?
+             WHERE school_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%')
              ORDER BY first_name, last_name`,
             [req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
         );
@@ -10162,7 +10412,7 @@ app.post('/api/homeroom/set-class-monitor', requireAuth, async (req, res) => {
 
         const [result] = await pool.query(
             `UPDATE students SET is_class_monitor = ?
-             WHERE student_id = ? AND school_id = ? AND class_level = ? AND section = ? AND stream = ?`,
+             WHERE student_id = ? AND school_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%')`,
             [is_class_monitor, student_id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
         );
         if (result.affectedRows === 0) {
@@ -10192,7 +10442,7 @@ app.get('/api/homeroom/attendance-today', requireAuth, async (req, res) => {
 
         const [students] = await pool.query(
             `SELECT student_id, first_name, middle_name, last_name FROM students
-             WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ?
+             WHERE school_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%')
              ORDER BY first_name, last_name`,
             [req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
         );
@@ -10250,7 +10500,7 @@ app.post('/api/homeroom/mark-present', requireAuth, async (req, res) => {
 
         const [studentRows] = await pool.query(
             `SELECT student_id, first_name, last_name FROM students
-             WHERE student_id = ? AND school_id = ? AND class_level = ? AND section = ? AND stream = ?`,
+             WHERE student_id = ? AND school_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%')`,
             [student_id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
         );
         if (studentRows.length === 0) {
@@ -10299,7 +10549,7 @@ app.post('/api/homeroom/undo-present', requireAuth, async (req, res) => {
 
         const [studentRows] = await pool.query(
             `SELECT student_id FROM students
-             WHERE student_id = ? AND school_id = ? AND class_level = ? AND section = ? AND stream = ?`,
+             WHERE student_id = ? AND school_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%')`,
             [student_id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
         );
         if (studentRows.length === 0) {
@@ -10361,7 +10611,7 @@ app.post('/api/homeroom/upload-student-photo', requireAuth, handleUploadError(up
         }
 
         const [studentRows] = await pool.query(
-            'SELECT student_id, first_name, last_name, id_photo_url FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream = ? AND school_id = ?',
+            'SELECT student_id, first_name, last_name, id_photo_url FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?',
             [student_id, homeroom.class_level, homeroom.section, homeroom.stream, req.user.school_id]
         );
         if (studentRows.length === 0) {
@@ -10418,7 +10668,7 @@ app.get('/api/homeroom/id-photo-requests', requireAuth, async (req, res) => {
              FROM id_photo_change_requests r
              JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
              WHERE r.school_id = ? AND r.status = 'pending'
-               AND st.class_level = ? AND st.section = ? AND st.stream = ?
+               AND st.class_level = ? AND st.section = ? AND st.stream LIKE CONCAT(?, '%')
              ORDER BY r.requested_at ASC`,
             [req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
         );
@@ -10439,7 +10689,7 @@ app.post('/api/homeroom/id-photo-requests/:id/approve', requireAuth, async (req,
              FROM id_photo_change_requests r
              JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
              WHERE r.request_id = ? AND r.school_id = ? AND r.status = 'pending'
-               AND st.class_level = ? AND st.section = ? AND st.stream = ?`,
+               AND st.class_level = ? AND st.section = ? AND st.stream LIKE CONCAT(?, '%')`,
             [req.params.id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
         );
         if (rows.length === 0) {
@@ -10473,7 +10723,7 @@ app.post('/api/homeroom/id-photo-requests/:id/reject', requireAuth, async (req, 
              JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
              SET r.status = 'rejected', r.reviewed_by = ?, r.reviewed_at = NOW(), r.rejection_reason = ?
              WHERE r.request_id = ? AND r.school_id = ? AND r.status = 'pending'
-               AND st.class_level = ? AND st.section = ? AND st.stream = ?`,
+               AND st.class_level = ? AND st.section = ? AND st.stream LIKE CONCAT(?, '%')`,
             [req.user.user_id, reason || null, req.params.id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
         );
         if (result.affectedRows === 0) {
@@ -10498,7 +10748,7 @@ app.get('/api/homeroom/absence-requests', requireAuth, async (req, res) => {
              FROM absence_requests r
              JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
              WHERE r.school_id = ? AND r.status = 'pending'
-               AND st.class_level = ? AND st.section = ? AND st.stream = ?
+               AND st.class_level = ? AND st.section = ? AND st.stream LIKE CONCAT(?, '%')
              ORDER BY r.requested_at ASC`,
             [req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
         );
@@ -10526,7 +10776,7 @@ app.post('/api/homeroom/absence-requests/:id/approve', requireAuth, async (req, 
              FROM absence_requests r
              JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
              WHERE r.request_id = ? AND r.school_id = ? AND r.status = 'pending'
-               AND st.class_level = ? AND st.section = ? AND st.stream = ?`,
+               AND st.class_level = ? AND st.section = ? AND st.stream LIKE CONCAT(?, '%')`,
             [req.params.id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
         );
         if (rows.length === 0) {
@@ -10573,7 +10823,7 @@ app.post('/api/homeroom/absence-requests/:id/reject', requireAuth, async (req, r
              FROM absence_requests r
              JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
              WHERE r.request_id = ? AND r.school_id = ? AND r.status = 'pending'
-               AND st.class_level = ? AND st.section = ? AND st.stream = ?`,
+               AND st.class_level = ? AND st.section = ? AND st.stream LIKE CONCAT(?, '%')`,
             [req.params.id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
         );
         if (rows.length === 0) {
@@ -10614,7 +10864,7 @@ app.post('/api/homeroom/absence-requests/:id/escalate', requireAuth, async (req,
              FROM absence_requests r
              JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
              WHERE r.request_id = ? AND r.school_id = ? AND r.status = 'pending'
-               AND st.class_level = ? AND st.section = ? AND st.stream = ?`,
+               AND st.class_level = ? AND st.section = ? AND st.stream LIKE CONCAT(?, '%')`,
             [req.params.id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
         );
         if (rows.length === 0) {
@@ -10728,7 +10978,7 @@ app.get('/api/homeroom/certificate-requests', requireAuth, async (req, res) => {
              FROM certificate_requests r
              JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
              WHERE r.school_id = ? AND r.status = 'pending'
-               AND st.class_level = ? AND st.section = ? AND st.stream = ?
+               AND st.class_level = ? AND st.section = ? AND st.stream LIKE CONCAT(?, '%')
              ORDER BY r.requested_at ASC`,
             [req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
         );
@@ -10749,7 +10999,7 @@ app.post('/api/homeroom/certificate-requests/:id/approve', requireAuth, async (r
              JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
              SET r.status = 'approved', r.reviewed_by = ?, r.reviewed_at = NOW()
              WHERE r.request_id = ? AND r.school_id = ? AND r.status = 'pending'
-               AND st.class_level = ? AND st.section = ? AND st.stream = ?`,
+               AND st.class_level = ? AND st.section = ? AND st.stream LIKE CONCAT(?, '%')`,
             [req.user.user_id, req.params.id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
         );
         if (result.affectedRows === 0) {
@@ -10773,7 +11023,7 @@ app.post('/api/homeroom/certificate-requests/:id/reject', requireAuth, async (re
              JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
              SET r.status = 'rejected', r.reviewed_by = ?, r.reviewed_at = NOW(), r.rejection_reason = ?
              WHERE r.request_id = ? AND r.school_id = ? AND r.status = 'pending'
-               AND st.class_level = ? AND st.section = ? AND st.stream = ?`,
+               AND st.class_level = ? AND st.section = ? AND st.stream LIKE CONCAT(?, '%')`,
             [req.user.user_id, reason || null, req.params.id, req.user.school_id, homeroom.class_level, homeroom.section, homeroom.stream]
         );
         if (result.affectedRows === 0) {
@@ -10876,7 +11126,7 @@ app.post('/api/homeroom/textbooks/issue', requireAuth, async (req, res) => {
         }
 
         const [studentCheck] = await pool.query(
-            'SELECT 1 FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream = ? AND school_id = ?',
+            'SELECT 1 FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?',
             [student_id, homeroom.class_level, homeroom.section, homeroom.stream, req.user.school_id]
         );
         if (studentCheck.length === 0) {
@@ -10914,7 +11164,7 @@ app.post('/api/homeroom/textbooks/return', requireAuth, async (req, res) => {
         }
 
         const [studentCheck] = await pool.query(
-            'SELECT 1 FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream = ? AND school_id = ?',
+            'SELECT 1 FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?',
             [student_id, homeroom.class_level, homeroom.section, homeroom.stream, req.user.school_id]
         );
         if (studentCheck.length === 0) {
@@ -10971,7 +11221,7 @@ app.post('/api/homeroom/textbooks/lost', requireAuth, async (req, res) => {
         }
 
         const [studentCheck] = await pool.query(
-            'SELECT 1 FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream = ? AND school_id = ?',
+            'SELECT 1 FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?',
             [student_id, homeroom.class_level, homeroom.section, homeroom.stream, req.user.school_id]
         );
         if (studentCheck.length === 0) {
@@ -11097,12 +11347,19 @@ app.get('/api/homeroom/textbooks/push-status', requireAuth, async (req, res) => 
 async function getTextbookPushSummary(school_id, class_level, section, stream, school_year) {
     // Count only actual issued slots — students who never received any book
     // are excluded so they don't drag the percentage down.
+    //
+    // st.stream (students) holds the longer descriptive label ("Natural
+    // Science"/"Social Science") while the `stream` param here is the short
+    // bucket code ('General'|'Natural'|'Social') from teacher_assignments —
+    // `st.stream = ?` never matched for Grade 11/12 homerooms, so
+    // total_slots always came back 0 for them. sub.stream (subjects)
+    // already stores the short bucket, so that side stays an exact match.
     const [[{ total_slots }]] = await pool.query(
         `SELECT COUNT(*) as total_slots
          FROM textbook_distributions td
          JOIN students st ON st.student_id = td.student_id AND st.school_id = td.school_id
          JOIN subjects sub ON sub.subject_id = td.subject_id AND sub.school_id = td.school_id
-         WHERE st.class_level = ? AND st.section = ? AND st.stream = ? AND sub.stream = ?
+         WHERE st.class_level = ? AND st.section = ? AND st.stream LIKE CONCAT(?, '%') AND sub.stream = ?
            AND td.school_id = ? AND td.school_year = ?`,
         [class_level, section, stream, stream, school_id, school_year]
     );
@@ -11114,7 +11371,7 @@ async function getTextbookPushSummary(school_id, class_level, section, stream, s
          FROM textbook_distributions td
          JOIN students st ON st.student_id = td.student_id AND st.school_id = td.school_id
          JOIN subjects sub ON sub.subject_id = td.subject_id AND sub.school_id = td.school_id
-         WHERE st.class_level = ? AND st.section = ? AND st.stream = ? AND sub.stream = ?
+         WHERE st.class_level = ? AND st.section = ? AND st.stream LIKE CONCAT(?, '%') AND sub.stream = ?
            AND td.school_id = ? AND td.school_year = ?`,
         [class_level, section, stream, stream, school_id, school_year]
     );
@@ -12143,7 +12400,7 @@ app.get('/api/teacher/conduct-status', requireAuth, async (req, res) => {
                  FROM marks m
                  JOIN students st ON st.student_id = m.student_id AND st.school_id = m.school_id
                  WHERE m.subject_id = ? AND m.school_id = ?
-                   AND st.class_level = ? AND st.section = ? AND st.stream = ?
+                   AND st.class_level = ? AND st.section = ? AND st.stream LIKE CONCAT(?, '%')
                  GROUP BY m.type, m.term`,
                 [a.subject_id, req.user.school_id, a.class_level, a.section, a.stream]
             );
@@ -12232,7 +12489,7 @@ app.post('/api/teacher/notify-students', requireAuth, async (req, res) => {
              FROM students s
              LEFT JOIN marks m ON m.student_id = s.student_id
                AND m.type = ? AND m.school_id = s.school_id
-             WHERE s.class_level = ? AND s.section = ? AND s.stream = ?
+             WHERE s.class_level = ? AND s.section = ? AND s.stream LIKE CONCAT(?, '%')
                AND s.school_id = ? AND m.mark_id IS NULL
              ORDER BY s.first_name, s.last_name`,
             [assessment_type, class_level, section, stream, req.user.school_id]
@@ -12447,15 +12704,17 @@ app.post('/api/login', async (req, res) => {
 app.get('/api/me', requireAuth, async (req, res) => {
     try {
         let school_name = null;
+        let school_level = null;
         let moe_school_code = null;
         let logo_url = null;
         if (req.user.school_id) {
             const [schoolRows] = await pool.query(
-                'SELECT school_name, moe_school_code, logo_url FROM schools WHERE id = ?',
+                'SELECT school_name, school_level, moe_school_code, logo_url FROM schools WHERE id = ?',
                 [req.user.school_id]
             );
             if (schoolRows.length > 0) {
                 school_name = schoolRows[0].school_name;
+                school_level = schoolRows[0].school_level;
                 moe_school_code = schoolRows[0].moe_school_code;
                 logo_url = schoolRows[0].logo_url || null;
             }
@@ -12552,6 +12811,7 @@ app.get('/api/me', requireAuth, async (req, res) => {
             title: req.user.title || null,
             can_act_independently: !!req.user.can_act_independently,
             school_name,
+            school_level,
             moe_school_code,
             logo_url,
             academic_year,
@@ -12618,12 +12878,21 @@ app.get('/api/teacher/my-students', requireAuth, async (req, res) => {
     try {
         // This query finds all students who belong to a class/section 
         // that the teacher is specifically assigned to, within their own school.
+        //
+        // ta.stream is the short bucket code ('General' | 'Natural' | 'Social')
+        // stored on teacher_assignments; s.stream (students) holds the longer
+        // descriptive label instead (e.g. "Natural Science", "Social Science").
+        // A plain `s.stream = ta.stream` only ever matches Grade 9/10
+        // ("General" is spelled the same both places) and silently drops
+        // every Grade 11/12 student, so we use `LIKE CONCAT(ta.stream, '%')`
+        // instead, which still matches 'General' exactly and also matches
+        // "Natural"/"Social" as a prefix of the longer student label.
         let sql = `
             SELECT DISTINCT s.* FROM students s
             INNER JOIN teacher_assignments ta 
             ON s.class_level = ta.class_level 
             AND s.section = ta.section 
-            AND s.stream = ta.stream
+            AND s.stream LIKE CONCAT(ta.stream, '%')
             AND s.school_id = ta.school_id
             WHERE ta.teacher_id = ? AND ta.school_id = ?
         `;
@@ -12636,7 +12905,7 @@ app.get('/api/teacher/my-students', requireAuth, async (req, res) => {
         }
         if (class_level) { sql += ' AND s.class_level = ?'; params.push(class_level); }
         if (section) { sql += ' AND s.section = ?'; params.push(section); }
-        if (stream) { sql += ' AND s.stream = ?'; params.push(stream); }
+        if (stream) { sql += ' AND s.stream LIKE CONCAT(?, \'%\')'; params.push(stream); }
 
         sql += ' ORDER BY s.first_name, s.last_name';
 
@@ -12697,7 +12966,13 @@ app.get('/api/teacher/student-performance', requireAuth, async (req, res) => {
         });
         const sectionKeys = Object.keys(subjectsBySection);
 
-        const sectionClause = sectionKeys.map(() => '(class_level = ? AND section = ? AND stream = ?)').join(' OR ');
+        // sectionClause below compares against students.stream, which stores
+        // the long descriptive label ("Natural Science") — but the `stream`
+        // value in each key here comes straight from teacher_assignments,
+        // which stores the short bucket code ("Natural"). Use LIKE instead
+        // of `=` so Grade 11/12 (the only levels with an actual stream
+        // split) still match; 'General' still matches itself exactly.
+        const sectionClause = sectionKeys.map(() => "(class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%'))").join(' OR ');
         const sectionParams = [];
         sectionKeys.forEach(key => sectionParams.push(...key.split('|')));
 
@@ -12947,7 +13222,7 @@ app.get('/api/admin/teachers', requireAuth, requireAdminTitle('Principal', 'Acad
 // don't know if one exists) — delete below matches on the natural key
 // instead of an assignment_id.
 app.get('/api/academic-vp/teacher-assignments', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
-    const { teacher_id } = req.query;
+    const { teacher_id, class_level, section, subject_id } = req.query;
     try {
         let query = `SELECT ta.teacher_id, ta.class_level, ta.section, ta.stream, ta.subject_id,
                             s.subject_name, t.first_name, t.last_name
@@ -12957,6 +13232,13 @@ app.get('/api/academic-vp/teacher-assignments', requireAuth, requireAdminTitle('
                      WHERE ta.school_id = ?`;
         const params = [req.user.school_id];
         if (teacher_id) { query += ' AND ta.teacher_id = ?'; params.push(teacher_id); }
+        // Optional narrowing used by the Timetable builder: given a class
+        // level + section + subject, find the teacher already assigned to
+        // teach it there, so the slot form can auto-fill the teacher name
+        // instead of asking the Academic VP to type a Teacher ID.
+        if (class_level) { query += ' AND ta.class_level = ?'; params.push(class_level); }
+        if (section) { query += ' AND ta.section = ?'; params.push(section); }
+        if (subject_id) { query += ' AND ta.subject_id = ?'; params.push(subject_id); }
         query += ' ORDER BY t.first_name, ta.class_level, ta.section';
         const [rows] = await pool.query(query, params);
         res.json(rows.map(r => ({
@@ -13026,6 +13308,15 @@ app.post('/api/academic-vp/homeroom', requireAuth, requireAdminTitle('Academic V
     const { teacher_id, class_level, section, stream } = req.body;
     if (!teacher_id || !class_level || !section) {
         return res.status(400).json({ error: "teacher_id, class_level, and section are required" });
+    }
+    // Grade 11/12 sections are split by stream (Natural/Social) — if the
+    // stream is left blank here, homeroom_stream is stored NULL while every
+    // student in that section has a real stream value, so the roster below
+    // would come back empty for that homeroom teacher even after the
+    // LIKE-prefix fix (see getHomeroomSectionOrNull). Grade 9/10 have no
+    // split, so they're exempt.
+    if (Number(class_level) >= 11 && !stream) {
+        return res.status(400).json({ error: "Stream (Natural or Social) is required for Grade 11/12 homeroom assignments." });
     }
     try {
         const [teacherRows] = await pool.query('SELECT teacher_id FROM teachers WHERE teacher_id = ? AND school_id = ?', [teacher_id, req.user.school_id]);
@@ -13483,18 +13774,26 @@ app.get('/api/admin/messages/recipients', requireAuth, requireRole('school_admin
         );
         const [schoolRows] = await pool.query('SELECT zone_id FROM schools WHERE id = ?', [req.user.school_id]);
         let zonal_contact = null;
+        let zonal_contacts = [];
         if (schoolRows[0]?.zone_id) {
+            // Every admin in this school's zone, not just the Head of
+            // Education — so the compose form can offer a real picker
+            // (Head of Education, Team Leaders, Development Coordinators,
+            // etc.) instead of silently routing everything to one person.
             const [zonalRows] = await pool.query(
-                `SELECT admin_id AS id, first_name, middle_name, last_name FROM zonal_admins WHERE zone_id = ? AND title = 'Head of Education' LIMIT 1`,
+                `SELECT admin_id AS id, first_name, middle_name, last_name, title FROM zonal_admins WHERE zone_id = ? ORDER BY (title = 'Head of Education') DESC, first_name`,
                 [schoolRows[0].zone_id]
             );
-            if (zonalRows.length > 0) zonal_contact = { id: zonalRows[0].id, full_name: [zonalRows[0].first_name, zonalRows[0].last_name].filter(Boolean).join(' ') };
+            zonal_contacts = zonalRows.map(z => ({ id: z.id, full_name: [z.first_name, z.middle_name, z.last_name].filter(Boolean).join(' '), title: z.title }));
+            const hoe = zonalRows.find(z => z.title === 'Head of Education');
+            if (hoe) zonal_contact = { id: hoe.id, full_name: [hoe.first_name, hoe.last_name].filter(Boolean).join(' ') };
         }
 
         res.json({
             teachers: teachers.map(t => ({ id: t.id, full_name: [t.first_name, t.middle_name, t.last_name].filter(Boolean).join(' ') })),
             admins: admins.map(a => ({ id: a.id, full_name: [a.first_name, a.last_name].filter(Boolean).join(' '), title: a.title })),
-            zonal_contact
+            zonal_contact,
+            zonal_contacts
         });
     } catch (err) {
         console.error("/api/admin/messages/recipients error:", err);
@@ -13511,8 +13810,8 @@ app.post('/api/admin/messages', requireAuth, requireRole('school_admins'), async
         let finalRecipientId = recipient_id || null;
 
         if (recipient_type === 'zonal_admins' && !finalRecipientId) {
-            // Zonal Admin Bridge with no specific recipient chosen — route
-            // to the zone's Head of Education by default.
+            // No specific zonal recipient chosen — route to the zone's
+            // Head of Education by default.
             const [schoolRows] = await pool.query('SELECT zone_id FROM schools WHERE id = ?', [req.user.school_id]);
             if (!schoolRows[0]?.zone_id) return res.status(400).json({ error: "Your school isn't assigned to a zone yet, so there's no Zonal Admin to escalate to." });
             const [zonalRows] = await pool.query(
@@ -13527,14 +13826,17 @@ app.post('/api/admin/messages', requireAuth, requireRole('school_admins'), async
 
         // Confirm the recipient actually exists in-scope before writing —
         // a teacher/admin recipient must be in this admin's own school; a
-        // zonal recipient just needs to exist (we already validated it
-        // above if it was auto-picked as the Head of Education).
+        // zonal recipient must belong to this school's own zone.
         if (recipient_type === 'teachers') {
             const [r] = await pool.query('SELECT teacher_id FROM teachers WHERE teacher_id = ? AND school_id = ?', [finalRecipientId, req.user.school_id]);
             if (r.length === 0) return res.status(404).json({ error: "Teacher not found in your school." });
         } else if (recipient_type === 'school_admins') {
             const [r] = await pool.query('SELECT admin_id FROM school_admins WHERE admin_id = ? AND school_id = ?', [finalRecipientId, req.user.school_id]);
             if (r.length === 0) return res.status(404).json({ error: "Admin not found in your school." });
+        } else if (recipient_type === 'zonal_admins' && recipient_id) {
+            const [schoolRows] = await pool.query('SELECT zone_id FROM schools WHERE id = ?', [req.user.school_id]);
+            const [r] = await pool.query('SELECT admin_id FROM zonal_admins WHERE admin_id = ? AND zone_id = ?', [finalRecipientId, schoolRows[0]?.zone_id || 0]);
+            if (r.length === 0) return res.status(404).json({ error: "That zonal admin isn't part of your school's zone." });
         }
 
         await pool.query(
@@ -13597,13 +13899,13 @@ app.get('/api/zonal/messages', requireAuth, requireZonalAdmin, async (req, res) 
     try {
         const [rows] = box === 'sent'
             ? await pool.query(
-                `SELECT m.message_id, m.school_id, s.school_name, m.recipient_type, m.recipient_id, m.subject, m.body, m.is_read, m.sent_at
+                `SELECT m.message_id, m.school_id, s.school_name, s.school_level, m.recipient_type, m.recipient_id, m.subject, m.body, m.is_read, m.sent_at
                  FROM admin_messages m JOIN schools s ON s.id = m.school_id
                  WHERE m.sender_type = 'zonal_admins' AND m.sender_id = ?
                  ORDER BY m.sent_at DESC`,
                 [req.user.user_id])
             : await pool.query(
-                `SELECT m.message_id, m.school_id, s.school_name, m.sender_type, m.sender_id, m.subject, m.body, m.is_read, m.sent_at
+                `SELECT m.message_id, m.school_id, s.school_name, s.school_level, m.sender_type, m.sender_id, m.subject, m.body, m.is_read, m.sent_at
                  FROM admin_messages m JOIN schools s ON s.id = m.school_id
                  WHERE m.recipient_type = 'zonal_admins' AND m.recipient_id = ?
                  ORDER BY m.sent_at DESC`,

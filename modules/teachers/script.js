@@ -14,12 +14,36 @@ function apiFetch(url, options = {}) {
 let CURRENT_TEACHER_ID = null;
 let CURRENT_SCHOOL_ID = null;
 let CURRENT_SCHOOL_NAME = null;
+let CURRENT_SCHOOL_LEVEL = null;
+
+// Every place the school's name is shown should show it combined with its
+// level ("PRIMARY SCHOOL"/"SECONDARY SCHOOL" from the server) — e.g.
+// "Newland Secondary School (Secondary School)" — using the same
+// za_school_level_* i18n labels the Zonal Admin portal already defines,
+// since i18n.js is shared across both portals. Falls back to the bare
+// name if level isn't set (older records, or school_id missing).
+function formatSchoolNameWithLevel(name, level) {
+    if (!name) return '—';
+    if (!level) return name;
+    const key = level === 'PRIMARY SCHOOL' ? 'za_school_level_primary'
+        : level === 'SECONDARY SCHOOL' ? 'za_school_level_secondary'
+        : null;
+    const levelLabel = key && typeof t === 'function' ? t(key) : level;
+    return `${name} (${levelLabel})`;
+}
 
 // i18n.js calls this after every language switch so JS-rendered content
 // (built with t() at fetch time, not data-i18n attributes) gets redrawn
 // in the new language too — data-i18n elements are already handled by
 // i18n.js's own applyTranslations().
 window.onSisLangChange = () => {
+    if (CURRENT_SCHOOL_NAME) {
+        const combined = formatSchoolNameWithLevel(CURRENT_SCHOOL_NAME, CURRENT_SCHOOL_LEVEL);
+        const titleEl = document.getElementById('page-title-text');
+        if (titleEl) titleEl.textContent = combined;
+        const logoEl = document.getElementById('nav-school-name');
+        if (logoEl) logoEl.textContent = combined;
+    }
     if (teacherIdCardData) renderTeacherIdCard(teacherIdCardData);
     if (lastPerformanceCompletion) renderPerformanceCompletion(lastPerformanceCompletion);
     if (lastDashboardTextbookData) renderDashboardTextbookSummary(lastDashboardTextbookData);
@@ -48,13 +72,15 @@ async function checkAuthAndInit() {
         CURRENT_TEACHER_ID = data.user_id;
         CURRENT_SCHOOL_ID = data.school_id;
         CURRENT_SCHOOL_NAME = data.school_name;
+        CURRENT_SCHOOL_LEVEL = data.school_level;
 
         // Update both the top-bar title and the sidebar logo subtitle
         if (CURRENT_SCHOOL_NAME) {
+            const combined = formatSchoolNameWithLevel(CURRENT_SCHOOL_NAME, CURRENT_SCHOOL_LEVEL);
             const titleEl = document.getElementById('page-title-text');
-            if (titleEl) titleEl.textContent = CURRENT_SCHOOL_NAME;
+            if (titleEl) titleEl.textContent = combined;
             const logoEl = document.getElementById('nav-school-name');
-            if (logoEl) logoEl.textContent = CURRENT_SCHOOL_NAME;
+            if (logoEl) logoEl.textContent = combined;
         }
 
         // Show the school's logo in the nav header automatically once a
@@ -1327,7 +1353,7 @@ async function loadHomeroomInfo() {
 
             const sidebarBadge = document.getElementById('sidebar-homeroom-badge');
             const sidebarLabel = document.getElementById('sidebar-homeroom-label');
-            if (sidebarLabel) sidebarLabel.textContent = `Grade ${homeroomInfo.class_level} - ${homeroomInfo.section}`;
+            if (sidebarLabel) sidebarLabel.textContent = `Grade ${homeroomInfo.class_level} - ${homeroomInfo.section} (${homeroomInfo.stream})`;
             if (sidebarBadge) sidebarBadge.style.display = 'flex';
 
             await Promise.all([
@@ -2624,6 +2650,12 @@ function setupNavigation() {
                 // and the page's own overflow:hidden clips it with no way
                 // to scroll at all.
                 targetPage.style.display = (target === 'myclass') ? 'flex' : 'block';
+                // View Students was only ever loaded once at page load
+                // (see the DOMContentLoaded init), so a student added,
+                // transferred, or reassigned elsewhere never showed up
+                // here until a full page refresh. Re-fetch every time the
+                // tab is opened so the list is actually live.
+                if (target === 'students') loadStudents();
                 if (target === 'textbooks') loadTextbooksGrid();
                 if (target === 'myclass') loadMyClassRoster();
                 if (target === 'leaderboard') loadLeaderboard();
@@ -2973,7 +3005,7 @@ function renderTeacherIdCard(data) {
     setText('idcard-zone-back', zoneLabel);
     setText('idcard-woreda-front', woredaLabel);
     setText('idcard-woreda-back', woredaLabel);
-    setText('idcard-school-name-front', data.school_name || '—');
+    setText('idcard-school-name-front', formatSchoolNameWithLevel(data.school_name, data.school_level));
     setText('idcard-name', data.full_name || '—');
     setText('idcard-teacher-id', data.teacher_id || '—');
     setText('idcard-subject', data.subject || 'General / አጠቃላይ');
@@ -4002,8 +4034,6 @@ window.onGradeSheetSubjectChange = async () => {
         gradeSheetStudents = res.ok ? await res.json() : [];
         renderGradeSheetTable(gradeSheetStudents);
         actions.style.display = gradeSheetStudents.length ? 'flex' : 'none';
-        const status = document.getElementById('gradesheet-status');
-        if (status) status.textContent = '';
     } catch (err) {
         console.error("Error loading students for grade sheet:", err);
         container.innerHTML = '<p style="color:#b91c1c; font-size:0.85rem;">Could not load students for this section.</p>';
@@ -4039,16 +4069,20 @@ function renderGradeSheetTable(students) {
             </td>`;
         }).join('');
         return `
-            <tr data-search-text="${escapeHtml((fullName + ' ' + s.student_id).toLowerCase())}">
+            <tr data-search-text="${escapeHtml((fullName + ' ' + s.student_id).toLowerCase())}" data-row-student-id="${escapeHtml(s.student_id)}">
                 <td><strong>${escapeHtml(s.student_id)}</strong><br><span style="color:#64748b;">${escapeHtml(fullName)}</span></td>
                 ${cells}
+                <td>
+                    <button type="button" class="btn-primary gradesheet-row-save-btn" onclick="saveGradeSheetRow('${escapeHtml(s.student_id)}', this)">Save</button>
+                    <div class="gradesheet-row-status" data-row-status="${escapeHtml(s.student_id)}"></div>
+                </td>
             </tr>`;
     }).join('');
 
     container.innerHTML = `
         <div class="gradesheet-table-wrap">
             <table class="gradesheet-table">
-                <thead><tr><th>Student</th>${headerCells}</tr></thead>
+                <thead><tr><th>Student</th>${headerCells}<th>Action</th></tr></thead>
                 <tbody>${rows}</tbody>
             </table>
         </div>`;
@@ -4062,27 +4096,28 @@ window.applyGradeSheetSearch = () => {
     });
 };
 
-// Saves every cell that has a value typed into it (marked "dirty" by the
-// oninput handler above) — untouched cells are left alone entirely, so
-// re-saving the same sheet twice doesn't create duplicate mark rows for
-// cells nobody actually changed.
-window.saveGradeSheet = async () => {
+// Saves every dirty (changed, non-empty) score cell in a single student's
+// row. Scoped to one row so a teacher can enter one student's marks and
+// save immediately, instead of filling the whole section before a single
+// bottom-of-table "Save All" pass.
+window.saveGradeSheetRow = async (studentId, btn) => {
     const subjectId = document.getElementById('gradesheet-subject')?.value;
-    const status = document.getElementById('gradesheet-status');
+    const statusEl = document.querySelector(`[data-row-status="${CSS.escape(studentId)}"]`);
     if (!subjectId) { showAlertModal("Please select a subject first."); return; }
 
-    const dirtyInputs = Array.from(document.querySelectorAll('#gradesheet-container .gradesheet-input-dirty'))
+    const row = btn.closest('tr');
+    const dirtyInputs = Array.from(row.querySelectorAll('.gradesheet-input-dirty'))
         .filter(input => input.value !== '');
 
     if (dirtyInputs.length === 0) {
-        showAlertModal("No new scores entered to save.");
+        if (statusEl) statusEl.textContent = 'Nothing to save.';
         return;
     }
 
-    if (status) status.textContent = `Saving ${dirtyInputs.length} score(s)…`;
+    btn.disabled = true;
+    if (statusEl) statusEl.textContent = 'Saving…';
 
     const results = await Promise.allSettled(dirtyInputs.map(async (input) => {
-        const student_id = input.dataset.studentId;
         const type = input.dataset.type;
         const score = parseInt(input.value, 10);
         const limits = ASSESSMENT_TYPE_LIMITS[type] || { min: 1, max: 100 };
@@ -4094,7 +4129,7 @@ window.saveGradeSheet = async () => {
         const res = await apiFetch(`${API_BASE}/api/add-mark`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ student_id, subject_id: subjectId, type, score })
+            body: JSON.stringify({ student_id: studentId, subject_id: subjectId, type, score })
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'Failed to save');
@@ -4116,15 +4151,15 @@ window.saveGradeSheet = async () => {
         }
     });
 
+    btn.disabled = false;
     const failCount = dirtyInputs.length - successCount;
-    if (status) {
-        status.textContent = failCount === 0
-            ? `Saved ${successCount} score(s).`
-            : `Saved ${successCount} score(s), ${failCount} failed.`;
+    if (statusEl) {
+        statusEl.textContent = failCount === 0
+            ? `Saved ${successCount}.`
+            : `Saved ${successCount}, ${failCount} failed.`;
+        statusEl.style.color = failCount === 0 ? '#16a34a' : '#dc2626';
     }
-    if (failCount > 0) {
-        showAlertModal(`${failCount} score(s) could not be saved. ${firstError ? 'First error: ' + firstError : ''} Cells with a red border were not saved — fix and try again.`);
-    } else {
-        showSuccessModal(`Saved ${successCount} score(s) successfully!`);
+    if (failCount > 0 && firstError) {
+        showAlertModal(`${failCount} score(s) could not be saved. First error: ${firstError}`);
     }
 };

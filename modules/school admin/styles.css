@@ -935,6 +935,12 @@ table.data-table tbody tr:hover { background: #f7faf8; }
     font-size: 0.85rem; font-family: inherit; background: #fff;
 }
 .form-group textarea { resize: vertical; min-height: 70px; }
+/* Section pickers rendered as a tick-list of checkboxes (e.g. Assign
+   Teaching Load) instead of a single-select dropdown, so more than one
+   section can be picked in one go. */
+.checkbox-grid { display: flex; flex-wrap: wrap; gap: 10px 16px; padding: 8px 0; }
+.checkbox-grid label { display: flex; align-items: center; gap: 6px; font-weight: normal; cursor: pointer; }
+.checkbox-grid input[type="checkbox"] { width: auto; margin: 0; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 /* Same idea as .form-row but keeps 3 fields on one line (e.g. the Class
    Leaderboard's Class/Section/Stream filters) instead of wrapping the
@@ -959,6 +965,21 @@ table.data-table tbody tr:hover { background: #f7faf8; }
 .form-actions { display: flex; gap: 10px; margin-top: 16px; }
 .form-hint { font-size: 0.75rem; color: var(--muted); margin-top: 4px; }
 .form-error { font-size: 0.8rem; color: var(--danger); margin-top: 8px; }
+/* Read-only "value" that sits where an input would (e.g. the
+   auto-resolved teacher name on the Timetable slot form) — looks like a
+   disabled field but is just a div, not a form control. */
+.form-control-static {
+    min-height: 38px;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-muted, #f4f5f7);
+    color: var(--text);
+    font-size: 0.9rem;
+}
+.form-control-static.is-empty { color: var(--muted); font-style: italic; }
 
 /* ---------- Tabs ---------- */
 .tab-row { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
@@ -1008,6 +1029,7 @@ table.data-table tbody tr:hover { background: #f7faf8; }
 }
 .toast.toast-error { background: var(--danger); }
 .toast.toast-success { background: var(--success); }
+.toast.toast-warning { background: var(--warning); }
 
 /* ---------- Decorative dashboard ring (signature element) ---------- */
 .dash-hero {
