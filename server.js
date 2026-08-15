@@ -2092,10 +2092,14 @@ const ASSESSMENT_TYPES = [
 // just SUM() (see /api/teacher/push-report): 5 + 5 + 10 + 10 + 30 + 40 =
 // 100. A teacher entering, say, 32 for a midterm (weight 30) would push
 // that student's total_score over 100 and silently break every average/
-// rank calculation downstream, so this is enforced server-side in both
-// /api/add-mark and /api/upload-marks, not just left to frontend inputs.
+// rank calculation downstream, so this is enforced server-side in
+// /api/add-mark, not just left to frontend inputs.
 // min: 1 (not 0) per the school's requirement — a genuinely missed
 // assessment isn't expected to be recorded as a 0 through this form.
+// Scores can be half-points (4.5, 9.5, etc. — real, legitimate student
+// marks), not just whole numbers, so marks.score must be a decimal
+// column. If it's still INT from an earlier version of this schema, run
+// once:  ALTER TABLE marks MODIFY score DECIMAL(5,2) NOT NULL;
 const ASSESSMENT_TYPE_LIMITS = {
     individual_assignment_1: { min: 1, max: 5 },
     individual_assignment_2: { min: 1, max: 5 },
@@ -2193,11 +2197,11 @@ async function isPushedAndLocked(subject_id, class_level, section, stream, term,
 // to teach it (teacher_assignments), or (b) a homeroom teacher who was
 // specifically granted temporary access by an Academic VP via the
 // subject_entry_requests workflow below (e.g. covering for an absent
-// colleague). Neither /api/add-mark nor /api/upload-marks checked subject
-// ownership at all before this — any authenticated teacher could enter
-// marks for any subject in their school, the frontend just never offered
-// subjects outside teacher_assignments in its dropdowns. This closes that
-// gap and is also what makes "request access to another subject" actually
+// colleague). /api/add-mark didn't check subject ownership at all before
+// this — any authenticated teacher could enter marks for any subject in
+// their school, the frontend just never offered subjects outside
+// teacher_assignments in its dropdowns. This closes that gap and is also
+// what makes "request access to another subject" actually
 // mean something rather than being purely cosmetic.
 async function hasSubjectAccess(teacher_id, school_id, subject_id, class_level, section, stream) {
     // `stream` here is the STUDENT's stream (the long descriptive label,
@@ -2354,6 +2358,26 @@ app.post('/api/add-mark', requireAuth, async (req, res) => {
             });
         }
 
+        // A mark already exists for this exact student+subject+type+term
+        // whenever it's submitted twice (e.g. re-submitted by mistake) —
+        // previously this always INSERTed a new
+        // row, so the student ended up with two rows for the same
+        // assessment and every downstream SUM/AVG (progress view, push-
+        // to-homeroom totals, dashboard performance) silently double-
+        // counted them. Update the existing row instead of inserting a
+        // duplicate.
+        const [existingMark] = await pool.query(
+            'SELECT 1 FROM marks WHERE student_id = ? AND subject_id = ? AND type = ? AND term = ? AND school_id = ?',
+            [student_id, subject_id, type, term, req.user.school_id]
+        );
+        if (existingMark.length > 0) {
+            await pool.query(
+                'UPDATE marks SET score = ? WHERE student_id = ? AND subject_id = ? AND type = ? AND term = ? AND school_id = ?',
+                [score, student_id, subject_id, type, term, req.user.school_id]
+            );
+            return res.json({ message: "Mark updated successfully!", term });
+        }
+
         await pool.query(
             'INSERT INTO marks (student_id, subject_id, type, score, term, school_id) VALUES (?, ?, ?, ?, ?, ?)',
             [student_id, subject_id, type, score, term, req.user.school_id]
@@ -2379,15 +2403,13 @@ const storage = multer.diskStorage({
     }
 });
 
-// This single `upload` instance is shared by two very different routes:
-//   - /api/teacher/update-avatar expects an image
-//   - /api/upload-marks expects a CSV
+// This single `upload` instance is shared by several routes — avatars,
+// signatures, stamps, ID photos, and absence-request attachments.
 // Multer's fileFilter only sees the file metadata (mimetype/originalname),
-// not which route called it, so we whitelist BOTH acceptable kinds here
+// not which route called it, so we whitelist every acceptable kind here
 // and let each route still validate it actually got what it needed.
 const ALLOWED_UPLOAD_MIME_TYPES = [
     'image/jpeg', 'image/png', 'image/gif', 'image/webp',
-    'text/csv', 'application/vnd.ms-excel', // some browsers send CSV as this
     'application/pdf' // absence-request attachments (e.g. a scanned doctor's note)
 ];
 
@@ -2397,13 +2419,12 @@ const upload = multer({
     fileFilter: (req, file, cb) => {
         const ext = path.extname(file.originalname).toLowerCase();
         const isImage = file.mimetype.startsWith('image/');
-        const isCsv = ext === '.csv' || ALLOWED_UPLOAD_MIME_TYPES.includes(file.mimetype);
         const isPdf = ext === '.pdf' || file.mimetype === 'application/pdf';
 
-        if (isImage || isCsv || isPdf) {
+        if (isImage || isPdf) {
             cb(null, true);
         } else {
-            cb(new Error('Unsupported file type. Only images (avatar/attachment), .csv (marks), or .pdf (absence attachment) are allowed.'));
+            cb(new Error('Unsupported file type. Only images (avatar/attachment) or .pdf (absence attachment) are allowed.'));
         }
     }
 });
@@ -3119,7 +3140,11 @@ app.post('/api/attendance/checkin', requireAuth, requireRole('teachers', 'school
         if (homeroomSection && (
             student.class_level !== homeroomSection.class_level ||
             student.section !== homeroomSection.section ||
-            student.stream !== homeroomSection.stream
+            // student.stream is the long-form label (e.g. "Natural Science");
+            // homeroomSection.stream is the short bucket code ("Natural").
+            // A plain !== always mismatched for Grade 11/12, wrongly blocking
+            // their homeroom teacher/monitor from taking attendance.
+            !String(student.stream || "").startsWith(homeroomSection.stream)
         )) {
             return res.status(403).json({ error: "This student isn't in your homeroom section." });
         }
@@ -4018,21 +4043,27 @@ app.get('/api/admin/teacher-punctuality', requireAuth, requireAdminTitle('Admin 
 // teacher_assignments — never taken from the client — so a slot always
 // reflects whoever is really assigned to teach that subject in that
 // section.
+// section is optional — omitting it returns every section for the
+// class_level/stream at once (used by the grid editor to prefill all
+// columns for a day in one call instead of one request per section).
 app.get('/api/admin/timetable', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
     const { class_level, section, stream } = req.query;
-    if (!class_level || !section || !stream) {
-        return res.status(400).json({ error: "class_level, section, and stream are required" });
+    if (!class_level || !stream) {
+        return res.status(400).json({ error: "class_level and stream are required" });
     }
     try {
+        const params = [req.user.school_id, class_level, stream];
+        let sectionClause = '';
+        if (section) { sectionClause = 'AND ct.section = ?'; params.push(section); }
         const [rows] = await pool.query(
-            `SELECT ct.timetable_id, ct.day_of_week, ct.start_time, ct.end_time, ct.subject_id, ct.teacher_id,
+            `SELECT ct.timetable_id, ct.section, ct.day_of_week, ct.start_time, ct.end_time, ct.subject_id, ct.teacher_id,
                     s.subject_name, t.first_name AS teacher_first_name, t.last_name AS teacher_last_name
              FROM class_timetable ct
              JOIN subjects s ON s.subject_id = ct.subject_id AND s.school_id = ct.school_id
              LEFT JOIN teachers t ON t.teacher_id = ct.teacher_id AND t.school_id = ct.school_id
-             WHERE ct.school_id = ? AND ct.class_level = ? AND ct.section = ? AND ct.stream = ?
+             WHERE ct.school_id = ? AND ct.class_level = ? AND ct.stream = ? ${sectionClause}
              ORDER BY ct.day_of_week, ct.start_time`,
-            [req.user.school_id, class_level, section, stream]
+            params
         );
         res.json(rows.map(r => ({
             ...r,
@@ -4041,6 +4072,75 @@ app.get('/api/admin/timetable', requireAuth, requireAdminTitle('Academic VP'), a
     } catch (err) {
         console.error("/api/admin/timetable GET error:", err);
         res.status(500).json({ error: "Could not load timetable" });
+    }
+});
+
+// --- Bulk save for one day's timetable grid (all periods x all
+// sections for a class_level/stream at once) ---
+// The grid editor sends the FULL set of period slots it's showing for
+// that day — one entry per section per period, subject_id null where
+// the Academic VP left a cell blank. This does a full replace: every
+// existing class_timetable row for this exact
+// (class_level, stream, day_of_week) is deleted first, then a fresh
+// row is inserted for every slot that actually has a subject_id. That
+// makes the grid the single source of truth for that day — clearing a
+// cell and saving really does remove that slot, no separate delete
+// step needed.
+app.post('/api/admin/timetable/bulk', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    const { class_level, stream, day_of_week, slots } = req.body;
+    if (!class_level || !stream || !day_of_week) {
+        return res.status(400).json({ error: "class_level, stream, and day_of_week are required." });
+    }
+    if (day_of_week < 1 || day_of_week > 5) {
+        return res.status(400).json({ error: "day_of_week must be 1 (Monday) through 5 (Friday)." });
+    }
+    if (!Array.isArray(slots)) {
+        return res.status(400).json({ error: "slots must be an array." });
+    }
+    const toSave = slots.filter(s => s && s.subject_id && s.section && s.start_time && s.end_time);
+    for (const s of toSave) {
+        if (s.end_time <= s.start_time) {
+            return res.status(400).json({ error: `Period ${s.start_time}\u2013${s.end_time} for section ${s.section} has an end time before its start time.` });
+        }
+    }
+
+    const conn = await pool.getConnection();
+    try {
+        await conn.beginTransaction();
+
+        await conn.query(
+            'DELETE FROM class_timetable WHERE school_id = ? AND class_level = ? AND stream = ? AND day_of_week = ?',
+            [req.user.school_id, class_level, stream, day_of_week]
+        );
+
+        let inserted = 0;
+        for (const s of toSave) {
+            // Same rule as the single-slot endpoint: the teacher is
+            // resolved from teacher_assignments, never taken from the
+            // client, so a slot can't claim a teacher who isn't really
+            // assigned to teach this subject in this section.
+            const [[assignment]] = await conn.query(
+                `SELECT teacher_id FROM teacher_assignments
+                 WHERE school_id = ? AND class_level = ? AND section = ? AND subject_id = ? LIMIT 1`,
+                [req.user.school_id, class_level, s.section, s.subject_id]
+            );
+            const teacher_id = assignment ? assignment.teacher_id : null;
+            await conn.query(
+                `INSERT INTO class_timetable (school_id, class_level, section, stream, day_of_week, subject_id, teacher_id, start_time, end_time)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [req.user.school_id, class_level, s.section, stream, day_of_week, s.subject_id, teacher_id, s.start_time, s.end_time]
+            );
+            inserted++;
+        }
+
+        await conn.commit();
+        res.json({ message: `Saved ${inserted} period(s) for this day.`, saved: inserted });
+    } catch (err) {
+        await conn.rollback();
+        console.error("/api/admin/timetable/bulk error:", err);
+        res.status(500).json({ error: "Could not save the timetable grid." });
+    } finally {
+        conn.release();
     }
 });
 
@@ -4145,7 +4245,11 @@ app.post('/api/attendance/manual-checkin', requireAuth, requireRole('teachers', 
         if (homeroomSection && (
             student.class_level !== homeroomSection.class_level ||
             student.section !== homeroomSection.section ||
-            student.stream !== homeroomSection.stream
+            // student.stream is the long-form label (e.g. "Natural Science");
+            // homeroomSection.stream is the short bucket code ("Natural").
+            // A plain !== always mismatched for Grade 11/12, wrongly blocking
+            // their homeroom teacher/monitor from taking attendance.
+            !String(student.stream || "").startsWith(homeroomSection.stream)
         )) {
             return res.status(403).json({ error: "This student isn't in your homeroom section." });
         }
@@ -4272,6 +4376,37 @@ function getCurrentAcademicYearLabel() {
         gc_range: `${gcStart}/${gcEndShort}`,
         label: `${ecYear} E.C. (${gcStart}/${gcEndShort} GC)`
     };
+}
+
+// The Academic Year printed on a certificate/report card should be the
+// year the student actually STUDIED that class_level — not whenever the
+// marks for it happened to get synced into the system (which can lag
+// the real term by months, or even land after the next academic year
+// has already started). There's no per-term school-year column on file
+// yet to read that directly (see getSchoolYear's note above), so this
+// approximates it from grade progression: a class_level that is N grades
+// behind the student's CURRENT class_level was studied N academic years
+// ago, so it's the current academic year minus N.
+// Caveat: this assumes standard one-grade-per-year progression, so a
+// student who repeated a grade will have that repeated year's label
+// computed as if no repeat happened. A real per-term school-year column
+// is the only way to fix that precisely.
+function academicYearForClassLevel(classLevel, currentClassLevel) {
+    if (classLevel == null || currentClassLevel == null) return null;
+    const gradesAgo = currentClassLevel - classLevel;
+    const current = getCurrentAcademicYearLabel();
+    return `${current.ec_year - gradesAgo} E.C.`;
+}
+
+// The printed school name combines the school's own name with its
+// level (e.g. "Newland" + "SECONDARY SCHOOL" -> "NEWLAND SECONDARY
+// SCHOOL"), since the level isn't otherwise implied by the name.
+// school_level is already stored upper-case (see SCHOOL_LEVELS above);
+// .toUpperCase() on the whole joined string is just a safety net for
+// the name half and for any caller that doesn't have a school_level
+// to pass (falls back to the name alone, still upper-cased).
+function buildSchoolDisplayName(schoolName, schoolLevel) {
+    return [schoolName, schoolLevel].filter(Boolean).join(' ').toUpperCase() || 'SCHOOL';
 }
 
 // Full Ethiopian date conversion for message text (e.g. absence
@@ -4492,11 +4627,23 @@ function renderCertificateHtml(data) {
     html = inlineImage(html, '../../public/assets/images/gambella_flag.png', path.join(__dirname, 'public', 'assets', 'images', 'gambella_flag.png'));
     html = inlineImage(html, '../../public/assets/images/ethiopia_flag.png', path.join(__dirname, 'public', 'assets', 'images', 'ethiopia_flag.png'));
 
+    // The printed verification line gives a manual fallback ("enter Code
+    // X at domain/verify") alongside the QR code, for anyone who can't
+    // scan it. The domain shown is read straight off verify_url itself
+    // (whatever host actually issued this document) rather than a
+    // hardcoded string — so if/when the school's real verification
+    // domain changes, this line updates automatically instead of needing
+    // a template edit.
+    let verifyDomain = '—';
+    try {
+        verifyDomain = `${new URL(data.verify_url).host}/verify`;
+    } catch (_) { /* leave the placeholder dash if verify_url is missing/malformed */ }
+
     const tokens = {
         __REGION_AMH__: data.region_amh || '',
         __REGION__: escapeHtml(data.region || '—'),
         __SCHOOL_NAME_AMH__: data.school_name_amh || '',
-        __SCHOOL_NAME__: escapeHtml(data.school_name || 'School'),
+        __SCHOOL_NAME__: escapeHtml(buildSchoolDisplayName(data.school_name, data.school_level)),
         __PHOTO_HTML__: data.photo_html,
         __STUDENT_ID__: escapeHtml(data.student_id),
         __STUDENT_NAME__: escapeHtml(data.student_name),
@@ -4507,7 +4654,7 @@ function renderCertificateHtml(data) {
         __ACADEMIC_YEAR__: escapeHtml(data.academic_year || '—'),
         __ZONE__: escapeHtml(data.zone || '—'),
         __WOREDA__: escapeHtml(data.woreda || '—'),
-        __TOWN__: escapeHtml(data.town || '—'),
+        __KEBELE__: escapeHtml(data.kebele || '—'),
         __HOMEROOM_TEACHER_NAME__: escapeHtml(data.homeroom_teacher_name || '—'),
         __HOMEROOM_SIGNATURE_HTML__: data.homeroom_signature_html || '',
         __PRINCIPAL_NAME__: escapeHtml(data.principal_name || '—'),
@@ -4516,7 +4663,9 @@ function renderCertificateHtml(data) {
         __PRINCIPAL_STAMP_WATERMARK_HTML__: data.principal_stamp_watermark_html || '',
         __RESULT_PROMOTED_CLASS__: data.result_promoted_class || '',
         __RESULT_DETAINED_CLASS__: data.result_detained_class || '',
-        __PROMOTED_TO_GRADE_TEXT__: escapeHtml(data.promoted_to_grade_text || '—')
+        __PROMOTED_TO_GRADE_TEXT__: escapeHtml(data.promoted_to_grade_text || '—'),
+        __VERIFY_CODE__: escapeHtml(data.verify_code || '—'),
+        __VERIFY_DOMAIN__: escapeHtml(verifyDomain)
     };
     for (const [token, value] of Object.entries(tokens)) {
         html = replaceOutsideScripts(html, token, value);
@@ -4527,7 +4676,9 @@ function renderCertificateHtml(data) {
     // </script>-breaking guard covers a subject name containing "</script>".
     const dataJson = JSON.stringify({
         subjects: data.subjects,
-        conduct: data.conduct,
+        conduct_s1: data.conduct_s1,
+        conduct_s2: data.conduct_s2,
+        conduct_year: data.conduct_year,
         absent_days_s1: data.absent_days_s1,
         absent_days_s2: data.absent_days_s2,
         rank: data.rank,
@@ -4797,15 +4948,13 @@ async function getSchoolYearLeaderboard(school_id) {
 
 // Days absent within a term, inferred from attendance check-ins — the
 // same signal the Dashboard's attendance streak already uses (a
-// student_attendance row only ever gets written as 'present'; absence is
-// never recorded directly, just implied by a missing school-day row).
-// The term's start boundary is whatever Academic VP last set via POST
-// /api/term/set (see getTermStartDate) — if that's never been pushed for
-// this school, this falls back to the older approximation (day after the
-// previous term synced, or the student's account creation date) so
-// nothing breaks for a school that hasn't adopted the Start Semester
-// button yet.
-async function countAbsentDays(student_id, school_id, class_level, section, stream, term, syncedAt) {
+// Shared by countAbsentDays and countConductWarnings — both need "the
+// date range this term actually covers" (start of term through the day
+// marks were synced), so the window is computed once here rather than
+// duplicated. See countAbsentDays below for the fallback chain this
+// implements: Start Semester date > day after previous term synced >
+// student's account creation date.
+async function getTermWindow(student_id, school_id, class_level, section, stream, term, syncedAt) {
     let startDate = null;
 
     if (term === 'Semester 2') {
@@ -4837,6 +4986,19 @@ async function countAbsentDays(student_id, school_id, class_level, section, stre
     }
 
     const endDate = new Date(syncedAt);
+    return { startDate, endDate };
+}
+
+// student_attendance row only ever gets written as 'present'; absence is
+// never recorded directly, just implied by a missing school-day row).
+// The term's start boundary is whatever Academic VP last set via POST
+// /api/term/set (see getTermStartDate) — if that's never been pushed for
+// this school, this falls back to the older approximation (day after the
+// previous term synced, or the student's account creation date) so
+// nothing breaks for a school that hasn't adopted the Start Semester
+// button yet.
+async function countAbsentDays(student_id, school_id, class_level, section, stream, term, syncedAt) {
+    const { startDate, endDate } = await getTermWindow(student_id, school_id, class_level, section, stream, term, syncedAt);
     if (startDate > endDate) return 0;
 
     const [presentRows] = await pool.query(
@@ -4875,6 +5037,51 @@ async function countAbsentDays(student_id, school_id, class_level, section, stre
         cursor.setDate(cursor.getDate() + 1);
     }
     return absentDays;
+}
+
+// Counts indiscipline warnings (Academic VP -> student, see POST
+// /api/academic-vp/conduct-warning, which files a student_notifications
+// row with assessment_type = 'conduct_warning') sent within the same
+// term window used for this term's absence count — so "how many
+// warnings this semester" and "how many days absent this semester" on
+// the same report card are scoped to the exact same date range.
+async function countConductWarnings(student_id, school_id, startDate, endDate) {
+    if (startDate > endDate) return 0;
+    const [rows] = await pool.query(
+        `SELECT COUNT(*) AS cnt FROM student_notifications
+         WHERE student_id = ? AND school_id = ? AND assessment_type = 'conduct_warning'
+           AND sent_at >= ? AND sent_at <= ?`,
+        [student_id, school_id, startDate, endDate]
+    );
+    return rows[0]?.cnt || 0;
+}
+
+// Maps an indiscipline-warning count to the school's conduct letter
+// grade, as given: 0 warnings -> A, 2-3 -> B, 4-10 -> C. A count of
+// exactly 1 falls in the gap between "no warning" (A) and the B range
+// (2-3) as specified — this treats 1 as still A, extending the "no/
+// minimal issue" bucket down rather than up into B. 11+ isn't covered
+// by the rule as given either; this extends the same escalating
+// pattern with a D tier rather than silently capping at C. Both of
+// these are assumptions, not confirmed rules — flag back if either
+// should land differently.
+function conductGradeForWarningCount(count) {
+    if (count == null) return null;
+    if (count <= 1) return 'A';
+    if (count <= 3) return 'B';
+    if (count <= 10) return 'C';
+    return 'D';
+}
+
+// Combines two terms' warning counts into one grade for the certificate's
+// 3rd ("Average") conduct column — same "sum, not average" treatment as
+// the Days Absent row's 3rd column, since there's no sensible way to
+// average two letter grades. Null only when NEITHER term has synced yet
+// (both counts unknown); one synced term is enough to grade off of.
+function combineConductGrade(term1, term2) {
+    if ((term1?.conduct_warnings ?? null) == null && (term2?.conduct_warnings ?? null) == null) return null;
+    const combined = (term1?.conduct_warnings ?? 0) + (term2?.conduct_warnings ?? 0);
+    return conductGradeForWarningCount(combined);
 }
 
 // Built on student_enrollment_history (what class/section/stream/term the
@@ -4956,6 +5163,16 @@ async function getCertificateTerms(student_id, school_id) {
             ? await countAbsentDays(student_id, school_id, h.class_level, h.section, h.stream, h.term, syncRows[0].pushed_at)
             : null;
 
+        // Conduct is graded off indiscipline-warning counts (Academic VP
+        // -> student), scoped to this same term's window — not computed
+        // at all until the term is synced, same reasoning as rank above.
+        let conduct_warnings = null, conduct_grade = null;
+        if (synced) {
+            const { startDate, endDate } = await getTermWindow(student_id, school_id, h.class_level, h.section, h.stream, h.term, syncRows[0].pushed_at);
+            conduct_warnings = await countConductWarnings(student_id, school_id, startDate, endDate);
+            conduct_grade = conductGradeForWarningCount(conduct_warnings);
+        }
+
         return {
             class_level: h.class_level,
             section: h.section,
@@ -4968,7 +5185,9 @@ async function getCertificateTerms(student_id, school_id) {
             term_average: overallAverage(scoreRows.map(r => r.total_score)),
             rank,
             class_size,
-            days_absent
+            days_absent,
+            conduct_warnings,
+            conduct_grade
         };
     }));
 }
@@ -5190,13 +5409,14 @@ app.get('/api/student/certificate.pdf', requireAuth, requireRole('students'), as
         const s2 = terms.find(t => t.class_level === latest.class_level && t.term === 'Semester 2');
 
         const [studentRows] = await pool.query(
-            `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.sex, st.id_photo_url,
-                    sc.school_name, z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region
+            `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.sex, st.id_photo_url, st.class_level,
+                    sc.school_name, sc.school_level, z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region, k.kebele_name AS kebele
              FROM students st
              LEFT JOIN schools sc ON sc.id = st.school_id
              LEFT JOIN zone z ON z.zone_id = sc.zone_id
              LEFT JOIN woreda w ON w.woreda_id = sc.woreda_id
              LEFT JOIN region r ON r.region_id = sc.region_id
+             LEFT JOIN kebele k ON k.kebele_id = sc.kebele_id
              WHERE st.student_id = ? AND st.school_id = ?`,
             [req.user.user_id, req.user.school_id]
         );
@@ -5246,10 +5466,11 @@ app.get('/api/student/certificate.pdf', requireAuth, requireRole('students'), as
         const promotionResult = await getPromotionResultForCertificate(req.user.user_id, req.user.school_id, latest.class_level);
         const html = renderCertificateHtml({
             school_name: s.school_name,
+            school_level: s.school_level,
             region: s.region,
             zone: s.zone,
             woreda: s.woreda,
-            town: s.woreda, // no separate "town" field on file — closest available match
+            kebele: s.kebele,
             photo_html: buildPhotoHtml(s.id_photo_url),
             student_id: s.student_id,
             student_name: [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' '),
@@ -5257,10 +5478,12 @@ app.get('/api/student/certificate.pdf', requireAuth, requireRole('students'), as
             grade: latest.class_level,
             section: s2.section,
             stream: s2.stream,
-            academic_year: s2.synced_at ? `${approximateEthiopianYear(s2.synced_at)} E.C.` : null,
+            academic_year: academicYearForClassLevel(latest.class_level, s.class_level),
             homeroom_teacher_name: homeroomTeacherName,
             subjects: mergedSubjects,
-            conduct: null, // no conduct-tracking feature yet — left blank on purpose, not fabricated
+            conduct_s1: s1 ? s1.conduct_grade : null,
+            conduct_s2: s2 ? s2.conduct_grade : null,
+            conduct_year: combineConductGrade(s1, s2),
             absent_days_s1: s1 ? s1.days_absent : null,
             absent_days_s2: s2 ? s2.days_absent : null,
             rank: latest.rank,
@@ -5268,7 +5491,8 @@ app.get('/api/student/certificate.pdf', requireAuth, requireRole('students'), as
             result_promoted_class: promotionResult.result_promoted_class,
             result_detained_class: promotionResult.result_detained_class,
             promoted_to_grade_text: promotionResult.promoted_to_grade_text,
-            verify_url: `${req.protocol}://${req.get('host')}/verify/${s.student_id}`
+            verify_url: `${req.protocol}://${req.get('host')}/verify/${s.student_id}`,
+            verify_code: s.student_id // this route has no document_issuances code — the URL (and Code shown) is keyed on student_id directly
         });
 
         const browser = await getBrowser();
@@ -6006,159 +6230,52 @@ app.get('/api/student/:id', requireAuth, async (req, res) => {
     }
 });
 
-// student_id, subject_id, type, score
-app.post('/api/upload-marks', requireAuth, handleUploadError(upload.single('file')), async (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ error: "No CSV file uploaded" });
-    }
-
-    // The shared multer filter also allows images (for the avatar route) —
-    // this route specifically needs a CSV, so re-check that here.
-    if (path.extname(req.file.originalname).toLowerCase() !== '.csv') {
-        return res.status(400).json({ error: "File must be a .csv file." });
-    }
-
-    try {
-        const fs = await import('fs');
-        const raw = fs.readFileSync(req.file.path, 'utf8');
-        const term = await getCurrentTerm(req.user.school_id);
-
-        // Split into non-empty lines, support both \n and \r\n
-        const lines = raw.split(/\r?\n/).filter(line => line.trim() !== '');
-        if (lines.length < 2) {
-            return res.status(400).json({ error: "CSV is empty or missing a header row" });
-        }
-
-        const header = lines[0].split(',').map(h => h.trim().toLowerCase());
-        const required = ['student_id', 'subject_id', 'type', 'score'];
-        const missing = required.filter(col => !header.includes(col));
-        if (missing.length > 0) {
-            return res.status(400).json({ error: `CSV header missing column(s): ${missing.join(', ')}` });
-        }
-
-        const colIndex = {};
-        required.forEach(col => { colIndex[col] = header.indexOf(col); });
-
-        const rows = [];
-        const rowErrors = [];
-
-        // Cache lookups so a CSV with many rows for the same student/subject
-        // doesn't re-query the DB for every single line.
-        const studentSectionCache = new Map(); // student_id -> {class_level, section, stream}
-        const lockCache = new Map(); // "subject_id|class_level|section|stream" -> boolean
-        const accessCache = new Map(); // "subject_id|class_level|section|stream" -> boolean
-
-        for (let i = 1; i < lines.length; i++) {
-            const cells = lines[i].split(',').map(c => c.trim());
-            const student_id = cells[colIndex.student_id];
-            const subject_id = cells[colIndex.subject_id];
-            const type = cells[colIndex.type];
-            const scoreRaw = cells[colIndex.score];
-            const score = parseInt(scoreRaw, 10);
-
-            if (!student_id || !subject_id || !type || isNaN(score)) {
-                rowErrors.push(`Row ${i + 1}: invalid or missing data ("${lines[i]}")`);
-                continue;
-            }
-            if (!ASSESSMENT_TYPES.includes(type)) {
-                rowErrors.push(`Row ${i + 1}: invalid type "${type}". Must be one of: ${ASSESSMENT_TYPES.join(', ')}`);
-                continue;
-            }
-            const rowLimits = ASSESSMENT_TYPE_LIMITS[type];
-            if (score < rowLimits.min || score > rowLimits.max) {
-                rowErrors.push(`Row ${i + 1}: ${assessmentTypeLabel(type)} score ${score} out of range (${rowLimits.min}-${rowLimits.max})`);
-                continue;
-            }
-
-            // Resolve the student's section (cached) — scoped to this
-            // teacher's own school, so a CSV can never add marks for a
-            // student belonging to a different school.
-            let studentInfo = studentSectionCache.get(student_id);
-            if (!studentInfo) {
-                const [studentRows] = await pool.query(
-                    'SELECT class_level, section, stream FROM students WHERE student_id = ? AND school_id = ?',
-                    [student_id, req.user.school_id]
-                );
-                if (studentRows.length === 0) {
-                    rowErrors.push(`Row ${i + 1}: student_id "${student_id}" not found in your school`);
-                    continue;
-                }
-                studentInfo = studentRows[0];
-                studentSectionCache.set(student_id, studentInfo);
-            }
-
-            // Check subject access (cached per subject+section combo) —
-            // must be formally assigned to this subject+section, or have
-            // an Academic-VP-approved subject_entry_request covering it.
-            const accessKey = `${subject_id}|${studentInfo.class_level}|${studentInfo.section}|${studentInfo.stream}`;
-            let allowed = accessCache.get(accessKey);
-            if (allowed === undefined) {
-                allowed = await hasSubjectAccess(req.user.user_id, req.user.school_id, subject_id, studentInfo.class_level, studentInfo.section, studentInfo.stream);
-                accessCache.set(accessKey, allowed);
-            }
-            if (!allowed) {
-                rowErrors.push(`Row ${i + 1}: you are not assigned to teach subject ${subject_id} for this student's section`);
-                continue;
-            }
-
-            // Check the lock (cached per subject+section combo)
-            const lockKey = `${subject_id}|${studentInfo.class_level}|${studentInfo.section}|${studentInfo.stream}`;
-            let locked = lockCache.get(lockKey);
-            if (locked === undefined) {
-                locked = await isPushedAndLocked(subject_id, studentInfo.class_level, studentInfo.section, studentInfo.stream, term, req.user.school_id);
-                lockCache.set(lockKey, locked);
-            }
-            if (locked) {
-                rowErrors.push(`Row ${i + 1}: subject ${subject_id} for this student's section is locked (already pushed to homeroom for ${term})`);
-                continue;
-            }
-
-            rows.push([student_id, subject_id, type, score, term, req.user.school_id]);
-        }
-
-        if (rows.length > 0) {
-            await pool.query(
-                'INSERT INTO marks (student_id, subject_id, type, score, term, school_id) VALUES ?',
-                [rows]
-            );
-        }
-
-        res.json({
-            message: `Uploaded ${rows.length} mark(s) successfully.` +
-                (rowErrors.length > 0 ? ` ${rowErrors.length} row(s) skipped.` : ''),
-            inserted: rows.length,
-            skipped: rowErrors.length,
-            errors: rowErrors
-        });
-
-    } catch (err) {
-        console.error("Bulk mark upload error:", err);
-        res.status(500).json({ error: "Failed to process CSV: " + err.message });
-    } finally {
-        // Clean up the uploaded temp file regardless of outcome
-        if (req.file) {
-            try {
-                const fs = await import('fs');
-                fs.unlinkSync(req.file.path);
-            } catch (cleanupErr) {
-                console.error("Could not delete temp upload file:", cleanupErr);
-            }
-        }
-    }
-});
-
 app.put('/api/update/:id', requireAuth, requireRegistrarOrRecorder, async (req, res) => {
     try {
         const { first_name, middle_name, last_name, phone_number, fayda_number, sex, class_level, stream } = req.body;
         // Status no longer tracks Fayda-number completeness — every student
         // stays Active through an info update regardless of that field.
         const finalStatus = 'Active';
-        const sql = `UPDATE students SET first_name=?, middle_name=?, last_name=?, phone_number=?, fayda_number=?, sex=?, class_level=?, stream=?, status=? WHERE student_id=? AND school_id=?`;
+
+        // A student's `section` only ever means something in the context of
+        // their CURRENT class_level + stream (it's a name from class_sections
+        // for that specific grade/stream bucket — see Placement Wizard). If
+        // this update changes either one, whatever section they were sitting
+        // in no longer refers to a real place for them: same section name
+        // might not even exist for the new grade/stream, or might, but for a
+        // different set of students. Left alone, the record silently drifts
+        // out of sync with class_sections — which is what was making
+        // section-scoped bulk actions (bulk ID cards, bulk report cards,
+        // homeroom rosters, etc.) come back empty even though the student
+        // clearly exists. So: if class_level or stream is actually changing,
+        // clear section back to NULL, same as the Promotion flow already
+        // does — the student simply re-enters the unassigned queue and picks
+        // up a real section next time the Placement Wizard runs for their
+        // new grade/stream.
+        const [beforeRows] = await pool.query(
+            'SELECT class_level, stream FROM students WHERE student_id = ? AND school_id = ?',
+            [req.params.id, req.user.school_id]
+        );
+        if (beforeRows.length === 0) {
+            return res.status(404).json({ error: "Student not found in your school." });
+        }
+        const gradeOrStreamChanged =
+            String(beforeRows[0].class_level) !== String(class_level) ||
+            String(beforeRows[0].stream) !== String(stream);
+
+        const sql = gradeOrStreamChanged
+            ? `UPDATE students SET first_name=?, middle_name=?, last_name=?, phone_number=?, fayda_number=?, sex=?, class_level=?, stream=?, section=NULL, status=? WHERE student_id=? AND school_id=?`
+            : `UPDATE students SET first_name=?, middle_name=?, last_name=?, phone_number=?, fayda_number=?, sex=?, class_level=?, stream=?, status=? WHERE student_id=? AND school_id=?`;
         const [result] = await pool.query(sql, [normalizeName(first_name), normalizeName(middle_name), normalizeName(last_name), phone_number, fayda_number, sex, class_level, stream, finalStatus, req.params.id, req.user.school_id]);
         if (result.affectedRows === 0) {
             return res.status(404).json({ error: "Student not found in your school." });
         }
-        res.sendStatus(200);
+        res.json({
+            message: gradeOrStreamChanged
+                ? "Student updated. Grade/stream changed, so this student now awaits placement into a section via the Placement Wizard."
+                : "Student updated.",
+            section_cleared: gradeOrStreamChanged
+        });
     } catch (err) {
         res.status(500).send("Database error: " + err.message);
     }
@@ -6191,6 +6308,28 @@ async function computePromotionEligibility(student_id, school_id, class_level) {
 // same "print blank rather than fabricate" rule the rest of this sheet
 // already follows for missing marks.
 async function getPromotionResultForCertificate(student_id, school_id, class_level) {
+    // Grade 12 is a special case: passing doesn't promote a student into
+    // a next grade — there is no Grade 13. Passing Grade 12 students are
+    // graduated through the separate graduation workflow (POST
+    // /api/registrar/graduation/process), which sets students.status to
+    // 'Graduated' but — unlike a normal promote — never writes a row to
+    // promotion_audit_log (only the retain/repeat path for Grade 12
+    // still goes through /api/promote/:id, so that case is still caught
+    // by the audit-log lookup below). So for Grade 12 we check the
+    // student's actual graduation status first; university admission
+    // for these students is decided later by the national Entrance
+    // Exam, not by this school, so the line simply reads "Graduate"
+    // instead of naming a next class.
+    if (Number(class_level) >= 12) {
+        const [gradRows] = await pool.query(
+            `SELECT status, graduated_at FROM students WHERE student_id = ? AND school_id = ?`,
+            [student_id, school_id]
+        );
+        if (gradRows.length && gradRows[0].status === 'Graduated' && gradRows[0].graduated_at) {
+            return { result_promoted_class: 'on', result_detained_class: '', promoted_to_grade_text: 'Graduate' };
+        }
+    }
+
     const [rows] = await pool.query(
         `SELECT action, to_class_level FROM promotion_audit_log
          WHERE student_id = ? AND school_id = ? AND from_class_level = ?
@@ -6203,6 +6342,15 @@ async function getPromotionResultForCertificate(student_id, school_id, class_lev
     const decided = rows[0];
     if (decided.action === 'promote') {
         return { result_promoted_class: 'on', result_detained_class: '', promoted_to_grade_text: `Grade ${decided.to_class_level}` };
+    }
+    // Detained: normally "Repeats Grade N", but Grade 12 has no next
+    // grade to repeat into within this school — the outcome is still
+    // logged as a retain (so the Detained box is checked, reflecting the
+    // registrar's real decision), but the destination line reads
+    // "Graduate" the same as the passing case, since university
+    // admission is decided separately by the Entrance Exam either way.
+    if (Number(class_level) >= 12) {
+        return { result_promoted_class: '', result_detained_class: 'on', promoted_to_grade_text: 'Graduate' };
     }
     return { result_promoted_class: '', result_detained_class: 'on', promoted_to_grade_text: `Repeats Grade ${class_level}` };
 }
@@ -6789,11 +6937,18 @@ async function getStudentAcademicChain(school_id, student_id) {
 // --- Outgoing ---
 
 app.post('/api/registrar/transfers/outgoing', requireAuth, requireRegistrarOrRecorder, async (req, res) => {
+    const { student_id, password } = req.body;
+    if (!student_id) return res.status(400).json({ error: "student_id is required." });
+    // Step-up confirmation — starting a transfer immediately marks the
+    // student "Transferred - Pending" on this school's roster, so it
+    // requires re-entering the acting user's own password, same as
+    // cancelling one below.
+    if (!(await verifyCurrentUserPassword(req, password))) {
+        return res.status(401).json({ error: "Incorrect password." });
+    }
+
     const conn = await pool.getConnection();
     try {
-        const { student_id } = req.body;
-        if (!student_id) return res.status(400).json({ error: "student_id is required." });
-
         await conn.beginTransaction();
         const [rows] = await conn.query('SELECT * FROM students WHERE student_id = ? AND school_id = ? FOR UPDATE', [student_id, req.user.school_id]);
         if (rows.length === 0) {
@@ -6909,6 +7064,12 @@ app.get('/api/registrar/transfers/outgoing', requireAuth, requireRegistrarOrReco
 });
 
 app.post('/api/registrar/transfers/outgoing/:id/cancel', requireAuth, requireRegistrarOrRecorder, async (req, res) => {
+    // Step-up confirmation — same requirement as starting a transfer, so
+    // cancelling one (which restores the student to the active roster)
+    // can't be done from an unattended screen either.
+    if (!(await verifyCurrentUserPassword(req, req.body?.password))) {
+        return res.status(401).json({ error: "Incorrect password." });
+    }
     try {
         const [rows] = await pool.query('SELECT * FROM student_transfers WHERE id = ? AND from_school_id = ?', [req.params.id, req.user.school_id]);
         if (rows.length === 0) return res.status(404).json({ error: "Transfer not found." });
@@ -7738,13 +7899,14 @@ async function buildReportCardForStudent(student_id, school_id, req) {
     const s2 = terms.find(t => t.class_level === latest.class_level && t.term === 'Semester 2');
 
     const [studentRows] = await pool.query(
-        `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.sex, st.id_photo_url,
-                sc.school_name, z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region
+        `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.sex, st.id_photo_url, st.class_level,
+                sc.school_name, sc.school_level, z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region, k.kebele_name AS kebele
          FROM students st
          LEFT JOIN schools sc ON sc.id = st.school_id
          LEFT JOIN zone z ON z.zone_id = sc.zone_id
          LEFT JOIN woreda w ON w.woreda_id = sc.woreda_id
          LEFT JOIN region r ON r.region_id = sc.region_id
+         LEFT JOIN kebele k ON k.kebele_id = sc.kebele_id
          WHERE st.student_id = ? AND st.school_id = ?`,
         [student_id, school_id]
     );
@@ -7808,20 +7970,22 @@ async function buildReportCardForStudent(student_id, school_id, req) {
     const verify_code = await logDocumentIssuance(school_id, student_id, 'report_card', req.user.user_id, latest.class_level);
     const promotionResult = await getPromotionResultForCertificate(student_id, school_id, latest.class_level);
     const html = renderCertificateHtml({
-        school_name: s.school_name, region: s.region, zone: s.zone, woreda: s.woreda, town: s.woreda,
+        school_name: s.school_name, school_level: s.school_level, region: s.region, zone: s.zone, woreda: s.woreda, kebele: s.kebele,
         photo_html: buildPhotoHtml(s.id_photo_url), student_id: s.student_id,
         student_name: [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' '), sex: s.sex,
         grade: latest.class_level, section: latest.section, stream: latest.stream,
-        academic_year: s2?.synced_at ? `${approximateEthiopianYear(s2.synced_at)} E.C.` : null,
+        academic_year: academicYearForClassLevel(latest.class_level, s.class_level),
         homeroom_teacher_name: homeroomTeacherName, homeroom_signature_html: homeroomSignatureHtml,
         principal_name: principalName, principal_signature_html: principalSignatureHtml,
         school_seal_html: schoolSealHtml, principal_stamp_watermark_html: principalStampWatermarkHtml,
         subjects: mergedSubjects,
-        conduct: null, absent_days_s1: s1 ? s1.days_absent : null, absent_days_s2: s2 ? s2.days_absent : null,
+        conduct_s1: s1 ? s1.conduct_grade : null, conduct_s2: s2 ? s2.conduct_grade : null, conduct_year: combineConductGrade(s1, s2),
+        absent_days_s1: s1 ? s1.days_absent : null, absent_days_s2: s2 ? s2.days_absent : null,
         rank: latest.rank, class_size: latest.class_size,
         result_promoted_class: promotionResult.result_promoted_class,
         result_detained_class: promotionResult.result_detained_class,
         promoted_to_grade_text: promotionResult.promoted_to_grade_text,
+        verify_code,
         verify_url: `${req.protocol}://${req.get('host')}/verify/document/${verify_code}`
     });
     return { ok: true, html, verify_code, class_level: latest.class_level };
@@ -7835,7 +7999,7 @@ app.get('/api/registrar/documents/report-card/:student_id/pdf', requireAuth, req
         if (isSample) {
             verify_code = 'SAMPLE';
             html = renderCertificateHtml({
-                school_name: 'Newland High School (Sample)', region: 'Sample Region', zone: 'Sample Zone', woreda: 'Sample Woreda', town: 'Sample Town',
+                school_name: 'Newland High School (Sample)', school_level: 'SECONDARY SCHOOL', region: 'Sample Region', zone: 'Sample Zone', woreda: 'Sample Woreda', kebele: 'Sample Kebele',
                 photo_html: buildPhotoHtml(null), student_id: SAMPLE_STUDENT.student_id,
                 student_name: 'Sample Student', sex: 'Female', grade: 10, section: 'A', stream: 'General',
                 academic_year: `${approximateEthiopianYear(new Date())} E.C.`,
@@ -7845,8 +8009,9 @@ app.get('/api/registrar/documents/report-card/:student_id/pdf', requireAuth, req
                     { en: 'Sample Subject', amh: null, s1: 88, s2: 91, applicable: true },
                     { en: 'Sample Stream-Only Subject', amh: null, s1: null, s2: null, applicable: false }
                 ],
-                conduct: null, absent_days_s1: 0, absent_days_s2: 0, rank: 1, class_size: 30,
+                conduct_s1: 'A', conduct_s2: 'A', conduct_year: 'A', absent_days_s1: 0, absent_days_s2: 0, rank: 1, class_size: 30,
                 result_promoted_class: 'on', result_detained_class: '', promoted_to_grade_text: 'Grade 11',
+                verify_code: 'SAMPLE',
                 verify_url: `${req.protocol}://${req.get('host')}/verify/document/SAMPLE`
             });
         } else {
@@ -7893,13 +8058,18 @@ app.get('/api/registrar/documents/report-card/bulk/pdf', requireAuth, requireReg
         if (!class_level || !section || !stream) {
             return res.status(400).json({ error: "Grade, section, and stream are required." });
         }
+        // See the matching comment on the bulk ID-card route above for why
+        // this uses a loose TRIM/UPPER match instead of exact equality.
         const [students] = await pool.query(
             `SELECT student_id, first_name, middle_name, last_name FROM students
-             WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ?
+             WHERE school_id = ? AND class_level = ?
+               AND TRIM(UPPER(section)) = TRIM(UPPER(?)) AND TRIM(UPPER(stream)) = TRIM(UPPER(?))
              ORDER BY first_name, last_name`,
             [req.user.school_id, class_level, section, stream]
         );
-        if (students.length === 0) return res.status(404).json({ error: "No students found in that grade/section/stream." });
+        if (students.length === 0) {
+            return res.status(404).json({ error: "No students currently placed in that grade/section/stream. If students recently had their grade or stream changed via Information Update or Promotion, run the Placement Wizard first." });
+        }
 
         const browser = await getBrowser();
         const merged = await PDFDocument.create();
@@ -7985,7 +8155,7 @@ app.get('/api/registrar/documents/transcript/:student_id/pdf', requireAuth, requ
             }
 
             const [studentRows] = await pool.query(
-                `SELECT student_id, first_name, middle_name, last_name, sex, created_at, status, graduated_at,
+                `SELECT student_id, first_name, middle_name, last_name, sex, class_level, created_at, status, graduated_at,
                         (SELECT st.initiated_at FROM student_transfers st
                            WHERE st.from_school_id = students.school_id AND st.student_id = students.student_id
                            ORDER BY st.initiated_at DESC LIMIT 1) AS transfer_out_at
@@ -8004,7 +8174,10 @@ app.get('/api/registrar/documents/transcript/:student_id/pdf', requireAuth, requ
                 const s2 = terms.find(t => t.class_level === y.class_level && t.term === 'Semester 2');
                 return {
                     class_level: y.class_level,
-                    ec_year: s2 && s2.synced_at ? String(approximateEthiopianYear(s2.synced_at)) : null,
+                    ec_year: (() => {
+                        const label = academicYearForClassLevel(y.class_level, s.class_level);
+                        return label ? label.replace(' E.C.', '') : null;
+                    })(),
                     subjects: y.subjects.map(sub => ({ name: sub.subject_name, s1: sub.semester_1, s2: sub.semester_2, applicable: sub.applicable })),
                     total_s1: s1 ? s1.term_total : null, total_s2: s2 ? s2.term_total : null,
                     avg_s1: s1 ? s1.term_average : null, avg_s2: s2 ? s2.term_average : null, avg_year: y.year_average,
@@ -8046,145 +8219,284 @@ app.get('/api/registrar/documents/transcript/:student_id/pdf', requireAuth, requ
     }
 });
 
-// ID Card — same docx layout as the student self-service one
-// (docxFieldRow etc.), just Registrar-callable for any student.
-// Shared by the individual ID card download, the HTML preview, and the
-// bulk zip below — one definition of the card layout (matching the
-// student self-service /api/student/id-card.docx template) so none of
-// them can drift apart from each other.
-async function buildIdCardDocBuffer(s, isSample) {
+// ID Card — shared HTML/CSS template that reproduces the exact design
+// students see under their own "My ID" tab (Documents > My ID in the
+// student portal's script.js/style.css: header gradient, MOE watermark,
+// photo box, bilingual fields, footer signature/validity, flip-to-back
+// terms face). One template feeds three places: the Templates tab's
+// live preview (view-only, matches the portal 1:1 since it's the same
+// markup), the single-student PDF download, and the bulk zip below —
+// so none of them can drift apart from each other or from what the
+// student sees on their own screen.
+//
+// Puppeteer's page.setContent() has no base URL, so every image (school
+// logo, region flag, MOE watermark, principal signature, student photo)
+// is inlined as a base64 data URI rather than a relative <img src> — see
+// the matching comment on renderCertificateHtml for why.
+function readStaticImageAsDataUri(filePath) {
+    try {
+        const buf = fs.readFileSync(filePath);
+        const ext = path.extname(filePath).slice(1).toLowerCase();
+        const mime = { png: 'image/png', gif: 'image/gif', webp: 'image/webp', jpg: 'image/jpeg', jpeg: 'image/jpeg' }[ext] || 'image/png';
+        return `data:${mime};base64,${buf.toString('base64')}`;
+    } catch (err) {
+        return null; // missing/unreadable asset — caller omits it, doesn't crash the card
+    }
+}
+
+// Ported from the student portal's style.css ID CARD block, with its
+// var(--primary)/var(--muted)/etc. custom properties swapped for their
+// literal values (#1e3a8a / #64748b / #e2e8f0 / #1e293b / #f8fafc) since
+// this template stands alone rather than inheriting the portal's
+// site-wide :root. printMode adds the page-break the portal's own
+// @media print rules apply when a student clicks "Print ID Card", so a
+// Registrar's PDF download comes out as the same two pages (front,
+// then back) that print would.
+function idCardCss(watermarkDataUri, printMode) {
+    return `
+        * { box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background:#f8fafc; margin:0; padding:24px; display:flex; justify-content:center; }
+        .id-card-flip-wrap { display:flex; flex-direction:column; align-items:center; gap:18px; }
+        .id-card { width: 430px; max-width: 100%; border-radius: 14px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.15); border: 1px solid #e2e8f0; background: white; position: relative; }
+        ${watermarkDataUri ? `.id-card::before { content: ''; position: absolute; inset: 0; background-image: url('${watermarkDataUri}'); background-repeat: no-repeat; background-position: center; background-size: 38% auto; opacity: 0.08; pointer-events: none; z-index: 0; }` : ''}
+        .id-card-header, .id-card-body, .id-card-footer, .id-card-back-body, .id-card-address-bar { position: relative; z-index: 1; }
+        .id-card-header { background: linear-gradient(135deg, #1e3a8a 0%, #1565a8 100%); color: white; display: flex; align-items: center; gap: 12px; padding: 14px 16px; min-height: 42px; }
+        .id-card-logo { width: 42px; height: 42px; border-radius: 50%; background: white; object-fit: contain; flex-shrink: 0; padding: 3px; }
+        .id-card-header-text { display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; flex: 1; min-width: 0; }
+        .id-card-school-name { font-size: 0.95rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.03em; line-height: 1.25; overflow-wrap: break-word; }
+        .id-card-subtitle { font-size: 0.64rem; opacity: 0.85; letter-spacing: 0.02em; margin-top: 2px; }
+        .id-card-body { display: flex; gap: 16px; padding: 18px 16px 10px; }
+        .id-card-photo-col { display: flex; flex-direction: column; align-items: center; gap: 4px; flex-shrink: 0; }
+        .id-card-photo { width: 80px; height: 96px; border-radius: 8px; background: #1e3a8a; color: white; font-size: 1.6rem; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; border: 1px solid #e2e8f0; overflow: hidden; }
+        .id-card-photo img { width: 100%; height: 100%; object-fit: cover; }
+        .id-card-photo-label { font-size: 0.6rem; font-weight: 700; color: #64748b; letter-spacing: 0.02em; text-align: center; }
+        .id-card-fields { flex: 1; font-size: 0.82rem; min-width: 0; }
+        .id-card-fields div { display: flex; flex-direction: row; align-items: baseline; flex-wrap: wrap; gap: 5px; padding: 3px 0; }
+        .id-card-fields .id-label { font-weight: 700; color: #64748b; font-size: 0.63rem; letter-spacing: 0.01em; white-space: nowrap; }
+        .id-card-name { font-size: 1.05rem; font-weight: 800; color: #1e3a8a; margin-bottom: 6px; }
+        .id-card-footer { display: flex; justify-content: space-between; align-items: flex-end; padding: 10px 16px 16px; border-top: 1px dashed #e2e8f0; margin-top: 8px; }
+        .id-card-signature { text-align: center; flex-shrink: 0; }
+        .id-card-signature img { height: 34px; object-fit: contain; display: block; margin: 0 auto 2px; }
+        .id-card-signature-line { font-size: 0.62rem; color: #64748b; border-top: 1px solid #1e293b; padding-top: 2px; margin-top: 2px; white-space: nowrap; }
+        .id-card-validity { text-align: right; font-size: 0.62rem; color: #64748b; max-width: 55%; }
+        .id-card-validity strong { color: #1e293b; display: block; margin-top: 2px; }
+        .id-card-expired { color: #dc2626 !important; }
+        .id-card-sample-badge { position:absolute; top:10px; right:-34px; transform:rotate(40deg); background:#f59e0b; color:#fff; font-size:0.6rem; font-weight:800; letter-spacing:0.04em; text-transform:uppercase; padding:3px 42px; z-index:2; box-shadow:0 2px 6px rgba(0,0,0,0.2); }
+        .id-card-back-body { padding: 20px 18px 10px; }
+        .id-card-back-body h4 { color: #1e3a8a; font-size: 0.9rem; margin-bottom: 10px; }
+        .id-card-terms { padding-left: 18px; font-size: 0.76rem; color: #1e293b; line-height: 1.5; }
+        .id-card-terms li { margin-bottom: 6px; }
+        .id-card-return-note { font-size: 0.8rem; font-weight: 700; margin-top: 10px; }
+        .id-card-back-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 4px; }
+        .id-card-back-footer .id-card-return-note { margin-top: 0; flex: 1; }
+        .id-card-verify { font-size: 0.62rem; color: #64748b; text-align: right; white-space: nowrap; }
+        .id-card-verify strong { color: #1e293b; letter-spacing: 0.02em; }
+        .id-card-address-bar { background: linear-gradient(135deg, #1e3a8a 0%, #1565a8 100%); color: white; text-align: center; font-size: 0.62rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em; padding: 8px 10px; line-height: 1.4; }
+        .id-card-flip-btn { border:1px solid #e2e8f0; background:#fff; color:#1e3a8a; font-weight:700; font-size:0.78rem; padding:8px 18px; border-radius:8px; cursor:pointer; margin: 0 4px; }
+        .id-card-flip-btn:hover { background:#f1f5f9; }
+        .id-card-front { display: block; ${printMode ? 'page-break-after: always;' : ''} }
+        .id-card-back { display: ${printMode ? 'block' : 'none'}; }
+        @media print { .id-card-controls { display: none !important; } }
+    `;
+}
+
+function buildIdCardHtml(s, { isSample = false, printMode = false } = {}) {
     const full = [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' ');
+    const initials = full.split(' ').filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase();
     const issued = s.created_at ? new Date(s.created_at) : new Date();
     const expires = new Date(issued);
+    // Valid 1 school year, not 2 — same rule as the student's own card
+    // (script.js renderIDCard): students move up a grade/section every
+    // year, so last year's card is out of date info before the plastic
+    // even wears out.
     expires.setFullYear(expires.getFullYear() + 1);
-    const fmt = d => d.toLocaleDateString('en-GB', { year: 'numeric', month: 'short', day: 'numeric' });
+    const isExpired = expires < new Date();
+    const fmt = d => formatDualDateText(d);
 
-    const fieldRows = [
-        docxFieldRow('የተማሪ መታወቂያ | Student ID', s.student_id),
-        docxFieldRow('ክፍል | Class', `Grade ${s.class_level} - ${s.section || 'Unassigned'}`),
-        docxFieldRow('ትምህርት ዘርፍ | Stream', s.stream),
-        docxFieldRow('ስልክ ቁጥር | Contact', s.phone_number || '—'),
-    ];
-    if (s.moe_school_code) fieldRows.push(docxFieldRow('የትምህርት ቤት ኮድ | School Code', s.moe_school_code));
+    const photoDataUri = !isSample ? readUploadedImageAsDataUri(s.id_photo_url) : null;
+    const photoInner = photoDataUri ? `<img src="${photoDataUri}" alt="ID photo">` : escapeHtml(initials || '?');
 
-    const children = [
-        new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: (s.school_name || 'School').toUpperCase(), bold: true, size: 32, color: "1e3a8a" })] }),
-        new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: 'የተማሪ መታወቂያ ካርድ | Student Identity Card', size: 18, color: "666666" })] }),
-        new Paragraph({ text: "" }),
-    ];
-    if (!isSample && s.id_photo_url) {
-        try {
-            const photoPath = path.join(__dirname, 'uploads', path.basename(s.id_photo_url));
-            const photoBuf = fs.readFileSync(photoPath);
-            children.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new ImageRun({ data: photoBuf, transformation: { width: 100, height: 120 } })] }));
-            children.push(new Paragraph({ text: "" }));
-        } catch (photoErr) {
-            console.error("buildIdCardDocBuffer: could not read photo file", photoErr);
-        }
-    }
-    children.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: full, bold: true, size: 28, color: "1e3a8a" })] }));
-    children.push(new Paragraph({ text: "" }));
-    children.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: fieldRows }));
-    children.push(new Paragraph({ text: "" }));
-    children.push(new Paragraph({ children: [new TextRun({ text: `የተሰጠበት | Issued: ${fmt(issued)}`, size: 18 })] }));
-    children.push(new Paragraph({ children: [new TextRun({ text: `እስከ | Valid until: ${fmt(expires)}`, size: 18, bold: true })] }));
-    children.push(new Paragraph({ text: "" }));
-    children.push(new Paragraph({ children: [new TextRun({ text: 'ርዕሰ መምህር | Principal: _______________________', size: 18 })] }));
+    const logoDataUri = !isSample ? readUploadedImageAsDataUri(s.logo_url) : null;
+    const logoHtml = logoDataUri ? `<img src="${logoDataUri}" alt="School logo" class="id-card-logo">` : '';
 
-    const doc = new Document({ sections: [{ children }] });
-    return Packer.toBuffer(doc);
+    const flagDataUri = readStaticImageAsDataUri(path.join(__dirname, 'public', 'assets', 'images', 'gambella_flag.png'));
+    const flagHtml = flagDataUri ? `<img src="${flagDataUri}" alt="Regional flag" class="id-card-logo">` : '';
+
+    const watermarkDataUri = readStaticImageAsDataUri(path.join(__dirname, 'public', 'assets', 'images', 'moe_logo.png'));
+
+    const signatureHtml = !isSample ? buildSignatureHtml(s.principal_signature_url) : '';
+
+    const addressParts = [s.woreda, s.zone, s.region].filter(Boolean);
+    const address = addressParts.length ? addressParts.join(', ') : 'Address not on file';
+
+    // Same signed "<student_id>.<signature>" payload the student's own QR
+    // encodes (signQrPayload) — shown as text here rather than a scannable
+    // QR graphic, since generating a QR image itself needs a rendering
+    // library this server doesn't currently have installed.
+    const verifyHtml = !isSample
+        ? `<div class="id-card-verify">Verify code<br><strong>${escapeHtml(signQrPayload(s.student_id))}</strong></div>`
+        : `<div class="id-card-verify">Sample card — no verification code</div>`;
+
+    return `<!doctype html><html><head><meta charset="UTF-8">
+<title>ID Card${isSample ? ' — Sample' : ' — ' + escapeHtml(full)}</title>
+<style>${idCardCss(watermarkDataUri, printMode)}</style>
+</head><body>
+  <div class="id-card-flip-wrap">
+    <div class="id-card id-card-front">
+      ${isSample ? '<div class="id-card-sample-badge">SAMPLE</div>' : ''}
+      <div class="id-card-header">
+        ${logoHtml}
+        <div class="id-card-header-text">
+          <div class="id-card-school-name">${escapeHtml((s.school_name || 'School').toUpperCase())}</div>
+          <div class="id-card-subtitle">የተማሪ መታወቂያ ካርድ | Student Identity Card</div>
+        </div>
+        ${flagHtml}
+      </div>
+      <div class="id-card-body">
+        <div class="id-card-photo-col">
+          <div class="id-card-photo">${photoInner}</div>
+          <div class="id-card-photo-label">ተማሪ | Student</div>
+        </div>
+        <div class="id-card-fields">
+          <div class="id-card-name">${escapeHtml(full)}</div>
+          <div><span class="id-label">የተማሪ መታወቂያ | Student ID</span><span>${escapeHtml(s.student_id)}</span></div>
+          <div><span class="id-label">ክፍል | Class</span><span>Grade ${escapeHtml(s.class_level)} - ${escapeHtml(s.section || 'Unassigned')}</span></div>
+          <div><span class="id-label">ትምህርት ዘርፍ | Stream</span><span>${escapeHtml(s.stream || '—')}</span></div>
+          <div><span class="id-label">ስልክ ቁጥር | Contact</span><span>${escapeHtml(s.phone_number || '—')}</span></div>
+          ${s.moe_school_code ? `<div><span class="id-label">የትምህርት ቤት ኮድ | School Code</span><span>${escapeHtml(s.moe_school_code)}</span></div>` : ''}
+        </div>
+      </div>
+      <div class="id-card-footer">
+        <div class="id-card-signature">
+          ${signatureHtml}
+          <div class="id-card-signature-line">ርዕሰ መምህር | Principal</div>
+        </div>
+        <div class="id-card-validity">
+          <span>የተሰጠበት | Issued: ${fmt(issued)}</span>
+          <strong class="${isExpired ? 'id-card-expired' : ''}">እስከ | Valid until: ${fmt(expires)}</strong>
+        </div>
+      </div>
+    </div>
+    <div class="id-card id-card-back">
+      <div class="id-card-back-body">
+        <h4>Terms of Use</h4>
+        <ul class="id-card-terms">
+          <li>This card remains the property of ${escapeHtml(s.school_name || 'the school')} and must be returned upon request.</li>
+          <li>Non-transferable — valid only for the student named on the front.</li>
+          <li>Report loss or misuse to the school registrar immediately.</li>
+          <li>Valid only through the date shown on the front.</li>
+        </ul>
+        <div class="id-card-back-footer">
+          <p class="id-card-return-note">If found, please return to the school office.</p>
+          ${verifyHtml}
+        </div>
+      </div>
+      <div class="id-card-address-bar">${escapeHtml(s.school_name || 'School')} — ${escapeHtml(address)}</div>
+    </div>
+  </div>
+  ${!printMode ? `<div class="id-card-controls" style="text-align:center; margin-top:6px;">
+    <button type="button" class="id-card-flip-btn" onclick="
+      var f=document.querySelector('.id-card-front'), b=document.querySelector('.id-card-back');
+      var showFront = f.style.display !== 'none';
+      f.style.display = showFront ? 'none' : 'block';
+      b.style.display = showFront ? 'block' : 'none';
+    ">Flip Card</button>
+    <button type="button" class="id-card-flip-btn" onclick="window.print()">Print</button>
+  </div>` : ''}
+</body></html>`;
 }
 
 // Fetches one student's id-card fields (or the sample) — shared by the
-// docx route, the html preview route, and the bulk zip route below.
+// PDF download route, the HTML preview route, and the bulk zip route
+// below. Pulls the same fields /api/student/me does for the portal's
+// own "My ID" tab (zone/woreda/region for the back-face address bar,
+// school logo, principal's signature) so the two renders have identical
+// source data, not just identical markup.
 async function loadIdCardSubject(student_id, school_id) {
     const isSample = student_id === SAMPLE_STUDENT.student_id;
     if (isSample) {
-        return { s: { ...SAMPLE_STUDENT, school_name: 'Newland High School (Sample)', created_at: new Date(), moe_school_code: 'SAMPLE-001' }, isSample };
+        return {
+            s: {
+                ...SAMPLE_STUDENT, school_name: 'Newland High School (Sample)', created_at: new Date(),
+                moe_school_code: 'SAMPLE-001', logo_url: null, woreda: null, zone: null, region: null,
+                principal_signature_url: null
+            },
+            isSample
+        };
     }
     const [rows] = await pool.query(
         `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.class_level, st.section, st.stream,
-                st.school_name, st.phone_number, st.created_at, st.id_photo_url, sc.moe_school_code
-         FROM students st LEFT JOIN schools sc ON sc.id = st.school_id
+                st.school_name, st.phone_number, st.created_at, st.id_photo_url,
+                sc.moe_school_code, sc.logo_url,
+                z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region
+         FROM students st
+         LEFT JOIN schools sc ON sc.id = st.school_id
+         LEFT JOIN zone z ON z.zone_id = sc.zone_id
+         LEFT JOIN woreda w ON w.woreda_id = sc.woreda_id
+         LEFT JOIN region r ON r.region_id = sc.region_id
          WHERE st.student_id = ? AND st.school_id = ?`,
         [student_id, school_id]
     );
     if (rows.length === 0) return { s: null, isSample };
-    return { s: rows[0], isSample };
+    const s = rows[0];
+
+    // Same principal-signature lookup /api/student/me does for the
+    // portal's own card.
+    const [principalRows] = await pool.query(
+        `SELECT signature_url FROM school_admins WHERE school_id = ? AND title = 'Principal' AND (is_active IS NULL OR is_active = TRUE) LIMIT 1`,
+        [school_id]
+    );
+    s.principal_signature_url = principalRows[0]?.signature_url || null;
+
+    return { s, isSample };
 }
 
-app.get('/api/registrar/documents/id-card/:student_id/docx', requireAuth, requireRegistrarOnly, async (req, res) => {
+// Renders buildIdCardHtml (printMode: both faces, front page-breaking to
+// a second page — same as what a student's own "Print ID Card" button
+// produces) to a PDF buffer via headless Chrome.
+async function buildIdCardPdfBuffer(s, isSample) {
+    const html = buildIdCardHtml(s, { isSample, printMode: true });
+    const browser = await getBrowser();
+    const page = await browser.newPage();
+    page.on('pageerror', err => console.error(`ID card PDF render error (student ${s.student_id}):`, err));
+    page.on('console', msg => { if (msg.type() === 'error') console.error(`ID card PDF console error (student ${s.student_id}):`, msg.text()); });
+    try {
+        await page.setContent(html, { waitUntil: 'networkidle0' });
+        return await page.pdf({ printBackground: true, preferCSSPageSize: true });
+    } finally {
+        await page.close();
+    }
+}
+
+app.get('/api/registrar/documents/id-card/:student_id/pdf', requireAuth, requireRegistrarOnly, async (req, res) => {
     try {
         const { s, isSample } = await loadIdCardSubject(req.params.student_id, req.user.school_id);
         if (!s) return res.status(404).json({ error: "Student not found in your school." });
 
         if (!isSample) await logDocumentIssuance(req.user.school_id, req.params.student_id, 'id_card', req.user.user_id, s.class_level);
 
-        const buffer = await buildIdCardDocBuffer(s, isSample);
-        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-        res.setHeader('Content-Disposition', `attachment; filename="ID-Card-${s.student_id}.docx"`);
+        const buffer = await buildIdCardPdfBuffer(s, isSample);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="ID-Card-${s.student_id}.pdf"`);
         res.send(buffer);
     } catch (err) {
-        console.error("/api/registrar/documents/id-card/docx error:", err);
-        res.status(500).json({ error: "Could not generate ID card document." });
+        console.error("/api/registrar/documents/id-card/pdf error:", err);
+        res.status(500).json({ error: "Could not generate the ID card." });
     }
 });
 
 // ID Card — HTML preview (view only: nothing downloaded, nothing
-// logged as issued). Same student lookup and layout data as the .docx
-// route above, just rendered as an inline styled page instead of a
-// Word file, so it can sit inside an <iframe> in the Templates tab
-// (or anywhere else a look-before-you-download makes sense).
+// logged as issued). Exactly the same buildIdCardHtml markup a real
+// download renders (minus printMode's page-break, plus the on-screen
+// Flip/Print controls) — so what's shown here, in the Templates tab's
+// iframe, is pixel-for-pixel what the student sees under their own
+// "My ID" tab, not a separate approximation of it.
 app.get('/api/registrar/documents/id-card/:student_id/preview', requireAuth, requireRegistrarOnly, async (req, res) => {
     try {
         const { s, isSample } = await loadIdCardSubject(req.params.student_id, req.user.school_id);
         if (!s) return res.status(404).json({ error: "Student not found in your school." });
 
-        const full = [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' ');
-        const issued = s.created_at ? new Date(s.created_at) : new Date();
-        const expires = new Date(issued);
-        expires.setFullYear(expires.getFullYear() + 1);
-        const fmt = d => d.toLocaleDateString('en-GB', { year: 'numeric', month: 'short', day: 'numeric' });
-        const photoHtml = isSample ? '<div class="photo">Student<br>Photo</div>' : buildPhotoHtml(s.id_photo_url);
-
-        const html = `<!doctype html><html><head><meta charset="UTF-8">
-<title>ID Card Preview — ${escapeHtml(full)}</title>
-<style>
-  body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background:#f1f5f9; margin:0; padding:40px 20px; display:flex; justify-content:center; }
-  .card { width:340px; background:#fff; border-radius:14px; box-shadow:0 10px 25px rgba(0,0,0,0.12); padding:24px; text-align:center; border-top:6px solid #1e3a8a; }
-  .school { font-weight:800; font-size:1.05rem; color:#1e3a8a; letter-spacing:0.02em; }
-  .subtitle { font-size:0.78rem; color:#666; margin-top:2px; margin-bottom:16px; }
-  .photo { width:100px; height:120px; margin:0 auto 14px; background:#e2e8f0; color:#94a3b8; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:0.75rem; object-fit:cover; }
-  .name { font-weight:700; font-size:1.1rem; color:#1e3a8a; margin-bottom:14px; }
-  table { width:100%; border-collapse:collapse; text-align:left; font-size:0.85rem; margin-bottom:14px; }
-  td { padding:5px 0; border-bottom:1px solid #f1f5f9; }
-  td:first-child { color:#64748b; }
-  td:last-child { text-align:right; font-weight:600; color:#1f2937; }
-  .dates { font-size:0.78rem; color:#334155; text-align:left; }
-  .dates .valid { font-weight:700; margin-top:2px; }
-  .principal { font-size:0.78rem; color:#64748b; margin-top:14px; text-align:left; }
-  ${isSample ? '.watermark { margin-top:16px; font-size:0.7rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.05em; }' : ''}
-</style></head><body>
-  <div class="card">
-    <div class="school">${escapeHtml((s.school_name || 'School').toUpperCase())}</div>
-    <div class="subtitle">የተማሪ መታወቂያ ካርድ | Student Identity Card</div>
-    ${photoHtml}
-    <div class="name">${escapeHtml(full)}</div>
-    <table>
-      <tr><td>Student ID</td><td>${escapeHtml(s.student_id)}</td></tr>
-      <tr><td>Class</td><td>Grade ${escapeHtml(s.class_level)} - ${escapeHtml(s.section || 'Unassigned')}</td></tr>
-      <tr><td>Stream</td><td>${escapeHtml(s.stream || '—')}</td></tr>
-      <tr><td>Contact</td><td>${escapeHtml(s.phone_number || '—')}</td></tr>
-      ${s.moe_school_code ? `<tr><td>School Code</td><td>${escapeHtml(s.moe_school_code)}</td></tr>` : ''}
-    </table>
-    <div class="dates">
-      <div>Issued: ${fmt(issued)}</div>
-      <div class="valid">Valid until: ${fmt(expires)}</div>
-    </div>
-    <div class="principal">Principal: _______________________</div>
-    ${isSample ? '<div class="watermark">Sample layout — not a real ID card</div>' : ''}
-  </div>
-</body></html>`;
+        const html = buildIdCardHtml(s, { isSample, printMode: false });
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
     } catch (err) {
@@ -8194,25 +8506,50 @@ app.get('/api/registrar/documents/id-card/:student_id/preview', requireAuth, req
 });
 
 // Bulk ID Cards — every student in one grade/section/stream, zipped as
-// individual .docx files. Uses buildIdCardDocBuffer above, so the
-// layout is identical to a single student's download (which in turn
-// matches the student self-service template). Each card is logged as
-// issued, same as downloading one student's card individually would be.
-app.get('/api/registrar/documents/id-card/bulk/docx-zip', requireAuth, requireRegistrarOnly, async (req, res) => {
+// individual PDFs (front + back, same as the single-student download
+// above and the student's own "Print ID Card" output). Each card is
+// logged as issued, same as downloading one student's card individually
+// would be.
+app.get('/api/registrar/documents/id-card/bulk/pdf-zip', requireAuth, requireRegistrarOnly, async (req, res) => {
     try {
         const { class_level, section, stream } = req.query;
         if (!class_level || !section || !stream) {
             return res.status(400).json({ error: "Grade, section, and stream are required." });
         }
+        // TRIM/UPPER on both sides of the section/stream match: a section
+        // set NULL-then-reassigned, or written by an older code path before
+        // Information Update started clearing it on grade/stream changes,
+        // could have picked up stray whitespace or case drift relative to
+        // class_sections.section_name (which is normalized on save). Loose
+        // matching here is defense-in-depth so a student doesn't silently
+        // vanish from bulk actions over a formatting difference alone.
         const [rows] = await pool.query(
             `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.class_level, st.section, st.stream,
-                    st.school_name, st.phone_number, st.created_at, st.id_photo_url, sc.moe_school_code
-             FROM students st LEFT JOIN schools sc ON sc.id = st.school_id
-             WHERE st.school_id = ? AND st.class_level = ? AND st.section = ? AND st.stream = ?
+                    st.school_name, st.phone_number, st.created_at, st.id_photo_url,
+                    sc.moe_school_code, sc.logo_url,
+                    z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region
+             FROM students st
+             LEFT JOIN schools sc ON sc.id = st.school_id
+             LEFT JOIN zone z ON z.zone_id = sc.zone_id
+             LEFT JOIN woreda w ON w.woreda_id = sc.woreda_id
+             LEFT JOIN region r ON r.region_id = sc.region_id
+             WHERE st.school_id = ? AND st.class_level = ?
+               AND TRIM(UPPER(st.section)) = TRIM(UPPER(?)) AND TRIM(UPPER(st.stream)) = TRIM(UPPER(?))
              ORDER BY st.first_name, st.last_name`,
             [req.user.school_id, class_level, section, stream]
         );
-        if (rows.length === 0) return res.status(404).json({ error: "No students found in that grade/section/stream." });
+        if (rows.length === 0) {
+            return res.status(404).json({ error: "No students currently placed in that grade/section/stream. If students recently had their grade or stream changed via Information Update or Promotion, run the Placement Wizard first." });
+        }
+
+        // One principal-signature lookup for the whole batch (same
+        // Principal for every student in this school) rather than one
+        // query per card.
+        const [principalRows] = await pool.query(
+            `SELECT signature_url FROM school_admins WHERE school_id = ? AND title = 'Principal' AND (is_active IS NULL OR is_active = TRUE) LIMIT 1`,
+            [req.user.school_id]
+        );
+        const principal_signature_url = principalRows[0]?.signature_url || null;
 
         res.setHeader('Content-Type', 'application/zip');
         res.setHeader('Content-Disposition', `attachment; filename="ID-Cards-Grade${class_level}-${section}.zip"`);
@@ -8222,13 +8559,14 @@ app.get('/api/registrar/documents/id-card/bulk/docx-zip', requireAuth, requireRe
         archive.pipe(res);
 
         for (const s of rows) {
-            const buffer = await buildIdCardDocBuffer(s, false);
-            archive.append(buffer, { name: `ID-Card-${s.student_id}.docx` });
+            s.principal_signature_url = principal_signature_url;
+            const buffer = await buildIdCardPdfBuffer(s, false);
+            archive.append(buffer, { name: `ID-Card-${s.student_id}.pdf` });
             await logDocumentIssuance(req.user.school_id, s.student_id, 'id_card', req.user.user_id, s.class_level);
         }
         await archive.finalize();
     } catch (err) {
-        console.error("/api/registrar/documents/id-card/bulk/docx-zip error:", err);
+        console.error("/api/registrar/documents/id-card/bulk/pdf-zip error:", err);
         if (!res.headersSent) res.status(500).json({ error: "Could not generate the bulk ID cards." });
     }
 });
@@ -8380,7 +8718,7 @@ app.get('/api/student-progress/:id', requireAuth, async (req, res) => {
                 MAX(CASE WHEN m.type = 'final' AND m.term = 'Semester 1' THEN m.score END) as final_s1,
                 MAX(CASE WHEN m.type = 'final' AND m.term = 'Semester 2' THEN m.score END) as final_s2
             FROM students s
-            JOIN subjects subj ON subj.stream = s.stream AND subj.school_id = s.school_id
+            JOIN subjects subj ON (subj.stream IS NULL OR s.stream LIKE CONCAT(subj.stream, '%')) AND subj.school_id = s.school_id
             LEFT JOIN marks m ON subj.subject_id = m.subject_id AND m.student_id = s.student_id AND m.school_id = s.school_id
             WHERE s.student_id = ? AND s.school_id = ?
             GROUP BY s.student_id, subj.subject_id, s.first_name, s.middle_name, s.last_name, subj.subject_name
@@ -8434,7 +8772,7 @@ app.get('/api/student-stats', requireAuth, async (req, res) => {
 
             if (class_level) { sql += ' AND s.class_level = ?'; params.push(class_level); }
             if (section) { sql += ' AND s.section = ?'; params.push(section); }
-            if (stream) { sql += ' AND s.stream LIKE CONCAT(?, '%')'; params.push(stream); }
+            if (stream) { sql += ` AND s.stream LIKE CONCAT(?, '%')`; params.push(stream); }
         } else {
             sql = `SELECT COUNT(*) as total, SUM(CASE WHEN sex = 'Female' THEN 1 ELSE 0 END) as female, SUM(CASE WHEN sex = 'Male' THEN 1 ELSE 0 END) as male FROM students WHERE school_id = ?`;
             params = [req.user.school_id];
@@ -8674,6 +9012,29 @@ app.post('/api/academic-vp/subjects/verify-password', requireAuth, requireAdminT
         res.json({ ok: true });
     } catch (err) {
         console.error("/api/academic-vp/subjects/verify-password error:", err);
+        res.status(500).json({ error: "Could not verify password." });
+    }
+});
+
+// Generic re-authentication gate for any School Admin action (Admin VP,
+// Academic VP, or Principal) — assigning, removing, approving, granting,
+// or revoking anything requires the admin to re-enter their own login
+// password immediately before the action goes through. Same check as
+// above, just not limited to one title or one page.
+app.post('/api/admin/verify-password', requireAuth, requireRole('school_admins'), async (req, res) => {
+    const { password } = req.body;
+    if (!password) return res.status(400).json({ error: "Password is required." });
+    try {
+        const [[row]] = await pool.query(
+            'SELECT security_password FROM school_admins WHERE admin_id = ?',
+            [req.user.user_id]
+        );
+        if (!row || !row.security_password) return res.status(500).json({ error: "Account has no password set." });
+        const match = await bcrypt.compare(password, row.security_password);
+        if (!match) return res.status(401).json({ error: "Incorrect password." });
+        res.json({ ok: true });
+    } catch (err) {
+        console.error("/api/admin/verify-password error:", err);
         res.status(500).json({ error: "Could not verify password." });
     }
 });
@@ -9165,7 +9526,7 @@ app.get('/api/teacher/eligible-subjects', requireAuth, async (req, res) => {
             SELECT DISTINCT s.subject_id, s.subject_name 
             FROM subjects s
             INNER JOIN teacher_assignments ta ON s.subject_id = ta.subject_id AND s.school_id = ta.school_id
-            WHERE s.stream = ? AND ta.teacher_id = ? AND s.school_id = ?
+            WHERE ? LIKE CONCAT(s.stream, '%') AND ta.teacher_id = ? AND s.school_id = ?
         `;
         const [assignedRows] = await pool.query(sql, [stream, req.user.user_id, req.user.school_id]);
 
@@ -9182,7 +9543,7 @@ app.get('/api/teacher/eligible-subjects', requireAuth, async (req, res) => {
                  FROM subjects s
                  INNER JOIN subject_entry_requests r ON r.subject_id = s.subject_id AND r.school_id = s.school_id
                  WHERE r.teacher_id = ? AND r.school_id = ? AND r.status = 'approved'
-                   AND r.class_level = ? AND r.section = ? AND r.stream = ?`,
+                   AND r.class_level = ? AND r.section = ? AND ? LIKE CONCAT(r.stream, '%')`,
                 [req.user.user_id, req.user.school_id, class_level, section, stream]
             );
         }
@@ -9495,6 +9856,11 @@ app.get('/api/teacher/performance', requireAuth, async (req, res) => {
 // For the Reports page: shows a subject teacher every (subject, section)
 // they're assigned to, whether it's been pushed for the CURRENT term yet,
 // and if so, when and by whom (always themselves, but useful to confirm).
+// Also includes any subject the caller was granted TEMPORARY access to via
+// an approved subject_entry_request (e.g. a homeroom teacher covering for
+// an absent subject teacher) — tagged via_request: true — so that teacher
+// sees it here too and can push/"pull" the report themselves instead of
+// waiting on the subject's regular teacher to do it.
 app.get('/api/teacher/push-status', requireAuth, async (req, res) => {
     try {
         const term = await getCurrentTerm(req.user.school_id);
@@ -9506,7 +9872,27 @@ app.get('/api/teacher/push-status', requireAuth, async (req, res) => {
             [req.user.user_id, req.user.school_id]
         );
 
-        const results = await Promise.all(assignments.map(async (a) => {
+        const [granted] = await pool.query(
+            `SELECT r.class_level, r.section, r.stream, r.subject_id, s.subject_name
+             FROM subject_entry_requests r
+             JOIN subjects s ON s.subject_id = r.subject_id AND s.school_id = r.school_id
+             WHERE r.teacher_id = ? AND r.school_id = ? AND r.status = 'approved'`,
+            [req.user.user_id, req.user.school_id]
+        );
+
+        // A teacher shouldn't normally have both a formal assignment AND an
+        // approved request for the exact same subject+section (requesting
+        // is blocked while already assigned — see POST above), but dedupe
+        // defensively so it's never listed twice if that ever happens.
+        const seen = new Set(assignments.map(a => `${a.subject_id}|${a.class_level}|${a.section}|${a.stream}`));
+        const combined = [
+            ...assignments.map(a => ({ ...a, via_request: false })),
+            ...granted
+                .filter(g => !seen.has(`${g.subject_id}|${g.class_level}|${g.section}|${g.stream}`))
+                .map(g => ({ ...g, via_request: true }))
+        ];
+
+        const results = await Promise.all(combined.map(async (a) => {
             const [pushRows] = await pool.query(
                 `SELECT push_id, pushed_at FROM pushed_reports
                  WHERE subject_id = ? AND class_level = ? AND section = ? AND stream = ? AND term = ? AND school_id = ?`,
@@ -9519,6 +9905,7 @@ app.get('/api/teacher/push-status', requireAuth, async (req, res) => {
                 subject_id: a.subject_id,
                 subject_name: a.subject_name,
                 term,
+                via_request: a.via_request,
                 pushed: pushRows.length > 0,
                 pushed_at: pushRows.length > 0 ? pushRows[0].pushed_at : null
             };
@@ -9545,14 +9932,15 @@ app.post('/api/teacher/push-report', requireAuth, async (req, res) => {
     try {
         const term = await getCurrentTerm(req.user.school_id);
 
-        // Confirm this teacher actually teaches this subject+section —
-        // don't let anyone push a report for a class they don't own.
-        const [ownsAssignment] = await pool.query(
-            `SELECT 1 FROM teacher_assignments
-             WHERE teacher_id = ? AND subject_id = ? AND class_level = ? AND section = ? AND stream = ? AND school_id = ?`,
-            [req.user.user_id, subject_id, class_level, section, stream, req.user.school_id]
-        );
-        if (ownsAssignment.length === 0) {
+        // Confirm this teacher actually has access to this subject+section —
+        // either formally assigned to teach it (teacher_assignments), or
+        // granted temporary access via an approved subject_entry_request
+        // (e.g. a homeroom teacher covering for an absent subject teacher).
+        // Either way they can push — "pull" — the report themselves rather
+        // than waiting on the subject's regular teacher to do it. Don't let
+        // anyone else push a report for a class they have no claim to.
+        const allowed = await hasSubjectAccess(req.user.user_id, req.user.school_id, subject_id, class_level, section, stream);
+        if (!allowed) {
             return res.status(403).json({ error: "You are not assigned to teach this subject for this section." });
         }
 
@@ -9604,10 +9992,23 @@ app.post('/api/teacher/push-report', requireAuth, async (req, res) => {
             [historyRows]
         );
 
+        // A push made by someone without a formal teacher_assignments row
+        // here got in purely on an approved subject_entry_request grant —
+        // worth saying explicitly in the confirmation.
+        const [formallyAssigned] = await pool.query(
+            `SELECT 1 FROM teacher_assignments
+             WHERE teacher_id = ? AND subject_id = ? AND class_level = ? AND section = ? AND stream = ? AND school_id = ?`,
+            [req.user.user_id, subject_id, class_level, section, stream, req.user.school_id]
+        );
+        const pulledViaGrant = formallyAssigned.length === 0;
+
         res.json({
-            message: `Pushed ${term} report to homeroom for ${totals.length} student(s). This subject is now locked for this section/term.`,
+            message: pulledViaGrant
+                ? `Pulled ${term} report to homeroom for ${totals.length} student(s), using your approved access to this subject. This subject is now locked for this section/term.`
+                : `Pushed ${term} report to homeroom for ${totals.length} student(s). This subject is now locked for this section/term.`,
             push_id,
-            students_included: totals.length
+            students_included: totals.length,
+            pulled_via_grant: pulledViaGrant
         });
     } catch (err) {
         console.error("push-report error:", err);
@@ -9788,7 +10189,7 @@ app.get('/api/homeroom/section-report', requireAuth, async (req, res) => {
         const [students] = await pool.query(
             `SELECT student_id, first_name, middle_name, last_name
              FROM students
-             WHERE class_level = ? AND section = ? AND stream = ? AND school_id = ?
+             WHERE class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?
              ORDER BY first_name, last_name`,
             [class_level, section, stream, req.user.school_id]
         );
@@ -9997,7 +10398,7 @@ app.post('/api/homeroom/student-status', requireAuth, async (req, res) => {
         }
 
         const [studentRows] = await pool.query(
-            'SELECT student_id FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream = ? AND school_id = ?',
+            'SELECT student_id FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, \'%\') AND school_id = ?',
             [student_id, class_level, section, stream, req.user.school_id]
         );
         if (studentRows.length === 0) {
@@ -10141,8 +10542,8 @@ app.get('/api/homeroom/leaderboard', requireAuth, async (req, res) => {
 // access to one specific subject for their OWN homeroom section, and an
 // Academic VP approves or rejects it. Once approved, hasSubjectAccess()
 // (see above isPushedAndLocked/hasSubjectAccess block) treats it exactly
-// like a normal teacher_assignments row for /api/add-mark and
-// /api/upload-marks — nothing else needs to change once it's approved.
+// like a normal teacher_assignments row for /api/add-mark — nothing
+// else needs to change once it's approved.
 //
 // Requires a table (not created elsewhere in this file, so run once):
 //   CREATE TABLE IF NOT EXISTS subject_entry_requests (
@@ -10158,7 +10559,8 @@ app.get('/api/homeroom/leaderboard', requireAuth, async (req, res) => {
 //     requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 //     decided_by VARCHAR(50) NULL,
 //     decided_at DATETIME NULL,
-//     decision_note TEXT NULL
+//     decision_note TEXT NULL,
+//     teacher_seen_at DATETIME NULL
 //   );
 
 // Homeroom teacher creates a request for their own section. Blocks a
@@ -10294,6 +10696,268 @@ app.post('/api/academic-vp/subject-entry-requests/:id/reject', requireAuth, requ
     }
 });
 
+// --- Last-Semester (Late) Mark Entry Requests ---
+// A homeroom teacher's catch-up path for students who ended a semester
+// still 'Incomplete' (see student_term_status above) with a genuine gap
+// in one or more subjects. Unlike subject_entry_requests (which grants a
+// teacher ongoing access to one subject for the CURRENT term), this is a
+// one-off, whole-section grant scoped to whichever PAST semester the
+// homeroom picks after approval — it exists specifically for closing out
+// missed marks once a semester has already closed, not for regular entry.
+//
+// Flow: homeroom sends one request per section (not per subject — "all
+// the subject" is covered by a single approved grant). Once the Academic
+// VP approves it, the homeroom's Upload Marks page shows a Semester 1 /
+// Semester 2 switch plus a subject picker; for whichever combination is
+// selected, only students who are (a) flagged 'Incomplete' for that term
+// in student_term_status AND (b) still have no marks row at all for that
+// subject+term are listed to enter marks for. That double condition is
+// the point — it stops a late-entry grant from being used to edit marks
+// that already exist, or for students who were never flagged incomplete
+// in the first place.
+//
+// Requires a new table — run this migration if it doesn't exist yet:
+//   CREATE TABLE IF NOT EXISTS late_marks_requests (
+//     id INT AUTO_INCREMENT PRIMARY KEY,
+//     school_id INT NOT NULL,
+//     teacher_id VARCHAR(50) NOT NULL,
+//     class_level VARCHAR(10) NOT NULL,
+//     section VARCHAR(5) NOT NULL,
+//     stream VARCHAR(30) NOT NULL,
+//     reason TEXT NULL,
+//     status ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
+//     requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     decided_by VARCHAR(50) NULL,
+//     decided_at DATETIME NULL,
+//     decision_note TEXT NULL,
+//     teacher_seen_at DATETIME NULL
+//   );
+
+// Homeroom teacher requests late-entry access for their whole section.
+// Blocks a second pending request for the same section — one open
+// request at a time is enough since the grant already covers every
+// subject once approved.
+app.post('/api/homeroom/late-marks-requests', requireAuth, async (req, res) => {
+    const { reason } = req.body;
+    try {
+        const homeroom = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+        if (!homeroom) {
+            return res.status(403).json({ error: "Only a homeroom teacher can request late mark entry." });
+        }
+        const { class_level, section, stream } = homeroom;
+
+        const [pending] = await pool.query(
+            `SELECT id FROM late_marks_requests
+             WHERE teacher_id = ? AND school_id = ? AND class_level = ? AND section = ? AND stream = ? AND status = 'pending'`,
+            [req.user.user_id, req.user.school_id, class_level, section, stream]
+        );
+        if (pending.length > 0) {
+            return res.status(409).json({ error: "You already have a pending late mark entry request for your section." });
+        }
+
+        await pool.query(
+            `INSERT INTO late_marks_requests (school_id, teacher_id, class_level, section, stream, reason)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [req.user.school_id, req.user.user_id, class_level, section, stream, reason || null]
+        );
+        res.json({ message: "Request sent to the Academic VP to enter last semester's marks for your section's incomplete students." });
+    } catch (err) {
+        console.error("/api/homeroom/late-marks-requests POST error:", err);
+        res.status(500).json({ error: "Could not submit request" });
+    }
+});
+
+// Homeroom teacher's own requests (any status).
+app.get('/api/homeroom/late-marks-requests', requireAuth, async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT id, class_level, section, stream, reason, status, requested_at, decided_at, decision_note
+             FROM late_marks_requests
+             WHERE teacher_id = ? AND school_id = ?
+             ORDER BY requested_at DESC`,
+            [req.user.user_id, req.user.school_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/homeroom/late-marks-requests GET error:", err);
+        res.status(500).json({ error: "Could not load your requests" });
+    }
+});
+
+// Academic VP: pending requests awaiting a decision.
+app.get('/api/academic-vp/late-marks-requests', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT r.id, r.teacher_id, t.first_name, t.middle_name, t.last_name,
+                    r.class_level, r.section, r.stream, r.reason, r.status, r.requested_at
+             FROM late_marks_requests r
+             JOIN teachers t ON t.teacher_id = r.teacher_id AND t.school_id = r.school_id
+             WHERE r.school_id = ? AND r.status = 'pending'
+             ORDER BY r.requested_at ASC`,
+            [req.user.school_id]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/academic-vp/late-marks-requests GET error:", err);
+        res.status(500).json({ error: "Could not load late mark entry requests" });
+    }
+});
+
+app.post('/api/academic-vp/late-marks-requests/:id/approve', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            `SELECT id FROM late_marks_requests WHERE id = ? AND school_id = ? AND status = 'pending'`,
+            [req.params.id, req.user.school_id]
+        );
+        if (rows.length === 0) {
+            return res.status(404).json({ error: "Request not found or already decided." });
+        }
+        await pool.query(
+            `UPDATE late_marks_requests SET status = 'approved', decided_by = ?, decided_at = NOW() WHERE id = ?`,
+            [req.user.user_id, req.params.id]
+        );
+        res.json({ message: "Approved — the homeroom teacher can now enter last semester's marks for incomplete students in their section." });
+    } catch (err) {
+        console.error("/api/academic-vp/late-marks-requests/:id/approve error:", err);
+        res.status(500).json({ error: "Could not approve this request" });
+    }
+});
+
+app.post('/api/academic-vp/late-marks-requests/:id/reject', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    const { reason } = req.body;
+    try {
+        const [rows] = await pool.query(
+            `SELECT id FROM late_marks_requests WHERE id = ? AND school_id = ? AND status = 'pending'`,
+            [req.params.id, req.user.school_id]
+        );
+        if (rows.length === 0) {
+            return res.status(404).json({ error: "Request not found or already decided." });
+        }
+        await pool.query(
+            `UPDATE late_marks_requests SET status = 'rejected', decided_by = ?, decided_at = NOW(), decision_note = ? WHERE id = ?`,
+            [req.user.user_id, reason || null, req.params.id]
+        );
+        res.json({ message: "Request rejected." });
+    } catch (err) {
+        console.error("/api/academic-vp/late-marks-requests/:id/reject error:", err);
+        res.status(500).json({ error: "Could not reject this request" });
+    }
+});
+
+// Resolves the homeroom's single most recent APPROVED grant for their own
+// section, if one exists — used by the frontend to decide whether to show
+// the Semester 1/2 switch at all, and by add-mark below to check that a
+// grant is actually in force before writing anything.
+async function getApprovedLateMarksGrant(teacher_id, school_id) {
+    const homeroom = await getHomeroomSectionOrNull(teacher_id, school_id);
+    if (!homeroom) return null;
+    const { class_level, section, stream } = homeroom;
+    const [[grant]] = await pool.query(
+        `SELECT id, decided_at FROM late_marks_requests
+         WHERE teacher_id = ? AND school_id = ? AND class_level = ? AND section = ? AND stream = ? AND status = 'approved'
+         ORDER BY decided_at DESC LIMIT 1`,
+        [teacher_id, school_id, class_level, section, stream]
+    );
+    return grant ? { ...grant, class_level, section, stream } : null;
+}
+
+// Students eligible for late entry under the homeroom's approved grant,
+// for one term + subject at a time: flagged Incomplete for that term AND
+// still missing every mark for that subject in that term. Both the term
+// switch and the subject picker live on the frontend; this just answers
+// "who's still missing marks" for whichever pair is currently selected.
+app.get('/api/homeroom/late-marks-requests/incomplete-students', requireAuth, async (req, res) => {
+    const { term, subject_id } = req.query;
+    if (!TERMS.includes(term)) {
+        return res.status(400).json({ error: `term must be one of: ${TERMS.join(', ')}` });
+    }
+    if (!subject_id) {
+        return res.status(400).json({ error: "subject_id is required" });
+    }
+    try {
+        const grant = await getApprovedLateMarksGrant(req.user.user_id, req.user.school_id);
+        if (!grant) {
+            return res.status(403).json({ error: "You don't have an approved late mark entry request for your section." });
+        }
+
+        const [rows] = await pool.query(
+            `SELECT s.student_id, s.first_name, s.middle_name, s.last_name
+             FROM students s
+             JOIN student_term_status sts
+               ON sts.student_id = s.student_id AND sts.school_id = s.school_id AND sts.term = ?
+             WHERE s.school_id = ? AND s.class_level = ? AND s.section = ? AND s.stream LIKE CONCAT(?, '%')
+               AND sts.status = 'Incomplete'
+               AND NOT EXISTS (
+                 SELECT 1 FROM marks m
+                 WHERE m.student_id = s.student_id AND m.subject_id = ? AND m.term = ? AND m.school_id = s.school_id
+               )
+             ORDER BY s.first_name, s.last_name`,
+            [term, req.user.school_id, grant.class_level, grant.section, grant.stream, subject_id, term]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("/api/homeroom/late-marks-requests/incomplete-students error:", err);
+        res.status(500).json({ error: "Could not load incomplete students" });
+    }
+});
+
+// Enters a mark for one of those gap students, for the specific past
+// term the homeroom is currently working in. Re-validates the grant AND
+// re-checks the same Incomplete+no-existing-mark condition server-side
+// (not just trusted from the list call above) before writing anything —
+// same defense-in-depth as /api/add-mark, just checked against the grant
+// instead of teacher_assignments.
+app.post('/api/homeroom/late-marks-requests/add-mark', requireAuth, async (req, res) => {
+    const { student_id, subject_id, term, type, score } = req.body;
+    if (!student_id || !subject_id || !TERMS.includes(term)) {
+        return res.status(400).json({ error: `student_id, subject_id, and a term in [${TERMS.join(', ')}] are required` });
+    }
+    if (!ASSESSMENT_TYPES.includes(type)) {
+        return res.status(400).json({ error: `Invalid type. Must be one of: ${ASSESSMENT_TYPES.join(', ')}` });
+    }
+    const limits = ASSESSMENT_TYPE_LIMITS[type];
+    const numericScore = Number(score);
+    if (score === undefined || score === null || score === '' || isNaN(numericScore) || numericScore < limits.min || numericScore > limits.max) {
+        return res.status(400).json({ error: `${assessmentTypeLabel(type)} must be a score between ${limits.min} and ${limits.max}.` });
+    }
+
+    try {
+        const grant = await getApprovedLateMarksGrant(req.user.user_id, req.user.school_id);
+        if (!grant) {
+            return res.status(403).json({ error: "You don't have an approved late mark entry request for your section." });
+        }
+
+        const [eligible] = await pool.query(
+            `SELECT 1 FROM students s
+             JOIN student_term_status sts
+               ON sts.student_id = s.student_id AND sts.school_id = s.school_id AND sts.term = ?
+             WHERE s.student_id = ? AND s.school_id = ? AND s.class_level = ? AND s.section = ? AND s.stream LIKE CONCAT(?, '%')
+               AND sts.status = 'Incomplete'`,
+            [term, student_id, req.user.school_id, grant.class_level, grant.section, grant.stream]
+        );
+        if (eligible.length === 0) {
+            return res.status(403).json({ error: "This student isn't flagged Incomplete for that term in your section." });
+        }
+
+        const [existingMark] = await pool.query(
+            'SELECT 1 FROM marks WHERE student_id = ? AND subject_id = ? AND type = ? AND term = ? AND school_id = ?',
+            [student_id, subject_id, type, term, req.user.school_id]
+        );
+        if (existingMark.length > 0) {
+            return res.status(409).json({ error: "A mark already exists for this student/subject/assessment/term — late entry is only for filling genuine gaps, not editing existing marks." });
+        }
+
+        await pool.query(
+            'INSERT INTO marks (student_id, subject_id, type, score, term, school_id) VALUES (?, ?, ?, ?, ?, ?)',
+            [student_id, subject_id, type, score, term, req.user.school_id]
+        );
+        res.json({ message: "Mark saved successfully!", term });
+    } catch (err) {
+        console.error("/api/homeroom/late-marks-requests/add-mark error:", err);
+        res.status(500).json({ error: "Failed to save: " + err.message });
+    }
+});
+
 // --- Textbook Distribution ---
 // No school-year selector exists anywhere yet, so this defaults to the
 // current calendar year. Revisit once a real academic-year concept is
@@ -10351,7 +11015,7 @@ app.post('/api/homeroom/reset-student-password', requireAuth, async (req, res) =
         }
 
         const [studentRows] = await pool.query(
-            'SELECT student_id, first_name, last_name FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?',
+            `SELECT student_id, first_name, last_name FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?`,
             [student_id, homeroom.class_level, homeroom.section, homeroom.stream, req.user.school_id]
         );
         if (studentRows.length === 0) {
@@ -10611,7 +11275,7 @@ app.post('/api/homeroom/upload-student-photo', requireAuth, handleUploadError(up
         }
 
         const [studentRows] = await pool.query(
-            'SELECT student_id, first_name, last_name, id_photo_url FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?',
+            `SELECT student_id, first_name, last_name, id_photo_url FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?`,
             [student_id, homeroom.class_level, homeroom.section, homeroom.stream, req.user.school_id]
         );
         if (studentRows.length === 0) {
@@ -11050,7 +11714,7 @@ app.get('/api/homeroom/textbooks', requireAuth, async (req, res) => {
 
         const [students] = await pool.query(
             `SELECT student_id, first_name, middle_name, last_name
-             FROM students WHERE class_level = ? AND section = ? AND stream = ? AND school_id = ?
+             FROM students WHERE class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?
              ORDER BY first_name, last_name`,
             [class_level, section, stream, req.user.school_id]
         );
@@ -11061,7 +11725,7 @@ app.get('/api/homeroom/textbooks', requireAuth, async (req, res) => {
         const [distributions] = await pool.query(
             `SELECT student_id, subject_id, status, issued_at, returned_at, lost_at FROM textbook_distributions
              WHERE school_year = ? AND school_id = ? AND student_id IN (
-                SELECT student_id FROM students WHERE class_level = ? AND section = ? AND stream = ? AND school_id = ?
+                SELECT student_id FROM students WHERE class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?
              )`,
             [school_year, req.user.school_id, class_level, section, stream, req.user.school_id]
         );
@@ -11126,7 +11790,7 @@ app.post('/api/homeroom/textbooks/issue', requireAuth, async (req, res) => {
         }
 
         const [studentCheck] = await pool.query(
-            'SELECT 1 FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?',
+            `SELECT 1 FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?`,
             [student_id, homeroom.class_level, homeroom.section, homeroom.stream, req.user.school_id]
         );
         if (studentCheck.length === 0) {
@@ -11164,7 +11828,7 @@ app.post('/api/homeroom/textbooks/return', requireAuth, async (req, res) => {
         }
 
         const [studentCheck] = await pool.query(
-            'SELECT 1 FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?',
+            `SELECT 1 FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?`,
             [student_id, homeroom.class_level, homeroom.section, homeroom.stream, req.user.school_id]
         );
         if (studentCheck.length === 0) {
@@ -11221,7 +11885,7 @@ app.post('/api/homeroom/textbooks/lost', requireAuth, async (req, res) => {
         }
 
         const [studentCheck] = await pool.query(
-            'SELECT 1 FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?',
+            `SELECT 1 FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?`,
             [student_id, homeroom.class_level, homeroom.section, homeroom.stream, req.user.school_id]
         );
         if (studentCheck.length === 0) {
@@ -11272,7 +11936,7 @@ app.post('/api/homeroom/textbooks/undo-lost', requireAuth, async (req, res) => {
         const { class_level, section, stream } = homeroom;
 
         const [studentCheck] = await pool.query(
-            'SELECT 1 FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream = ? AND school_id = ?',
+            'SELECT 1 FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, \'%\') AND school_id = ?',
             [student_id, class_level, section, stream, req.user.school_id]
         );
         if (studentCheck.length === 0) {
@@ -11570,6 +12234,82 @@ app.get('/api/academic-vp/marks-review', requireAuth, requireAdminTitle('Academi
     }
 });
 
+// --- Academic VP: re-open a homeroom's already-pushed report so the
+// homeroom teacher can go back in, fix whichever students are still
+// Incomplete, and push again. Only makes sense once every subject has
+// actually been pushed for that section (pushed_marks_reports has a
+// row) AND there's at least one Incomplete student flagged for the
+// term — otherwise there's nothing to send back for.
+//
+// Mechanically this just deletes the pushed_marks_reports row: that
+// row is the ONLY thing /api/homeroom/student-status and
+// /api/homeroom/marks/push-report check to decide "locked or not", so
+// removing it re-opens both immediately. The original push is kept as
+// a permanent record in marks_reopen_log first, so re-opening doesn't
+// erase the history of who pushed what and when.
+//
+// Requires a new table — run this migration if it doesn't exist yet:
+//   CREATE TABLE marks_reopen_log (
+//     id INT AUTO_INCREMENT PRIMARY KEY,
+//     school_id INT NOT NULL,
+//     class_level VARCHAR(10) NOT NULL,
+//     section VARCHAR(5) NOT NULL,
+//     stream VARCHAR(30) NOT NULL,
+//     term VARCHAR(20) NOT NULL,
+//     original_pushed_by VARCHAR(50) NULL,
+//     original_pushed_at DATETIME NULL,
+//     incomplete_count INT NOT NULL DEFAULT 0,
+//     reopened_by VARCHAR(50) NOT NULL,
+//     reopened_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+//     note TEXT NULL
+//   );
+app.post('/api/academic-vp/marks-review/:teacher_id/reopen', requireAuth, requireAdminTitle('Academic VP'), async (req, res) => {
+    const { teacher_id } = req.params;
+    const { note } = req.body;
+    try {
+        const [[teacherRow]] = await pool.query(
+            `SELECT homeroom_class_level AS class_level, homeroom_section AS section, homeroom_stream AS stream,
+                    first_name, middle_name, last_name
+             FROM teachers WHERE teacher_id = ? AND school_id = ? AND homeroom_class_level IS NOT NULL`,
+            [teacher_id, req.user.school_id]
+        );
+        if (!teacherRow) return res.status(404).json({ error: "This teacher isn't set up as a homeroom teacher." });
+        const { class_level, section, stream } = teacherRow;
+        const term = await getCurrentTerm(req.user.school_id);
+
+        const [[pushRow]] = await pool.query(
+            'SELECT push_id, pushed_by, pushed_at FROM pushed_marks_reports WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ? AND term = ?',
+            [req.user.school_id, class_level, section, stream, term]
+        );
+        if (!pushRow) return res.status(409).json({ error: `This section's ${term} report hasn't been pushed yet — nothing to re-open.` });
+
+        const [[{ incomplete_count }]] = await pool.query(
+            `SELECT COUNT(*) AS incomplete_count FROM student_term_status
+             WHERE school_id = ? AND class_level = ? AND section = ? AND stream = ? AND term = ? AND status = 'Incomplete'`,
+            [req.user.school_id, class_level, section, stream, term]
+        );
+        if (incomplete_count === 0) {
+            return res.status(409).json({ error: "This section has no students marked Incomplete — there's nothing to send back for." });
+        }
+
+        await pool.query(
+            `INSERT INTO marks_reopen_log
+                (school_id, class_level, section, stream, term, original_pushed_by, original_pushed_at, incomplete_count, reopened_by, note)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [req.user.school_id, class_level, section, stream, term, pushRow.pushed_by, pushRow.pushed_at, incomplete_count, req.user.user_id, note || null]
+        );
+        await pool.query('DELETE FROM pushed_marks_reports WHERE push_id = ?', [pushRow.push_id]);
+
+        res.json({
+            message: `Re-opened ${class_level}-${section}'s ${term} report — ${teacherRow.first_name} can now fix the ${incomplete_count} Incomplete student(s) and push again.`,
+            incomplete_count
+        });
+    } catch (err) {
+        console.error("/api/academic-vp/marks-review/:teacher_id/reopen error:", err);
+        res.status(500).json({ error: "Could not re-open this section's report." });
+    }
+});
+
 // --- Academic VP: the compiled master sheet for one section, once its
 // homeroom teacher has pushed it — same per-subject totals as
 // /api/homeroom/section-report, plus the Incomplete/Dropout list the
@@ -11596,7 +12336,7 @@ app.get('/api/academic-vp/section-master-sheet', requireAuth, requireAdminTitle(
         const [students] = await pool.query(
             `SELECT student_id, first_name, middle_name, last_name
              FROM students
-             WHERE class_level = ? AND section = ? AND stream = ? AND school_id = ?
+             WHERE class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?
              ORDER BY first_name, last_name`,
             [class_level, section, stream, req.user.school_id]
         );
@@ -12387,7 +13127,7 @@ app.get('/api/teacher/conduct-status', requireAuth, async (req, res) => {
             // Total students actually in this section, scoped to this school
             const [[{ total }]] = await pool.query(
                 `SELECT COUNT(*) as total FROM students
-                 WHERE class_level = ? AND section = ? AND stream = ? AND school_id = ?`,
+                 WHERE class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?`,
                 [a.class_level, a.section, a.stream, req.user.school_id]
             );
 
@@ -12553,7 +13293,11 @@ app.get('/api/teacher/my-sections', requireAuth, async (req, res) => {
 });
 
 // Returns unread notification count and items: contact thread replies
-// the teacher hasn't seen yet (new messages since last_read_at).
+// the teacher hasn't seen yet (new messages since last_read_at), PLUS any
+// subject-entry-request the teacher submitted that an Academic VP has
+// since approved/rejected but the teacher hasn't looked at yet (see
+// teacher_seen_at, cleared by /api/teacher/subject-entry-requests/mark-seen
+// once they actually open the request list).
 app.get('/api/notifications', requireAuth, async (req, res) => {
     try {
         const [threads] = await pool.query(
@@ -12569,18 +13313,91 @@ app.get('/api/notifications', requireAuth, async (req, res) => {
             [req.user.user_id, req.user.school_id]
         );
 
+        const threadItems = threads.map(t => ({
+            type: 'thread',
+            thread_id: t.thread_id,
+            subject: t.subject,
+            from: t.recipient_role,
+            reply_count: t.reply_count
+        }));
+
+        let decisionItems = [];
+        if (req.user.role === 'teachers') {
+            const [decisions] = await pool.query(
+                `SELECT r.id, r.subject_id, s.subject_name, r.status, r.decided_at
+                 FROM subject_entry_requests r
+                 JOIN subjects s ON s.subject_id = r.subject_id AND s.school_id = r.school_id
+                 WHERE r.teacher_id = ? AND r.school_id = ?
+                   AND r.status IN ('approved', 'rejected')
+                   AND r.decided_at IS NOT NULL
+                   AND r.teacher_seen_at IS NULL
+                 ORDER BY r.decided_at DESC`,
+                [req.user.user_id, req.user.school_id]
+            );
+            decisionItems = decisions.map(d => ({
+                type: 'subject_request',
+                request_id: d.id,
+                subject_name: d.subject_name,
+                status: d.status
+            }));
+
+            const [lateDecisions] = await pool.query(
+                `SELECT id, status, decided_at FROM late_marks_requests
+                 WHERE teacher_id = ? AND school_id = ?
+                   AND status IN ('approved', 'rejected')
+                   AND decided_at IS NOT NULL
+                   AND teacher_seen_at IS NULL
+                 ORDER BY decided_at DESC`,
+                [req.user.user_id, req.user.school_id]
+            );
+            decisionItems = decisionItems.concat(lateDecisions.map(d => ({
+                type: 'late_marks_request',
+                request_id: d.id,
+                status: d.status
+            })));
+        }
+
         res.json({
-            unread_count: threads.reduce((sum, t) => sum + Number(t.reply_count), 0),
-            items: threads.map(t => ({
-                thread_id: t.thread_id,
-                subject: t.subject,
-                from: t.recipient_role,
-                reply_count: t.reply_count
-            }))
+            unread_count: threads.reduce((sum, t) => sum + Number(t.reply_count), 0) + decisionItems.length,
+            items: [...threadItems, ...decisionItems]
         });
     } catch (err) {
         console.error("notifications error:", err);
         res.status(500).json({ error: "Could not load notifications" });
+    }
+});
+
+// Marks all of this teacher's decided (approved/rejected) subject-entry
+// requests as seen, so they stop lighting up the notification bell once
+// the teacher's actually looked at their request list.
+app.post('/api/teacher/subject-entry-requests/mark-seen', requireAuth, async (req, res) => {
+    try {
+        await pool.query(
+            `UPDATE subject_entry_requests
+             SET teacher_seen_at = NOW()
+             WHERE teacher_id = ? AND school_id = ? AND status IN ('approved', 'rejected') AND teacher_seen_at IS NULL`,
+            [req.user.user_id, req.user.school_id]
+        );
+        res.json({ ok: true });
+    } catch (err) {
+        console.error("/api/teacher/subject-entry-requests/mark-seen error:", err);
+        res.status(500).json({ error: "Could not mark requests as seen" });
+    }
+});
+
+// Same idea as above, for late-marks-request decisions.
+app.post('/api/homeroom/late-marks-requests/mark-seen', requireAuth, async (req, res) => {
+    try {
+        await pool.query(
+            `UPDATE late_marks_requests
+             SET teacher_seen_at = NOW()
+             WHERE teacher_id = ? AND school_id = ? AND status IN ('approved', 'rejected') AND teacher_seen_at IS NULL`,
+            [req.user.user_id, req.user.school_id]
+        );
+        res.json({ ok: true });
+    } catch (err) {
+        console.error("/api/homeroom/late-marks-requests/mark-seen error:", err);
+        res.status(500).json({ error: "Could not mark requests as seen" });
     }
 });
 
@@ -12605,18 +13422,42 @@ app.post('/api/contact/thread/:thread_id/mark-read', requireAuth, async (req, re
 });
 
 // --- Authentication Endpoint ---
+// Shared table/idCol map for every login-capable account type — kept in
+// one place so both the login route and verifyCurrentUserPassword below
+// (used to gate sensitive actions like starting/cancelling a student
+// transfer) stay in sync with the same set of tables.
+const AUTH_SOURCES_BY_ROLE = {
+    students: { table: 'students', idCol: 'student_id' },
+    teachers: { table: 'teachers', idCol: 'teacher_id' },
+    school_admins: { table: 'school_admins', idCol: 'admin_id' },
+    zonal_admins: { table: 'zonal_admins', idCol: 'admin_id' },
+    super_admins: { table: 'super_admins', idCol: 'admin_id' },
+    registrar_users: { table: 'registrar_users', idCol: 'registrar_id' }
+};
+
+// Re-checks the CURRENTLY logged-in user's own password against their
+// stored hash — used as a step-up confirmation before a sensitive,
+// hard-to-undo action (e.g. starting or cancelling a student transfer),
+// separate from the JWT session cookie which only proves they logged in
+// at some point earlier. req.user.role matches one of the keys above
+// (set at login from whichever table the account was found in).
+async function verifyCurrentUserPassword(req, password) {
+    if (!password) return false;
+    const src = AUTH_SOURCES_BY_ROLE[req.user?.role];
+    if (!src) return false;
+    const [rows] = await pool.query(
+        `SELECT security_password FROM ${src.table} WHERE ${src.idCol} = ?`,
+        [req.user.user_id]
+    );
+    if (rows.length === 0 || !rows[0].security_password) return false;
+    return bcrypt.compare(password, rows[0].security_password);
+}
+
 app.post('/api/login', async (req, res) => {
     const { id, password } = req.body;
 
     // Define the tables and their corresponding ID columns
-    const authSources = [
-        { table: 'students', idCol: 'student_id' },
-        { table: 'teachers', idCol: 'teacher_id' },
-        { table: 'school_admins', idCol: 'admin_id' },
-        { table: 'zonal_admins', idCol: 'admin_id' },
-        { table: 'super_admins', idCol: 'admin_id' },
-        { table: 'registrar_users', idCol: 'registrar_id' }
-    ];
+    const authSources = Object.values(AUTH_SOURCES_BY_ROLE);
 
     try {
         let user = null;
@@ -12854,14 +13695,14 @@ app.get('/api/teacher/can-access-student', requireAuth, async (req, res) => {
         // homeroom teacher covering for an absent colleague may not have
         // any teacher_assignments row here at all otherwise.
         const [assignment] = await pool.query(
-            'SELECT * FROM teacher_assignments WHERE teacher_id = ? AND class_level = ? AND section = ? AND stream = ? AND school_id = ?',
+            'SELECT * FROM teacher_assignments WHERE teacher_id = ? AND class_level = ? AND section = ? AND ? LIKE CONCAT(stream, \'%\') AND school_id = ?',
             [req.user.user_id, student.class_level, student.section, student.stream, req.user.school_id]
         );
         let allowed = assignment.length > 0;
         if (!allowed) {
             const [approved] = await pool.query(
                 `SELECT 1 FROM subject_entry_requests
-                 WHERE teacher_id = ? AND school_id = ? AND class_level = ? AND section = ? AND stream = ? AND status = 'approved'`,
+                 WHERE teacher_id = ? AND school_id = ? AND class_level = ? AND section = ? AND ? LIKE CONCAT(stream, '%') AND status = 'approved'`,
                 [req.user.user_id, req.user.school_id, student.class_level, student.section, student.stream]
             );
             allowed = approved.length > 0;
@@ -12918,13 +13759,23 @@ app.get('/api/teacher/my-students', requireAuth, async (req, res) => {
 app.get('/api/teacher/my-subjects', requireAuth, async (req, res) => {
     const { stream } = req.query;
     try {
+        // Callers pass this `stream` in both forms: the short bucket code
+        // ('Natural') from most of the UI, but also the student's long
+        // descriptive label ('Natural Science') when this is called from
+        // viewStudentProgress with the student's own `stream` field.
+        // `ta.stream = ?` only ever matched the short form, so a Grade
+        // 11/12 student's progress view silently got zero subjects (and
+        // therefore looked like no marks existed) whenever this was
+        // called with the long form. Matching each side against a
+        // normalized bucket handles both.
+        const streamBucket = streamBucketFor(stream);
         const sql = `
             SELECT DISTINCT s.subject_id, s.subject_name 
             FROM subjects s
             INNER JOIN teacher_assignments ta ON s.subject_id = ta.subject_id AND s.school_id = ta.school_id
             WHERE ta.teacher_id = ? AND ta.stream = ? AND ta.school_id = ?
         `;
-        const [rows] = await pool.query(sql, [req.user.user_id, stream, req.user.school_id]);
+        const [rows] = await pool.query(sql, [req.user.user_id, streamBucket, req.user.school_id]);
         res.json(rows);
     } catch (err) {
         console.error("Database error in /my-subjects:", err);
@@ -12986,7 +13837,15 @@ app.get('/api/teacher/student-performance', requireAuth, async (req, res) => {
 
         const results = [];
         for (const student of students) {
-            const key = `${student.class_level}|${student.section}|${student.stream}`;
+            // subjectsBySection was keyed using teacher_assignments.stream,
+            // the short bucket code ('Natural'). student.stream holds the
+            // long descriptive label ('Natural Science'). Looking this key
+            // up with the long label as-is never matched for Grade 11/12,
+            // so subjectIds came back empty and every Natural/Social
+            // student was silently skipped — the widget looked empty even
+            // though the teacher had students. Normalize to the same
+            // bucket used to build the map.
+            const key = `${student.class_level}|${student.section}|${streamBucketFor(student.stream)}`;
             const subjectIds = subjectsBySection[key] || [];
             if (subjectIds.length === 0) continue;
 
@@ -14014,7 +14873,7 @@ app.post('/api/homeroom/students/:student_id/mark-dropout', requireAuth, async (
         const term = await getCurrentTerm(req.user.school_id);
 
         const [studentRows] = await pool.query(
-            'SELECT student_id FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream = ? AND school_id = ?',
+            'SELECT student_id FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, \'%\') AND school_id = ?',
             [req.params.student_id, class_level, section, stream, req.user.school_id]
         );
         if (studentRows.length === 0) return res.status(403).json({ error: "This student is not in your homeroom section." });

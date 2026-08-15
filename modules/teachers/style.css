@@ -759,6 +759,22 @@ body.dark-theme .request-status-badge.status-pending { background: #451a03; colo
 body.dark-theme .request-status-badge.status-approved { background: #14532d; color: #86efac; }
 body.dark-theme .request-status-badge.status-rejected { background: #450a0a; color: #fca5a5; }
 
+/* Semester 1 / Semester 2 switch (late-marks-entry panel) */
+.segmented-toggle-btn {
+    border: none;
+    background: #f1f5f9;
+    color: #475569;
+    padding: 8px 18px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+.segmented-toggle-btn + .segmented-toggle-btn { border-left: 1px solid #cbd5e1; }
+.segmented-toggle-btn.active { background: #3b5998; color: #fff; }
+body.dark-theme .segmented-toggle-btn { background: #1e293b; color: #cbd5e1; }
+body.dark-theme .segmented-toggle-btn.active { background: #3b5998; color: #fff; }
+body.dark-theme .segmented-toggle-btn + .segmented-toggle-btn { border-left-color: #334155; }
+
 /* Leaderboard (homeroom — student rank order) */
 .leaderboard-rank-cell {
     font-weight: 700;
@@ -1710,6 +1726,14 @@ textarea:focus-visible,
     }
     .student-filter-row {
         flex-direction: column;
+    }
+    /* .notification-panel is a fixed 300px anchored to the right edge of
+       its trigger button — on the narrowest phones (≤360px) that leaves
+       very little clearance from the left edge of the screen. Capping it
+       to a viewport-relative width keeps it fully on-screen instead of
+       nearly touching (or on very small devices, crossing) the left edge. */
+    .notification-panel {
+        width: min(300px, calc(100vw - 20px));
     }
 }
 

@@ -84,6 +84,10 @@ async function checkAuthAndInit() {
         loadTopbarSemester();
         refreshUnreadMessagesBadge();
         loadAlertsDropdown();
+        // Keep the bell live without needing a page refresh — pending
+        // items (a new absence request, a transfer request, etc.) should
+        // turn the badge red on their own within a minute of showing up.
+        setInterval(loadAlertsDropdown, 60000);
     } catch (err) {
         console.error('checkAuthAndInit error:', err);
         window.location.href = '/login.html';
@@ -184,8 +188,13 @@ async function loadAlertsDropdown() {
                     <button class="btn btn-ghost" onclick="navigateToPage('absence')">${t('sa_view')}</button>`
             }));
         } else if (CURRENT_TITLE === 'Academic VP') {
-            const res = await apiFetch(`${API_BASE}/api/admin/absence-requests`);
-            const rows = res.ok ? await res.json() : [];
+            const [absRes, dropoutRes] = await Promise.all([
+                apiFetch(`${API_BASE}/api/admin/absence-requests`),
+                apiFetch(`${API_BASE}/api/academic-vp/dropout-requests`)
+            ]);
+            const rows = absRes.ok ? await absRes.json() : [];
+            const dropouts = dropoutRes.ok ? await dropoutRes.json() : [];
+
             items = rows.map(r => alertItemHtml({
                 title: `${lucideIcon('user', 15)} ${escapeHtml(r.first_name)} ${escapeHtml(r.last_name)} (${r.student_id})`,
                 meta: `${r.class_level}-${r.section} · ${formatEthDateRange(r.date_from, r.date_to)}`,
@@ -194,15 +203,22 @@ async function loadAlertsDropdown() {
                     <button class="btn btn-danger" onclick="decideStudentAbsence(${r.request_id}, 'reject')">${t('sa_reject')}</button>
                     <button class="btn btn-ghost" onclick="navigateToPage('student-absence-escalations')">${t('sa_view')}</button>`
             }));
+            items = items.concat(dropouts.map(r => alertItemHtml({
+                title: `${lucideIcon('user-x', 15)} ${escapeHtml(r.full_name)} (${r.student_id})`,
+                meta: `${r.class_level}-${r.section} · ${escapeHtml(r.reason_category || r.reason || '')}`,
+                actionsHtml: `<button class="btn btn-ghost" onclick="navigateToPage('dropout-requests')">${t('sa_view')}</button>`
+            })));
         } else if (CURRENT_TITLE === 'Principal') {
-            const [escRes, casesRes, docsRes] = await Promise.all([
+            const [escRes, casesRes, docsRes, transferRes] = await Promise.all([
                 apiFetch(`${API_BASE}/api/principal/teacher-absence-requests`),
                 apiFetch(`${API_BASE}/api/principal/disciplinary-cases`),
-                apiFetch(`${API_BASE}/api/principal/teacher-document-requests`)
+                apiFetch(`${API_BASE}/api/principal/teacher-document-requests`),
+                apiFetch(`${API_BASE}/api/principal/transfer-requests`)
             ]);
             const escalated = escRes.ok ? await escRes.json() : [];
             const cases = casesRes.ok ? await casesRes.json() : [];
             const docs = docsRes.ok ? await docsRes.json() : [];
+            const transfers = transferRes.ok ? (await transferRes.json()).filter(r => r.status === 'pending') : [];
 
             items = escalated.map(r => alertItemHtml({
                 title: `${lucideIcon('triangle-alert', 15)} ${escapeHtml(r.first_name)} ${escapeHtml(r.last_name)} (${r.teacher_id})`,
@@ -222,6 +238,14 @@ async function loadAlertsDropdown() {
                 meta: r.doc_type === 'signature' ? t('sa_doc_type_signature') : t('sa_doc_type_id_photo'),
                 actionsHtml: `<button class="btn btn-ghost" onclick="navigateToPage('document-approvals')">${t('sa_view')}</button>`
             })));
+            items = items.concat(transfers.map(r => alertItemHtml({
+                title: `${lucideIcon('arrow-right-left', 15)} ${escapeHtml(r.full_name)} (${r.student_id})`,
+                meta: `${r.class_level}-${r.section}${r.reason ? ' · ' + escapeHtml(r.reason) : ''}`,
+                actionsHtml: `
+                    <button class="btn btn-success" onclick="approveTransferRequest(${r.request_id})">${t('sa_approve')}</button>
+                    <button class="btn btn-danger" onclick="rejectTransferRequest(${r.request_id})">${t('sa_reject')}</button>
+                    <button class="btn btn-ghost" onclick="navigateToPage('transfer-requests')">${t('sa_view')}</button>`
+            })));
         }
     } catch (err) {
         console.error('loadAlertsDropdown error:', err);
@@ -238,10 +262,18 @@ async function loadAlertsDropdown() {
 
 // Small helper so a dropdown item's "View" button can jump straight to the
 // right nav section (reuses whatever nav-click wiring already exists —
-// just simulates a click on the matching sidebar link).
+// just simulates a click on the matching sidebar link). Transfer requests
+// live as a tab inside the Students page rather than their own nav
+// entry, so that case also clicks the matching tab button once the page
+// is showing.
 function navigateToPage(page) {
     ALERTS_DROPDOWN_OPEN = false;
     document.getElementById('sa-alerts-dropdown').style.display = 'none';
+    if (page === 'transfer-requests') {
+        document.querySelector(`#sa-nav-menu [data-page="students"]`)?.click();
+        document.querySelector(`.tab-btn[data-tab="students-transfer-requests"]`)?.click();
+        return;
+    }
     document.querySelector(`#sa-nav-menu [data-page="${page}"]`)?.click();
 }
 
@@ -324,25 +356,28 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('mark-attendance-btn')?.addEventListener('click', markTeacherAttendance);
     document.getElementById('punctuality-lookup-btn')?.addEventListener('click', lookupPunctuality);
     document.getElementById('grant-leave-btn')?.addEventListener('click', grantTeacherLeave);
-    document.getElementById('tt-load-btn')?.addEventListener('click', loadTimetable);
-    document.getElementById('tt-add-btn')?.addEventListener('click', addTimetableSlot);
     document.getElementById('tt-class-level')?.addEventListener('change', (e) => {
         updateStreamOptionsForLevel(document.getElementById('tt-stream'), e.target.value);
-        renderTtSectionOptions();
-        refreshTimetableSubjectOptions();
-        refreshTimetableTeacherDisplay();
+        renderTtSectionsPreview();
+        document.getElementById('tt-grid-wrap').innerHTML = '';
+        loadTimetableWeekView();
     });
     document.getElementById('tt-stream')?.addEventListener('change', () => {
-        renderTtSectionOptions();
-        refreshTimetableSubjectOptions();
-        refreshTimetableTeacherDisplay();
+        renderTtSectionsPreview();
+        document.getElementById('tt-grid-wrap').innerHTML = '';
+        loadTimetableWeekView();
     });
-    document.getElementById('tt-section')?.addEventListener('change', refreshTimetableTeacherDisplay);
-    document.getElementById('tt-subject-id')?.addEventListener('change', refreshTimetableTeacherDisplay);
-    document.getElementById('tt-start-time')?.addEventListener('input', (e) =>
-        showEthiopianTimeHint('tt-start-time-eth', e.target.value));
-    document.getElementById('tt-end-time')?.addEventListener('input', (e) =>
-        showEthiopianTimeHint('tt-end-time-eth', e.target.value));
+    document.getElementById('tt-period-count')?.addEventListener('input', () => {
+        renderTtBreakAfterOptions();
+        renderTtPeriodPreview();
+    });
+    document.getElementById('tt-break-after')?.addEventListener('change', renderTtPeriodPreview);
+    document.getElementById('tt-break-minutes')?.addEventListener('input', renderTtPeriodPreview);
+    document.getElementById('tt-start-time')?.addEventListener('input', (e) => {
+        showEthiopianTimeHint('tt-start-time-eth', e.target.value);
+        renderTtPeriodPreview();
+    });
+    document.getElementById('tt-generate-grid-btn')?.addEventListener('click', generateTtGrid);
     document.getElementById('ta-class-level')?.addEventListener('change', (e) => {
         updateStreamOptionsForLevel(document.getElementById('ta-stream'), e.target.value);
         renderTaSectionCheckboxes();
@@ -632,6 +667,9 @@ async function loadDashboard() {
 // text color its container (e.g. .stat-icon) is styled with.
 const LUCIDE_PATHS = {
     users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/>',
+    lock: '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+    eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>',
+    'eye-off': '<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/>',
     'triangle-alert': '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
     'shield-alert': '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
     signature: '<path d="m21 17-2.156-1.868A.5.5 0 0 0 18 15.5v.5a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1c0-2.545-3.991-3.97-8.5-4a1 1 0 0 0 0 5c4.153 0 4.745-11.295 5.708-13.5a2.5 2.5 0 1 1 3.31 3.284"/><path d="M3 21h18"/>',
@@ -882,6 +920,7 @@ async function grantTeacherLeave() {
     const date_from = document.getElementById('leave-date-from').value;
     const date_to = document.getElementById('leave-date-to').value;
     if (!teacher_id || !date_from || !date_to) return showToast(t('sa_err_leave_fields_required'), 'error');
+    if (!(await verifyAdminPassword())) return;
     const res = await apiFetch(`${API_BASE}/api/admin/teacher-leave`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ teacher_id, date_from, date_to, reason })
@@ -936,6 +975,7 @@ async function decidePenalty(student_id, subject_id) {
         if (amount === null) return;
     }
     const note = await showPromptModal(t('sa_prompt_penalty_note')) || '';
+    if (!(await verifyAdminPassword())) return;
     const res = await apiFetch(`${API_BASE}/api/admin/textbooks/penalty`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ student_id, subject_id, decision, amount, note })
@@ -1002,6 +1042,7 @@ async function decideTeacherAbsence(request_id, action, scope) {
         const reason = await showPromptModal(t('sa_prompt_rejection_reason')) || '';
         body = { reason };
     }
+    if (!(await verifyAdminPassword())) return;
     const res = await apiFetch(`${API_BASE}${base}/${request_id}/${action}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     });
@@ -1016,6 +1057,7 @@ async function decideStudentAbsence(request_id, action) {
         const reason = await showPromptModal(t('sa_prompt_rejection_reason')) || '';
         body = { reason };
     }
+    if (!(await verifyAdminPassword())) return;
     const res = await apiFetch(`${API_BASE}/api/admin/absence-requests/${request_id}/${action}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     });
@@ -1029,12 +1071,16 @@ async function decideStudentAbsence(request_id, action) {
 // ==========================================================
 // Class/section options come from the Registrar's own Section Setup
 // (class_sections table, same source the Subject & Teaching Assignment
-// page uses) — so Class Level/Section here can only ever be a
-// combination the Registrar actually configured. Subjects come from this
-// school's own Subject Configuration grid (ticked from the zone/TDC
-// subject dictionary), filtered to the selected stream.
+// page uses) — so Class Level/Stream here can only ever surface a
+// section the Registrar actually configured; nothing is ever typed in.
+// Subjects come from this school's own Subject Configuration grid
+// (ticked from the zone/TDC subject dictionary), filtered to the
+// selected stream, and are picked per grid cell rather than once for
+// the whole form — a Grade 11 Natural Science slot can only ever be
+// filled with a Natural Science (or All-Streams) subject.
 let TT_CLASS_SECTIONS_CACHE = [];
 let TT_SUBJECTS_CACHE = [];
+let TT_ASSIGNMENTS_CACHE = [];
 
 async function initTimetablePage() {
     const [sectionsRes, subjectsRes] = await Promise.all([
@@ -1053,85 +1099,48 @@ async function initTimetablePage() {
             + levels.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('');
         if (levels.includes(current)) levelSelect.value = current;
     }
-    renderTtSectionOptions();
-    refreshTimetableSubjectOptions();
-    refreshTimetableTeacherDisplay();
+    updateStreamOptionsForLevel(document.getElementById('tt-stream'), levelSelect?.value || '');
+    renderTtBreakAfterOptions();
+    renderTtSectionsPreview();
+    document.getElementById('tt-grid-wrap').innerHTML = '';
+    loadTimetableWeekView();
 }
 
-// Section dropdown narrows to whatever the Registrar actually set up for
-// the selected Class Level (and Stream, once Grade 11/12 picks one) —
-// same normalizeStreamCode() bridge used by the Teaching Assignment page,
-// since the Registrar's own form stores stream as free text.
-function renderTtSectionOptions() {
-    const sectionSelect = document.getElementById('tt-section');
-    if (!sectionSelect) return;
+// Sections the Registrar actually set up for the currently-picked Class
+// Level + Stream — these become the grid's columns. Same
+// normalizeStreamCode() bridge the Teaching Assignment page uses, since
+// the Registrar's own stream field is free text.
+function getTtSections() {
     const level = document.getElementById('tt-class-level')?.value || '';
     const stream = document.getElementById('tt-stream')?.value || '';
-    if (!level) {
-        sectionSelect.innerHTML = `<option value="">${t('sa_select_section')}</option>`;
-        return;
-    }
+    if (!level || !stream) return [];
     let sections = TT_CLASS_SECTIONS_CACHE.filter(s => String(s.class_level) === String(level));
-    if (stream) sections = sections.filter(s => !s.stream || normalizeStreamCode(s.stream) === normalizeStreamCode(stream));
-    const names = [...new Set(sections.map(s => s.section_name))].sort();
-    const current = sectionSelect.value;
-    sectionSelect.innerHTML = `<option value="">${t('sa_select_section')}</option>`
-        + names.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
-    if (names.includes(current)) sectionSelect.value = current;
+    sections = sections.filter(s => !s.stream || normalizeStreamCode(s.stream) === normalizeStreamCode(stream));
+    return [...new Set(sections.map(s => s.section_name))].sort();
 }
 
-// Subjects narrow to the selected stream, same rule as the Teaching
-// Assignment form: a subject configured for "All Streams" (stream = null)
-// always shows, on top of whichever specific stream is chosen. The
-// Academic VP never types a subject here — it's only ever one they've
-// already ticked in Subject Configuration (sourced from the zone/TDC
-// subject dictionary).
-function refreshTimetableSubjectOptions() {
-    const subjectSelect = document.getElementById('tt-subject-id');
-    if (!subjectSelect) return;
-    const level = document.getElementById('tt-class-level')?.value || '';
-    const stream = document.getElementById('tt-stream')?.value || '';
-    if (!level) {
-        subjectSelect.innerHTML = `<option value="">${t('sa_tt_select_class_section_first')}</option>`;
-        return;
-    }
-    const list = stream
-        ? TT_SUBJECTS_CACHE.filter(s => !s.stream || s.stream === stream)
-        : TT_SUBJECTS_CACHE;
-    const current = subjectSelect.value;
-    subjectSelect.innerHTML = list.length
-        ? (`<option value="">${t('sa_select_subject')}</option>` +
-           list.map(s => `<option value="${s.subject_id}">${escapeHtml(s.subject_name)}${s.stream ? ' (' + escapeHtml(s.stream) + ')' : ''}</option>`).join(''))
-        : `<option value="">${t('sa_no_subject_for_stream')}</option>`;
-    if (list.some(s => s.subject_id === current)) subjectSelect.value = current;
+// Small read-only line so the Academic VP can see which sections will
+// become grid columns before generating anything.
+function renderTtSectionsPreview() {
+    const el = document.getElementById('tt-sections-preview');
+    if (!el) return;
+    const sections = getTtSections();
+    el.textContent = sections.length ? sections.join(', ') : t('sa_tt_no_sections');
 }
 
-// Teacher is never typed in — it's whoever is already linked (via the
-// Teaching Assignment page) to teach the selected subject in the selected
-// class/section. Purely a display lookup; the actual teacher_id used when
-// the slot is saved is resolved server-side from the same data.
-async function refreshTimetableTeacherDisplay() {
-    const display = document.getElementById('tt-teacher-display');
-    if (!display) return;
-    const class_level = document.getElementById('tt-class-level')?.value || '';
-    const section = document.getElementById('tt-section')?.value || '';
-    const subject_id = document.getElementById('tt-subject-id')?.value || '';
-    if (!class_level || !section || !subject_id) {
-        display.classList.add('is-empty');
-        display.textContent = t('sa_tt_teacher_placeholder');
-        return;
+// "Break after period N" needs its N options to track whatever period
+// count is currently typed in.
+function renderTtBreakAfterOptions() {
+    const sel = document.getElementById('tt-break-after');
+    if (!sel) return;
+    const count = Number(document.getElementById('tt-period-count')?.value || 0);
+    const current = sel.value;
+    let html = `<option value="0">${t('sa_tt_no_break')}</option>`;
+    for (let i = 1; i < count; i++) {
+        html += `<option value="${i}">${t('sa_tt_after_period', { n: i })}</option>`;
     }
-    display.classList.add('is-empty');
-    display.textContent = t('sa_loading');
-    const res = await apiFetch(`${API_BASE}/api/academic-vp/teacher-assignments?class_level=${encodeURIComponent(class_level)}&section=${encodeURIComponent(section)}&subject_id=${encodeURIComponent(subject_id)}`);
-    const rows = res.ok ? await res.json() : [];
-    if (rows.length === 0) {
-        display.classList.add('is-empty');
-        display.textContent = t('sa_tt_teacher_none');
-    } else {
-        display.classList.remove('is-empty');
-        display.textContent = rows[0].teacher_name;
-    }
+    sel.innerHTML = html;
+    if ([...sel.options].some(o => o.value === current)) sel.value = current;
 }
 
 // ---------- Ethiopian clock-time display ----------
@@ -1160,14 +1169,186 @@ function showEthiopianTimeHint(hintElId, hhmm) {
     el.textContent = label ? `${t('sa_eth_time_label')}: ${label}` : '';
 }
 
-async function loadTimetable() {
-    const class_level = document.getElementById('tt-class-level').value.trim();
-    const section = document.getElementById('tt-section').value.trim();
-    const stream = document.getElementById('tt-stream').value.trim();
+// ---------- Period time math ----------
+// Every period is a fixed 40 minutes, chained one after another from
+// whatever start time was picked. A break — a fixed extra gap after one
+// specific period — just shifts every period after it forward by the
+// break's own length; periods stay 40 minutes each on both sides of it.
+const TT_PERIOD_MINUTES = 40;
+
+function hhmmToMinutes(hhmm) {
+    const [h, m] = hhmm.split(':').map(Number);
+    return h * 60 + m;
+}
+function minutesToHhmm(mins) {
+    const h = Math.floor(mins / 60) % 24;
+    const m = mins % 60;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+function computeTtPeriods() {
+    const startVal = document.getElementById('tt-start-time')?.value;
+    const periodCount = Number(document.getElementById('tt-period-count')?.value || 0);
+    const breakAfter = Number(document.getElementById('tt-break-after')?.value || 0);
+    const breakMinutes = Number(document.getElementById('tt-break-minutes')?.value || 0);
+    if (!startVal || !periodCount || periodCount < 1) return [];
+
+    const items = [];
+    let cursor = hhmmToMinutes(startVal);
+    for (let i = 1; i <= periodCount; i++) {
+        const start = cursor;
+        const end = start + TT_PERIOD_MINUTES;
+        items.push({ type: 'period', index: i, start_time: minutesToHhmm(start), end_time: minutesToHhmm(end) });
+        cursor = end;
+        if (breakAfter && i === breakAfter && breakMinutes > 0) {
+            const breakStart = cursor;
+            const breakEnd = cursor + breakMinutes;
+            items.push({ type: 'break', start_time: minutesToHhmm(breakStart), end_time: minutesToHhmm(breakEnd) });
+            cursor = breakEnd;
+        }
+    }
+    return items;
+}
+
+// Live preview of the computed period times as the Academic VP tweaks
+// start time / period count / break settings, before they've even
+// generated the subject grid.
+function renderTtPeriodPreview() {
+    const el = document.getElementById('tt-period-preview');
+    if (!el) return;
+    const items = computeTtPeriods();
+    if (items.length === 0) { el.textContent = ''; return; }
+    el.innerHTML = items.map(p => p.type === 'break'
+        ? `<span class="tt-period-chip tt-period-chip-break">${t('sa_tt_break_label')} ${p.start_time}\u2013${p.end_time}</span>`
+        : `<span class="tt-period-chip">${p.index}. ${p.start_time}\u2013${p.end_time}</span>`
+    ).join(' ');
+}
+
+// Builds the periods x sections grid — one subject dropdown per cell,
+// scoped to subjects configured for the selected stream (plus any
+// "All Streams" subject), pre-filled from whatever's already saved for
+// this exact class level/stream/day.
+async function generateTtGrid() {
+    const level = document.getElementById('tt-class-level')?.value || '';
+    const stream = document.getElementById('tt-stream')?.value || '';
+    const day = document.getElementById('tt-day')?.value || '';
+    const sections = getTtSections();
+    const periods = computeTtPeriods();
+    const wrap = document.getElementById('tt-grid-wrap');
+
+    if (!level || !stream) return showToast(t('sa_err_class_fields_required'), 'error');
+    if (sections.length === 0) return showToast(t('sa_tt_no_sections'), 'error');
+    if (periods.filter(p => p.type === 'period').length === 0) return showToast(t('sa_tt_no_periods'), 'error');
+
+    wrap.innerHTML = `<p class="page-subtitle">${t('sa_loading')}</p>`;
+
+    const [existingRes, assignRes] = await Promise.all([
+        apiFetch(`${API_BASE}/api/admin/timetable?class_level=${encodeURIComponent(level)}&stream=${encodeURIComponent(stream)}`),
+        apiFetch(`${API_BASE}/api/academic-vp/teacher-assignments`)
+    ]);
+    const existingRows = existingRes.ok ? await existingRes.json() : [];
+    TT_ASSIGNMENTS_CACHE = assignRes.ok ? await assignRes.json() : [];
+
+    const existingByKey = {};
+    existingRows.filter(r => String(r.day_of_week) === String(day)).forEach(r => {
+        existingByKey[`${r.section}|${r.start_time}`] = r.subject_id;
+    });
+
+    // Same stream rule as everywhere else in this page: a subject
+    // configured for "All Streams" (stream = null) is always offered,
+    // on top of whichever specific stream is selected.
+    const subjectOptions = TT_SUBJECTS_CACHE.filter(s => !s.stream || s.stream === stream);
+
+    let html = `<table class="data-table tt-grid-table"><thead><tr><th>${t('sa_tt_col_period')}</th>`
+        + sections.map(sec => `<th>${escapeHtml(sec)}</th>`).join('') + `</tr></thead><tbody>`;
+
+    periods.forEach(p => {
+        if (p.type === 'break') {
+            html += `<tr class="tt-grid-break-row"><td colspan="${sections.length + 1}">${t('sa_tt_break_label')} (${p.start_time}\u2013${p.end_time})</td></tr>`;
+            return;
+        }
+        html += `<tr><td class="tt-grid-period-cell">${p.index}<br><span class="form-hint">${p.start_time}\u2013${p.end_time}</span></td>`;
+        sections.forEach(sec => {
+            const key = `${sec}|${p.start_time}`;
+            const selected = existingByKey[key] || '';
+            const cellId = `tt-cell-${sec}-${p.index}`;
+            html += `<td>
+                <select class="tt-grid-cell form-control" id="${cellId}" data-section="${escapeHtml(sec)}" data-start="${p.start_time}" data-end="${p.end_time}" onchange="updateTtCellTeacherHint('${cellId}')">
+                    <option value="">${t('sa_tt_blank_cell')}</option>
+                    ${subjectOptions.map(s => `<option value="${s.subject_id}" ${String(s.subject_id) === String(selected) ? 'selected' : ''}>${escapeHtml(s.subject_name)}</option>`).join('')}
+                </select>
+                <div class="form-hint tt-grid-teacher-hint" id="${cellId}-hint"></div>
+            </td>`;
+        });
+        html += `</tr>`;
+    });
+    html += `</tbody></table>
+        <div class="form-actions">
+            <button class="btn btn-accent" onclick="saveTtGrid()">${t('sa_tt_save_day_btn')}</button>
+        </div>`;
+    wrap.innerHTML = html;
+
+    sections.forEach(sec => {
+        periods.filter(p => p.type === 'period').forEach(p => {
+            const cellId = `tt-cell-${sec}-${p.index}`;
+            if (document.getElementById(cellId)?.value) updateTtCellTeacherHint(cellId);
+        });
+    });
+}
+
+// Purely informational — shows who's actually assigned to teach the
+// picked subject in that section, right under the dropdown, the same
+// way the old single-slot form used to show it above the Add button.
+function updateTtCellTeacherHint(cellId) {
+    const select = document.getElementById(cellId);
+    const hint = document.getElementById(`${cellId}-hint`);
+    if (!select || !hint) return;
+    const subject_id = select.value;
+    const section = select.dataset.section;
+    const level = document.getElementById('tt-class-level')?.value || '';
+    if (!subject_id) { hint.textContent = ''; return; }
+    const match = TT_ASSIGNMENTS_CACHE.find(a =>
+        String(a.subject_id) === String(subject_id) && a.section === section && String(a.class_level) === String(level));
+    hint.textContent = match ? `${t('sa_teacher_auto_label')}: ${match.teacher_name}` : t('sa_tt_teacher_none');
+}
+
+// One password prompt for the whole day's grid (not one per cell) —
+// sends every cell at once, blank ones included, so the server can do a
+// clean full replace for this class_level/stream/day (see the bulk
+// endpoint's own comment for why).
+async function saveTtGrid() {
+    const level = document.getElementById('tt-class-level')?.value || '';
+    const stream = document.getElementById('tt-stream')?.value || '';
+    const day = document.getElementById('tt-day')?.value || '';
+    const cells = [...document.querySelectorAll('.tt-grid-cell')];
+    if (cells.length === 0) return;
+    const slots = cells.map(sel => ({
+        section: sel.dataset.section,
+        subject_id: sel.value || null,
+        start_time: sel.dataset.start,
+        end_time: sel.dataset.end
+    }));
+    if (!(await verifyAdminPassword())) return;
+    const res = await apiFetch(`${API_BASE}/api/admin/timetable/bulk`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ class_level: level, stream, day_of_week: Number(day), slots })
+    });
+    const data = await handleJsonResponse(res, t('sa_tt_grid_saved'));
+    if (!data) return;
+    loadTimetableWeekView();
+}
+
+// Read-only view of everything currently saved for the picked Class
+// Level + Stream, across every section and every day — a quick way to
+// see the whole week at a glance without regenerating the edit grid.
+async function loadTimetableWeekView() {
+    const level = document.getElementById('tt-class-level')?.value || '';
+    const stream = document.getElementById('tt-stream')?.value || '';
     const tbody = document.getElementById('sa-timetable-tbody');
-    if (!class_level || !section || !stream) return showToast(t('sa_err_class_fields_required'), 'error');
+    if (!tbody) return;
+    if (!level || !stream) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_tt_pick_class_stream_first')}</td></tr>`; return; }
     tbody.innerHTML = `<tr><td colspan="6">${t('sa_loading')}</td></tr>`;
-    const res = await apiFetch(`${API_BASE}/api/admin/timetable?class_level=${encodeURIComponent(class_level)}&section=${encodeURIComponent(section)}&stream=${encodeURIComponent(stream)}`);
+    const res = await apiFetch(`${API_BASE}/api/admin/timetable?class_level=${encodeURIComponent(level)}&stream=${encodeURIComponent(stream)}`);
     if (!res.ok) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_load_error')}</td></tr>`; return; }
     const rows = await res.json();
     const dayNames = ['', t('sa_monday'), t('sa_tuesday'), t('sa_wednesday'), t('sa_thursday'), t('sa_friday')];
@@ -1177,37 +1358,10 @@ async function loadTimetable() {
             <td>${dayNames[r.day_of_week] || r.day_of_week}</td>
             <td>${r.start_time} - ${r.end_time}</td>
             <td>${toEthiopianTimeLabel(r.start_time)} - ${toEthiopianTimeLabel(r.end_time)}</td>
+            <td>${escapeHtml(r.section)}</td>
             <td>${escapeHtml(r.subject_name)}</td>
-            <td>${r.teacher_name ? escapeHtml(r.teacher_name) : '—'}</td>
-            <td><button class="btn btn-sm btn-danger" onclick="deleteTimetableSlot(${r.timetable_id})">${t('sa_delete')}</button></td>
+            <td>${r.teacher_name ? `${escapeHtml(r.teacher_name)} (${escapeHtml(r.teacher_id)})` : '—'}</td>
         </tr>`).join('');
-}
-
-async function addTimetableSlot() {
-    const class_level = document.getElementById('tt-class-level').value.trim();
-    const section = document.getElementById('tt-section').value.trim();
-    const stream = document.getElementById('tt-stream').value.trim();
-    const day_of_week = document.getElementById('tt-day').value;
-    const subject_id = document.getElementById('tt-subject-id').value.trim();
-    const start_time = document.getElementById('tt-start-time').value;
-    const end_time = document.getElementById('tt-end-time').value;
-    if (!class_level || !section || !stream || !subject_id || !start_time || !end_time) {
-        return showToast(t('sa_err_slot_fields_required'), 'error');
-    }
-    // teacher_id is deliberately not sent — the server resolves it from
-    // whoever is actually assigned to teach this subject in this section.
-    const res = await apiFetch(`${API_BASE}/api/admin/timetable`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ class_level, section, stream, day_of_week: Number(day_of_week), subject_id, start_time, end_time })
-    });
-    await handleJsonResponse(res, t('sa_slot_added'));
-    loadTimetable();
-}
-
-async function deleteTimetableSlot(id) {
-    const res = await apiFetch(`${API_BASE}/api/admin/timetable/${id}`, { method: 'DELETE' });
-    await handleJsonResponse(res, t('sa_slot_removed'));
-    loadTimetable();
 }
 
 // ==========================================================
@@ -1215,18 +1369,43 @@ async function deleteTimetableSlot(id) {
 // ==========================================================
 async function loadMarksReview() {
     const tbody = document.getElementById('sa-marks-review-tbody');
-    tbody.innerHTML = `<tr><td colspan="4">${t('sa_loading')}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6">${t('sa_loading')}</td></tr>`;
     const res = await apiFetch(`${API_BASE}/api/academic-vp/marks-review`);
-    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="4">${t('sa_load_error')}</td></tr>`; return; }
+    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_load_error')}</td></tr>`; return; }
     const rows = await res.json();
-    if (rows.length === 0) { tbody.innerHTML = `<tr><td colspan="4">${t('sa_no_data')}</td></tr>`; return; }
+    if (rows.length === 0) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_no_data')}</td></tr>`; return; }
     tbody.innerHTML = rows.map(r => `
         <tr>
-            <td>${escapeHtml(r.full_name)}</td>
+            <td>${escapeHtml(r.full_name)} (${escapeHtml(r.teacher_id)})</td>
             <td>${r.class_level}-${r.section} (${escapeHtml(r.stream || '')})</td>
             <td><span class="badge badge-${r.pushed ? 'approved' : 'pending'}">${r.pushed ? t('sa_pushed') : t('sa_not_pushed')}</span></td>
             <td>${r.pushed_at ? formatEthDateTime(r.pushed_at) : '—'}</td>
+            <td>${r.pushed
+                ? (r.incomplete_count > 0
+                    ? `<span class="badge badge-rejected">${r.incomplete_count} ${t('sa_incomplete')}</span>`
+                    : '—')
+                : '—'}</td>
+            <td>${r.pushed && r.incomplete_count > 0
+                ? `<button class="btn btn-sm btn-danger" onclick="reopenMarksReport('${r.teacher_id}', ${r.incomplete_count})">${t('sa_send_reentry_approval')}</button>`
+                : '—'}</td>
         </tr>`).join('');
+}
+
+// Academic VP sends a homeroom teacher's already-pushed report back for
+// correction — only offered once that section is pushed AND has at
+// least one Incomplete student (the button doesn't even render
+// otherwise). Unlocks the homeroom teacher's editing on their end so
+// they can fix those students and push again.
+async function reopenMarksReport(teacher_id, incomplete_count) {
+    if (!(await showConfirmModal(t('sa_confirm_reopen_marks', { count: incomplete_count }), { danger: true }))) return;
+    const note = await showPromptModal(t('sa_prompt_reopen_note')) || '';
+    if (!(await verifyAdminPassword())) return;
+    const res = await apiFetch(`${API_BASE}/api/academic-vp/marks-review/${teacher_id}/reopen`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note })
+    });
+    await handleJsonResponse(res, t('sa_reentry_approval_sent'));
+    loadMarksReview();
 }
 
 // ==========================================================
@@ -1247,10 +1426,16 @@ async function loadSemesterStatus() {
 // the Academic VP's own login password first — same one-time re-auth gate
 // as unlocking Subject Configuration for edit (verify-password doesn't
 // issue a new session, it just confirms the password again).
-async function verifyAcademicVpPassword(promptMessage) {
-    const password = await showPasswordPromptModal(promptMessage);
+// Generic re-authentication gate for ANY School Admin action — assigning,
+// removing, approving, granting, or revoking anything requires the
+// logged-in admin (Admin VP, Academic VP, or Principal) to re-enter their
+// own login password immediately before the action goes through. Doesn't
+// issue a new session, just confirms the password again against the same
+// school_admins.security_password used at login.
+async function verifyAdminPassword(promptMessage) {
+    const password = await showPasswordPromptModal(promptMessage || t('sa_action_password_prompt'));
     if (!password) return false;
-    const res = await apiFetch(`${API_BASE}/api/academic-vp/subjects/verify-password`, {
+    const res = await apiFetch(`${API_BASE}/api/admin/verify-password`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password })
     });
@@ -1260,6 +1445,12 @@ async function verifyAcademicVpPassword(promptMessage) {
         return false;
     }
     return true;
+}
+
+// Kept as a thin alias — older call sites were written against this name
+// specifically, and it's the same check either way.
+async function verifyAcademicVpPassword(promptMessage) {
+    return verifyAdminPassword(promptMessage);
 }
 
 async function startSemester() {
@@ -1355,6 +1546,7 @@ async function loadDisciplinaryCases() {
 async function decideCase(case_id, decision) {
     if (decision === 'terminated' && !(await showConfirmModal(t('sa_confirm_terminate'), { danger: true }))) return;
     const note = await showPromptModal(t('sa_prompt_decision_note')) || '';
+    if (!(await verifyAdminPassword())) return;
     const res = await apiFetch(`${API_BASE}/api/principal/disciplinary-cases/${case_id}/decide`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ decision, note })
@@ -1389,6 +1581,7 @@ async function loadDocumentApprovals() {
 async function decideDocumentRequest(request_id, action) {
     let body = {};
     if (action === 'reject') body = { reason: await showPromptModal(t('sa_prompt_rejection_reason')) || '' };
+    if (!(await verifyAdminPassword())) return;
     const res = await apiFetch(`${API_BASE}/api/principal/teacher-document-requests/${request_id}/${action}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     });
@@ -1488,6 +1681,7 @@ async function loadSubjectEntryRequests() {
 async function decideSubjectEntryRequest(id, action) {
     let body = {};
     if (action === 'reject') body = { reason: await showPromptModal(t('sa_prompt_rejection_reason')) || '' };
+    if (!(await verifyAdminPassword())) return;
     const res = await apiFetch(`${API_BASE}/api/academic-vp/subject-entry-requests/${id}/${action}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     });
@@ -1524,6 +1718,7 @@ async function loadDropoutRequests() {
 
 async function decideDropoutRequest(student_id, action) {
     if (action === 'approve' && !(await showConfirmModal(t('sa_dropout_approve_confirm')))) return;
+    if (!(await verifyAdminPassword())) return;
     const res = await apiFetch(`${API_BASE}/api/academic-vp/dropout-requests/${student_id}/${action}`, { method: 'POST' });
     await handleJsonResponse(res, action === 'approve' ? t('sa_dropout_approved_msg') : t('sa_dropout_rejected_msg'));
     loadDropoutRequests();
@@ -1801,6 +1996,7 @@ async function initiateDirectTransfer() {
     const input = document.getElementById('direct-transfer-student-id');
     const student_id = input.value.trim();
     if (!student_id) return showToast(t('sa_err_student_id_required'), 'error');
+    if (!(await verifyAdminPassword())) return;
 
     const res = await apiFetch(`${API_BASE}/api/principal/transfer-requests/direct`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1821,18 +2017,30 @@ function transferRequestStatusBadge(r) {
 }
 
 async function approveTransferRequest(request_id) {
+    if (!(await verifyAdminPassword())) return;
     const res = await apiFetch(`${API_BASE}/api/principal/transfer-requests/${request_id}/approve`, { method: 'POST' });
     await handleJsonResponse(res, t('sa_tr_approved_msg'));
     loadTransferRequests();
 }
 
 async function rejectTransferRequest(request_id) {
+    if (!(await verifyAdminPassword())) return;
     const reason = await showPromptModal(t('sa_decline_reason_prompt')) || '';
     const res = await apiFetch(`${API_BASE}/api/principal/transfer-requests/${request_id}/reject`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason })
     });
     await handleJsonResponse(res, t('sa_tr_rejected_msg'));
     loadTransferRequests();
+}
+
+// A transfer isn't "pending" on the Principal once it's been sent —
+// it's sitting with the receiving school's Registrar. Only once the
+// Registrar has actually completed their side does it become done, so
+// the label reflects whose court it's in rather than a generic "pending".
+function transferStatusBadge(status) {
+    if (status === 'completed') return `<span class="badge badge-approved">${t('sa_transfer_complete')}</span>`;
+    if (status === 'cancelled') return `<span class="badge badge-rejected">${t('sa_cancelled')}</span>`;
+    return `<span class="badge badge-escalated">${t('sa_awaiting_registrar')}</span>`;
 }
 
 // ---------- Transferred Students (this year, read-only) ----------
@@ -1849,7 +2057,7 @@ async function loadTransferredStudents() {
             <td>${escapeHtml(r.full_name)}</td>
             <td>${r.class_level}-${r.section}</td>
             <td>${escapeHtml(r.transfer_code || '—')}</td>
-            <td><span class="badge ${r.transfer_status === 'completed' ? 'badge-approved' : 'badge-pending'}">${escapeHtml(r.transfer_status)}</span></td>
+            <td>${transferStatusBadge(r.transfer_status)}</td>
             <td>${formatEthDate(r.completed_at || r.initiated_at)}</td>
         </tr>`).join('');
 }
@@ -2029,7 +2237,10 @@ function openAcceptIncomingModal(incoming_id) {
         <p class="page-subtitle">${t('sa_accept_incoming_hint')}</p>
         <div class="form-group">
             <label>${t('sa_temp_password_label')}</label>
-            <input type="text" id="accept-incoming-password" value="1122" />
+            <div class="password-prompt-field-wrap">
+                <span class="password-prompt-field-icon">${lucideIcon('lock', 16)}</span>
+                <input type="text" id="accept-incoming-password" class="password-prompt-field" value="1122" />
+            </div>
         </div>
         <div class="form-actions">
             <button class="btn btn-accent" onclick="acceptIncomingTeacher(${incoming_id})">${t('sa_accept')}</button>
@@ -2041,6 +2252,7 @@ function openAcceptIncomingModal(incoming_id) {
 async function acceptIncomingTeacher(incoming_id) {
     const password = document.getElementById('accept-incoming-password').value.trim();
     if (!password) return showToast(t('sa_err_teacher_setup_required'), 'error');
+    if (!(await verifyAdminPassword())) return;
     const res = await apiFetch(`${API_BASE}/api/principal/incoming-teachers/${incoming_id}/accept`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password })
@@ -2052,6 +2264,7 @@ async function acceptIncomingTeacher(incoming_id) {
 }
 
 async function declineIncomingTeacher(incoming_id) {
+    if (!(await verifyAdminPassword())) return;
     const reason = await showPromptModal(t('sa_decline_reason_prompt')) || '';
     const res = await apiFetch(`${API_BASE}/api/principal/incoming-teachers/${incoming_id}/decline`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2102,28 +2315,75 @@ async function loadTeacherAssignments(filterTeacherId) {
     }
 
     const tbody = document.getElementById('sa-teacher-assignments-tbody');
-    tbody.innerHTML = `<tr><td colspan="6">${t('sa_loading')}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5">${t('sa_loading')}</td></tr>`;
     const teacherIdFilter = filterTeacherId || filterSelect?.value || '';
     const url = teacherIdFilter
         ? `${API_BASE}/api/academic-vp/teacher-assignments?teacher_id=${encodeURIComponent(teacherIdFilter)}`
         : `${API_BASE}/api/academic-vp/teacher-assignments`;
     const res = await apiFetch(url);
-    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_load_error')}</td></tr>`; return; }
+    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="5">${t('sa_load_error')}</td></tr>`; return; }
     const rows = await res.json();
-    if (rows.length === 0) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_no_data')}</td></tr>`; return; }
-    tbody.innerHTML = rows.map(r => `
+    if (rows.length === 0) { tbody.innerHTML = `<tr><td colspan="5">${t('sa_no_data')}</td></tr>`; return; }
+
+    // Group rows so a teacher covering 9A/9B/9C for the same subject is one
+    // line with a row of section tick-boxes, rather than three separate
+    // rows repeating the teacher/subject/class over and over.
+    const groups = new Map();
+    for (const r of rows) {
+        const key = `${r.teacher_id}|${r.subject_id}|${r.class_level}|${r.stream || ''}`;
+        if (!groups.has(key)) {
+            groups.set(key, {
+                teacher_id: r.teacher_id, teacher_name: r.teacher_name,
+                subject_id: r.subject_id, subject_name: r.subject_name,
+                class_level: r.class_level, stream: r.stream,
+                sections: new Set()
+            });
+        }
+        groups.get(key).sections.add(r.section);
+    }
+
+    tbody.innerHTML = [...groups.values()].map(g => {
+        // All sections that exist for this class level (+ stream, if any),
+        // so the tick row shows the full set — not just the ones assigned.
+        let available = TA_CLASS_SECTIONS_CACHE.filter(s => String(s.class_level) === String(g.class_level));
+        if (g.stream) available = available.filter(s => !s.stream || normalizeStreamCode(s.stream) === normalizeStreamCode(g.stream));
+        const sectionNames = new Set(available.map(s => s.section_name));
+        // Guard against a legacy assignment whose section isn't in the
+        // current class_sections config — still show it, ticked.
+        g.sections.forEach(s => sectionNames.add(s));
+
+        const boxes = [...sectionNames].sort().map(name => {
+            const assigned = g.sections.has(name);
+            const disabledAttr = (canAssign && assigned) ? '' : 'disabled';
+            const interactive = canAssign && assigned;
+            const clickHandler = interactive
+                ? `onclick="event.preventDefault(); unassignTeacherSection('${g.teacher_id}','${g.class_level}','${name}','${g.subject_id}')"`
+                : '';
+            return `<label class="ta-section-tick${assigned ? ' is-assigned' : ''}" title="${escapeHtml(name)}" ${clickHandler}>
+                <input type="checkbox" ${assigned ? 'checked' : ''} ${disabledAttr} tabindex="-1">
+                <span>${escapeHtml(name)}</span>
+            </label>`;
+        }).join('');
+
+        return `
         <tr>
-            <td>${escapeHtml(r.teacher_name)}</td>
-            <td>${escapeHtml(r.subject_name)}</td>
-            <td>${escapeHtml(r.class_level)}</td>
-            <td>${escapeHtml(r.section)}</td>
-            <td>${escapeHtml(r.stream ?? '—')}</td>
-            <td>${canAssign
-                ? `<button class="btn btn-sm btn-danger" onclick="removeTeacherAssignment('${r.teacher_id}','${r.class_level}','${r.section}','${r.subject_id}')">${t('sa_remove')}</button>`
-                : '—'}</td>
-        </tr>`).join('');
+            <td>${escapeHtml(g.teacher_name)} (${escapeHtml(g.teacher_id)})</td>
+            <td>${escapeHtml(g.subject_name)}</td>
+            <td>${escapeHtml(g.class_level)}</td>
+            <td>${escapeHtml(g.stream || '—')}</td>
+            <td><div class="ta-section-ticks">${boxes}</div></td>
+        </tr>`;
+    }).join('');
 
     renderTeacherRoles(teachers, canAssign);
+}
+
+// Clicking a ticked (assigned) section box removes the teacher from just
+// that section — the boxes double as the remove control, so there's no
+// separate long "Remove" button per row. Gated behind a password like
+// every other assign/remove action (see removeTeacherAssignment).
+async function unassignTeacherSection(teacher_id, class_level, section, subject_id) {
+    await removeTeacherAssignment(teacher_id, class_level, section, subject_id);
 }
 
 // ==========================================================
@@ -2135,7 +2395,7 @@ function renderTeacherRoles(teachers, canAssign) {
     if (teachers.length === 0) { tbody.innerHTML = `<tr><td colspan="4">${t('sa_no_data')}</td></tr>`; return; }
     tbody.innerHTML = teachers.map(tr => `
         <tr>
-            <td>${escapeHtml(tr.full_name)}</td>
+            <td>${escapeHtml(tr.full_name)} (${escapeHtml(tr.teacher_id)})</td>
             <td>${tr.homeroom
                 ? `${tr.homeroom.class_level}-${tr.homeroom.section}${tr.homeroom.stream ? ' (' + escapeHtml(tr.homeroom.stream) + ')' : ''}`
                 : `<span class="badge badge-none">${t('sa_none')}</span>`}</td>
@@ -2158,6 +2418,7 @@ async function saveHomeroom() {
     const stream = document.getElementById('hr-stream').value.trim();
     if (!teacher_id) return showToast(t('sa_err_teacher_not_selected'), 'error');
     if (!class_level || !section) return showToast(t('sa_err_assignment_required'), 'error');
+    if (!(await verifyAdminPassword())) return;
 
     const res = await apiFetch(`${API_BASE}/api/academic-vp/homeroom`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2174,6 +2435,8 @@ async function saveHomeroom() {
 }
 
 async function removeTeacherHomeroom(teacher_id) {
+    if (!(await showConfirmModal(t('sa_confirm_remove_homeroom'), { danger: true }))) return;
+    if (!(await verifyAdminPassword())) return;
     const res = await apiFetch(`${API_BASE}/api/academic-vp/homeroom`, {
         method: 'DELETE', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ teacher_id })
@@ -2187,6 +2450,7 @@ async function removeTeacherHomeroom(teacher_id) {
 // than a form.
 async function grantRegistrar(teacher_id) {
     if (!(await showConfirmModal(t('sa_grant_registrar_confirm')))) return;
+    if (!(await verifyAdminPassword())) return;
     const res = await apiFetch(`${API_BASE}/api/academic-vp/grant-registrar`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ teacher_id })
@@ -2197,6 +2461,7 @@ async function grantRegistrar(teacher_id) {
 
 async function revokeRegistrar(teacher_id) {
     if (!(await showConfirmModal(t('sa_revoke_registrar_confirm'), { danger: true }))) return;
+    if (!(await verifyAdminPassword())) return;
     const res = await apiFetch(`${API_BASE}/api/academic-vp/grant-registrar`, {
         method: 'DELETE', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ teacher_id })
@@ -2292,6 +2557,7 @@ async function saveTeacherAssignment() {
     const sections = [...document.querySelectorAll('.ta-section-cb:checked')].map(cb => cb.value);
     if (!teacher_id) return showToast(t('sa_err_teacher_not_selected'), 'error');
     if (!subject_id || !class_level || sections.length === 0) return showToast(t('sa_err_assignment_required'), 'error');
+    if (!(await verifyAdminPassword())) return;
 
     let successCount = 0;
     const errors = [];
@@ -2497,6 +2763,8 @@ async function removeOrphanedSubjects() {
 
 
 async function removeTeacherAssignment(teacher_id, class_level, section, subject_id) {
+    if (!(await showConfirmModal(t('sa_confirm_remove_assignment'), { danger: true }))) return;
+    if (!(await verifyAdminPassword())) return;
     const res = await apiFetch(`${API_BASE}/api/academic-vp/teacher-assignments`, {
         method: 'DELETE', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ teacher_id, class_level, section, subject_id })
@@ -2557,7 +2825,7 @@ async function loadTeacherAudit() {
     if (!data.teachers || data.teachers.length === 0) { tbody.innerHTML = `<tr><td colspan="5">${t('sa_no_data')}</td></tr>`; return; }
     tbody.innerHTML = data.teachers.map(tr => `
         <tr style="cursor:pointer; ${tr.flagged ? 'background:var(--danger-bg);' : ''}" onclick="openTeacherAuditModal('${tr.teacher_id}')">
-            <td>${escapeHtml(tr.full_name)}</td>
+            <td>${escapeHtml(tr.full_name)} (${escapeHtml(tr.teacher_id)})</td>
             <td>${tr.absent_days_30d}</td>
             <td>${tr.punctuality_rate != null ? tr.punctuality_rate + '%' : '—'}</td>
             <td>${tr.avg_score != null ? tr.avg_score : '—'}</td>
@@ -2678,8 +2946,15 @@ function showPromptModal(message, { placeholder = '', required = false, multilin
 function showPasswordPromptModal(message) {
     return new Promise(resolve => {
         openModal(`
-            <h3>${escapeHtml(message)}</h3>
-            <input id="sa-password-prompt-field" class="form-control" type="password" style="width:100%; margin:12px 0;" autocomplete="current-password">
+            <div class="password-prompt">
+                <div class="password-prompt-icon">${lucideIcon('lock', 20)}</div>
+                <h3>${escapeHtml(message)}</h3>
+                <div class="password-prompt-field-wrap">
+                    <span class="password-prompt-field-icon">${lucideIcon('lock', 16)}</span>
+                    <input id="sa-password-prompt-field" class="form-control password-prompt-field" type="password" autocomplete="current-password" placeholder="${t('sa_password_placeholder')}">
+                    <button type="button" class="password-prompt-toggle" id="sa-password-prompt-toggle" aria-label="${t('sa_show_password')}" tabindex="-1">${lucideIcon('eye', 17)}</button>
+                </div>
+            </div>
             <div class="form-actions">
                 <button class="btn btn-ghost" id="sa-password-prompt-cancel-btn">${t('sa_cancel')}</button>
                 <button class="btn btn-primary" id="sa-password-prompt-ok-btn">${t('sa_confirm_ok')}</button>
@@ -2692,6 +2967,13 @@ function showPasswordPromptModal(message) {
         document.getElementById('sa-password-prompt-ok-btn').onclick = submit;
         input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
         document.getElementById('sa-password-prompt-cancel-btn').onclick = () => finish(null);
+        const toggleBtn = document.getElementById('sa-password-prompt-toggle');
+        toggleBtn.onclick = () => {
+            const showing = input.type === 'text';
+            input.type = showing ? 'password' : 'text';
+            toggleBtn.innerHTML = lucideIcon(showing ? 'eye' : 'eye-off', 17);
+            toggleBtn.setAttribute('aria-label', t(showing ? 'sa_show_password' : 'sa_hide_password'));
+        };
         document.getElementById('sa-generic-modal').addEventListener('click', (e) => {
             if (e.target.id === 'sa-generic-modal') finish(null);
         });

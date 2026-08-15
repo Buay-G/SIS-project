@@ -526,7 +526,7 @@ function renderDashboardTodaysClasses(rows) {
             <div class="todays-class-time">${formatTimeRange(r.start_time, r.end_time)}</div>
             <div class="todays-class-info">
                 <strong>${escapeHtml(r.subject_name)}</strong>
-                <span>Grade ${escapeHtml(String(r.class_level))} - ${escapeHtml(r.section)} (${escapeHtml(r.stream)})</span>
+                <span>Grade ${escapeHtml(String(r.class_level))} - ${escapeHtml(r.section)} (${escapeHtml(streamDisplayLabel(r.stream))})</span>
             </div>
             ${badge}
         </div>`;
@@ -690,6 +690,223 @@ window.submitSubjectEntryRequest = async () => {
         await renderSubjectEntryRequestList();
     } catch (err) {
         showAlertModal(err.message || 'Could not submit request.');
+    }
+};
+
+// LAST SEMESTER MARK ENTRY REQUEST (homeroom teacher catching up students
+// who ended a closed semester still flagged Incomplete). Same visibility
+// rule as the subject-access widget above — homeroom teachers only — but
+// this one also has a live "entry panel" that only appears once the
+// Academic VP has approved the section's request: a Semester 1/2 switch
+// plus a subject picker, filtered down to students who are still
+// genuinely missing marks.
+let lateMarksSelectedTerm = 'Semester 1';
+
+async function loadLateMarksRequestUI() {
+    const widget = document.getElementById('late-marks-widget');
+    if (!widget) return;
+
+    if (!homeroomInfo || !homeroomInfo.is_homeroom) {
+        widget.style.display = 'none';
+        return;
+    }
+    widget.style.display = 'block';
+
+    await renderLateMarksRequestList();
+}
+
+async function renderLateMarksRequestList() {
+    const list = document.getElementById('late-marks-request-list');
+    const panel = document.getElementById('late-marks-entry-panel');
+    if (!list) return;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/late-marks-requests`);
+        const requests = res.ok ? await res.json() : [];
+
+        if (requests.length === 0) {
+            list.innerHTML = '';
+        } else {
+            const statusLabel = { pending: 'Pending', approved: 'Approved', rejected: 'Rejected' };
+            const statusClass = { pending: 'status-pending', approved: 'status-approved', rejected: 'status-rejected' };
+            list.innerHTML = `
+                <table class="student-table">
+                    <thead><tr><th>Reason</th><th>Status</th><th>Requested</th></tr></thead>
+                    <tbody>
+                        ${requests.map(r => `
+                            <tr>
+                                <td>${escapeHtml(r.reason || '—')}</td>
+                                <td><span class="request-status-badge ${statusClass[r.status] || ''}">${statusLabel[r.status] || r.status}</span></td>
+                                <td>${escapeHtml(new Date(r.requested_at).toLocaleDateString())}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>`;
+        }
+
+        // Most recent request drives whether the entry panel shows —
+        // only the latest approved grant is actionable server-side too
+        // (see getApprovedLateMarksGrant), so mirror that here.
+        const latest = requests[0];
+        if (panel) {
+            if (latest && latest.status === 'approved') {
+                panel.style.display = 'block';
+                await loadLateMarksSubjects();
+            } else {
+                panel.style.display = 'none';
+            }
+        }
+    } catch (err) {
+        console.error("Error loading late-marks request status:", err);
+    }
+}
+
+window.submitLateMarksRequest = async () => {
+    const reasonInput = document.getElementById('late-marks-reason');
+    const note = document.getElementById('late-marks-status-note');
+
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/late-marks-requests`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: reasonInput ? reasonInput.value.trim() : '' })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Could not submit request');
+
+        if (note) note.textContent = data.message || 'Request sent.';
+        if (reasonInput) reasonInput.value = '';
+        await renderLateMarksRequestList();
+    } catch (err) {
+        showAlertModal(err.message || 'Could not submit request.');
+    }
+};
+
+window.setLateMarksTerm = (term) => {
+    lateMarksSelectedTerm = term;
+    document.querySelectorAll('#late-marks-entry-panel .segmented-toggle-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.term === term);
+    });
+    loadLateMarksIncompleteStudents();
+};
+
+// Reuses the same subject list the subject-access widget uses (every
+// subject in the school for the homeroom's stream) — the late-entry
+// grant covers all of them, so there's no need for a narrower list here.
+async function loadLateMarksSubjects() {
+    const select = document.getElementById('late-marks-subject-select');
+    if (!select || !homeroomInfo) return;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/subjects?stream=${encodeURIComponent(homeroomInfo.stream)}`);
+        const subjects = res.ok ? await res.json() : [];
+        select.innerHTML = `<option value="">Select a subject…</option>` +
+            subjects.map(s => `<option value="${s.subject_id}">${escapeHtml(s.subject_name)}</option>`).join('');
+    } catch (err) {
+        console.error("Error loading subjects for late-marks entry:", err);
+    }
+}
+
+window.loadLateMarksIncompleteStudents = async () => {
+    const subjectSelect = document.getElementById('late-marks-subject-select');
+    const container = document.getElementById('late-marks-students-container');
+    const subject_id = subjectSelect ? subjectSelect.value : '';
+    if (!container) return;
+
+    if (!subject_id) {
+        container.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Select a subject above to see incomplete students.</p>';
+        return;
+    }
+
+    container.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Loading…</p>';
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/late-marks-requests/incomplete-students?term=${encodeURIComponent(lateMarksSelectedTerm)}&subject_id=${subject_id}`);
+        const data = await res.json().catch(() => ([]));
+        if (!res.ok) throw new Error(data.error || 'Could not load incomplete students');
+
+        if (!data.length) {
+            container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">No incomplete students for ${escapeHtml(lateMarksSelectedTerm)} in this subject — nothing left to enter.</p>`;
+            return;
+        }
+
+        const typeOptions = ASSESSMENT_TYPES_ORDER.map(type =>
+            `<option value="${type}">${escapeHtml(assessmentTypeLabel(type))}</option>`
+        ).join('');
+
+        container.innerHTML = data.map(s => {
+            const fullName = [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' ');
+            return `
+            <div class="search-group" style="flex-wrap: wrap; align-items: center; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #e2e8f0;">
+                <span style="min-width: 180px; font-size: 0.85rem;"><strong>${escapeHtml(s.student_id)}</strong> — ${escapeHtml(fullName)}</span>
+                <select class="form-input late-marks-type-select" data-student-id="${escapeHtml(s.student_id)}" style="max-width: 170px" onchange="updateLateMarksScoreLimits(this)">
+                    ${typeOptions}
+                </select>
+                <input type="number" class="form-input late-marks-score-input" data-student-id="${escapeHtml(s.student_id)}" style="max-width: 110px" step="0.5" placeholder="Score" />
+                <button class="btn-primary" onclick="submitLateMark('${escapeHtml(s.student_id)}', ${subject_id}, this)">Save</button>
+                <span class="late-marks-row-status" data-status-for="${escapeHtml(s.student_id)}" style="font-size: 0.8rem;"></span>
+            </div>`;
+        }).join('');
+
+        container.querySelectorAll('.late-marks-type-select').forEach(sel => updateLateMarksScoreLimits(sel));
+    } catch (err) {
+        container.innerHTML = `<p style="color:#dc2626; font-size:0.85rem;">${escapeHtml(err.message || 'Could not load incomplete students.')}</p>`;
+    }
+};
+
+// ASSESSMENT_TYPE_LIMITS keys, in the order a teacher would naturally
+// fill them in (matches the type-select dropdown on the individual-entry
+// form above).
+const ASSESSMENT_TYPES_ORDER = ['individual_assignment_1', 'individual_assignment_2', 'group_assignment', 'quiz', 'midterm', 'final'];
+
+window.updateLateMarksScoreLimits = (selectEl) => {
+    const row = selectEl.closest('.search-group');
+    const scoreInput = row ? row.querySelector('.late-marks-score-input') : null;
+    if (!scoreInput) return;
+    const limits = ASSESSMENT_TYPE_LIMITS[selectEl.value] || { min: 1, max: 100 };
+    scoreInput.min = limits.min;
+    scoreInput.max = limits.max;
+    scoreInput.step = '0.5';
+    scoreInput.placeholder = `${limits.min}-${limits.max}`;
+};
+
+window.submitLateMark = async (student_id, subject_id, btn) => {
+    const row = btn.closest('.search-group');
+    const typeSelect = row ? row.querySelector('.late-marks-type-select') : null;
+    const scoreInput = row ? row.querySelector('.late-marks-score-input') : null;
+    const statusEl = row ? row.querySelector('.late-marks-row-status') : null;
+    const type = typeSelect ? typeSelect.value : '';
+    // parseFloat so half-point marks (4.5, 9.5, etc.) are entered as-is.
+    const score = scoreInput ? parseFloat(scoreInput.value) : NaN;
+
+    const limits = ASSESSMENT_TYPE_LIMITS[type] || { min: 1, max: 100 };
+    if (isNaN(score) || score < limits.min || score > limits.max) {
+        showAlertModal(`Please enter a valid score for ${assessmentTypeLabel(type)}, between ${limits.min} and ${limits.max}.`);
+        return;
+    }
+
+    btn.disabled = true;
+    if (statusEl) statusEl.textContent = 'Saving…';
+
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/late-marks-requests/add-mark`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ student_id, subject_id, term: lateMarksSelectedTerm, type, score })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Failed to save');
+
+        if (statusEl) statusEl.textContent = 'Saved ✓';
+        if (scoreInput) scoreInput.value = '';
+        // Once every assessment type for this student+subject+term is
+        // filled, they'll drop off the incomplete list on next load —
+        // but rather than force a full reload after every single save,
+        // just leave the row so the teacher can keep entering other
+        // assessment types for the same student without losing their
+        // place.
+    } catch (err) {
+        if (statusEl) statusEl.textContent = '';
+        showAlertModal(err.message || 'Could not save this mark.');
+    } finally {
+        btn.disabled = false;
     }
 };
 
@@ -1147,16 +1364,30 @@ function populateConductSectionFilter(data) {
     select.innerHTML = options.join('');
 }
 
+// Several backend endpoints (teacher_assignments, teachers.homeroom_stream)
+// store the short internal bucket code ('General'|'Natural'|'Social')
+// rather than the full name a person actually recognizes. This maps it to
+// the full label wherever a stream name is shown on screen. Already-long
+// values (and anything unrecognized, like 'General') pass through
+// unchanged, so it's safe to apply even when a source's exact convention
+// isn't certain.
+function streamDisplayLabel(stream) {
+    if (stream === 'Natural') return 'Natural Science';
+    if (stream === 'Social') return 'Social Science';
+    return stream;
+}
+
 // Shared "Grade {level} - {section} ({stream})" label, used across the
 // conduct widget, push-status list, and the section filter dropdown.
 function formatGradeSectionStream(level, section, stream) {
+    const streamLabel = streamDisplayLabel(stream);
     if (typeof t === 'function') {
         return t('grade_section_stream')
             .replace('{level}', level)
             .replace('{section}', section)
-            .replace('{stream}', stream);
+            .replace('{stream}', streamLabel);
     }
-    return `Grade ${level} - ${section} (${stream})`;
+    return `Grade ${level} - ${section} (${streamLabel})`;
 }
 
 function setupConductFilter() {
@@ -1263,6 +1494,7 @@ function renderPushList(data) {
     }
 
     list.innerHTML = data.map(entry => {
+        const actionLabel = entry.via_request ? 'Pull' : 'Push';
         const statusHtml = entry.pushed
             ? `<span class="push-status push-status-locked">&#128274; Pushed &amp; locked (${new Date(entry.pushed_at).toLocaleDateString()})</span>`
             : `<button class="btn-primary push-btn" onclick='pushReport(${JSON.stringify({
@@ -1270,12 +1502,16 @@ function renderPushList(data) {
                 class_level: entry.class_level,
                 section: entry.section,
                 stream: entry.stream
-              })})'>Push ${entry.term} Report</button>`;
+              })}, ${entry.via_request})'>${actionLabel} ${entry.term} Report</button>`;
+
+        const grantedBadge = entry.via_request
+            ? `<span class="push-status" style="background:#fef3c7; color:#92400e; margin-left:6px;">Granted access — not your subject</span>`
+            : '';
 
         return `
             <div class="conduct-card">
                 <div class="conduct-card-header">
-                    <strong>${entry.subject_name}</strong>
+                    <strong>${entry.subject_name}</strong>${grantedBadge}
                     <span class="conduct-card-section">${formatGradeSectionStream(entry.class_level, entry.section, entry.stream)} — ${entry.term}</span>
                 </div>
                 <div style="margin-top:8px;">${statusHtml}</div>
@@ -1283,10 +1519,12 @@ function renderPushList(data) {
     }).join('');
 }
 
-window.pushReport = async (assignment) => {
+window.pushReport = async (assignment, viaRequest = false) => {
     const confirmed = await showConfirmModal(
         "This will LOCK it — you won't be able to enter any more marks for this subject/section/term afterward.",
-        "Push this report to the homeroom teacher?"
+        viaRequest
+            ? "Pull this subject's report to homeroom now, instead of waiting for its regular teacher to push it?"
+            : "Push this report to the homeroom teacher?"
     );
     if (!confirmed) return;
 
@@ -1340,20 +1578,20 @@ async function loadHomeroomInfo() {
 
         if (homeroomInfo.is_homeroom) {
             const label = document.getElementById('homeroom-section-label');
-            if (label) label.textContent = `Grade ${homeroomInfo.class_level} - ${homeroomInfo.section} (${homeroomInfo.stream})`;
+            if (label) label.textContent = formatGradeSectionStream(homeroomInfo.class_level, homeroomInfo.section, homeroomInfo.stream);
 
             const dashboardLabel = document.getElementById('dashboard-textbook-section-label');
-            if (dashboardLabel) dashboardLabel.textContent = `Grade ${homeroomInfo.class_level} - ${homeroomInfo.section} (${homeroomInfo.stream})`;
+            if (dashboardLabel) dashboardLabel.textContent = formatGradeSectionStream(homeroomInfo.class_level, homeroomInfo.section, homeroomInfo.stream);
 
             const myClassLabel = document.getElementById('myclass-section-label');
-            if (myClassLabel) myClassLabel.textContent = `Grade ${homeroomInfo.class_level} - ${homeroomInfo.section} (${homeroomInfo.stream})`;
+            if (myClassLabel) myClassLabel.textContent = formatGradeSectionStream(homeroomInfo.class_level, homeroomInfo.section, homeroomInfo.stream);
 
             const leaderboardLabel = document.getElementById('leaderboard-section-label');
-            if (leaderboardLabel) leaderboardLabel.textContent = `Grade ${homeroomInfo.class_level} - ${homeroomInfo.section} (${homeroomInfo.stream})`;
+            if (leaderboardLabel) leaderboardLabel.textContent = formatGradeSectionStream(homeroomInfo.class_level, homeroomInfo.section, homeroomInfo.stream);
 
             const sidebarBadge = document.getElementById('sidebar-homeroom-badge');
             const sidebarLabel = document.getElementById('sidebar-homeroom-label');
-            if (sidebarLabel) sidebarLabel.textContent = `Grade ${homeroomInfo.class_level} - ${homeroomInfo.section} (${homeroomInfo.stream})`;
+            if (sidebarLabel) sidebarLabel.textContent = formatGradeSectionStream(homeroomInfo.class_level, homeroomInfo.section, homeroomInfo.stream);
             if (sidebarBadge) sidebarBadge.style.display = 'flex';
 
             await Promise.all([
@@ -1385,13 +1623,22 @@ window.loadHomeroomStudentReport = async () => {
             return;
         }
 
-        const rows = report.map(r => `
+        const rows = report.flatMap(grade => {
+            const headerRow = `
             <tr>
-                <td>${r.subject_name}</td>
-                <td>${r.semester_1 != null ? r.semester_1 : '<span class="shaded-blank">N/A</span>'}</td>
-                <td>${r.semester_2 != null ? r.semester_2 : '<span class="shaded-blank">N/A</span>'}</td>
-                <td>${r.year_average != null ? r.year_average : '<span class="shaded-blank">N/A</span>'}</td>
-            </tr>`).join('');
+                <td colspan="4" style="font-weight:600; background:#f1f5f9;">
+                    Grade ${grade.class_level} — Section ${grade.section}
+                </td>
+            </tr>`;
+            const subjectRows = grade.subjects.map(s => `
+            <tr>
+                <td>${s.subject_name}</td>
+                <td>${s.semester_1 != null ? s.semester_1 : '<span class="shaded-blank">N/A</span>'}</td>
+                <td>${s.semester_2 != null ? s.semester_2 : '<span class="shaded-blank">N/A</span>'}</td>
+                <td>${s.year_average != null ? s.year_average : '<span class="shaded-blank">N/A</span>'}</td>
+            </tr>`);
+            return [headerRow, ...subjectRows];
+        }).join('');
 
         output.innerHTML = `
             <table id="progress-table">
@@ -1453,8 +1700,15 @@ window.loadHomeroomSectionReport = async () => {
             : `<button class="btn-primary" onclick="notifyIncompleteStudents()" style="margin-bottom:12px; margin-left:8px; width:auto; padding:8px 16px; background:#b45309;">Notify Incomplete Students${incompleteCount ? ` (${incompleteCount})` : ''}</button>`;
 
         output.innerHTML = `
-            <button class="btn-primary" onclick="exportSectionReportCSV()" style="margin-bottom:12px; width:auto; padding:8px 16px;">Export CSV</button>
-            ${notifyBtn}
+            <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
+                <div style="display:flex; flex-wrap:wrap; gap:8px;">
+                    <button class="btn-primary" onclick="exportSectionReportCSV()" style="width:auto; padding:8px 16px;">Export CSV</button>
+                    ${notifyBtn.replace('margin-bottom:12px; margin-left:8px;', '')}
+                </div>
+                <button type="button" onclick="closeHomeroomSectionReport()" style="width:auto; padding:8px 16px; background:#f1f5f9; color:#334155; border:1px solid #cbd5e1; border-radius:6px; cursor:pointer; font-size:0.85rem;">
+                    &times; Close
+                </button>
+            </div>
             ${locked ? '<p style="font-size:0.8rem; color:#64748b; margin-bottom:12px;">This term\'s report has already been pushed to the Academic VP — status is locked.</p>' : ''}
             <div style="overflow-x:auto;">
                 <table id="progress-table">
@@ -1469,6 +1723,14 @@ window.loadHomeroomSectionReport = async () => {
         console.error("Section report load error:", err);
         output.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not load section report.</p>';
     }
+};
+
+// Collapses the Whole Section view back down — there was previously no
+// way to exit it short of navigating to another page and back.
+window.closeHomeroomSectionReport = () => {
+    const output = document.getElementById('homeroom-report-output');
+    if (output) output.innerHTML = '';
+    lastSectionReport = null;
 };
 
 function studentStatusBadge(status) {
@@ -2377,7 +2639,7 @@ async function loadMysections() {
         if (!res.ok) return;
         const sections = await res.json();
         select.innerHTML = '<option value="">Select section…</option>' +
-            sections.map(s => `<option value="${s.class_level}|${s.section}|${s.stream}">Grade ${s.class_level} - ${s.section} (${s.stream})</option>`).join('');
+            sections.map(s => `<option value="${s.class_level}|${s.section}|${s.stream}">Grade ${s.class_level} - ${s.section} (${streamDisplayLabel(s.stream)})</option>`).join('');
     } catch (err) {
         console.error("loadMysections error:", err);
     }
@@ -2662,7 +2924,7 @@ function setupNavigation() {
                 if (target === 'contact') { loadContactThreads(); loadMysections(); }
                 if (target === 'idcard') loadTeacherIdCard();
                 if (target === 'actioncenter') loadActionCenterRequests();
-                if (target === 'upload') { loadGradeSheetSections(); loadSubjectEntryRequestUI(); }
+                if (target === 'upload') { loadGradeSheetSections(); loadSubjectEntryRequestUI(); loadLateMarksRequestUI(); }
                 if (target === 'profile') loadTeacherDocumentStatus();
             } else {
                 console.warn(`No page found for data-page="${target}". Did you forget to add <section id="page-${target}">?`);
@@ -2777,15 +3039,21 @@ const loadStudents = async () => {
 function populateStudentFilterOptions(students) {
     const classSelect = document.getElementById('student-filter-class');
     const sectionSelect = document.getElementById('student-filter-section');
+    const streamSelect = document.getElementById('student-filter-stream');
     if (!classSelect || !sectionSelect) return;
 
     const classes = [...new Set(students.map(s => s.class_level))].sort((a, b) => a - b);
     const sections = [...new Set(students.map(s => s.section))].sort();
+    const streams = [...new Set(students.map(s => s.stream).filter(Boolean))].sort();
 
     classSelect.innerHTML = '<option value="">All Classes</option>' +
         classes.map(c => `<option value="${c}">Grade ${c}</option>`).join('');
     sectionSelect.innerHTML = '<option value="">All Sections</option>' +
         sections.map(s => `<option value="${s}">${s}</option>`).join('');
+    if (streamSelect) {
+        streamSelect.innerHTML = '<option value="">All Streams</option>' +
+            streams.map(s => `<option value="${s}">${s}</option>`).join('');
+    }
 }
 
 // Renders both the table rows AND the 3 stat cards from the SAME filtered
@@ -2825,10 +3093,12 @@ function applyStudentFilters() {
     const searchTerm = (document.getElementById('student-search')?.value || '').trim().toLowerCase();
     const classFilter = document.getElementById('student-filter-class')?.value || '';
     const sectionFilter = document.getElementById('student-filter-section')?.value || '';
+    const streamFilter = document.getElementById('student-filter-stream')?.value || '';
 
     const filtered = allMyStudents.filter(s => {
         if (classFilter && String(s.class_level) !== classFilter) return false;
         if (sectionFilter && s.section !== sectionFilter) return false;
+        if (streamFilter && s.stream !== streamFilter) return false;
         if (searchTerm) {
             const fullName = [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' ').toLowerCase();
             if (!fullName.includes(searchTerm) && !s.student_id.toLowerCase().includes(searchTerm)) {
@@ -2845,10 +3115,12 @@ function setupStudentFilters() {
     const search = document.getElementById('student-search');
     const classSelect = document.getElementById('student-filter-class');
     const sectionSelect = document.getElementById('student-filter-section');
+    const streamSelect = document.getElementById('student-filter-stream');
 
     if (search) search.addEventListener('input', applyStudentFilters);
     if (classSelect) classSelect.addEventListener('change', applyStudentFilters);
     if (sectionSelect) sectionSelect.addEventListener('change', applyStudentFilters);
+    if (streamSelect) streamSelect.addEventListener('change', applyStudentFilters);
 }
 
 // SUBJECTS DROPDOWN
@@ -3625,6 +3897,7 @@ window.updateScoreInputLimits = () => {
     const limits = ASSESSMENT_TYPE_LIMITS[typeSelect.value] || { min: 1, max: 100 };
     scoreInput.min = limits.min;
     scoreInput.max = limits.max;
+    scoreInput.step = '0.5';
     scoreInput.placeholder = `Enter Score (${limits.min}-${limits.max})`;
     if (label) label.textContent = `Score, ${limits.min} to ${limits.max}`;
     if (hint) hint.textContent = `${assessmentTypeLabel(typeSelect.value)} is worth ${limits.max}% — enter a score between ${limits.min} and ${limits.max}.`;
@@ -3640,7 +3913,10 @@ window.clampScoreInput = (input) => {
     if (input.value === '') return;
     const typeSelect = document.getElementById('type-select');
     const limits = ASSESSMENT_TYPE_LIMITS[typeSelect?.value] || { min: 1, max: 100 };
-    let num = parseInt(input.value, 10);
+    // parseFloat (not parseInt) so half-point marks like 4.5 or 9.5 —
+    // which students can genuinely earn — aren't truncated down to 4 or 9
+    // as the person types.
+    let num = parseFloat(input.value);
     if (isNaN(num)) return;
     if (num > limits.max) num = limits.max;
     input.value = String(num);
@@ -3693,7 +3969,9 @@ window.submitIndividualMark = async () => {
     const subject_id = document.getElementById('subject-select').value;
     const type = document.getElementById('type-select').value;
     const scoreInput = document.getElementById('score-input');
-    const score = parseInt(scoreInput.value);
+    // parseFloat so half-point marks (e.g. 4.5, 9.5) are submitted as
+    // entered instead of being truncated to a whole number.
+    const score = parseFloat(scoreInput.value);
 
     if (!subject_id) {
         showAlertModal("Please select a subject before submitting.");
@@ -3737,30 +4015,6 @@ window.updateFileName = (input, targetId = 'file-name') => {
     const fileName = input.files[0] ? input.files[0].name : "No file chosen";
     const el = document.getElementById(targetId);
     if (el) el.innerText = fileName;
-};
-
-window.uploadData = async () => {
-    const fileInput = document.getElementById('csv-file');
-    if (fileInput.files.length === 0) return showAlertModal("Please select a CSV file first!");
-
-    const formData = new FormData();
-    formData.append('file', fileInput.files[0]);
-
-    try {
-        const res = await apiFetch(`${API_BASE}/api/upload-marks`, {
-            method: 'POST',
-            body: formData // Do NOT set Content-Type when sending FormData
-        });
-        const result = await res.json();
-        if (res.ok) {
-            showSuccessModal(result.message || "Marks uploaded successfully!");
-        } else {
-            showAlertModal(result.error || "Upload failed.");
-        }
-    } catch (err) {
-        console.error("Upload error:", err);
-        showAlertModal("Could not connect to server.");
-    }
 };
 
 // MISC
@@ -3848,11 +4102,29 @@ function renderNotifications(data) {
         return;
     }
 
-    list.innerHTML = data.items.map(item => `
-        <div class="notif-item" onclick="openNotificationThread(${item.thread_id})">
-            <strong>Reply from ${item.from}</strong>
-            ${item.subject} &mdash; ${item.reply_count} new message${item.reply_count !== 1 ? 's' : ''}
-        </div>`).join('');
+    list.innerHTML = data.items.map(item => {
+        if (item.type === 'subject_request') {
+            const verb = item.status === 'approved' ? 'approved' : 'rejected';
+            return `
+            <div class="notif-item" data-type="subject_request" data-id="${item.request_id}" onclick="openSubjectRequestNotification(${item.request_id})">
+                <strong>Subject access ${verb}</strong>
+                Your request for ${escapeHtml(item.subject_name)} was ${verb} by the Academic VP.
+            </div>`;
+        }
+        if (item.type === 'late_marks_request') {
+            const verb = item.status === 'approved' ? 'approved' : 'rejected';
+            return `
+            <div class="notif-item" data-type="late_marks_request" data-id="${item.request_id}" onclick="openLateMarksRequestNotification(${item.request_id})">
+                <strong>Last semester mark entry ${verb}</strong>
+                Your request to enter last semester's marks was ${verb} by the Academic VP.
+            </div>`;
+        }
+        return `
+            <div class="notif-item" data-type="thread" data-id="${item.thread_id}" onclick="openNotificationThread(${item.thread_id})">
+                <strong>Reply from ${item.from}</strong>
+                ${item.subject} &mdash; ${item.reply_count} new message${item.reply_count !== 1 ? 's' : ''}
+            </div>`;
+    }).join('');
 }
 
 window.toggleNotificationPanel = () => {
@@ -3876,16 +4148,70 @@ window.openNotificationThread = (thread_id) => {
     loadNotifications();
 };
 
+// Clicking a "subject access approved/rejected" notification takes the
+// teacher to Upload Marks, where their request list (with its live
+// status) already lives, and marks all their decided requests as seen.
+window.openSubjectRequestNotification = (request_id) => {
+    document.getElementById('notification-panel').style.display = 'none';
+    const uploadLink = document.querySelector('.nav-link[data-page="upload"]');
+    if (uploadLink) {
+        uploadLink.click();
+    } else {
+        document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+        document.querySelectorAll('.page-content').forEach(p => p.style.display = 'none');
+        const uploadPage = document.getElementById('page-upload');
+        if (uploadPage) uploadPage.style.display = 'block';
+        loadGradeSheetSections();
+        loadSubjectEntryRequestUI();
+    }
+    apiFetch(`${API_BASE}/api/teacher/subject-entry-requests/mark-seen`, { method: 'POST' }).catch(() => {});
+    loadNotifications();
+};
+
+// Same idea for a "last semester mark entry approved/rejected"
+// notification — takes the teacher to Upload Marks, where the late-marks
+// widget lives, and clears the seen flag so the bell stops lighting up.
+window.openLateMarksRequestNotification = (request_id) => {
+    document.getElementById('notification-panel').style.display = 'none';
+    const uploadLink = document.querySelector('.nav-link[data-page="upload"]');
+    if (uploadLink) {
+        uploadLink.click();
+    } else {
+        document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+        document.querySelectorAll('.page-content').forEach(p => p.style.display = 'none');
+        const uploadPage = document.getElementById('page-upload');
+        if (uploadPage) uploadPage.style.display = 'block';
+        loadGradeSheetSections();
+        loadLateMarksRequestUI();
+    }
+    apiFetch(`${API_BASE}/api/homeroom/late-marks-requests/mark-seen`, { method: 'POST' }).catch(() => {});
+    loadNotifications();
+};
+
 window.markAllNotificationsRead = async () => {
     const list = document.getElementById('notification-list');
     if (!list) return;
     const items = list.querySelectorAll('.notif-item');
-    // Extract thread IDs from onclick attributes and mark each read
     const promises = [];
+    let hasSubjectRequest = false;
+    let hasLateMarksRequest = false;
     items.forEach(item => {
-        const match = item.getAttribute('onclick').match(/\d+/);
-        if (match) promises.push(apiFetch(`${API_BASE}/api/contact/thread/${match[0]}/mark-read`, { method: 'POST' }));
+        const type = item.getAttribute('data-type');
+        const id = item.getAttribute('data-id');
+        if (type === 'thread' && id) {
+            promises.push(apiFetch(`${API_BASE}/api/contact/thread/${id}/mark-read`, { method: 'POST' }));
+        } else if (type === 'subject_request') {
+            hasSubjectRequest = true;
+        } else if (type === 'late_marks_request') {
+            hasLateMarksRequest = true;
+        }
     });
+    if (hasSubjectRequest) {
+        promises.push(apiFetch(`${API_BASE}/api/teacher/subject-entry-requests/mark-seen`, { method: 'POST' }));
+    }
+    if (hasLateMarksRequest) {
+        promises.push(apiFetch(`${API_BASE}/api/homeroom/late-marks-requests/mark-seen`, { method: 'POST' }));
+    }
     await Promise.all(promises);
     loadNotifications();
 };
@@ -4061,7 +4387,7 @@ function renderGradeSheetTable(students) {
             return `
             <td>
                 <label for="gs-${s.student_id}-${type}" class="sr-only">${escapeHtml(assessmentTypeLabel(type))} score for ${escapeHtml(fullName)}</label>
-                <input type="number" min="${limits.min}" max="${limits.max}" class="gradesheet-input"
+                <input type="number" min="${limits.min}" max="${limits.max}" step="0.5" class="gradesheet-input"
                        id="gs-${s.student_id}-${type}"
                        data-student-id="${s.student_id}"
                        data-type="${type}"
@@ -4119,7 +4445,9 @@ window.saveGradeSheetRow = async (studentId, btn) => {
 
     const results = await Promise.allSettled(dirtyInputs.map(async (input) => {
         const type = input.dataset.type;
-        const score = parseInt(input.value, 10);
+        // parseFloat so half-point marks (4.5, 9.5, etc.) students can
+        // legitimately earn aren't truncated to whole numbers on save.
+        const score = parseFloat(input.value);
         const limits = ASSESSMENT_TYPE_LIMITS[type] || { min: 1, max: 100 };
 
         if (isNaN(score) || score < limits.min || score > limits.max) {

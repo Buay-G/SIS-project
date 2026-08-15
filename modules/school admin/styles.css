@@ -927,6 +927,54 @@ table.data-table tbody tr:hover { background: #f7faf8; }
 .badge-escalated, .badge-charged { background: var(--info-bg); color: var(--info); }
 .badge-none, .badge-closed, .badge-dismissed { background: #f1f5f9; color: #64748b; }
 
+/* ---------- Teacher assignment section tick-boxes ----------
+   Used in the "Current Assignments" table: instead of one row per
+   section a teacher covers, all sections for that class/stream show as
+   a compact row of boxes, self-ticked for whichever ones the teacher is
+   actually assigned to. A ticked box is also the remove control. */
+.ta-section-ticks { display: flex; flex-wrap: wrap; gap: 6px; white-space: normal; }
+.ta-section-tick {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 9px 3px 7px; border-radius: 7px; border: 1px solid var(--border);
+    background: #f8fafc; color: #94a3b8; font-size: 0.78rem; font-weight: 600;
+    cursor: default; user-select: none; transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.ta-section-tick input[type="checkbox"] { margin: 0; accent-color: var(--accent); pointer-events: none; }
+.ta-section-tick.is-assigned {
+    background: var(--success-bg); color: var(--success); border-color: transparent;
+}
+.ta-section-tick.is-assigned:has(input:not(:disabled)) { cursor: pointer; }
+.ta-section-tick.is-assigned:has(input:not(:disabled)):hover {
+    background: var(--danger-bg); color: var(--danger);
+}
+.ta-section-tick.is-assigned:has(input:not(:disabled)):hover::after { content: ' ✕'; }
+
+/* ---------- Timetable grid builder (Academic VP) ---------- */
+.tt-period-preview { display: flex; flex-wrap: wrap; gap: 6px; }
+.tt-period-chip {
+    display: inline-block; padding: 4px 10px; border-radius: 7px;
+    background: var(--info-bg); color: var(--info); font-size: 0.78rem; font-weight: 600;
+}
+.tt-period-chip-break { background: var(--warning-bg); color: var(--warning); }
+.tt-period-chip-eth { opacity: 0.75; font-weight: 500; }
+.tt-grid-wrap { margin-top: 16px; overflow-x: auto; }
+.tt-grid-table { min-width: 100%; }
+/* This table is a small, page-embedded editable grid, not a long
+   scrollable list — the sticky-header rule further down
+   (table.data-table thead th { position: sticky; top: 70px }) is meant
+   for those, and inside .tt-grid-wrap's own scroll container it was
+   sticking the header at the wrong offset, overlapping period 1's row
+   above it instead of sitting cleanly on top of it. */
+.tt-grid-table thead th { position: static; top: auto; z-index: auto; }
+.tt-grid-table th, .tt-grid-table td { vertical-align: top; }
+.tt-grid-period-cell { white-space: nowrap; font-weight: 600; text-align: center; }
+.tt-grid-cell { width: 100%; min-width: 140px; }
+.tt-grid-teacher-hint { margin-top: 4px; min-height: 14px; }
+.tt-grid-break-row td {
+    background: var(--warning-bg); color: var(--warning); text-align: center;
+    font-weight: 600; font-size: 0.8rem; padding: 6px;
+}
+
 /* ---------- Forms ---------- */
 .form-group { margin-bottom: 14px; }
 .form-group label { display: block; font-size: 0.8rem; font-weight: 700; margin-bottom: 5px; color: var(--text); }
@@ -935,6 +983,45 @@ table.data-table tbody tr:hover { background: #f7faf8; }
     font-size: 0.85rem; font-family: inherit; background: #fff;
 }
 .form-group textarea { resize: vertical; min-height: 70px; }
+.form-group input:focus, .form-group select:focus, .form-group textarea:focus,
+.form-control:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(201, 161, 90, 0.2);
+}
+/* Standalone input class used by modal prompts (confirm/text-input/
+   password) that aren't wrapped in a .form-group — previously had no
+   rule at all here and fell back to bare browser styling. */
+.form-control {
+    width: 100%; padding: 9px 12px; margin: 12px 0; border: 1px solid var(--border);
+    border-radius: 8px; font-size: 0.85rem; font-family: inherit; background: #fff; color: var(--text);
+}
+
+/* ---------- Password prompt modal (re-auth gate before any
+   assign/remove/approve action) ---------- */
+.password-prompt { text-align: center; }
+.password-prompt-icon {
+    width: 44px; height: 44px; margin: 0 auto 12px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--accent-bg, #eef6f0); color: var(--accent);
+}
+.password-prompt h3 { margin: 0 0 4px; font-size: 0.95rem; line-height: 1.4; }
+.password-prompt-field-wrap { position: relative; margin: 16px 0 4px; text-align: left; }
+.password-prompt-field-icon {
+    position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+    color: var(--muted); display: flex; pointer-events: none;
+}
+.password-prompt-field {
+    margin: 0 !important; padding: 10px 42px !important;
+    letter-spacing: 0.03em;
+}
+.password-prompt-toggle {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+    border: none; background: transparent; color: var(--muted); cursor: pointer; border-radius: 6px;
+    padding: 0;
+}
+.password-prompt-toggle:hover { background: var(--bg-muted, #f4f5f7); color: var(--text); }
+
 /* Section pickers rendered as a tick-list of checkboxes (e.g. Assign
    Teaching Load) instead of a single-select dropdown, so more than one
    section can be picked in one go. */

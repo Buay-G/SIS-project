@@ -4,8 +4,8 @@
   --ink:        oklch(0.26 0.012 250);
   --ink-soft:   oklch(0.44 0.012 250);
   --ink-faint:  oklch(0.60 0.010 250);
-  --paper:      oklch(0.985 0.006 95);
-  --paper-2:    oklch(0.965 0.008 95);
+  --paper:      #ffffff;
+  --paper-2:    #ffffff;
   --line:       oklch(0.80 0.010 250);
   --line-soft:  oklch(0.88 0.008 250);
   --seal:       oklch(0.42 0.10 156);
@@ -34,7 +34,7 @@
 html,body{ margin:0; padding:0; }
 
 body{
-  background: oklch(0.62 0.010 250);
+  background: #ffffff;
   font-size:0.92rem;
   font-family:"Noto Sans","Noto Serif Ethiopic",system-ui,sans-serif;
   color:var(--ink);
@@ -58,13 +58,13 @@ body{
   width:100%;
   max-width:210mm;
 }
-#page-1{ width:100%; max-width:210mm; min-height:297mm; padding:9mm 7mm 7mm; border:1.25px solid var(--line); }
-#page-2{ width:100%; max-width:210mm; min-height:297mm; padding:9mm 7mm 7mm; border:1.25px solid var(--line); }
+#page-1{ width:100%; max-width:210mm; min-height:297mm; padding:9mm 7mm 7mm; }
+#page-2{ width:100%; max-width:210mm; min-height:297mm; padding:9mm 7mm 7mm; }
 
 /* ================= HEADER ================= */
 .head{
   display:grid;
-  grid-template-columns: 56px 1fr 56px;
+  grid-template-columns: 76px 1fr 76px;
   align-items:center;
   gap:var(--s3);
   padding-bottom:var(--s1);
@@ -74,7 +74,7 @@ body{
 .head .emblem-right{ justify-self:center; }
 .flag-img{
   display:block;
-  width:48px;
+  width:68px;
   height:auto;
   aspect-ratio:3/2;
   object-fit:cover;
@@ -221,22 +221,24 @@ tr.summary td.rating{ color:var(--seal-deep); font-weight:700; }
 tr.not-applicable td{ text-decoration:line-through; color:var(--ink-faint); opacity:0.65; }
 tr.not-applicable td.subject .en, tr.not-applicable td.subject .amh{ color:inherit; }
 
-/* On screen these rows show struck-through for context (a subject
-   outside the student's stream is still visible, just marked as N/A).
-   On the printed sheet that context isn't useful — a parent doesn't
-   need to see subjects their child never took — so they're dropped
-   entirely rather than just faded, which also shortens the table and
-   helps everything fit on one printed page. */
-@media print{
-  tr.not-applicable{ display:none !important; }
-}
+/* Struck-through rows now print too (not just show on screen), so the
+   full subject list — every subject the school teaches — always
+   appears on the printed sheet regardless of the student's stream,
+   with out-of-stream subjects visibly marked as not taken rather than
+   silently dropped. certificate.js's "many-subjects" compact mode
+   already accounts for the full row count fitting on one page. */
 tr.rank td{ background:oklch(0.93 0.03 78) !important; color:oklch(0.36 0.07 60); font-weight:700; }
 tr.rank td.subject{ color:oklch(0.36 0.07 60); }
 
 /* ================= FOOTER ================= */
+/* .method-title (the "Method of Marking" heading) now lives inside
+   .table-wrap, right after .legend — see certificate.html — so it
+   sits directly under the marks table instead of in a side column
+   next to the QR block. .foot is left holding just the Result panel,
+   so it no longer needs a two-column split. */
+.method-title{ margin-top:var(--s3); margin-bottom:var(--s2); }
 .foot{
-  margin-top:var(--s1);
-  display:grid; grid-template-columns:200px 1fr; gap:var(--s2); align-items:start;
+  margin-top:var(--s2);
 }
 .panel-title{
   font-size:0.74rem; font-weight:700; letter-spacing:0.1em; text-transform:uppercase;
@@ -244,13 +246,33 @@ tr.rank td.subject{ color:oklch(0.36 0.07 60); }
 }
 .panel-title .amh{ letter-spacing:0.02em; text-transform:none; color:var(--ink-soft); font-weight:500; }
 
-.legend{ display:grid; grid-template-columns:auto 1fr; gap:2px 6px; font-size:0.76rem; align-items:center; }
+/* Fixed verification instructions, printed the same on every report
+   card (not per-student data) — sits full-width between the Result
+   block and the signature strip. The code/domain are real per-document
+   data (see server.js), so they're set off in the same ink as the
+   rest of the sheet's bold/emphasis, not just plain prose. */
+.verify-note{
+  margin:var(--s3) 0 0;
+  font-family:"Noto Serif Ethiopic",Georgia,serif;
+  font-size:0.74rem; font-weight:600; line-height:1.35; color:var(--ink);
+}
+.verify-note strong{ color:var(--seal-deep); }
+
+/* Now lives inside .table-wrap, directly under the marks table (see
+   certificate.html), rather than squeezed into the .foot .panel's
+   narrow side column — so it fills the space below the table using
+   the table's own full width instead of trailing along a 200px-wide
+   column regardless of how tall the table is. Still a simple
+   range|label grid, just wider now that it isn't confined to 200px. */
+.legend{
+  display:grid; grid-template-columns:auto 1fr; gap:2px var(--s3); font-size:0.78rem; align-items:center;
+}
 .legend .rng,
 .legend .lbl{ display:inline-flex; align-items:center; gap:4px; }
 .legend .rng{ font-weight:700; color:var(--ink); font-variant-numeric:tabular-nums; }
 .legend .lbl{ color:var(--ink-soft); }
 .legend .lbl .amh{ color:var(--ink-faint); }
-.legend .note{ grid-column:1 / -1; margin-top:2px; font-size:0.7rem; color:var(--ink-faint); line-height:1.32; }
+.legend .note{ grid-column:1 / -1; margin-top:4px; font-size:0.72rem; color:var(--ink-faint); line-height:1.32; }
 
 .result-side{ display:flex; flex-direction:column; gap:var(--s2); width:100%; }
 .result-row{ display:flex; gap:var(--s2); width:100%; }
@@ -414,13 +436,13 @@ tr.rank td.subject{ color:oklch(0.36 0.07 60); }
   /* #page-1 is the element certificate.js measures and, if needed,
      shrinks (via CSS zoom) to guarantee everything — header through
      the signature strip — lands inside one page. Because zoom scales
-     the element's own box together with its content, the border below
-     always ends up wrapping exactly the content that actually printed,
-     on exactly one page, instead of a border that stops mid-sheet while
-     the signature strip spills onto a second, borderless page. */
+     the element's own box together with its content, the page always
+     ends up sized to exactly the content that actually printed, on
+     exactly one page, instead of stopping mid-sheet while the
+     signature strip spills onto a second page. (No border is drawn
+     around the page itself — the sheet is borderless by design.) */
   #page-1, #page-2{
     padding:4mm;
-    border:1.25px solid var(--line);
     min-height:var(--page-content-h);
     max-height:none !important;
     page-break-after:avoid;
@@ -499,7 +521,6 @@ tr.rank td.subject{ color:oklch(0.36 0.07 60); }
 
   .foot{
     margin-top:auto !important;
-    gap:var(--s3);
   }
   .legend{ gap:3px 8px; font-size:0.82rem; }
   .legend .note{ margin-top:3px; font-size:0.76rem; }
@@ -528,7 +549,7 @@ tr.rank td.subject{ color:oklch(0.36 0.07 60); }
   .sig-field .cap{ font-size:0.76rem; }
   .seal-ring{ width:62px; height:62px; font-size:0.64rem; }
 
-  .head, .qr-cell, .foot, .sign-strip, .table-wrap, table.marks{
+  .head, .qr-cell, .foot, .verify-note, .sign-strip, .table-wrap, table.marks{
     page-break-inside:avoid;
     break-inside:avoid;
   }
@@ -576,8 +597,7 @@ tr.rank td.subject{ color:oklch(0.36 0.07 60); }
   .toolbar{ width:100%; }
   .body-land{ grid-template-columns:1fr; }
   .field-grid{ grid-template-columns:1fr 1fr; }
-  .foot{ grid-template-columns:1fr; }
-  .head{ grid-template-columns:48px 1fr 48px; }
+  .head{ grid-template-columns:60px 1fr 60px; }
   .sign-strip{ grid-template-columns:1fr; gap:var(--s6); }
 }
 @media screen and (max-width: 560px){

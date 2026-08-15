@@ -9,22 +9,39 @@
     <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
   </head>
   <body>
+    <a href="#content" class="skip-link">Skip to content</a>
     <div class="nav-overlay" id="navOverlay"></div>
     <div class="sidebar" id="sidebar">
       <div class="brand">
-        <div class="brand-badge">GCEO</div>
+        <div class="brand-badge">
+          <img
+            src="/assets/images/town.jpg"
+            alt=""
+            class="brand-badge-img"
+            onerror="
+              this.style.display = 'none';
+              this.nextElementSibling.style.display = 'flex';
+            "
+          />
+          <span class="brand-badge-fallback" style="display: none">GCEO</span>
+        </div>
         <div>
           <div class="brand-name" data-i18n="za_portal_title">
             Gambella City Education Office
           </div>
-          <div class="brand-sub" data-i18n="za_brand_sub">Gambella Zone</div>
+          <div class="brand-sub" data-i18n="za_brand_sub">Gambella</div>
         </div>
         <button class="nav-close-btn" id="navCloseBtn" aria-label="Close menu">
           <i data-lucide="x"></i>
         </button>
       </div>
 
-      <div class="nav-scroll" id="navScroll"></div>
+      <div
+        class="nav-scroll"
+        id="navScroll"
+        role="navigation"
+        aria-label="Main navigation"
+      ></div>
 
       <div class="side-footer">
         <div class="role-card">
@@ -77,10 +94,24 @@
               አማርኛ
             </button>
           </div>
-          <div class="bell" id="notifBell">
+          <div
+            class="bell"
+            id="notifBell"
+            role="button"
+            tabindex="0"
+            aria-haspopup="true"
+            aria-expanded="false"
+            aria-controls="notifPanel"
+            aria-label="Notifications"
+          >
             <i data-lucide="bell"></i
-            ><span class="dot" id="notifDot" style="display: none">0</span>
-            <div class="notif-panel" id="notifPanel">
+            ><span class="dot" id="notifDot" style="display: none"></span>
+            <div
+              class="notif-panel"
+              id="notifPanel"
+              role="menu"
+              aria-label="Notifications"
+            >
               <div class="notif-header" data-i18n="za_notifications">
                 Notifications
               </div>
@@ -106,7 +137,7 @@
         </div>
       </div>
 
-      <div class="content" id="content"></div>
+      <div class="content" id="content" role="main" tabindex="-1"></div>
     </div>
 
     <script src="/assets/js/guard.js"></script>

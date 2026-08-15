@@ -909,15 +909,9 @@ textarea.form-input { line-height: 1.5; resize: none; height: 90px; }
 
 @media print {
     .sidebar, .top-bar, .btn-cancel, #sidebar-overlay { display: none !important; }
-    .page-content { padding: 0; }
-    body { overflow: visible; background: white; }
+    .page-content { padding: 0; margin: 0; }
+    body { overflow: visible; background: white; margin: 0; padding: 0; }
     .main-content { overflow: visible; }
-    /* Force both faces to print regardless of which is toggled on screen.
-       Only the FRONT gets page-break-after — if the back also forces a
-       break after itself, that pushes out an extra blank trailing page
-       (nothing follows it to justify a break). */
-    .id-card-front, .id-card-back { display: block !important; }
-    .id-card-front { page-break-after: always; }
 
     /* Just the card, not the page's on-screen heading/tab buttons/instructions.
        (Previously targeted #page-idcard, which doesn't exist — the real
@@ -928,6 +922,73 @@ textarea.form-input { line-height: 1.5; resize: none; height: 90px; }
     #page-documents > .filter-row,
     #doc-tab-idcard > p.muted { display: none !important; }
 
+    /* ---- CR-80 card-sized print (landscape) ----
+       True badge size: 3.375in wide × 2.125in tall (204px @ 96dpi/CSS-in
+       → 324px wide) per face. Rather than rebuild the layout at card
+       scale — a second design to keep in sync with the on-screen 430px
+       mockup forever after — this shrinks the EXISTING design down
+       proportionally with transform: scale(), so photo/text/logo/
+       spacing all shrink together and can never drift from what's on
+       screen.
+
+       --idcard-scale: 3.375in (324px) ÷ 430px natural on-screen width.
+
+       transform-origin is explicitly 'center' (the default) to match
+       how the scale is applied — which means the shrunk card sits
+       centered inside its OWN unscaled, ~265-320px-tall layout box
+       (scaling the contents doesn't shrink the box reserved for them).
+       That leaves a blank margin split above AND below the visible
+       card. Stacked front-then-back with no correction, that reserved
+       space stacks up between them — nowhere near the 10px gap we
+       actually want.
+
+       --idcard-natural-h is a calibrated, deliberately conservative
+       estimate of that reserved box height (based on the shortest
+       realistic version of this content — no principal signature
+       image, no MOE school-code row) — deliberately an underestimate
+       so the computed margin can never overlap the two faces; if the
+       real content is taller (signature image present, school code
+       shown), the printed gap will be a bit MORE than 10px, never
+       negative. The margin below converts that leftover reserved
+       space into exactly --idcard-gap of real visual gap.
+
+       The Issued/Valid-until block (.id-card-validity) below is
+       shrunk print-only: it was the tallest part of the front face's
+       footer, taller than the signature column next to it — which
+       made the front render noticeably taller than the back (whose
+       footer is just a return note + QR) even though both get the
+       same scale. Trimming it here brings the two faces' natural
+       heights close together (front ~266px, back ~274px) instead of
+       leaving a visible size mismatch between them.
+
+       If this design's content changes meaningfully, re-check an
+       actual print preview and adjust --idcard-natural-h to match. */
+    .id-card-flip-wrap {
+        --idcard-scale: 0.7535;
+        --idcard-natural-h: 266px;
+        --idcard-gap: 10px;
+        margin: 0;
+        padding: 0;
+    }
+    .id-card-front, .id-card-back {
+        display: block !important;
+        transform: scale(var(--idcard-scale));
+        transform-origin: center;
+    }
+    /* No page-break — both faces now print on the SAME page, stacked
+       vertically, instead of the front forcing a break to a second
+       page. */
+    .id-card-back {
+        margin-top: calc((var(--idcard-scale) - 1) * var(--idcard-natural-h) + var(--idcard-gap));
+    }
+    /* Print-only trim of the Issued/Valid-until text — see the comment
+       above. Left at the on-screen 0.62rem/two-line size everywhere
+       else; this only applies inside @media print. */
+    .id-card-validity { font-size: 0.5rem; line-height: 1.15; }
+    .id-card-validity strong { margin-top: 1px; }
+    /* Flip/Print buttons are already covered by the .btn-cancel rule
+       above (both use that class) — nothing else to hide here. */
+
     /* Browsers skip background colors/gradients/images when printing by
        default (to save ink), which is what was wiping out the header
        gradient, the MOE watermark, and the colored badges/borders. This
@@ -937,6 +998,15 @@ textarea.form-input { line-height: 1.5; resize: none; height: 90px; }
         print-color-adjust: exact !important;
         color-adjust: exact !important;
     }
+}
+
+/* Minimal print margin so the card sits at the top of the page instead
+   of being pushed down by the browser's default ~1in print margin.
+   Declared as a standalone rule (not nested inside @media print) since
+   @page is inherently print-only already, and top-level @page has
+   broader browser support than nesting it inside a media block. */
+@page {
+    margin: 0.2in;
 }
 
 /* ---- ACCESSIBILITY ---- */

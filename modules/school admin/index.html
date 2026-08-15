@@ -1330,19 +1330,6 @@
                 </select>
               </div>
               <div class="form-group">
-                <label data-i18n="sa_section_label">Section</label>
-                <select id="tt-section">
-                  <option value="" data-i18n="sa_select_section">
-                    Select section...
-                  </option>
-                </select>
-                <span class="form-hint" data-i18n="sa_tt_section_hint"
-                  >Only sections set up by the Registrar are shown.</span
-                >
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
                 <label data-i18n="sa_stream_label">Stream</label>
                 <select id="tt-stream" disabled>
                   <option value="" data-i18n="sa_select_class_level">
@@ -1350,19 +1337,17 @@
                   </option>
                 </select>
               </div>
-              <div class="form-group" style="align-self: end">
-                <button
-                  class="btn btn-primary"
-                  id="tt-load-btn"
-                  data-i18n="sa_load"
-                >
-                  Load
-                </button>
-              </div>
+            </div>
+            <div class="form-group">
+              <label data-i18n="sa_tt_sections_preview_label"
+                >Sections (set up by Registrar)</label
+              >
+              <div class="form-control-static" id="tt-sections-preview"></div>
             </div>
           </div>
+
           <div class="widget" style="margin-bottom: 18px">
-            <h3 data-i18n="sa_add_slot_heading">Add a Slot</h3>
+            <h3 data-i18n="sa_tt_build_day_heading">Build a Day's Schedule</h3>
             <div class="form-row">
               <div class="form-group">
                 <label data-i18n="sa_day_label">Day</label>
@@ -1375,45 +1360,62 @@
                 </select>
               </div>
               <div class="form-group">
-                <label data-i18n="sa_tt_subject_label">Subject</label>
-                <select id="tt-subject-id">
-                  <option value="" data-i18n="sa_tt_select_class_section_first">
-                    Select class level and section first...
-                  </option>
-                </select>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
-                <label data-i18n="sa_teacher_auto_label">Teacher</label>
-                <div class="form-control-static" id="tt-teacher-display">
-                  <span data-i18n="sa_tt_teacher_placeholder"
-                    >Pick a subject to see the assigned teacher</span
-                  >
-                </div>
-              </div>
-              <div class="form-group"></div>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
-                <label data-i18n="sa_start_time_label">Start Time</label
-                ><input type="time" id="tt-start-time" />
+                <label data-i18n="sa_start_time_label">Start Time</label>
+                <input type="time" id="tt-start-time" />
                 <span class="form-hint" id="tt-start-time-eth"></span>
               </div>
+            </div>
+            <div class="form-row">
               <div class="form-group">
-                <label data-i18n="sa_end_time_label">End Time</label
-                ><input type="time" id="tt-end-time" />
-                <span class="form-hint" id="tt-end-time-eth"></span>
+                <label data-i18n="sa_tt_period_count_label"
+                  >Number of Periods</label
+                >
+                <input
+                  type="number"
+                  id="tt-period-count"
+                  min="1"
+                  max="12"
+                  value="6"
+                />
+                <span class="form-hint" data-i18n="sa_tt_period_length_hint"
+                  >Every period is automatically 40 minutes, chained from the
+                  start time.</span
+                >
+              </div>
+              <div class="form-group">
+                <label data-i18n="sa_tt_break_after_label"
+                  >Break After Period</label
+                >
+                <select id="tt-break-after">
+                  <option value="0" data-i18n="sa_tt_no_break">No break</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label data-i18n="sa_tt_break_minutes_label"
+                  >Break Length (minutes)</label
+                >
+                <input
+                  type="number"
+                  id="tt-break-minutes"
+                  min="0"
+                  max="60"
+                  value="20"
+                />
               </div>
             </div>
+            <div class="form-group">
+              <div class="tt-period-preview" id="tt-period-preview"></div>
+            </div>
             <button
-              class="btn btn-accent"
-              id="tt-add-btn"
-              data-i18n="sa_add_slot_btn"
+              class="btn btn-primary"
+              id="tt-generate-grid-btn"
+              data-i18n="sa_tt_generate_grid_btn"
             >
-              Add Slot
+              Generate Grid
             </button>
+            <div id="tt-grid-wrap" class="tt-grid-wrap"></div>
           </div>
+
           <div class="data-table-wrap">
             <table class="data-table">
               <thead>
@@ -1421,9 +1423,9 @@
                   <th data-i18n="sa_col_day">Day</th>
                   <th data-i18n="sa_col_time">Time</th>
                   <th data-i18n="sa_col_time_eth">Time (Ethiopian)</th>
+                  <th data-i18n="sa_col_section">Section</th>
                   <th data-i18n="sa_col_subject">Subject</th>
                   <th data-i18n="sa_col_teacher">Teacher</th>
-                  <th data-i18n="sa_col_action">Action</th>
                 </tr>
               </thead>
               <tbody id="sa-timetable-tbody"></tbody>
@@ -1527,9 +1529,8 @@
                     <th data-i18n="sa_col_teacher">Teacher</th>
                     <th data-i18n="sa_col_subject">Subject</th>
                     <th data-i18n="sa_col_class">Class</th>
-                    <th data-i18n="sa_col_section">Section</th>
                     <th data-i18n="sa_col_stream">Stream</th>
-                    <th data-i18n="sa_col_action">Action</th>
+                    <th data-i18n="sa_col_section">Sections</th>
                   </tr>
                 </thead>
                 <tbody id="sa-teacher-assignments-tbody"></tbody>
@@ -1749,6 +1750,8 @@
                   <th data-i18n="sa_col_class">Class</th>
                   <th data-i18n="sa_col_status">Status</th>
                   <th data-i18n="sa_col_pushed_at">Pushed At</th>
+                  <th data-i18n="sa_col_incomplete">Incomplete</th>
+                  <th data-i18n="sa_col_reentry">Re-entry</th>
                 </tr>
               </thead>
               <tbody id="sa-marks-review-tbody"></tbody>

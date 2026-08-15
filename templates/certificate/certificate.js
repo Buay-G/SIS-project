@@ -1,5 +1,7 @@
 const SUBJECTS = DATA.subjects;
-const CONDUCT = DATA.conduct;
+const CONDUCT_S1 = DATA.conduct_s1;
+const CONDUCT_S2 = DATA.conduct_s2;
+const CONDUCT_YEAR = DATA.conduct_year;
 const ABSENT_DAYS_S1 = DATA.absent_days_s1;
 const ABSENT_DAYS_S2 = DATA.absent_days_s2;
 const RANK = DATA.rank;
@@ -27,6 +29,12 @@ function ordinal(n){
 }
 const fmt = v => v == null ? '<span class="score na">—</span>' : `<span class="score">${v}</span>`;
 const r1 = n => Math.round(n * 10) / 10;
+// Every "Average" value on the sheet — the per-subject Average column
+// and the summary Average row — is shown to one decimal place with a
+// "%" sign (e.g. "94.5%"), never a bare/rounded-off integer. Marks
+// themselves (S1, S2, Total) are literal point totals, not
+// percentages, so they're left as plain numbers.
+const pct = n => n == null ? null : `${Number(n).toFixed(1)}%`;
 // Some subjects won't have an Amharic name on file — omit the "/ ..."
 // half rather than printing "/ undefined" or a blank slash.
 const subjLabel = s => s.amh
@@ -37,8 +45,12 @@ const taken = SUBJECTS.filter(s => s.applicable !== false && s.s1 != null && s.s
 const sum = (arr, fn) => arr.reduce((t,s)=>t + fn(s), 0);
 const s1Total = sum(taken, s => s.s1);
 const s2Total = sum(taken, s => s.s2);
-// Total of the Average column = sum of each subject's own average.
-const avgColTotal = r1(sum(taken, s => (s.s1 + s.s2) / 2));
+// Total row's 3rd column is the grand total (S1 + S2 marks summed) —
+// a plain point sum, not a percentage, matching how the Days Absent
+// row's 3rd column is already just S1 + S2 with no "%". The Average
+// *row* below is where the /% figures belong (mean-of-marks, not a
+// sum), and that's kept as a separate calculation (s1Avg/s2Avg/yearAvg).
+const grandTotal = s1Total + s2Total;
 // No subject has both semesters scored yet (a freshly-issued sheet
 // before marks are synced) — s1Total/taken.length would be 0/0 = NaN,
 // which does two bad things downstream: it prints the literal text
@@ -67,7 +79,7 @@ let rows = SUBJECTS.map(s => {
     <td class="subject">${subjLabel(s)}</td>
     <td>${fmt(s1)}</td>
     <td>${fmt(s2)}</td>
-    <td>${avg != null ? `<span class="score">${avg}</span>` : '<span class="score na">—</span>'}</td>
+    <td>${avg != null ? `<span class="score">${pct(avg)}</span>` : '<span class="score na">—</span>'}</td>
     <td class="rating">${avg != null ? descriptor(avg) : '—'}</td>
   </tr>`;
 }).join("");
@@ -80,16 +92,16 @@ const absentTotal = (ABSENT_DAYS_S1 == null && ABSENT_DAYS_S2 == null) ? null : 
 
 rows += `<tr class="summary">
     <td class="subject">Total <span class="amh">/ ድምር</span></td>
-    <td>${naDash(taken.length ? s1Total : null)}</td><td>${naDash(taken.length ? s2Total : null)}</td><td>${naDash(taken.length ? avgColTotal : null)}</td><td class="rating">—</td>
+    <td>${naDash(taken.length ? s1Total : null)}</td><td>${naDash(taken.length ? s2Total : null)}</td><td>${naDash(taken.length ? grandTotal : null)}</td><td class="rating">—</td>
   </tr>
   <tr class="summary">
     <td class="subject">Average <span class="amh">/ አማካይ</span></td>
-    <td>${naDash(s1Avg != null ? r1(s1Avg) : null)}</td><td>${naDash(s2Avg != null ? r1(s2Avg) : null)}</td><td>${naDash(yearAvg != null ? r1(yearAvg) : null)}</td>
+    <td>${s1Avg != null ? pct(r1(s1Avg)) : '—'}</td><td>${s2Avg != null ? pct(r1(s2Avg)) : '—'}</td><td>${yearAvg != null ? pct(r1(yearAvg)) : '—'}</td>
     <td class="rating">${yearAvg != null ? descriptor(yearAvg) : '—'}</td>
   </tr>
   <tr>
     <td class="subject">Conduct <span class="amh">/ ስነ ምግባር</span></td>
-    <td>${CONDUCT || '—'}</td><td>${CONDUCT || '—'}</td><td>${CONDUCT || '—'}</td><td class="rating">—</td>
+    <td>${CONDUCT_S1 || '—'}</td><td>${CONDUCT_S2 || '—'}</td><td>${CONDUCT_YEAR || '—'}</td><td class="rating">—</td>
   </tr>
   <tr>
     <td class="subject">Days Absent <span class="amh">/ የቀሩበት ቀናት</span></td>

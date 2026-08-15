@@ -117,6 +117,80 @@ function showConfirm(message, { title, confirmText } = {}) {
 }
 
 /* ---------------------------------------------------------------
+   Password-confirm modal — a "prove it's you" gate in front of
+   sensitive actions (setting up a new school, editing the subject
+   dictionary, submitting a proposal). Re-checks the logged-in admin's
+   own password against POST /api/zonal/verify-password and only
+   resolves true once that succeeds; a wrong password shows an inline
+   error and lets the person retry rather than silently failing.
+   Returns Promise<boolean>. Styling reuses .confirm-modal-*.
+   --------------------------------------------------------------- */
+function showPasswordConfirm(message){
+  return new Promise(resolve => {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'confirm-modal-backdrop';
+    backdrop.innerHTML = `
+      <div class="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="pwConfirmTitle" aria-describedby="pwConfirmMsg">
+        <div class="confirm-modal-icon"><i data-lucide="lock"></i></div>
+        <h3 class="confirm-modal-title" id="pwConfirmTitle">${t('za_pwconfirm_title')}</h3>
+        <p class="confirm-modal-msg" id="pwConfirmMsg">${message || t('za_pwconfirm_hint')}</p>
+        <div class="form-field" style="text-align:left;margin-bottom:4px;">
+          <label for="pwConfirmInput" class="sr-only-label">${t('za_pwconfirm_placeholder')}</label>
+          <input type="password" id="pwConfirmInput" autocomplete="current-password" placeholder="${t('za_pwconfirm_placeholder')}">
+        </div>
+        <p class="confirm-modal-error" id="pwConfirmError" role="alert" aria-live="assertive" style="display:none"></p>
+        <div class="confirm-modal-actions">
+          <button class="btn ghost" id="pwConfirmCancel">${t('za_cancel')}</button>
+          <button class="btn primary" id="pwConfirmOk">${t('za_confirm_yes')}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(backdrop);
+    if (window.lucide) lucide.createIcons();
+
+    const input = backdrop.querySelector('#pwConfirmInput');
+    const errEl = backdrop.querySelector('#pwConfirmError');
+    const okBtn = backdrop.querySelector('#pwConfirmOk');
+    const cancelBtn = backdrop.querySelector('#pwConfirmCancel');
+
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      backdrop.remove();
+      document.removeEventListener('keydown', onKey);
+      resolve(result);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') finish(false); if (e.key === 'Enter' && document.activeElement === input) attempt(); };
+    document.addEventListener('keydown', onKey);
+
+    const attempt = async () => {
+      const password = input.value;
+      errEl.style.display = 'none';
+      if (!password) { errEl.textContent = t('za_pwconfirm_required'); errEl.style.display = 'block'; input.focus(); return; }
+      okBtn.disabled = true;
+      const originalText = okBtn.textContent;
+      okBtn.textContent = t('za_loading');
+      try {
+        await apiPost('/api/zonal/verify-password', { password });
+        finish(true);
+      } catch (err) {
+        errEl.textContent = err.message || t('za_pwconfirm_wrong');
+        errEl.style.display = 'block';
+        okBtn.disabled = false;
+        okBtn.textContent = originalText;
+        input.select();
+        input.focus();
+      }
+    };
+
+    backdrop.addEventListener('click', e => { if (e.target === backdrop) finish(false); });
+    cancelBtn.addEventListener('click', () => finish(false));
+    okBtn.addEventListener('click', attempt);
+    input.focus();
+  });
+}
+
+/* ---------------------------------------------------------------
    Credentials modal — shown once, right after a push creates a login
    (currently just the Supervisor account created via an approved
    assign_supervisor proposal — see the push-proposal handler below).
@@ -169,6 +243,8 @@ function setMsg(el, text, kind){
   if(!el) return;
   const icon = kind === 'success' ? 'check-circle-2' : 'alert-triangle';
   el.innerHTML = `<i data-lucide="${icon}" class="msg-icon ${kind}"></i><span>${text}</span>`;
+  el.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+  el.setAttribute('aria-live', kind === 'error' ? 'assertive' : 'polite');
   if (window.lucide) lucide.createIcons();
 }
 function setSuccessMsg(el, text){ setMsg(el, text, 'success'); }
@@ -227,11 +303,20 @@ const NAV = {
   ],
   supervisor:[
     {sec:"za_sec_admin", items:[["za_nav_dashboard","home"],["za_nav_schools","building-2"],["za_nav_teachers","graduation-cap"]]},
-    {sec:"za_sec_oversight", items:[["za_nav_team","users-round"],["za_nav_school_performance","bar-chart-3"],["za_nav_messages","mail"],["za_nav_myid","credit-card"]]}
+    {sec:"za_sec_oversight", items:[["za_nav_team","users-round"],["za_nav_school_performance","bar-chart-3"],["za_nav_messages","mail"],["za_nav_myid","credit-card"],["za_nav_profile","file-signature"]]}
   ]
 };
 
 let activePage = 'za_nav_dashboard';
+
+// Unread count from /api/notifications, kept in sync by loadNotifications()
+// (see below). Currently every notification is a Messages-thread reply, so
+// the badge lands on the za_nav_messages nav item — the one nav entry the
+// notification actually concerns. If other notification kinds get added
+// later with their own destination page, extend NOTIF_NAV_TARGET rather
+// than hardcoding a second nav key here.
+let notifUnreadCount = 0;
+const NOTIF_NAV_TARGET = 'za_nav_messages';
 
 function renderNav(){
   const wrap = document.getElementById('navScroll');
@@ -243,8 +328,17 @@ function renderNav(){
     section.items.forEach(([key,icon])=>{
       const el = document.createElement('div');
       el.className = 'nav-item' + (key===activePage ? ' active':'');
-      el.innerHTML = `<span class="ic"><i data-lucide="${icon}"></i></span><span>${t(key)}</span>`;
-      el.onclick = ()=>{ activePage = key; render(); closeMobileNav(); };
+      el.setAttribute('role', 'button');
+      el.setAttribute('tabindex', '0');
+      if(key === activePage) el.setAttribute('aria-current', 'page');
+      const showBadge = key === NOTIF_NAV_TARGET && notifUnreadCount > 0;
+      const badgeHTML = showBadge
+        ? `<span class="nav-badge" aria-label="${notifUnreadCount > 9 ? '9+' : notifUnreadCount} ${t('za_notifications')}">${notifUnreadCount > 9 ? '9+' : notifUnreadCount}</span>`
+        : '';
+      el.innerHTML = `<span class="ic"><i data-lucide="${icon}"></i></span><span class="nav-item-label">${t(key)}</span>${badgeHTML}`;
+      const go = ()=>{ activePage = key; render(); closeMobileNav(); };
+      el.onclick = go;
+      el.addEventListener('keydown', e=>{ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); go(); } });
       wrap.appendChild(el);
     });
   });
@@ -446,10 +540,10 @@ function renderDashboard({ schools, students, proposals, incoming, performance }
   <div class="cards">${cards}</div>
   <div class="panel">
     <h3><i data-lucide="clipboard-list"></i> ${t('za_recent_activity')}</h3>
-    <table>
+    <div class="table-wrap"><table>
       <tr><th>${t('za_th_school')}</th><th>Event</th><th>Date</th></tr>
       ${activityRows}
-    </table>
+    </table></div>
     ${role==='supervisor' ? `<div class="hint">${t('za_locked_note')}</div>` : ''}
   </div>`;
   if (panel) panel.outerHTML = dataHTML;
@@ -1001,6 +1095,7 @@ async function submitNewSchool(){
     setErrorMsg(msg, t('za_setup_required'));
     return;
   }
+  if(!(await showPasswordConfirm(t('za_pwconfirm_setup_school')))) return;
   try {
     const result = await apiPost('/api/zonal/schools', body);
     setSuccessMsg(msg, result.message);
@@ -1039,10 +1134,10 @@ function renderSchoolsPanel(schools){
   document.getElementById('content').innerHTML = `
   <div class="panel">
     <h3><i data-lucide="building-2"></i> ${t('za_schools_title')}</h3>
-    <table>
+    <div class="table-wrap"><table>
       <tr><th>${t('za_th_school')}</th><th>${t('za_th_prefix')}</th><th>${t('za_th_moe')}</th><th>${t('za_th_woreda')}</th><th>${t('za_th_region')}</th></tr>
       ${rows}
-    </table>
+    </table></div>
   </div>`;
 }
 
@@ -1094,6 +1189,8 @@ function renderApprovalsPanel(schools, proposals){
   const schoolName = id => { const s = schools.find(s=>String(s.id)===String(id)); return s ? schoolDisplayName(s.school_name, s.school_level) : '—'; };
   const decided = proposals.filter(p=>normStatus(p.status)!=='pending')
     .sort((a,b)=> new Date(b.reviewed_at||b.created_at) - new Date(a.reviewed_at||a.created_at)).slice(0,10);
+  const pending = proposals.filter(p=>normStatus(p.status)==='pending')
+    .sort((a,b)=> new Date(a.created_at) - new Date(b.created_at));
 
   const pendingHTML = pending.length ? pending.map(p=>`
     <div class="queue-item" data-id="${p.proposal_id}">
@@ -1353,6 +1450,7 @@ function renderSubjectsPanel(subjects){
       const msg = document.getElementById('subjectFormMsg');
       const subject_name = document.getElementById('f_subj_name').value.trim();
       if(!subject_name){ setErrorMsg(msg, t('za_subjects_required')); return; }
+      if(!(await showPasswordConfirm(t('za_pwconfirm_subject')))) return;
       try {
         const result = editingId
           ? await apiPut(`/api/zonal/subject-dictionary/${editingId}`, { subject_name })
@@ -1652,7 +1750,7 @@ function myProposalTypeFieldsHTML(teachers){
         </div>
         <div class="form-field"><label for="mp_a_phone">${t('za_f_candidate_phone')}</label><input type="text" id="mp_a_phone" placeholder="${t('za_optional')}"></div>
         <div class="form-field"><label for="mp_a_email">${t('za_f_candidate_email')}</label><input type="email" id="mp_a_email" placeholder="${t('za_optional')}"></div>
-        <div class="form-field"><label for="mp_a_password">${t('za_f_password')}</label><input type="password" id="mp_a_password"></div>
+        <p class="hint" style="grid-column:1/-1;margin:0;">${t('za_admin_default_password_note')}</p>
       </div>
       <div id="replaceAdminBox" style="display:none;margin-top:10px;padding:10px;border:1px solid var(--border,#333);border-radius:8px;">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
@@ -1863,12 +1961,11 @@ function renderMyProposalsPanel(schools, proposals, admins, teachers){
     } else {
       const first_name = document.getElementById('mp_a_first').value.trim();
       const last_name = document.getElementById('mp_a_last').value.trim();
-      const password = document.getElementById('mp_a_password').value;
-      if(!first_name || !last_name || !password){ setErrorMsg(msg, t('za_my_proposals_admin_required')); return; }
+      if(!first_name || !last_name){ setErrorMsg(msg, t('za_my_proposals_admin_required')); return; }
       const replaceBox = document.getElementById('replaceAdminBox');
       const wantsReplace = document.getElementById('mp_a_replace_check').checked;
       payload = {
-        first_name, last_name, password,
+        first_name, last_name,
         middle_name: document.getElementById('mp_a_middle').value.trim() || null,
         title: document.getElementById('mp_a_title').value,
         sex: document.getElementById('mp_a_sex').value || null,
@@ -1878,6 +1975,8 @@ function renderMyProposalsPanel(schools, proposals, admins, teachers){
         replace_admin_id: (wantsReplace && replaceBox.dataset.replaceId) ? replaceBox.dataset.replaceId : null
       };
     }
+
+    if(!(await showPasswordConfirm(t('za_pwconfirm_proposal')))) return;
 
     try {
       let successText;
@@ -2165,15 +2264,16 @@ function myIdPanelHTML(){
             <div class="idcard-front-bottom">
               <div class="idcard-name" id="idcard-name">—</div>
               <div class="idcard-role" id="idcard-title-role">—</div>
+              <div class="idcard-role idcard-role-am" id="idcard-title-role-am">—</div>
               <div class="idcard-detail-rows">
                 <div class="idcard-detail-row">
-                  <span class="idcard-detail-label">ADMIN ID</span><span id="idcard-admin-id">—</span>
+                  <span class="idcard-detail-label">ADMIN ID <span class="idcard-am">/ የመታወቂያ ቁጥር</span></span><span id="idcard-admin-id">—</span>
                 </div>
                 <div class="idcard-detail-row">
-                  <span class="idcard-detail-label">ZONE</span><span id="idcard-zone-name">—</span>
+                  <span class="idcard-detail-label">ZONE <span class="idcard-am">/ ዞን</span></span><span id="idcard-zone-name">—</span>
                 </div>
                 <div class="idcard-detail-row">
-                  <span class="idcard-detail-label">VALID UNTIL</span><span id="idcard-valid-until">—</span>
+                  <span class="idcard-detail-label">VALID UNTIL <span class="idcard-am">/ የሚያገለግልበት</span></span><span id="idcard-valid-until">—</span>
                 </div>
               </div>
             </div>
@@ -2190,18 +2290,18 @@ function myIdPanelHTML(){
               </div>
             </div>
             <div class="idcard-back-body">
-              <div class="idcard-contact-title">CONTACT INFORMATION</div>
+              <div class="idcard-contact-title">CONTACT INFORMATION <span class="idcard-am">/ የመገናኛ አድራሻ</span></div>
               <div class="idcard-contact-row">
-                <span class="idcard-contact-label">PHONE</span><span id="idcard-phone">—</span>
+                <span class="idcard-contact-label">PHONE <span class="idcard-am">/ ስልክ</span></span><span id="idcard-phone">—</span>
               </div>
               <div class="idcard-contact-row">
-                <span class="idcard-contact-label">EMAIL</span><span id="idcard-email">—</span>
+                <span class="idcard-contact-label">EMAIL <span class="idcard-am">/ ኢሜይል</span></span><span id="idcard-email">—</span>
               </div>
               <div class="idcard-qrcode" id="idcard-qrcode" aria-hidden="true"></div>
               <div class="idcard-signature">
                 <img id="idcard-hoe-signature" class="idcard-signature-img" src="" alt="" style="display:none">
                 <div class="idcard-signature-line"></div>
-                <div class="idcard-signature-label">HEAD OF EDUCATION</div>
+                <div class="idcard-signature-label">HEAD OF EDUCATION <span class="idcard-am">/ የትምህርት ኃላፊ</span></div>
               </div>
             </div>
           </div>
@@ -2215,6 +2315,16 @@ function myIdPanelHTML(){
     </div>
   </div>`;
 }
+
+// Static AM equivalents for the three zonal-admin titles, used on the
+// printed/digital ID card so both languages show together regardless of
+// the current UI language toggle (matching the sample physical card,
+// which is always bilingual, not just when Amharic is selected).
+const TITLE_AM = {
+  'Head of Education': 'የትምህርት ኃላፊ',
+  'Teacher Development Coordinator': 'የመምህራን ልማት አስተባባሪ',
+  'Supervisor': 'ተቆጣጣሪ'
+};
 
 function renderZonalIdCard(data){
   const wrap = document.getElementById('idcard-wrap');
@@ -2234,6 +2344,7 @@ function renderZonalIdCard(data){
   setText('idcard-name', data.full_name || '—');
   setText('idcard-admin-id', data.admin_id || '—');
   setText('idcard-title-role', data.title ? data.title.toUpperCase() : '—');
+  setText('idcard-title-role-am', data.title && TITLE_AM[data.title] ? TITLE_AM[data.title] : '—');
   setText('idcard-valid-until', data.valid_until || '—');
   setText('idcard-phone', data.contact_number || '—');
   setText('idcard-email', data.email || '—');
@@ -2809,18 +2920,51 @@ async function loadCurrentUser(){
 /* ---------------- Notification bell — live from /api/notifications --- */
 function renderNotifications(data){
   const dot = document.getElementById('notifDot');
+  const bell = document.getElementById('notifBell');
   const list = document.getElementById('notifList');
   const count = data.unread_count || 0;
   if(count > 0){ dot.style.display = 'flex'; dot.textContent = count > 9 ? '9+' : String(count); }
   else { dot.style.display = 'none'; }
+  if(bell) {
+    bell.classList.toggle('has-unread', count > 0);
+    bell.setAttribute('aria-label', count > 0 ? `${t('za_notifications')} (${count} ${t('za_unread')})` : t('za_notifications'));
+  }
 
   list.innerHTML = (data.items && data.items.length)
     ? data.items.map(i=>`
-        <div class="notif-item">
+        <div class="notif-item" data-thread-id="${i.thread_id}" tabindex="0" role="button">
           <div class="n-subject">${i.subject}</div>
           <div class="n-meta">${i.reply_count} new — ${i.from}</div>
         </div>`).join('')
     : `<div class="notif-empty">${t('za_no_notifications')}</div>`;
+
+  // Jumping to a thread from the panel also marks it read, so the badge
+  // count (and the Messages nav dot) drop immediately instead of staying
+  // stuck until the next 60s poll. Zonal admins (HoE/TDC/Supervisor) use
+  // a different mark-read endpoint than teachers — see /api/notifications,
+  // which sources zonal items from admin_messages rather than
+  // contact_threads.
+  list.querySelectorAll('.notif-item').forEach(el=>{
+    const go = async ()=>{
+      const threadId = el.dataset.threadId;
+      const markReadUrl = CURRENT_USER && CURRENT_USER.role === 'zonal_admins'
+        ? `/api/zonal/messages/${threadId}/read`
+        : `/api/contact/thread/${threadId}/mark-read`;
+      try { await apiPost(markReadUrl); } catch (err) { /* non-critical */ }
+      document.getElementById('notifPanel')?.classList.remove('open');
+      activePage = 'za_nav_messages';
+      render();
+      loadNotifications();
+    };
+    el.addEventListener('click', go);
+    el.addEventListener('keydown', e=>{ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); go(); } });
+  });
+
+  // Update the unread count and re-draw the sidebar so the specific nav
+  // item this notification concerns (Messages) carries the red badge —
+  // not just the bell — without disturbing whatever page is open.
+  notifUnreadCount = count;
+  if(CURRENT_USER) renderNav();
 }
 
 async function loadNotifications(){
@@ -2836,11 +2980,17 @@ async function loadNotifications(){
 function wireChrome(){
   const bell = document.getElementById('notifBell');
   const panel = document.getElementById('notifPanel');
-  bell.addEventListener('click', (e)=>{
+  const togglePanel = (e)=>{
     e.stopPropagation();
-    panel.classList.toggle('open');
+    const open = panel.classList.toggle('open');
+    bell.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+  bell.addEventListener('click', togglePanel);
+  bell.addEventListener('keydown', (e)=>{
+    if(e.key==='Enter' || e.key===' '){ e.preventDefault(); togglePanel(e); }
+    if(e.key==='Escape'){ panel.classList.remove('open'); bell.setAttribute('aria-expanded','false'); }
   });
-  document.addEventListener('click', ()=> panel.classList.remove('open'));
+  document.addEventListener('click', ()=>{ panel.classList.remove('open'); bell.setAttribute('aria-expanded','false'); });
   panel.addEventListener('click', e=> e.stopPropagation());
 
   document.getElementById('logoutBtn').addEventListener('click', async ()=>{

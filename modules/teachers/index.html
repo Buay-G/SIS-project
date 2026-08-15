@@ -678,44 +678,6 @@
         <section id="page-upload" class="page-content" style="display: none">
           <div class="dashboard-grid">
             <div class="widget">
-              <h3>Bulk Upload</h3>
-              <p style="font-size: 0.8rem; color: #64748b; margin-bottom: 10px">
-                Score limits per assessment type: Individual Assignment 1 & 2
-                (1-5 each), Group Assignment (1-10), Quiz (1-10), Midterm
-                (1-30), Final (1-40). Rows outside their type's range are
-                skipped.
-              </p>
-              <div class="file-wrapper">
-                <div>
-                  <label for="csv-file" class="sr-only"
-                    >CSV file of marks to upload</label
-                  >
-                  <button
-                    class="file-btn"
-                    onclick="document.getElementById('csv-file').click()"
-                  >
-                    Choose CSV File
-                  </button>
-                  <span
-                    id="file-name"
-                    style="margin-left: 10px; font-size: 0.9rem; color: #64748b"
-                    >No file chosen</span
-                  >
-                  <input
-                    type="file"
-                    id="csv-file"
-                    accept=".csv"
-                    style="display: none"
-                    onchange="updateFileName(this)"
-                  />
-                </div>
-
-                <button class="btn-primary" onclick="uploadData()">
-                  Upload Data
-                </button>
-              </div>
-            </div>
-            <div class="widget">
               <h3>Individual Entry</h3>
               <form id="markEntryForm">
                 <div class="search-group">
@@ -771,6 +733,7 @@
                     placeholder="Enter Score (1-5)"
                     min="1"
                     max="5"
+                    step="0.5"
                     oninput="clampScoreInput(this)"
                   />
                   <div
@@ -897,6 +860,110 @@
             ></div>
             <div id="subject-request-list" style="margin-top: 16px"></div>
           </div>
+
+          <div class="widget" id="late-marks-widget" style="display: none">
+            <h3 data-i18n="late_marks_heading">
+              Last Semester Mark Entry Request
+            </h3>
+            <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 14px">
+              <span data-i18n="late_marks_desc"
+                >Once a semester is closed, use this to ask the Academic VP for
+                permission to go back and enter marks for students who are still
+                flagged Incomplete — across any subject in your section.</span
+              >
+            </p>
+            <div class="search-group" style="flex-wrap: wrap">
+              <label for="late-marks-reason" class="sr-only"
+                >Reason for request</label
+              >
+              <input
+                type="text"
+                id="late-marks-reason"
+                class="form-input"
+                data-i18n-placeholder="late_marks_reason_placeholder"
+                placeholder="Reason (e.g. student was on medical leave)"
+              />
+              <button class="btn-primary" onclick="submitLateMarksRequest()">
+                <span data-i18n="late_marks_submit">Send Request</span>
+              </button>
+            </div>
+            <div
+              id="late-marks-status-note"
+              style="font-size: 0.8rem; color: #64748b; margin-top: 8px"
+            ></div>
+            <div id="late-marks-request-list" style="margin-top: 16px"></div>
+
+            <div
+              id="late-marks-entry-panel"
+              style="
+                display: none;
+                margin-top: 20px;
+                border-top: 1px solid #e2e8f0;
+                padding-top: 16px;
+              "
+            >
+              <p
+                style="font-size: 0.85rem; color: #166534; margin-bottom: 12px"
+              >
+                <span data-i18n="late_marks_approved_note"
+                  >Approved — pick a semester and subject below to see which
+                  students are still incomplete.</span
+                >
+              </p>
+              <div
+                class="segmented-toggle"
+                role="group"
+                aria-label="Semester"
+                style="
+                  display: inline-flex;
+                  margin-bottom: 14px;
+                  border: 1px solid #cbd5e1;
+                  border-radius: 8px;
+                  overflow: hidden;
+                "
+              >
+                <button
+                  type="button"
+                  class="segmented-toggle-btn active"
+                  data-term="Semester 1"
+                  onclick="setLateMarksTerm('Semester 1')"
+                >
+                  Semester 1
+                </button>
+                <button
+                  type="button"
+                  class="segmented-toggle-btn"
+                  data-term="Semester 2"
+                  onclick="setLateMarksTerm('Semester 2')"
+                >
+                  Semester 2
+                </button>
+              </div>
+
+              <div
+                class="search-group"
+                style="flex-wrap: wrap; margin-bottom: 14px"
+              >
+                <label for="late-marks-subject-select" class="sr-only"
+                  >Subject</label
+                >
+                <select
+                  id="late-marks-subject-select"
+                  class="form-input"
+                  style="max-width: 220px"
+                  onchange="loadLateMarksIncompleteStudents()"
+                >
+                  <option value="">Select a subject…</option>
+                </select>
+              </div>
+
+              <div id="late-marks-students-container">
+                <p style="color: #64748b; font-size: 0.85rem">
+                  Select a subject above to see incomplete students.
+                </p>
+              </div>
+            </div>
+          </div>
         </section>
         <section id="page-students" class="page-content" style="display: none">
           <h3>Student Candidates</h3>
@@ -934,6 +1001,16 @@
               style="flex: 1"
             >
               <option value="">All Sections</option>
+            </select>
+            <label for="student-filter-stream" class="sr-only"
+              >Filter by stream</label
+            >
+            <select
+              id="student-filter-stream"
+              class="form-input"
+              style="flex: 1"
+            >
+              <option value="">All Streams</option>
             </select>
           </div>
 
@@ -2034,16 +2111,8 @@
         align-items: center;
       "
     >
-      <div
-        style="
-          background: white;
-          padding: 30px;
-          border-radius: 12px;
-          text-align: center;
-          box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
-        "
-      >
-        <div style="color: #2563eb; font-size: 50px" aria-hidden="true">✔</div>
+      <div class="success-modal-box">
+        <div style="color: #2563eb; font-size: 44px" aria-hidden="true">✔</div>
         <h2 id="success-modal-title">Success!</h2>
         <p id="success-modal-message">The mark has been saved successfully.</p>
         <button

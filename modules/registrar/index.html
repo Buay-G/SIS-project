@@ -31,10 +31,17 @@
         </div>
 
         <div class="sidebar-nav">
+          <div class="nav-group-label" data-i18n="reg_nav_group_overview">
+            Overview
+          </div>
           <button onclick="switchTab('dashboard')">
             <i data-lucide="layout-dashboard" aria-hidden="true"></i>
             <span data-i18n="reg_nav_dashboard">Dashboard</span>
           </button>
+
+          <div class="nav-group-label" data-i18n="reg_nav_group_admissions">
+            Admissions &amp; Records
+          </div>
           <button onclick="switchTab('new-entry')">
             <i data-lucide="user-plus" aria-hidden="true"></i>
             <span data-i18n="reg_nav_new_entry">New Entry Registration</span>
@@ -42,10 +49,6 @@
           <button onclick="switchTab('update-info')">
             <i data-lucide="user-cog" aria-hidden="true"></i>
             <span data-i18n="reg_nav_update_info">Information Update</span>
-          </button>
-          <button onclick="switchTab('promotion')">
-            <i data-lucide="trending-up" aria-hidden="true"></i>
-            <span data-i18n="reg_nav_promotion">Promotion/Stream</span>
           </button>
           <button
             id="nav-students"
@@ -55,6 +58,42 @@
             <i data-lucide="users" aria-hidden="true"></i>
             <span data-i18n="reg_nav_students">Students</span>
           </button>
+
+          <div class="nav-group-label" data-i18n="reg_nav_group_progression">
+            Progression &amp; Placement
+          </div>
+          <button onclick="switchTab('promotion')">
+            <i data-lucide="trending-up" aria-hidden="true"></i>
+            <span data-i18n="reg_nav_promotion">Promotion/Stream</span>
+          </button>
+          <button
+            id="nav-section-setup"
+            onclick="switchTab('section-setup')"
+            style="display: none"
+          >
+            <i data-lucide="grid-2x2" aria-hidden="true"></i>
+            <span data-i18n="reg_nav_section_setup">Section Setup</span>
+          </button>
+          <button
+            id="nav-placement-wizard"
+            onclick="switchTab('placement-wizard')"
+            style="display: none"
+          >
+            <i data-lucide="wand-2" aria-hidden="true"></i>
+            <span data-i18n="reg_nav_placement">Placement Wizard</span>
+          </button>
+          <button
+            id="nav-graduation-wizard"
+            onclick="switchTab('graduation-wizard')"
+            style="display: none"
+          >
+            <i data-lucide="graduation-cap" aria-hidden="true"></i>
+            <span data-i18n="reg_nav_graduation">Graduation Wizard</span>
+          </button>
+
+          <div class="nav-group-label" data-i18n="reg_nav_group_transfers">
+            Transfers &amp; Documents
+          </div>
           <button
             id="nav-transfer-hub"
             onclick="switchTab('transfer-hub')"
@@ -89,30 +128,10 @@
             <i data-lucide="layout-template" aria-hidden="true"></i>
             <span data-i18n="reg_nav_templates">Templates</span>
           </button>
-          <button
-            id="nav-graduation-wizard"
-            onclick="switchTab('graduation-wizard')"
-            style="display: none"
-          >
-            <i data-lucide="graduation-cap" aria-hidden="true"></i>
-            <span data-i18n="reg_nav_graduation">Graduation Wizard</span>
-          </button>
-          <button
-            id="nav-section-setup"
-            onclick="switchTab('section-setup')"
-            style="display: none"
-          >
-            <i data-lucide="grid-2x2" aria-hidden="true"></i>
-            <span data-i18n="reg_nav_section_setup">Section Setup</span>
-          </button>
-          <button
-            id="nav-placement-wizard"
-            onclick="switchTab('placement-wizard')"
-            style="display: none"
-          >
-            <i data-lucide="wand-2" aria-hidden="true"></i>
-            <span data-i18n="reg_nav_placement">Placement Wizard</span>
-          </button>
+
+          <div class="nav-group-label" data-i18n="reg_nav_group_admin">
+            Administration &amp; Staff
+          </div>
           <button
             id="nav-recorder-mgmt"
             onclick="switchTab('recorder-mgmt')"
@@ -1294,6 +1313,62 @@
             data-i18n="reg_confirm_yes"
           >
             Yes, Continue
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      id="password-confirm-modal"
+      class="modal-overlay"
+      style="display: none"
+    >
+      <div
+        class="modal-box confirm-box"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="password-confirm-modal-message"
+      >
+        <p id="password-confirm-modal-message" class="confirm-message"></p>
+        <input
+          type="password"
+          id="password-confirm-modal-input"
+          autocomplete="current-password"
+          placeholder="Your account password"
+          style="
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ced4da;
+            border-radius: 5px;
+            margin: 10px 0;
+            box-sizing: border-box;
+          "
+        />
+        <p
+          id="password-confirm-modal-error"
+          style="
+            color: #e74c3c;
+            font-size: 13px;
+            display: none;
+            margin: -4px 0 8px;
+          "
+        ></p>
+        <div class="confirm-actions">
+          <button
+            type="button"
+            id="password-confirm-modal-cancel"
+            class="confirm-btn confirm-btn-secondary"
+            data-i18n="reg_confirm_cancel"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            id="password-confirm-modal-ok"
+            class="confirm-btn confirm-btn-danger"
+            data-i18n="reg_confirm_yes"
+          >
+            Confirm
           </button>
         </div>
       </div>

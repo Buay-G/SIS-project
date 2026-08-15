@@ -101,8 +101,8 @@
               <div class="val">__WOREDA__</div>
             </div>
             <div class="field">
-              <label>Address Town <span class="amh">/ ከተማ</span></label>
-              <div class="val">__TOWN__</div>
+              <label>Kebele <span class="amh">/ ቀበሌ</span></label>
+              <div class="val">__KEBELE__</div>
             </div>
           </div>
 
@@ -137,14 +137,11 @@
               <!-- filled by JS -->
             </tbody>
           </table>
-        </div>
-      </div>
 
-      <div class="foot">
-        <div class="panel">
-          <div class="panel-title">
+          <div class="panel-title method-title">
             Method of Marking <span class="amh">የውጤት አሰጣጥ ስልት</span>
           </div>
+
           <div class="legend">
             <span class="rng">90–100%</span
             ><span class="lbl"
@@ -164,7 +161,9 @@
             </p>
           </div>
         </div>
+      </div>
 
+      <div class="foot">
         <div class="result-side">
           <div class="panel-title">Result <span class="amh">ውጤት</span></div>
           <div class="result-row">
@@ -184,6 +183,13 @@
           </div>
         </div>
       </div>
+
+      <p class="verify-note">
+        This is an official record. To confirm document validity and view the
+        original record on the secure institutional portal, scan the QR code or
+        enter Code <strong>__VERIFY_CODE__</strong> at
+        <strong>__VERIFY_DOMAIN__</strong>.
+      </p>
 
       <div class="sign-strip">
         <div class="slot">
@@ -251,7 +257,9 @@
                 { en: "IT", s1: 90, s2: 92 },
                 { en: "HPE", s1: 88, s2: 90 },
               ],
-              conduct: "Very Good",
+              conduct_s1: "A",
+              conduct_s2: "A",
+              conduct_year: "A",
               absent_days_s1: 2,
               absent_days_s2: 1,
               rank: 5,
@@ -270,7 +278,7 @@
         __REGION_AMH__: "አማራ ክልል",
         __REGION__: "Amhara",
         __SCHOOL_NAME_AMH__: "ኔውላንድ ሁለተኛ ደረጃ ትምህርት ቤት",
-        __SCHOOL_NAME__: "Newland Secondary School",
+        __SCHOOL_NAME__: "Newland Secondary School".toUpperCase(),
         __STUDENT_ID__: "S1234567",
         __STUDENT_NAME__: "Samuel Bekele",
         __SEX__: "Male",
@@ -280,11 +288,13 @@
         __ACADEMIC_YEAR__: "2025–2026",
         __ZONE__: "Bahir Dar Zone",
         __WOREDA__: "Arada",
-        __TOWN__: "Bahir Dar",
+        __KEBELE__: "Kebele 04",
         __HOMEROOM_TEACHER_NAME__: "Mr. Alemu",
         __RESULT_PROMOTED_CLASS__: "on",
         __RESULT_DETAINED_CLASS__: "",
         __PROMOTED_TO_GRADE_TEXT__: "Grade 11",
+        __VERIFY_CODE__: "S1234567",
+        __VERIFY_DOMAIN__: "newlandschool.et/verify",
       };
 
       function replaceTextPlaceholder(needle, html) {

@@ -322,6 +322,48 @@ function showConfirm(message) {
     });
 }
 
+// Promise-based password-confirmation modal — used before any action
+// that moves a student out of the school (transfer start/cancel), so a
+// shared or unlocked screen can't trigger one by accident. Resolves to
+// the entered password on Confirm, or null on Cancel/Escape. serverError
+// can be set (from a failed attempt) to show inline under the field the
+// next time this same prompt is reused for a retry.
+function showPasswordPrompt(message) {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('password-confirm-modal');
+        if (!modal) { resolve(window.prompt(message)); return; }
+        document.getElementById('password-confirm-modal-message').textContent = message;
+        const input = document.getElementById('password-confirm-modal-input');
+        const errorEl = document.getElementById('password-confirm-modal-error');
+        input.value = '';
+        errorEl.style.display = 'none';
+        errorEl.textContent = '';
+        modal.style.display = 'flex';
+
+        const okBtn = document.getElementById('password-confirm-modal-ok');
+        const cancelBtn = document.getElementById('password-confirm-modal-cancel');
+
+        const cleanup = (result) => {
+            modal.style.display = 'none';
+            okBtn.removeEventListener('click', onOk);
+            cancelBtn.removeEventListener('click', onCancel);
+            document.removeEventListener('keydown', onKeydown);
+            resolve(result);
+        };
+        const onOk = () => cleanup(input.value);
+        const onCancel = () => cleanup(null);
+        const onKeydown = (e) => {
+            if (e.key === 'Escape') cleanup(null);
+            if (e.key === 'Enter') onOk();
+        };
+
+        okBtn.addEventListener('click', onOk);
+        cancelBtn.addEventListener('click', onCancel);
+        document.addEventListener('keydown', onKeydown);
+        input.focus();
+    });
+}
+
 // --- 2. Dynamic Stream Logic (Grade 9-12) ---
 function updateStreamOptions() {
     const grade = document.getElementById('reg_grade').value;
@@ -435,10 +477,20 @@ async function submitUpdate() {
         });
 
         if (res.ok) {
-            showSuccess(); 
+            const result = await res.json().catch(() => ({}));
+            showSuccess();
+            // Grade/stream changed here means the server reset this
+            // student's section — flag it so the Registrar knows to run
+            // the Placement Wizard for them, instead of finding out later
+            // when a section-scoped bulk action mysteriously skips them.
+            if (result.section_cleared) {
+                showAlert("Grade/stream changed — this student now awaits placement into a section via the Placement Wizard.", "success");
+            }
         } else {
-            const errorText = await res.text();
-            showAlert("Update failed: " + errorText);
+            const raw = await res.text().catch(() => "Unknown error");
+            let message = raw;
+            try { message = JSON.parse(raw).error || raw; } catch (_) { /* plain-text error body */ }
+            showAlert("Update failed: " + message);
         }
     } catch (err) {
         console.error("Fetch Error:", err);
@@ -564,7 +616,7 @@ async function submitPromotion() {
 
         if (res.ok) {
             showAlert(result.message);
-            location.reload();
+            resetPromotionForNextStudent();
         } else {
             showAlert(result.error || "Promotion failed.");
         }
@@ -572,6 +624,24 @@ async function submitPromotion() {
         console.error(err);
         showAlert(t("reg_server_error"));
     }
+}
+
+// Clears the Promotion/Stream form back to its just-opened state so the
+// Registrar can immediately search for the next student, without a full
+// page reload (which used to kick them back to the Dashboard tab).
+function resetPromotionForNextStudent() {
+    document.getElementById('promo-id').value = '';
+    document.getElementById('promo-form').style.display = 'none';
+    document.getElementById('action-promote').checked = false;
+    document.getElementById('action-retain').checked = false;
+    document.getElementById('override-reason-box').style.display = 'none';
+    document.getElementById('override-reason').value = '';
+    window.currentEligibility = null;
+    // The Placement Wizard's "recently promoted" list is stale now too —
+    // refresh it if that function is loaded, so the freshly-promoted
+    // student shows up there without the Registrar switching tabs.
+    if (typeof loadPlacementPromoted === 'function') loadPlacementPromoted();
+    document.getElementById('promo-id').focus();
 }
 
 function showSuccess() {
@@ -756,12 +826,44 @@ async function loadBulkSectionOptions() {
     }
 }
 
+// window.open()-ing these endpoints directly used to mean a 404 ("no
+// students in that grade/section/stream") just dumped raw JSON into a
+// blank new tab — easy to mistake for the download silently failing.
+// Fetching first lets a failed request show a normal toast instead, and
+// only opens/downloads a new tab once there's an actual file to show.
+async function downloadBulkDocument(url, fallbackFilename) {
+    try {
+        const res = await fetch(url, { credentials: 'include' });
+        if (!res.ok) {
+            const body = await res.json().catch(() => null);
+            showAlert(body?.error || "Could not generate that document.", "error");
+            return;
+        }
+        const blob = await res.blob();
+        const disposition = res.headers.get('Content-Disposition') || '';
+        const match = disposition.match(/filename="?([^"]+)"?/);
+        const filename = match ? match[1] : fallbackFilename;
+
+        const blobUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+        console.error(err);
+        showAlert(t("reg_server_error"));
+    }
+}
+
 function bulkDownloadIdCards() {
     const val = document.getElementById('bulk-doc-section')?.value;
     if (!val) { showAlert("Pick a section first.", "error"); return; }
     const [class_level, section, stream] = val.split('|');
     const params = new URLSearchParams({ class_level, section, stream });
-    window.open(`http://localhost:3001/api/registrar/documents/id-card/bulk/docx-zip?${params}`, '_blank');
+    downloadBulkDocument(`http://localhost:3001/api/registrar/documents/id-card/bulk/pdf-zip?${params}`, `ID-Cards-Grade${class_level}-${section}.zip`);
 }
 
 function bulkDownloadReportCards() {
@@ -769,7 +871,7 @@ function bulkDownloadReportCards() {
     if (!val) { showAlert("Pick a section first.", "error"); return; }
     const [class_level, section, stream] = val.split('|');
     const params = new URLSearchParams({ class_level, section, stream });
-    window.open(`http://localhost:3001/api/registrar/documents/report-card/bulk/pdf?${params}`, '_blank');
+    downloadBulkDocument(`http://localhost:3001/api/registrar/documents/report-card/bulk/pdf?${params}`, `ReportCards-Grade${class_level}-${section}.pdf`);
 }
 
 async function addSection() {
@@ -1138,13 +1240,16 @@ function showTransferPane(which) {
 async function startOutgoingTransfer(student_id) {
     if (!student_id) return;
     if (!(await showConfirm(t('reg_generate_code_confirm')))) return;
+    const password = await showPasswordPrompt(t('reg_transfer_password_prompt'));
+    if (password === null) return;
+    if (!password) return showAlert("Enter your password to continue.", "error");
 
     try {
         const res = await fetch('http://localhost:3001/api/registrar/transfers/outgoing', {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ student_id })
+            body: JSON.stringify({ student_id, password })
         });
         const result = await res.json();
         if (!res.ok) return showAlert(result.error || "Could not start the transfer.");
@@ -1246,10 +1351,16 @@ function outgoingTransferStatusLabel(status) {
 
 async function cancelOutgoingTransfer(id) {
     if (!(await showConfirm(t('reg_cancel_transfer_confirm')))) return;
+    const password = await showPasswordPrompt(t('reg_transfer_password_prompt'));
+    if (password === null) return;
+    if (!password) return showAlert("Enter your password to continue.", "error");
+
     try {
         const res = await fetch(`http://localhost:3001/api/registrar/transfers/outgoing/${id}/cancel`, {
             method: 'POST',
-            credentials: 'include'
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password })
         });
         const result = await res.json();
         if (!res.ok) return showAlert(result.error || "Could not cancel the transfer.");
@@ -1525,9 +1636,11 @@ function previewSampleTranscript() {
 }
 
 // View-only ID card preview (HTML) — downloadIdCard() below is the
-// actual .docx issuance, used from the Documents tab for a real student.
+// actual PDF issuance, used from the Documents tab for a real student.
+// Same front+back design as the student's own "My ID" tab — see
+// buildIdCardHtml in server.js.
 function downloadIdCard(student_id) {
-    window.open(`http://localhost:3001/api/registrar/documents/id-card/${encodeURIComponent(student_id)}/docx`, '_blank');
+    window.open(`http://localhost:3001/api/registrar/documents/id-card/${encodeURIComponent(student_id)}/pdf`, '_blank');
     setTimeout(loadIssuanceLog, 1500);
     setTimeout(() => loadDocumentHistory(student_id), 1500);
 }

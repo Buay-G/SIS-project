@@ -84,6 +84,21 @@ body {
 }
 #sidebar button i[data-lucide] { width: 17px; height: 17px; flex-shrink: 0; stroke-width: 2px; }
 
+/* Sidebar section headers — groups related nav buttons (Overview,
+   Admissions & Records, Progression & Placement, Transfers & Documents,
+   Administration & Staff) so a long, flat button list reads as a
+   structured menu instead of one undifferentiated stack. */
+.nav-group-label {
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.4);
+    padding: 14px 14px 6px;
+    margin: 0;
+}
+.nav-group-label:first-child { padding-top: 2px; }
+
 #sidebar button:hover { background: rgba(255,255,255,0.1); color: #ffffff; border-left-color: rgba(255,255,255,0.4); }
 #sidebar button.active { background: rgba(37, 99, 235, 0.55); color: #ffffff; border-left-color: #60a5fa; font-weight: 600; }
 
