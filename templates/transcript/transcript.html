@@ -5,183 +5,224 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Student Transcript - Newland Secondary School</title>
     <link rel="stylesheet" href="transcript.css" />
+    <!-- QR rendering for the verification code below the student photo —
+         same library the certificate/report card verification already
+         relies on (see server.js CSP script-src/connect-src comment). -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
   </head>
   <body>
-    <div class="page">
-      <!-- Top Header -->
-      <div class="header">
-        <div class="flag-box">
-          <img
-            class="flag-img"
-            src="../../public/assets/images/gambella_flag.png"
-            alt="Gambella regional flag"
-          />
+    <div id="page-scale-wrap">
+      <div class="page">
+        <!-- Top Header -->
+        <div class="header">
+          <div class="flag-box">
+            <img
+              class="flag-img"
+              src="../../public/assets/images/gambella_flag.png"
+              alt="Gambella regional flag"
+            />
+          </div>
+          <div class="header-center">
+            <h3>በጋምቤላ ሕዝቦች ብሔራዊ ክልላዊ መንግሥት</h3>
+            <h2>Gambella People National Regional State</h2>
+            <!-- School name filled from DATA.school_display_name (school
+               name + school level combined, same as the report card /
+               certificate / ID card) — not hardcoded per-school. -->
+            <h3 id="f-school-name-amh"></h3>
+            <h2 id="f-school-name"></h2>
+          </div>
+          <div class="flag-box">
+            <img
+              class="flag-img"
+              src="../../public/assets/images/ethiopia_flag.png"
+              alt="Ethiopian national flag"
+            />
+          </div>
         </div>
-        <div class="header-center">
-          <h3>በጋምቤላ ሕዝቦች ብሔራዊ ክልላዊ መንግሥት</h3>
-          <h2>Gambella People National Regional State</h2>
-          <h3>የኒውላንድ ሁለተኛ ደረጃ ት/ቤት</h3>
-          <h2>Newland Secondary School</h2>
-        </div>
-        <div class="flag-box">
-          <img
-            class="flag-img"
-            src="../../public/assets/images/ethiopia_flag.png"
-            alt="Ethiopian national flag"
-          />
-        </div>
-      </div>
 
-      <!-- Contact Sub-Header removed -->
+        <!-- Contact Sub-Header removed -->
 
-      <!-- Title/Info (left) + Photo (right), side by side so the photo
+        <!-- Title banner spans full width above the info+photo row, so the
+           info column and the photo column both start at the same top
+           edge and align cleanly with each other. -->
+        <div class="doc-title">Student Transcript</div>
+
+        <!-- Title/Info (left) + Photo (right), side by side so the photo
            reserves its own column instead of floating over the text -->
-      <div class="title-photo-row">
-        <div class="title-info-col">
-          <!-- Title -->
-          <div class="doc-title">Student Transcript</div>
+        <div class="title-photo-row">
+          <div class="title-info-col">
+            <!-- Student Details -->
+            <div class="info-grid">
+              <div class="field wide">
+                <label>Student's Full Name</label>
+                <div class="val" id="f-student-name"></div>
+              </div>
+              <div class="field">
+                <label>Stream</label>
+                <div class="val" id="f-stream"></div>
+              </div>
+              <div class="field">
+                <label>Sex</label>
+                <div class="val" id="f-sex"></div>
+              </div>
+              <div class="field">
+                <label>Program</label>
+                <div class="val">Regular</div>
+              </div>
+              <div class="field">
+                <label>Date of Admission</label>
+                <div class="val" id="f-date-admission"></div>
+              </div>
+              <div class="field">
+                <label>Date of Leaving</label>
+                <div class="val" id="f-date-leaving"></div>
+              </div>
+            </div>
 
-          <!-- Student Details -->
-          <div class="info-grid">
-            <div class="field wide">
-              <label>Student's Full Name</label>
-              <div class="val" id="f-student-name"></div>
+            <!-- Farewell/congratulations note — only filled in (by
+               transcript.js, from DATA.farewell_message) when the
+               student has actually graduated or transferred out; stays
+               empty and collapses to nothing for a still-enrolled
+               student's transcript. Lives here, in the left column
+               below the info fields, so it sits beside the photo/QR
+               tower rather than as a full-width block that pushes the
+               table further down the page. -->
+            <div class="farewell-note" id="farewell-note"></div>
+          </div>
+
+          <!-- Photo, with Student ID as a caption strip, and the
+             verification QR code stacked directly beneath it. -->
+          <div class="photo-wrap">
+            <div class="photo-box" id="photo-box">Photo</div>
+            <div class="photo-caption">
+              <span class="id-label">Student ID</span>
+              <span class="id-value" id="f-student-id"></span>
             </div>
-            <div class="field">
-              <label>Stream</label>
-              <div class="val" id="f-stream"></div>
-            </div>
-            <div class="field">
-              <label>Sex</label>
-              <div class="val" id="f-sex"></div>
-            </div>
-            <div class="field">
-              <label>Age</label>
-              <div class="val" id="f-age"></div>
-            </div>
-            <div class="field">
-              <label>Program</label>
-              <div class="val">Regular</div>
-            </div>
-            <div class="field">
-              <label>Date of Admission</label>
-              <div class="val" id="f-date-admission"></div>
-            </div>
-            <div class="field">
-              <label>Date of Leaving</label>
-              <div class="val" id="f-date-leaving"></div>
+            <div class="qr-wrap">
+              <div class="qr-box" id="qr-code"></div>
+              <span class="qr-caption">Scan to verify</span>
             </div>
           </div>
         </div>
 
-        <!-- Photo, with Student ID as a caption strip -->
-        <div class="photo-wrap">
-          <div class="photo-box" id="photo-box">Photo</div>
-          <div class="photo-caption">
-            <span class="id-label">Student ID</span>
-            <span class="id-value" id="f-student-id"></span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Main Table -->
-      <table>
-        <thead>
-          <tr>
-            <th rowspan="3" class="subject-col">Subjects</th>
-            <th colspan="12">Academic Years</th>
-            <th rowspan="3">Remark</th>
-          </tr>
-          <tr>
-            <td colspan="3" id="yr-header-9">20___ E.C</td>
-            <td colspan="3" id="yr-header-10">20___ E.C</td>
-            <td colspan="3" id="yr-header-11">20___ E.C</td>
-            <td colspan="3" id="yr-header-12">20___ E.C</td>
-          </tr>
-          <tr>
-            <!-- 9th -->
-            <td colspan="3"><strong>9th</strong></td>
-            <!-- 10th -->
-            <td colspan="3"><strong>10th</strong></td>
-            <!-- 11th -->
-            <td colspan="3"><strong>11th</strong></td>
-            <!-- 12th -->
-            <td colspan="3"><strong>12th</strong></td>
-          </tr>
-          <tr>
-            <th></th>
-            <!-- 9th sub -->
-            <th>I</th>
-            <th>II</th>
-            <th>AV</th>
-            <!-- 10th sub -->
-            <th>I</th>
-            <th>II</th>
-            <th>AV</th>
-            <!-- 11th sub -->
-            <th>I</th>
-            <th>II</th>
-            <th>AV</th>
-            <!-- 12th sub -->
-            <th>I</th>
-            <th>II</th>
-            <th>AV</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="transcript-body">
-          <!-- filled by transcript.js -->
-        </tbody>
-      </table>
-
-      <!-- Disclaimer Note -->
-      <div class="note">
-        <strong>Note:-</strong> If there is any erase, alteration, deletion or
-        absence of students' photograph and School seal, this transcript is
-        completely invalid.
-      </div>
-
-      <!-- Signatures and Seal (three-column layout) -->
-      <div class="signatures">
-        <div class="sig-left">
-          <div>
-            <strong>Registrar</strong>
-            <span
-              id="f-registrar-name"
-              class="underline-field"
-              style="min-width: 180px"
-            ></span>
-          </div>
-          <div>
-            <strong>Sign</strong>
-            <span class="underline-field" style="min-width: 120px"></span>
-          </div>
-          <div>
-            <strong>Date</strong>
-            <span
-              id="f-issue-date"
-              class="underline-field"
-              style="min-width: 140px"
-            ></span>
-          </div>
+        <!-- Main Table. Wrapped so the not-attended-grade lines (drawn by
+           transcript.js as one continuous diagonal per column, spanning
+           the full row height — not a per-cell fill) can be positioned
+           with real pixel coordinates measured off the actual rendered
+           rows. -->
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th rowspan="3" class="subject-col">Subjects</th>
+                <th colspan="12">Academic Years</th>
+              </tr>
+              <tr>
+                <th colspan="3" id="yr-header-9">20___ E.C</th>
+                <th colspan="3" id="yr-header-10">20___ E.C</th>
+                <th colspan="3" id="yr-header-11">20___ E.C</th>
+                <th colspan="3" id="yr-header-12">20___ E.C</th>
+              </tr>
+              <tr>
+                <!-- 9th -->
+                <th colspan="3">9th</th>
+                <!-- 10th -->
+                <th colspan="3">10th</th>
+                <!-- 11th -->
+                <th colspan="3">11th</th>
+                <!-- 12th -->
+                <th colspan="3">12th</th>
+              </tr>
+              <tr>
+                <th></th>
+                <!-- 9th sub -->
+                <th>I</th>
+                <th>II</th>
+                <th>AV</th>
+                <!-- 10th sub -->
+                <th>I</th>
+                <th>II</th>
+                <th>AV</th>
+                <!-- 11th sub -->
+                <th>I</th>
+                <th>II</th>
+                <th>AV</th>
+                <!-- 12th sub -->
+                <th>I</th>
+                <th>II</th>
+                <th>AV</th>
+              </tr>
+            </thead>
+            <tbody id="transcript-body">
+              <!-- filled by transcript.js -->
+            </tbody>
+          </table>
+          <svg class="not-attended-lines" id="not-attended-lines"></svg>
         </div>
 
-        <div class="seal-slot">
-          <div class="seal-area">Seal</div>
+        <!-- Disclaimer Note -->
+        <div class="note">
+          <strong>Note:-</strong> If there is any erase, alteration, deletion or
+          absence of students' photograph and School seal, this transcript is
+          completely invalid.
         </div>
 
-        <div class="sig-right">
-          <div>
-            <strong>Principal</strong>
-            <span class="underline-field" style="min-width: 180px"></span>
+        <!-- Signatures and Seal (three-column layout). Signature images
+           are filled in by transcript.js when the school has one on
+           file (registrar_signature_data_uri / principal_signature_data_uri);
+           the underline stays as a blank line to sign on paper when it
+           doesn't, same fallback the report card/certificate use. -->
+        <div class="signatures">
+          <div class="sig-left">
+            <div>
+              <strong>Registrar</strong>
+              <span
+                id="f-registrar-name"
+                class="underline-field"
+                style="min-width: 180px"
+              ></span>
+            </div>
+            <div>
+              <strong>Date</strong>
+              <span
+                id="f-registrar-date"
+                class="underline-field"
+                style="min-width: 140px"
+              ></span>
+            </div>
+            <div class="sig-block">
+              <span class="sig-slot" id="f-registrar-sign"></span>
+              <span class="underline-field" style="min-width: 150px"></span>
+              <span class="sig-caption">Signature / ፊርማ</span>
+            </div>
           </div>
-          <div>
-            <strong>Sign</strong>
-            <span class="underline-field" style="min-width: 120px"></span>
+
+          <div class="seal-slot">
+            <div class="seal-area" id="school-seal">Seal</div>
           </div>
-          <div>
-            <strong>Date</strong>
-            <span class="underline-field" style="min-width: 140px"></span>
+
+          <div class="sig-right">
+            <div>
+              <strong>Principal</strong>
+              <span
+                id="f-principal-name"
+                class="underline-field"
+                style="min-width: 180px"
+              ></span>
+            </div>
+            <div>
+              <strong>Date</strong>
+              <span
+                id="f-principal-date"
+                class="underline-field"
+                style="min-width: 140px"
+              ></span>
+            </div>
+            <div class="sig-block">
+              <span class="sig-slot" id="f-principal-sign"></span>
+              <span class="underline-field" style="min-width: 150px"></span>
+              <span class="sig-caption">Signature / ፊርማ</span>
+            </div>
           </div>
         </div>
       </div>
@@ -197,13 +238,21 @@
           : {
               student_id: "S1234567",
               student_name: "Samuel Bekele",
+              school_name: "Newland Secondary School",
+              school_display_name: "NEWLAND SECONDARY SCHOOL",
               stream: "Natural Science",
               sex: "Male",
-              age: 17,
               date_of_admission: "10 Sep 2022",
               date_of_leaving: "03 Jul 2026",
               registrar_name: "Mr. Alemu",
+              registrar_signature_data_uri: null,
+              principal_name: "Mrs. Nyabuoy",
+              principal_signature_data_uri: null,
+              school_seal_data_uri: null,
               issue_date: "04 Jul 2026",
+              verify_url: "https://example.edu.et/verify/document/SAMPLE",
+              farewell_message:
+                "Dear Samuel Bekele, congratulations on graduating from Newland Secondary School. Thank you for being such a valued part of our school community — we are proud of everything you've achieved and wish you every success in what comes next.",
               years: [
                 {
                   class_level: 9,

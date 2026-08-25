@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
     <title>Teacher Portal | Newland High</title>
     <link rel="stylesheet" href="style.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
@@ -27,7 +30,6 @@
             id="nav-school-logo"
             class="nav-school-logo"
             style="display: none"
-            onerror="this.style.display = 'none'"
           />
           <span data-i18n="teacher_portal_title">Teachers Portal</span>
           <span id="nav-school-name">—</span>
@@ -373,6 +375,11 @@
               <span class="sidebar-toggle-bar"></span>
             </button>
             <h1 class="page-title" id="page-title-text">—</h1>
+            <!-- Zero-size flex item, mobile-only: forces everything after
+                 the title onto its own new row instead of letting a badge
+                 sneak onto row 1 next to a shrunken title. See
+                 .topbar-break in style.css. -->
+            <div class="topbar-break topbar-break-1" aria-hidden="true"></div>
             <span
               id="academic-year-badge"
               class="academic-year-badge"
@@ -389,6 +396,12 @@
               style="display: none"
               >—</span
             >
+            <!-- Same line-break trick as topbar-break-1 above, this one
+                 pushing academic-year-badge onto its own row below the
+                 MOE-code/semester-status pair, without stretching it to
+                 the row's full width the way flex-basis:100% on the badge
+                 itself would. -->
+            <div class="topbar-break topbar-break-2" aria-hidden="true"></div>
           </div>
 
           <div class="user-actions">
@@ -403,7 +416,7 @@
                 data-lang="en"
                 role="tab"
                 aria-selected="true"
-                onclick="setLang('en')"
+                id="lang-btn-en"
               >
                 EN
               </button>
@@ -413,7 +426,7 @@
                 data-lang="am"
                 role="tab"
                 aria-selected="false"
-                onclick="setLang('am')"
+                id="lang-btn-am"
               >
                 አማ
               </button>
@@ -421,8 +434,8 @@
             <div class="notification-wrapper">
               <button
                 class="notification-btn"
+                id="notification-btn"
                 aria-label="Notifications"
-                onclick="toggleNotificationPanel()"
                 aria-haspopup="true"
                 aria-expanded="false"
                 aria-controls="notification-panel"
@@ -441,10 +454,7 @@
               >
                 <div class="notification-panel-header">
                   <strong>Notifications</strong>
-                  <button
-                    class="notif-clear-btn"
-                    onclick="markAllNotificationsRead()"
-                  >
+                  <button class="notif-clear-btn" id="notif-clear-btn">
                     Mark all read
                   </button>
                 </div>
@@ -455,51 +465,36 @@
             </div>
             <button
               class="settings-btn"
+              id="settings-btn"
               aria-label="Settings"
-              onclick="navigateToProfile()"
             >
               ⚙️
             </button>
             <button
               class="help-btn"
+              id="help-btn"
               aria-label="Help and support"
-              onclick="openHelpModal()"
             >
               ❓
             </button>
 
             <div
               class="user-profile-trigger"
-              onclick="toggleDropdown()"
+              id="user-profile-trigger"
               role="button"
               tabindex="0"
               aria-haspopup="true"
               aria-expanded="false"
               aria-label="Open profile menu"
-              onkeydown="
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault();
-                  toggleDropdown();
-                }
-              "
             >
-              <span id="nav-greeting">Hi, Teacher!</span>
-              <img
-                src=""
-                alt=""
-                class="nav-avatar"
-                id="nav-avatar"
-                onerror="
-                  this.style.display = 'none';
-                  document.getElementById('nav-avatar-initials').style.display =
-                    'flex';
-                "
-              />
+              <img src="" alt="" class="nav-avatar" id="nav-avatar" />
               <div
                 id="nav-avatar-initials"
                 class="nav-avatar-initials"
                 aria-hidden="true"
               ></div>
+              <span id="nav-greeting">Hi, Teacher!</span>
+              <span id="nav-greeting-name" aria-hidden="true">Teacher</span>
             </div>
 
             <div id="profile-dropdown" class="dropdown-menu" role="menu">
@@ -621,6 +616,19 @@
                 <p style="color: #64748b; font-size: 0.85rem">Loading…</p>
               </div>
             </div>
+            <div class="widget" id="dashboard-history-widget">
+              <h3 data-i18n="widget_history_heading">History</h3>
+              <p
+                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                data-i18n="widget_history_desc"
+              >
+                Every subject, homeroom, and Recorder role you've held at this
+                school, by academic year.
+              </p>
+              <div id="dashboard-history-list">
+                <p style="color: #64748b; font-size: 0.85rem">Loading…</p>
+              </div>
+            </div>
           </div>
         </section>
         <div
@@ -640,7 +648,7 @@
                   Average: <span id="modal-avg"></span>
                 </p>
               </div>
-              <button onclick="closeModal()" class="btn-return">Return</button>
+              <button id="modal-close-btn" class="btn-return">Return</button>
             </div>
 
             <div style="overflow-y: auto">
@@ -675,6 +683,34 @@
             </div>
           </div>
         </div>
+
+        <!-- Enlarges the small ID-photo thumbnail from the View Students
+             table — same .modal/.modal-content shell as student-modal
+             above, just with an image instead of a progress table, so it
+             picks up the same overlay/box styling for free. -->
+        <div
+          id="student-photo-modal"
+          class="modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="photo-preview-name"
+          style="display: none"
+        >
+          <div class="modal-content photo-preview-modal-content">
+            <div class="modal-header-row">
+              <h3 id="photo-preview-name"></h3>
+              <button id="photo-preview-close-btn" class="btn-return">
+                Close
+              </button>
+            </div>
+            <img
+              id="photo-preview-img"
+              class="photo-preview-img"
+              src=""
+              alt=""
+            />
+          </div>
+        </div>
         <section id="page-upload" class="page-content" style="display: none">
           <div class="dashboard-grid">
             <div class="widget">
@@ -693,7 +729,7 @@
                   <button
                     type="button"
                     class="btn-primary"
-                    onclick="searchStudent()"
+                    id="search-student-btn"
                   >
                     Search
                   </button>
@@ -708,7 +744,7 @@
                   <label for="type-select" class="sr-only"
                     >Assessment type</label
                   >
-                  <select id="type-select" onchange="updateScoreInputLimits()">
+                  <select id="type-select">
                     <option value="individual_assignment_1">
                       Individual Assignment 1
                     </option>
@@ -734,7 +770,6 @@
                     min="1"
                     max="5"
                     step="0.5"
-                    oninput="clampScoreInput(this)"
                   />
                   <div
                     id="score-input-hint"
@@ -743,7 +778,7 @@
                   <button
                     type="button"
                     class="btn-primary"
-                    onclick="submitIndividualMark()"
+                    id="submit-individual-mark-btn"
                   >
                     Submit
                   </button>
@@ -769,7 +804,6 @@
                 id="gradesheet-section"
                 class="form-input"
                 style="max-width: 240px"
-                onchange="onGradeSheetSectionChange()"
               >
                 <option value="">Select section…</option>
               </select>
@@ -779,7 +813,6 @@
                 id="gradesheet-subject"
                 class="form-input"
                 style="max-width: 200px"
-                onchange="onGradeSheetSubjectChange()"
               >
                 <option value="">Select subject…</option>
               </select>
@@ -793,7 +826,6 @@
                 class="form-input"
                 placeholder="Search by name or ID…"
                 style="max-width: 200px"
-                oninput="applyGradeSheetSearch()"
               />
             </div>
 
@@ -850,7 +882,7 @@
                 data-i18n-placeholder="subject_request_reason_placeholder"
                 placeholder="Reason (e.g. subject teacher on leave)"
               />
-              <button class="btn-primary" onclick="submitSubjectEntryRequest()">
+              <button class="btn-primary" id="submit-subject-entry-request-btn">
                 <span data-i18n="subject_request_submit">Send Request</span>
               </button>
             </div>
@@ -869,7 +901,9 @@
               <span data-i18n="late_marks_desc"
                 >Once a semester is closed, use this to ask the Academic VP for
                 permission to go back and enter marks for students who are still
-                flagged Incomplete — across any subject in your section.</span
+                flagged Incomplete — across any subject in your section. This is
+                sent to the same Academic VP request queue as "Request Access to
+                Another Subject," tagged as a last-semester entry request.</span
               >
             </p>
             <div class="search-group" style="flex-wrap: wrap">
@@ -883,7 +917,7 @@
                 data-i18n-placeholder="late_marks_reason_placeholder"
                 placeholder="Reason (e.g. student was on medical leave)"
               />
-              <button class="btn-primary" onclick="submitLateMarksRequest()">
+              <button class="btn-primary" id="submit-late-marks-request-btn">
                 <span data-i18n="late_marks_submit">Send Request</span>
               </button>
             </div>
@@ -926,7 +960,7 @@
                   type="button"
                   class="segmented-toggle-btn active"
                   data-term="Semester 1"
-                  onclick="setLateMarksTerm('Semester 1')"
+                  id="late-marks-term-s1-btn"
                 >
                   Semester 1
                 </button>
@@ -934,7 +968,7 @@
                   type="button"
                   class="segmented-toggle-btn"
                   data-term="Semester 2"
-                  onclick="setLateMarksTerm('Semester 2')"
+                  id="late-marks-term-s2-btn"
                 >
                   Semester 2
                 </button>
@@ -951,7 +985,6 @@
                   id="late-marks-subject-select"
                   class="form-input"
                   style="max-width: 220px"
-                  onchange="loadLateMarksIncompleteStudents()"
                 >
                   <option value="">Select a subject…</option>
                 </select>
@@ -1034,6 +1067,7 @@
               <thead>
                 <tr>
                   <th>ID</th>
+                  <th>Photo</th>
                   <th>Full Name</th>
                   <th>Gender</th>
                   <th>Class</th>
@@ -1090,7 +1124,6 @@
                 data-i18n-placeholder="myclass_search_placeholder"
                 placeholder="Search by name or ID…"
                 style="flex: 2; min-width: 180px"
-                oninput="applyMyClassSearch()"
               />
 
               <label
@@ -1113,7 +1146,7 @@
                 type="button"
                 class="btn-primary"
                 style="width: auto; padding: 10px 18px; white-space: nowrap"
-                onclick="openQrScanner()"
+                id="open-qr-scanner-btn"
               >
                 <span aria-hidden="true">📷</span>
                 <span data-i18n="myclass_scan_qr">Scan QR</span>
@@ -1174,7 +1207,7 @@
           <div class="modal-content" style="width: 420px">
             <div class="modal-header-row">
               <h3 id="qr-scan-title" data-i18n="myclass_scan_qr">Scan QR</h3>
-              <button onclick="closeQrScanner()" class="btn-return">
+              <button id="close-qr-scanner-btn" class="btn-return">
                 Close
               </button>
             </div>
@@ -1242,12 +1275,6 @@
                       src=""
                       alt=""
                       style="display: none"
-                      onerror="
-                        this.style.display = 'none';
-                        document.getElementById(
-                          'idcard-photo-placeholder',
-                        ).style.display = 'flex';
-                      "
                     />
                     <div
                       id="idcard-photo-placeholder"
@@ -1364,7 +1391,7 @@
               type="button"
               class="btn-primary"
               style="width: auto; padding: 10px 22px"
-              onclick="flipIdCard()"
+              id="flip-idcard-btn"
               data-i18n="idcard_flip"
             >
               Flip Card
@@ -1373,7 +1400,7 @@
               type="button"
               class="btn-primary"
               style="width: auto; padding: 10px 22px"
-              onclick="printIdCard()"
+              id="print-idcard-btn"
               data-i18n="idcard_print"
             >
               Print ID Card
@@ -1391,8 +1418,8 @@
             style="font-size: 0.85rem; color: #64748b; margin-bottom: 20px"
             data-i18n="action_center_desc"
           >
-            Things your homeroom students need from you: photo/certificate
-            approvals, direct photo uploads, and password resets.
+            Things your homeroom students need from you: photo approvals, direct
+            photo uploads, and password resets.
           </p>
 
           <div class="dashboard-grid">
@@ -1406,22 +1433,6 @@
                 and approve or reject.
               </p>
               <div id="photo-requests-list">
-                <p style="color: #64748b; font-size: 0.85rem">Loading…</p>
-              </div>
-            </div>
-
-            <div class="widget">
-              <h3 data-i18n="action_center_certificate_requests">
-                Certificate Requests
-              </h3>
-              <p
-                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
-                data-i18n="action_center_certificate_requests_desc"
-              >
-                Students asking for their certificate to be unlocked for
-                download.
-              </p>
-              <div id="certificate-requests-list">
                 <p style="color: #64748b; font-size: 0.85rem">Loading…</p>
               </div>
             </div>
@@ -1475,16 +1486,12 @@
                   data-i18n-placeholder="homeroom_reset_placeholder"
                   placeholder="Student ID"
                   class="form-input"
-                  style="max-width: 160px"
+                  style="max-width: 160px; min-width: 120px; flex-basis: 120px"
                 />
                 <label for="upload-photo-file" class="sr-only"
                   >Student photo file</label
                 >
-                <button
-                  type="button"
-                  class="file-btn"
-                  onclick="document.getElementById('upload-photo-file').click()"
-                >
+                <button type="button" class="file-btn" id="choose-photo-btn">
                   Choose Photo
                 </button>
                 <span
@@ -1497,13 +1504,12 @@
                   id="upload-photo-file"
                   accept="image/*"
                   style="display: none"
-                  onchange="updateFileName(this, 'upload-photo-file-name')"
                 />
                 <button
                   type="button"
                   class="btn-primary"
                   style="width: auto; padding: 10px 22px"
-                  onclick="uploadStudentPhoto()"
+                  id="upload-student-photo-btn"
                   data-i18n="action_center_upload_button"
                 >
                   Upload Photo
@@ -1539,7 +1545,7 @@
                 <button
                   type="button"
                   class="btn-primary"
-                  onclick="resetHomeroomStudentPassword()"
+                  id="reset-homeroom-password-btn"
                   data-i18n="homeroom_reset_button"
                 >
                   Reset Password
@@ -1562,12 +1568,6 @@
                   class="profile-avatar-large"
                   id="profile-img"
                   alt="Profile photo"
-                  onerror="
-                    this.style.display = 'none';
-                    document.getElementById(
-                      'profile-avatar-initials',
-                    ).style.display = 'flex';
-                  "
                 />
                 <div
                   id="profile-avatar-initials"
@@ -1576,21 +1576,13 @@
                   aria-hidden="true"
                 ></div>
               </div>
-              <button
-                onclick="document.getElementById('avatar-upload').click()"
-                class="btn-photo"
-              >
+              <button id="change-photo-btn" class="btn-photo">
                 📷 Change Photo
               </button>
               <label for="avatar-upload" class="sr-only"
                 >Upload a new profile photo</label
               >
-              <input
-                type="file"
-                id="avatar-upload"
-                style="display: none"
-                onchange="uploadAvatar()"
-              />
+              <input type="file" id="avatar-upload" style="display: none" />
 
               <p>
                 <strong>Full Name:</strong>
@@ -1611,7 +1603,7 @@
                 <strong>Contact Number:</strong>
                 <span id="profile-contact-display">—</span>
                 <button
-                  onclick="toggleContactEdit()"
+                  id="edit-contact-btn"
                   class="edit-inline-btn"
                   aria-label="Edit contact number"
                 >
@@ -1633,14 +1625,14 @@
                 />
                 <div style="display: flex; gap: 8px">
                   <button
-                    onclick="saveProfileChanges()"
+                    id="save-profile-btn"
                     class="btn-primary"
                     style="flex: 1; margin: 0"
                   >
                     Save
                   </button>
                   <button
-                    onclick="toggleContactEdit()"
+                    id="cancel-contact-edit-btn"
                     class="btn-cancel"
                     style="flex: 1; margin: 0"
                   >
@@ -1711,9 +1703,7 @@
                   ></p>
                   <button
                     type="button"
-                    onclick="
-                      document.getElementById('signature-upload').click()
-                    "
+                    id="upload-signature-trigger-btn"
                     class="btn-photo"
                     data-i18n="profile_upload_signature"
                   >
@@ -1727,7 +1717,6 @@
                     id="signature-upload"
                     accept="image/*"
                     style="display: none"
-                    onchange="uploadTeacherSignature()"
                   />
                 </div>
               </div>
@@ -1764,9 +1753,7 @@
                   ></p>
                   <button
                     type="button"
-                    onclick="
-                      document.getElementById('teacher-idphoto-upload').click()
-                    "
+                    id="upload-idphoto-trigger-btn"
                     class="btn-photo"
                     data-i18n="profile_upload_idphoto"
                   >
@@ -1780,7 +1767,6 @@
                     id="teacher-idphoto-upload"
                     accept="image/*"
                     style="display: none"
-                    onchange="uploadTeacherIdPhoto()"
                   />
                 </div>
               </div>
@@ -1804,7 +1790,7 @@
                 id="confirm-pass"
                 placeholder="Confirm New Password"
               />
-              <button onclick="updatePassword()">Update Password</button>
+              <button id="update-password-btn">Update Password</button>
               <div style="margin-top: 15px">
                 <label
                   ><input type="checkbox" id="2fa-toggle" /> Enable 2FA
@@ -1865,7 +1851,7 @@
               type="button"
               class="btn-primary"
               style="margin-top: 10px"
-              onclick="sendAbsenceRequest()"
+              id="send-absence-request-btn"
             >
               Send Absence Request
             </button>
@@ -1905,7 +1891,7 @@
               <button
                 type="button"
                 class="btn-primary"
-                onclick="sendContactMessage()"
+                id="send-contact-message-btn"
               >
                 Send
               </button>
@@ -1923,7 +1909,7 @@
             class="widget"
           >
             <button
-              onclick="closeContactThread()"
+              id="close-contact-thread-btn"
               class="btn-return"
               style="margin-bottom: 10px"
             >
@@ -1979,7 +1965,7 @@
               type="button"
               class="btn-primary"
               style="margin-top: 10px"
-              onclick="sendStudentNotification()"
+              id="send-student-notification-btn"
             >
               Send Notification
             </button>
@@ -2053,7 +2039,7 @@
                 <button
                   type="button"
                   class="btn-primary"
-                  onclick="loadHomeroomStudentReport()"
+                  id="load-homeroom-student-report-btn"
                 >
                   View Student Report
                 </button>
@@ -2061,7 +2047,7 @@
               <button
                 type="button"
                 class="btn-primary"
-                onclick="loadHomeroomSectionReport()"
+                id="load-homeroom-section-report-btn"
                 style="margin-bottom: 15px"
               >
                 View Whole Section / Export CSV
@@ -2116,7 +2102,7 @@
         <h2 id="success-modal-title">Success!</h2>
         <p id="success-modal-message">The mark has been saved successfully.</p>
         <button
-          onclick="closeSuccessModal()"
+          id="success-modal-close-btn"
           style="
             padding: 10px 20px;
             background: #2563eb;
@@ -2201,10 +2187,10 @@
           style="margin-bottom: 14px"
         ></textarea>
         <div class="confirm-modal-actions">
-          <button class="btn-confirm-cancel" onclick="closeHelpModal()">
+          <button class="btn-confirm-cancel" id="close-help-modal-btn">
             Cancel
           </button>
-          <button class="btn-confirm-ok" onclick="submitHelpRequest()">
+          <button class="btn-confirm-ok" id="submit-help-request-btn">
             Send
           </button>
         </div>

@@ -618,15 +618,39 @@ function openFollowUpModal(){
    /api/zonal/students-directory ---------------------------------------
    One row per student (ID, name, class, stream, section, enrollment
    year, status) across every school in the zone — not the old
-   class/section headcount summary. enrollment_year comes from when the
-   student's record was first created (no separate per-academic-year
-   history table exists yet), which is close enough to browse cohorts
-   by intake year even though it won't show a student's class in a
-   *past* year. currentStudentRows/currentStudentSchools are kept
-   around so the Download CSV button can export exactly what's on
-   screen without a second fetch. */
+   class/section headcount summary.
+
+   Two independent year filters live here, and it matters not to mix
+   them up:
+     - Enrollment Year: when the student's record was first CREATED
+       (students.created_at). Separates intake cohorts — always read
+       from the live table, past or present.
+     - Academic Year: which real academic year's roster you're looking
+       at, addressed as "years_back" (0 = current, 1 = last year, 2 =
+       two years ago...) rather than by label text — the EC label text
+       (e.g. "2017 E.C.") is NOT reliable for telling two consecutive
+       academic years apart, since a school that closes Semester 2
+       (typically May–July) rolls into a new academic_years row that
+       still carries the identical label text right up until the real
+       calendar crosses the Sept-11 Ethiopian new year — see the
+       comment on /api/zonal/academic-years in server.js. Left on
+       "Current Year" (years_back=0, the default), the zone-wide total
+       is exactly this year's count — a school that re-registers a
+       student for a new year (promotion or a new entrant) is what gets
+       counted, same as school performance/teacher performance below,
+       which are always a live last-14-days snapshot rather than
+       anything cumulative, so both effectively "start fresh" each year
+       on their own. Any years_back >= 1 instead reads
+       student_academic_year_snapshots — a frozen copy of who was here
+       that year — since the live students table has since been
+       overwritten by this year's promotion/placement.
+   currentStudentRows/currentStudentSchools are kept around so the
+   Download CSV button can export exactly what's on screen without a
+   second fetch. */
 let currentStudentRows = [];
 let currentStudentSchools = [];
+let currentStudentAcademicYears = [];
+let currentStudentViewingYearsBack = 0;
 
 // enrollment_year is stored as a plain Gregorian year (see the note
 // above). The rest of the portal always shows dates/years Ethiopian-
@@ -657,30 +681,45 @@ async function loadAndRenderStudents(filters){
     return;
   }
   try {
-    const [schools, data] = await Promise.all([
+    const [schools, academicYears, data] = await Promise.all([
       apiGet('/api/zonal/schools'),
+      apiGet('/api/zonal/academic-years'),
       apiGet('/api/zonal/students-directory', filters)
     ]);
+    currentStudentAcademicYears = academicYears.years || [];
     renderStudentsPanel(schools, data, filters || {});
   } catch (err) {
     content.innerHTML = errorPanel(err);
   }
 }
 
+// Mirrors the school-admin side's actual student lifecycle exactly
+// (see server.js's Student Status & Academic Year Management notes):
+// a student is Unregistered at academic-year rollover until the
+// Registrar re-registers them (promotion or a new entrant), Inactive
+// once registered but not yet placed into a section, Active once
+// placed, or briefly Pending Promotion between a promote decision and
+// placement. Graduated/Dropped/Transferred are terminal. There is no
+// "Transferred - Pending" status — that was removed on the school-admin
+// side, so only the completed transfer state exists here.
 const STUDENT_STATUS_PILL = {
-  'Active':                    'ok',
-  'Graduated':                 'grad',
-  'Dropped':                   'bad',
-  'Transferred - Pending':     'warn',
-  'Transferred - Completed':   'warn'
+  'Unregistered':             'bad',
+  'Inactive':                 'warn',
+  'Active':                   'ok',
+  'Pending Promotion':        'warn',
+  'Graduated':                'grad',
+  'Transferred - Completed':  'warn',
+  'Dropped':                  'bad'
 };
 
 const STUDENT_STATUS_KEY = {
-  'Active':                  'za_status_active',
+  'Unregistered':             'za_status_unregistered',
+  'Inactive':                 'za_status_inactive',
+  'Active':                   'za_status_active',
+  'Pending Promotion':        'za_status_pending_promotion',
   'Graduated':                'za_status_graduated',
-  'Dropped':                  'za_status_dropped',
-  'Transferred - Pending':    'za_status_transferred_pending',
-  'Transferred - Completed':  'za_status_transferred_completed'
+  'Transferred - Completed':  'za_status_transferred_completed',
+  'Dropped':                  'za_status_dropped'
 };
 
 function studentStatusLabel(status){
@@ -703,11 +742,20 @@ function streamLabel(stream){
   return key ? t(key) : (stream || '—');
 }
 
+// Display text for a years_back offset. n=0 never reaches here (callers
+// only use this for past entries) but is handled anyway for safety.
+function yearsAgoLabel(n){
+  if(!n) return t('za_academic_year_current');
+  return n === 1 ? t('za_year_ago_one') : t('za_years_ago', { n });
+}
+
 function renderStudentsPanel(schools, data, filters){
   const rows = data.rows || [];
   const years = data.years || [];
+  const viewingYearsBack = Number(data.years_back) || 0;
   currentStudentRows = rows;
   currentStudentSchools = schools;
+  currentStudentViewingYearsBack = viewingYearsBack;
 
   const totals = rows.reduce((acc, r)=>{
     acc.total++;
@@ -719,9 +767,22 @@ function renderStudentsPanel(schools, data, filters){
   const classOpts = ['9','10','11','12'].map(c=>`<option value="${c}" ${filters.class_level===c?'selected':''}>${t('za_grade_short',{level:c})}</option>`).join('');
   const streamOpts = ['General','Natural','Social'].map(s=>`<option value="${s}" ${filters.stream===s?'selected':''}>${streamLabel(s)}</option>`).join('');
   const sectionOpts = ['A','B','C','D'].map(s=>`<option value="${s}" ${filters.section===s?'selected':''}>${s}</option>`).join('');
-  const STATUS_VALUES = ['Active','Graduated','Dropped','Transferred - Pending','Transferred - Completed'];
+  const STATUS_VALUES = ['Unregistered','Inactive','Active','Pending Promotion','Graduated','Transferred - Completed','Dropped'];
   const statusOpts = STATUS_VALUES.map(s=>`<option value="${s}" ${filters.status===s?'selected':''}>${studentStatusLabel(s)}</option>`).join('');
   const yearOpts = years.map(y=>`<option value="${y}" ${String(filters.enrollment_year)===String(y)?'selected':''}>${enrollmentYearLabel(y)}</option>`).join('');
+  // Academic Year filter: options are relative offsets (years_back),
+  // never label text — see the big comment above currentStudentRows for
+  // why label text can't tell two consecutive academic years apart.
+  // "Current Year" is offset 0 and maps to an empty/omitted filter
+  // value; currentStudentAcademicYears (fetched from
+  // /api/zonal/academic-years in loadAndRenderStudents) supplies every
+  // offset at least one school in the zone has reached, each with a
+  // best-effort EC label shown only as a hint in parentheses.
+  const pastAcademicYears = currentStudentAcademicYears.filter(y => y.years_back > 0);
+  const academicYearOpts = pastAcademicYears.map(y=>{
+    const hint = y.label ? ` (${y.label})` : '';
+    return `<option value="${y.years_back}" ${String(filters.years_back)===String(y.years_back)?'selected':''}>${yearsAgoLabel(y.years_back)}${hint}</option>`;
+  }).join('');
 
   const tableRows = rows.length ? rows.map(r=>`
     <tr>
@@ -732,7 +793,9 @@ function renderStudentsPanel(schools, data, filters){
 
   document.getElementById('content').innerHTML = `
   <div class="panel">
-    <h3><i data-lucide="users"></i> ${t('za_students_title')}</h3>
+    <h3><i data-lucide="users"></i> ${t('za_students_title')}
+      ${viewingYearsBack > 0 ? `<span class="badge">${t('za_filters_academic_year')}: ${yearsAgoLabel(viewingYearsBack)}</span>` : ''}
+    </h3>
     <div class="filters">
       <select id="filt_school"><option value="">${t('za_all')} — ${t('za_filters_school')}</option>${schoolOpts}</select>
       <select id="filt_class"><option value="">${t('za_all')} — ${t('za_filters_class')}</option>${classOpts}</select>
@@ -740,6 +803,7 @@ function renderStudentsPanel(schools, data, filters){
       <select id="filt_section"><option value="">${t('za_all')} — ${t('za_filters_section')}</option>${sectionOpts}</select>
       <select id="filt_status"><option value="">${t('za_all')} — ${t('za_filters_status')}</option>${statusOpts}</select>
       <select id="filt_year"><option value="">${t('za_all')} — ${t('za_filters_year')}</option>${yearOpts}</select>
+      <select id="filt_academic_year"><option value="" ${!filters.years_back?'selected':''}>${t('za_filters_academic_year')}: ${t('za_academic_year_current')}</option>${academicYearOpts}</select>
       <button class="btn ghost" id="btnDownloadCsv">⬇ ${t('za_download_csv')}</button>
     </div>
     <div class="gender-strip">
@@ -769,10 +833,11 @@ function renderStudentsPanel(schools, data, filters){
       stream: document.getElementById('filt_stream').value,
       section: document.getElementById('filt_section').value,
       status: document.getElementById('filt_status').value,
-      enrollment_year: document.getElementById('filt_year').value
+      enrollment_year: document.getElementById('filt_year').value,
+      years_back: document.getElementById('filt_academic_year').value
     });
   };
-  ['filt_school','filt_class','filt_stream','filt_section','filt_status','filt_year'].forEach(id=>{
+  ['filt_school','filt_class','filt_stream','filt_section','filt_status','filt_year','filt_academic_year'].forEach(id=>{
     document.getElementById(id).addEventListener('change', refetch);
   });
   document.getElementById('btnDownloadCsv').addEventListener('click', downloadStudentsCsv);
@@ -797,7 +862,8 @@ function downloadStudentsCsv(){
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `zone-students-${new Date().toISOString().slice(0,10)}.csv`;
+  const yearSlug = currentStudentViewingYearsBack > 0 ? `-${currentStudentViewingYearsBack}yr_ago` : '';
+  a.download = `zone-students${yearSlug}-${new Date().toISOString().slice(0,10)}.csv`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -2253,8 +2319,7 @@ function myIdPanelHTML(){
               </div>
             </div>
             <div class="idcard-photo-ring">
-              <img id="idcard-photo" src="" alt="" style="display:none"
-                   onerror="this.style.display='none'; document.getElementById('idcard-photo-placeholder').style.display='flex';">
+              <img id="idcard-photo" src="" alt="" style="display:none">
               <div id="idcard-photo-placeholder" class="idcard-photo-placeholder" aria-hidden="true">
                 <svg width="46" height="46" viewBox="0 0 24 24" fill="#8a6d8a">
                   <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7"/>
@@ -2310,8 +2375,8 @@ function myIdPanelHTML(){
     </div>
 
     <div class="idcard-actions" id="idcard-actions" style="display:none">
-      <button type="button" class="btn primary" onclick="flipIdCard()">${t('za_idcard_flip')}</button>
-      <button type="button" class="btn" onclick="printIdCard()">${t('za_idcard_print')}</button>
+      <button type="button" class="btn primary" id="idcard-flip-btn">${t('za_idcard_flip')}</button>
+      <button type="button" class="btn" id="idcard-print-btn">${t('za_idcard_print')}</button>
     </div>
   </div>`;
 }
@@ -2355,6 +2420,17 @@ function renderZonalIdCard(data){
   // Don't confuse this with CURRENT_USER.avatar_url used for the topbar.
   const photo = document.getElementById('idcard-photo');
   const placeholder = document.getElementById('idcard-photo-placeholder');
+  // CSP: this used to be an inline onerror="" on the <img> itself. Since
+  // myIdPanelHTML() is re-inserted via innerHTML on every call to this
+  // function (including on language switch, via window.onSisLangChange
+  // -> render()), attaching it here rather than once at page load keeps
+  // it bound to whichever <img> node currently exists in the DOM.
+  if (photo) {
+    photo.addEventListener('error', () => {
+      photo.style.display = 'none';
+      if (placeholder) placeholder.style.display = 'flex';
+    });
+  }
   if (data.avatar_url && photo) {
     photo.src = API_BASE + data.avatar_url;
     photo.alt = data.full_name ? `Photo of ${data.full_name}` : 'Admin photo';
@@ -2376,6 +2452,14 @@ function renderZonalIdCard(data){
   }
 
   renderIdCardQrCode(data.qr_payload || data.admin_id || '');
+
+  // CSP: these used to be inline onclick="" on the buttons themselves —
+  // see the comment on the photo onerror fix above for why binding here
+  // (rather than once at load) is correct: fresh DOM every call.
+  const flipBtn = document.getElementById('idcard-flip-btn');
+  if (flipBtn) flipBtn.addEventListener('click', flipIdCard);
+  const printBtn = document.getElementById('idcard-print-btn');
+  if (printBtn) printBtn.addEventListener('click', printIdCard);
 }
 
 function renderIdCardQrCode(payload){
@@ -2389,12 +2473,12 @@ function renderIdCardQrCode(payload){
   container.innerHTML = qr.createSvgTag(4, 2);
 }
 
-window.flipIdCard = () => {
+function flipIdCard(){
   const flipper = document.getElementById('idcard-flipper');
   if (flipper) flipper.classList.toggle('idcard-flipped');
-};
+}
 
-window.printIdCard = () => { window.print(); };
+function printIdCard(){ window.print(); }
 
 /* ==================================================================
    Teachers directory (all three titles) — live from
@@ -3002,6 +3086,32 @@ function wireChrome(){
   document.getElementById('navOpenBtn').addEventListener('click', openMobileNav);
   document.getElementById('navCloseBtn').addEventListener('click', closeMobileNav);
   document.getElementById('navOverlay').addEventListener('click', closeMobileNav);
+
+  // Brand badge image fallback (CSP: was an inline onerror="" in index.html).
+  // If /assets/images/town.jpg 404s, hide the broken <img> and show the
+  // "GCEO" text fallback that sits next to it.
+  const brandBadgeImg = document.getElementById('brandBadgeImg');
+  if (brandBadgeImg) {
+    brandBadgeImg.addEventListener('error', () => {
+      brandBadgeImg.style.display = 'none';
+      const fallbackId = brandBadgeImg.dataset.fallbackTarget;
+      const fallbackEl = fallbackId
+        ? document.getElementById(fallbackId)
+        : brandBadgeImg.nextElementSibling;
+      if (fallbackEl) fallbackEl.style.display = 'flex';
+    });
+  }
+
+  // Language switch buttons (CSP: was inline onclick="setLang('en'|'am')").
+  document.querySelectorAll('.lang-switch-btn[data-lang]').forEach((btn) => {
+    btn.addEventListener('click', () => setLang(btn.dataset.lang));
+  });
+
+  // Avatar / profile button (CSP: was inline onclick="goToProfile()").
+  const avatarBtn = document.getElementById('avatarInit');
+  if (avatarBtn) {
+    avatarBtn.addEventListener('click', goToProfile);
+  }
 
   loadNotifications();
   setInterval(loadNotifications, 60000);

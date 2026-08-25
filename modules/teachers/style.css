@@ -7,10 +7,31 @@
     --sidebar-width: 260px;
 }
 
-body { font-family: 'Segoe UI', system-ui, sans-serif; background-color: var(--bg-main); color: var(--text-main); height: 100vh; overflow: hidden; }
+/* overflow-x: hidden was only ever set on <body>, not <html>. On mobile,
+   <html> — not <body> — is typically the element the browser treats as
+   the actual root scrolling/panning surface. With no restriction on it,
+   once a touch-drag inside a horizontally-scrolling element (e.g. the
+   grade sheet or textbook tables) reaches its scroll boundary, the
+   browser hands the gesture off to <html> instead of just stopping —
+   panning the ENTIRE page sideways, dragging the sticky top bar along
+   with it. Restricting <html> the same way <body> already is closes that
+   gap; overscroll-behavior-x further tells the browser not to chain an
+   exhausted horizontal scroll from a child up to the page at all.
+
+   Same issue exists on the vertical axis and was missed here: <body>
+   has `overflow: hidden` + a fixed height, but that doesn't fully
+   contain <html> on mobile — the app shell scrolls internally via
+   .main-content's own overflow-y, so <html> should never need to
+   scroll at all. On short-content pages (few widgets, nothing to fill
+   the screen) there's little for .main-content's internal scroll to
+   absorb, so a vertical drag/overscroll gets handed up to <html>
+   instead, revealing the unstyled background below the app shell —
+   the vertical twin of the horizontal bug above. */
+html { overflow: hidden; width: 100%; overscroll-behavior: none; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; background-color: var(--bg-main); color: var(--text-main); height: 100vh; height: 100dvh; overflow: hidden; overscroll-behavior-x: none; }
 
 /* 2. Main Layout Framework */
-.dashboard-container { display: grid; grid-template-columns: var(--sidebar-width) 1fr; height: 100vh; }
+.dashboard-container { display: grid; grid-template-columns: var(--sidebar-width) 1fr; height: 100vh; height: 100dvh; }
 
 /* Sidebar */
 .sidebar {
@@ -458,10 +479,61 @@ body.dark-theme .myclass-roster-status.status-absent { background: #334155; colo
 .perf-tier-badge-poor { background: #fee2e2; color: #991b1b; }
 .perf-tier-badge-none { background: #f1f5f9; color: #64748b; }
 
+.history-year-list {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    max-height: 320px;
+    overflow-y: auto;
+}
+.history-year-group {
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 10px 12px;
+}
+.history-year-label {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: #334155;
+    margin-bottom: 6px;
+}
+.history-role-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.history-role-item {
+    font-size: 0.85rem;
+    color: #475569;
+    padding-left: 14px;
+    position: relative;
+}
+.history-role-item::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 8px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #94a3b8;
+}
+.history-role-item.history-role-homeroom::before { background: #3b82f6; }
+.history-role-item.history-role-recorder::before { background: #f59e0b; }
+body.dark-theme .history-year-group { border-color: #334155; }
+body.dark-theme .history-year-label { color: #e2e8f0; }
+body.dark-theme .history-role-item { color: #cbd5e1; }
+
 /* Content Area */
 .main-content {
-    padding: 32px;
+    padding: 0 32px 32px 32px; /* Top is 0, sides and bottom are 32px */
     overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior-x: none;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 24px;
@@ -474,6 +546,18 @@ body.dark-theme .main-content {
 /* Widgets & Cards */
 .dashboard-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 24px; }
 .widget {
+    /* Grid items default to min-width: auto, which means the browser
+       refuses to shrink a widget below the intrinsic minimum width of
+       whatever's inside it (a canvas, a nested grid, a table, a long
+       unbreakable string) — even once .dashboard-grid collapses to a
+       single 1fr column below 900px (see that media query). That
+       mismatch is what forced the whole card to overflow sideways on
+       phones, dragging .main-content's scrollbar horizontal with it.
+       min-width: 0 lets the widget actually shrink to its track width;
+       anything that still needs its own horizontal scroll internally
+       (tables, via .table-container) keeps that unaffected, since it
+       manages its own overflow context. */
+    min-width: 0;
     background: white;
     padding: 24px;
     border-radius: 12px;
@@ -552,7 +636,7 @@ td { padding: 15px; border-bottom: 1px solid #e2e8f0; }
    scroll container, so the sticky header (top:0 below) freezes in place
    while only the student rows scroll underneath it — the search/filter
    controls and page above stay put and never need to be scrolled past. */
-.gradesheet-table-wrap { overflow-x: auto; overflow-y: auto; max-height: 65vh; border-radius: 8px; border: 1px solid #e2e8f0; }
+.gradesheet-table-wrap { overflow-x: auto; overflow-y: auto; max-height: 65vh; border-radius: 8px; border: 1px solid #e2e8f0; overscroll-behavior: contain; }
 .gradesheet-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 .gradesheet-table th, .gradesheet-table td { padding: 8px 10px; border-bottom: 1px solid #e2e8f0; white-space: nowrap; }
 .gradesheet-table th { background: #1a2a47; color: white; text-align: left; position: sticky; top: 0; z-index: 2; }
@@ -770,9 +854,9 @@ body.dark-theme .request-status-badge.status-rejected { background: #450a0a; col
     cursor: pointer;
 }
 .segmented-toggle-btn + .segmented-toggle-btn { border-left: 1px solid #cbd5e1; }
-.segmented-toggle-btn.active { background: #3b5998; color: #fff; }
+.segmented-toggle-btn.active { background: var(--primary); color: #fff; }
 body.dark-theme .segmented-toggle-btn { background: #1e293b; color: #cbd5e1; }
-body.dark-theme .segmented-toggle-btn.active { background: #3b5998; color: #fff; }
+body.dark-theme .segmented-toggle-btn.active { background: var(--primary); color: #fff; }
 body.dark-theme .segmented-toggle-btn + .segmented-toggle-btn { border-left-color: #334155; }
 
 /* Leaderboard (homeroom — student rank order) */
@@ -786,11 +870,27 @@ body.dark-theme .leaderboard-row-top {
     background: #422006;
 }
 
+/* Lightweight horizontal-scroll wrapper for small standalone tables
+   (request-history lists, the leaderboard) that live directly inside a
+   .widget card with no other bounding container. Without this, a table
+   wider than its card — three columns plus a status badge is enough on a
+   narrow phone — breaks out of the card's edges instead of scrolling
+   within it. Unlike .table-container/.gradesheet-table-wrap this has no
+   max-height/overflow-y: these lists are short, so only the horizontal
+   overflow needs containing. */
+.list-table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100%;
+    overscroll-behavior-x: contain;
+}
+
 /* Container for the table */
 .table-container {
     max-height: 500px; /* Adjust this height to your preference */
     overflow-y: auto;
     position: relative;
+    overscroll-behavior: contain;
 }
 
 /* Make the header stick to the top */
@@ -878,6 +978,7 @@ body.dark-theme #progress-table tbody tr:hover { background: #273548; }
     border: 1px solid #e2e8f0;
     border-radius: 12px;
     box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    overscroll-behavior: contain;
 }
 body.dark-theme .textbook-table-scroll { border-color: #334155; }
 
@@ -908,6 +1009,43 @@ body.dark-theme .textbook-table-scroll #progress-table td:first-child {
     background: #1e293b;
 }
 body.dark-theme .textbook-table-scroll #progress-table tbody tr:nth-child(even) td:first-child { background: #273548; }
+
+/* Same frozen-header/frozen-first-column pattern as .textbook-table-scroll
+   above, but for the homeroom "View Whole Section" report — capped to
+   roughly 10 rows tall (rather than 65vh) so a long section scrolls
+   within its own box instead of pushing the Export/Close buttons and
+   the rest of the page down. */
+.section-report-table-scroll {
+    max-height: 450px;
+    overflow-y: auto;
+    overflow-x: auto;
+    position: relative;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    overscroll-behavior: contain;
+}
+body.dark-theme .section-report-table-scroll { border-color: #334155; }
+
+.section-report-table-scroll #progress-table th:first-child,
+.section-report-table-scroll #progress-table td:first-child {
+    position: sticky;
+    left: 0;
+    background: #ffffff;
+    font-weight: 600;
+    box-shadow: 2px 0 4px rgba(0,0,0,0.06);
+}
+.section-report-table-scroll #progress-table tbody tr:nth-child(even) td:first-child { background: #f8fafc; }
+.section-report-table-scroll #progress-table tbody tr:hover td:first-child { background: #eef2ff; }
+.section-report-table-scroll #progress-table thead th:first-child {
+    background: var(--primary);
+    z-index: 11;
+}
+body.dark-theme .section-report-table-scroll #progress-table td:first-child {
+    background: #1e293b;
+}
+body.dark-theme .section-report-table-scroll #progress-table tbody tr:nth-child(even) td:first-child { background: #273548; }
+
 /* Shared styling for all form elements */
 .form-input, 
 select#subject-select, 
@@ -981,12 +1119,21 @@ select#type-select {
 .top-bar {
     position: sticky; top: 0; z-index: 1000;
     display: flex; justify-content: space-between; align-items: center;
-    background: linear-gradient(135deg, #142c66 0%, var(--primary) 100%);
-    padding: 0 24px;
+    background: #142c66;
+    /* Bleed past .main-content's 32px padding so the bar reaches the
+       page/sidebar edges on every side — including the TOP — instead of
+       leaving a visible white gap. This originally only handled
+       left/right (margin: 0 -32px 20px): that closed the side gaps, but
+       .main-content's 32px top padding was still pushing the bar down
+       from the true top edge, leaving a plain white strip above the navy
+       background before it started. margin-top: -32px closes that same
+       gap on top, the same way -32px already closes it on each side —
+       height/padding stay untouched since this only repositions the bar,
+       it doesn't need to resize. */
+    margin: -32px -32px 20px;
+    width: calc(100% + 64px);
+    padding: 0 32px;
     height: 60px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.18);
-    border-radius: 0 0 10px 10px;
-    margin-bottom: 20px;
 }
 .page-title {
     margin: 0;
@@ -1036,9 +1183,17 @@ select#type-select {
 .help-btn:hover {
     background: rgba(255,255,255,0.25);
 }
-.nav-greeting {
+.nav-greeting,
+#nav-greeting {
     color: rgba(255,255,255,0.9);
     font-size: 0.85rem;
+    font-weight: 500;
+}
+/* Compact name-only label for the mobile header (no room for "Hi, ...!").
+   Hidden on desktop, where #nav-greeting already shows the full greeting. */
+#nav-greeting-name {
+    display: none;
+    color: rgba(255,255,255,0.9);
     font-weight: 500;
 }
 
@@ -1083,7 +1238,18 @@ select#type-select {
 .user-profile-trigger:hover { background: rgba(255,255,255,0.22); }
 
 /* --- PROFILE SETTINGS LAYOUT --- */
-.page-content { margin-top: 20px; padding: 20px; width: 100%; height: calc(100vh - 80px); overflow-y: auto; }
+/* Was `height: calc(100vh - 80px)`, which hardcodes .top-bar's desktop
+   height (60px + 20px margin). Below the 900px breakpoint .top-bar
+   switches to `height: auto` and wraps into up to 4 rows (often
+   150-190px), so that fixed 80px assumption undersized the space it was
+   meant to subtract — .page-content ended up taller than what was
+   actually left below the top bar, pushing the shell past its bounds and
+   exposing the unstyled background beneath it on scroll.
+   flex: 1 + min-height: 0 fills exactly whatever space remains after
+   .top-bar inside .main-content's flex column, regardless of the bar's
+   real height on any screen size, so this self-corrects instead of
+   relying on a magic number. */
+.page-content { margin-top: 20px; padding: 20px; width: 100%; flex: 1; min-height: 0; overflow-y: auto; }
 .profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; max-width: 1200px; margin: 0 auto; }
 
 /* 5. CARD DESIGN */
@@ -1103,7 +1269,7 @@ select#type-select {
 .card button:hover { background-color: #357abd; }
 
 /* 7. AVATARS */
-.nav-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; margin-right: 10px; border: 1px solid #e2e8f0; }
+.nav-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; border: 1px solid #e2e8f0; }
 .profile-avatar-large { 
     width: 120px; height: 120px; border-radius: 50%; object-fit: cover; 
     border: 4px solid #4a90e2; display: block; margin: 0 auto 15px auto; 
@@ -1113,7 +1279,6 @@ select#type-select {
    one clean circle rather than an empty/broken image. */
 .nav-avatar-initials {
     width: 32px; height: 32px; border-radius: 50%;
-    margin-right: 10px;
     background: rgba(255,255,255,0.25);
     border: 1px solid rgba(255,255,255,0.4);
     color: #fff;
@@ -1146,6 +1311,56 @@ select#type-select {
     background-color: #1e3a8a;
     color: #ffffff;
     border-color: #1e3a8a;
+}
+
+/* View Students table: small round ID-photo thumbnail next to the ID
+   column, clickable to open the full-size preview modal. Students who
+   haven't had an ID photo approved yet (see id_photo_url on the students
+   table) get a plain placeholder circle instead of a broken image. */
+.student-photo-thumb {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 1px solid #cbd5e1;
+    cursor: pointer;
+    display: block;
+    transition: transform 0.15s, border-color 0.15s;
+}
+.student-photo-thumb:hover {
+    transform: scale(1.08);
+    border-color: #1e3a8a;
+}
+.student-photo-thumb-placeholder {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: #f1f5f9;
+    border: 1px solid #e2e8f0;
+    color: #94a3b8;
+    font-size: 0.7rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+body.dark-theme .student-photo-thumb-placeholder {
+    background: #334155;
+    border-color: #475569;
+    color: #94a3b8;
+}
+
+/* Full-size preview modal opened by clicking a thumbnail above. */
+.photo-preview-modal-content {
+    width: auto;
+    text-align: center;
+}
+.photo-preview-img {
+    max-width: 100%;
+    max-height: 70vh;
+    border-radius: 8px;
+    display: block;
+    margin: 0 auto;
 }
 
 /* --- Assessment & Exam Conduct widget --- */
@@ -1575,6 +1790,7 @@ textarea:focus-visible,
         top: 0;
         left: 0;
         height: 100vh;
+        height: 100dvh;
         width: min(280px, 80vw);
         z-index: 999;
         transform: translateX(-100%);
@@ -1597,35 +1813,101 @@ textarea:focus-visible,
 
     .main-content {
         background-attachment: scroll; /* same fixed-attachment fix as above */
-        padding: 16px;
+        /* No top padding: .main-content's 32px all-round desktop padding
+           was leaving a gap above the sticky top-bar on mobile, since the
+           top-bar is the first flex child and inherits that gap as space
+           above it. The bar should sit flush against the very top of the
+           screen — side/bottom padding is unaffected. */
+        padding: 0 16px 16px;
     }
 
     .top-bar {
-        flex-wrap: nowrap;
-        height: clamp(46px, 13vw, 50px);
-        padding: 0 10px;
-        border-radius: 0;
-        margin-bottom: 10px;
-        gap: 0;
+        flex-wrap: wrap;
+        height: auto;
+        /* .main-content's side padding is 16px here (not desktop's 32px),
+           so the bleed-to-edge margin/width from the base rule must match
+           that, or it'll either leave a gap or overshoot the screen. */
+        margin: 0 -16px 10px;
+        width: calc(100% + 32px);
+        padding: 10px 12px;
+        /* On notched/status-bar phones (with viewport-fit=cover set in the
+           <meta viewport> tag), the safe area above the bar was left
+           unstyled — showing whatever's behind .top-bar (white) instead of
+           its blue background. Pulling the bar's top edge up by the safe
+           area and adding that same amount back as padding lets the blue
+           background bleed all the way to the physical top of the screen
+           while keeping the title/badges positioned below the notch.
+           env() resolves to 0 on devices without a safe area, so this is a
+           no-op there. */
+        margin-top: calc(-1 * env(safe-area-inset-top, 0px));
+        padding-top: calc(10px + env(safe-area-inset-top, 0px));
+        row-gap: 8px;
+        column-gap: 0;
+        /* Desktop gives .top-bar z-index:1000, which is higher than the
+           mobile off-canvas .sidebar (999) and its .sidebar-overlay (998).
+           That made the header render on top of the open sidebar instead
+           of being covered by it. Below the breakpoint the header should
+           sit behind both, so it's dimmed/covered like the rest of the
+           page while the menu is open. */
+        z-index: 1;
     }
-    /* Secondary badges are supplementary info, not core navigation — drop
-       them below tablet width so the hamburger, title, and user actions
-       (the things people actually need to tap) always have room to
-       breathe instead of everything fighting over the same strip. */
-    .academic-year-badge,
-    .moe-code-badge,
-    #semester-status-badge {
-        display: none !important;
+    /* Stack the header into rows instead of hiding the badges: 1) hamburger
+       + title, 2) MOE code + semester status side by side, 3) academic
+       year on its own row, 4) the language/notification/settings/avatar
+       actions. .page-title is given flex:1 so it fills whatever's left of
+       row 1, which pushes the MOE/semester badges onto row 2; the
+       .topbar-break item then forces the academic-year badge onto row 3
+       (see its own comment below for why). */
+    .topbar-left {
+        flex-wrap: wrap;
+        flex-basis: 100%;
+        row-gap: 8px;
+        column-gap: 8px;
     }
+    .sidebar-toggle-btn { order: 1; }
     .page-title {
-        font-size: 0.78rem;
+        order: 2;
+        flex: 1 1 0;
+        font-size: 0.92rem;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
         min-width: 0;
     }
+    /* Zero-size flex items that force a line break at a specific point in
+       the wrapping header, without stretching the badge that follows them
+       to the row's full width the way flex-basis:100% on the badge itself
+       would. A basis:0 title alone isn't enough to keep the MOE-code
+       badge off row 1 — the wrap decision uses hypothetical (basis) sizes
+       before title's flex-grow fills the row, so without topbar-break-1
+       the badge can still end up sharing row 1 with a shrunken title. */
+    .topbar-break {
+        flex-basis: 100%;
+        width: 0;
+        height: 0;
+        margin: 0;
+        padding: 0;
+    }
+    .topbar-break-1 { order: 3; }
+    .moe-code-badge {
+        order: 4;
+        margin-left: 0;
+    }
+    #semester-status-badge {
+        order: 5;
+        margin-left: 0;
+    }
+    .topbar-break-2 { order: 6; }
+    .academic-year-badge {
+        order: 7;
+        margin-left: 0;
+    }
     .user-actions {
-        gap: 3px;
+        flex-basis: 100%;
+        flex-wrap: wrap;
+        justify-content: flex-start;
+        gap: 12px;
+        row-gap: 8px;
         flex-shrink: 0;
     }
     .user-actions > button,
@@ -1636,17 +1918,33 @@ textarea:focus-visible,
         height: 28px;
         font-size: 0.8rem;
     }
+    /* Push the profile trigger a bit further from the help button so it
+       doesn't read as part of the same button cluster now that it also
+       carries the account name next to the avatar. */
     .user-profile-trigger {
-        padding: 2px 6px 2px 2px;
-        gap: 4px;
+        padding: 2px 8px 2px 4px;
+        gap: 6px;
+        margin-left: 4px;
     }
-    .nav-avatar {
+    .nav-avatar,
+    .nav-avatar-initials {
         width: 24px;
         height: 24px;
         margin-right: 0;
     }
+    /* Swap the full "Hi, ...!" greeting for the compact name-only label
+       next to the avatar — there isn't room for the prefix on mobile.
+       Capped width + ellipsis so a long name doesn't push the row wider. */
     #nav-greeting {
         display: none;
+    }
+    #nav-greeting-name {
+        display: block;
+        max-width: 84px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-size: 0.78rem;
     }
 
     /* Dashboard/report widget grids: single column on narrow screens
@@ -1674,6 +1972,62 @@ textarea:focus-visible,
         max-height: 55vh; /* a bit shorter on mobile to leave room for the push-status widget below it */
     }
 
+    /* #progress-table's Student column (used by both the Textbooks grid
+       and the homeroom "View Whole Section" report) is sticky and, like
+       the gradesheet's first column, inherits white-space: nowrap — a full
+       first/middle/last name just grows the column as wide as it needs,
+       which on a phone pushes every subject column for issuing/returning
+       books off-screen. Capping the width and wrapping at word
+       boundaries (not mid-word) keeps names readable in two or three short
+       lines without swallowing the rest of the row; the remaining subject
+       columns stay reachable through the existing horizontal scroll. */
+    #progress-table th:first-child, #progress-table td:first-child {
+        white-space: normal;
+        max-width: 110px;
+        word-break: normal;
+        overflow-wrap: break-word;
+    }
+
+    /* Class Attendance ("My Class"): on desktop the heading, metric cards,
+       and search/scan toolbar stay frozen above a separately-scrolling
+       roster (see the desktop .myclass-frozen-header rules above) — that
+       header alone is tall enough on a phone screen to leave almost no
+       room for the clipped roster underneath. Below the breakpoint, drop
+       the frozen-header/clipped-roster split entirely and let the whole
+       page scroll normally like every other page, so the teacher can
+       simply scroll down through the student list. */
+    .page-content.myclass-page {
+        /* setupNavigation() in script.js now sets this page's display
+           to 'block' directly on mobile (matching every other page), so
+           no !important override is needed here — that was the earlier
+           bug: it also overrode the 'display:none' used to hide this page
+           when navigating away, leaving it stuck visible underneath
+           whatever page was opened next. */
+        overflow: visible;
+    }
+    .myclass-frozen-header {
+        flex-shrink: initial;
+    }
+    .widget.myclass-roster-widget {
+        flex: initial;
+        min-height: 0;
+        display: block;
+        overflow: visible;
+    }
+    .myclass-roster-scroll {
+        flex: initial;
+        overflow-y: visible;
+    }
+
+    /* Same reasoning as textbook-table-scroll above: the 450px fixed
+       height (sized for ~10 rows on desktop) is taller than a lot of
+       phones' visible viewport once the browser chrome and page header
+       take their share, so it's better to scale it to the viewport here
+       instead. */
+    .section-report-table-scroll {
+        max-height: 55vh;
+    }
+
     /* Touch targets: buttons and nav links get a bit more breathing room
        so they're comfortably tappable (WCAG recommends ~44x44px minimum). */
     .nav-link {
@@ -1685,8 +2039,56 @@ textarea:focus-visible,
     .push-btn {
         min-height: 40px;
     }
+    /* The Semester 1/2 switch (late-marks entry panel) was ~36px tall at
+       its desktop padding — bump it to the same ~44px WCAG touch-target
+       floor as the other buttons in this block. */
+    .segmented-toggle-btn {
+        min-height: 44px;
+        padding: 10px 20px;
+    }
     .form-input {
         font-size: 16px; /* prevents iOS Safari from auto-zooming in on focus when font-size < 16px */
+    }
+    /* Gradesheet mark-entry inputs were left at the desktop 0.85rem
+       (~13.6px) size, which is below iOS Safari's 16px auto-zoom
+       threshold — every tap into a score field zoomed the whole page in,
+       and zoomed back out on blur. Same fix as .form-input above, plus a
+       bit more room since fingers (not a mouse) are doing the tapping. */
+    .gradesheet-input {
+        font-size: 16px;
+        width: 64px;
+        padding: 8px 6px;
+        min-height: 40px;
+    }
+    .gradesheet-table th, .gradesheet-table td {
+        padding: 10px 8px;
+    }
+    /* The Student column is sticky and inherits white-space: nowrap from
+       the base rule, so a long name just grows the column wider instead
+       of wrapping — on mobile that pushes the score inputs off-screen,
+       forcing the teacher to scroll horizontally to find them. Capping
+       the column width and letting the name wrap keeps it readable and
+       keeps the inputs in view.
+       word-break: break-word (its old value here) breaks words even when
+       not needed to fit, which at a narrow 108px column chopped the ID and
+       name into a jagged, near-diagonal staircase of single characters.
+       overflow-wrap: break-word only breaks a word when it genuinely
+       doesn't fit the line — names wrap cleanly at spaces first, same as
+       the existing <br> between the ID and the name — and the slightly
+       wider column gives that normal wrapping more room to work with. The
+       other assessment columns are still reachable via the existing
+       .gradesheet-table-wrap horizontal scroll, so this column doesn't
+       need to shrink further than this to keep them in view. */
+    .gradesheet-table td:first-child, .gradesheet-table th:first-child {
+        white-space: normal;
+        max-width: 132px;
+        word-break: normal;
+        overflow-wrap: break-word;
+    }
+    .gradesheet-row-save-btn {
+        min-height: 40px;
+        padding: 8px 16px;
+        font-size: 0.9rem;
     }
 
     /* Modals: full-width with margin instead of a fixed max-width that
@@ -1700,11 +2102,14 @@ textarea:focus-visible,
 
 @media (max-width: 480px) {
     .top-bar {
-        height: 44px;
-        padding: 0 6px;
+        height: auto;
+        padding: 8px 6px;
+        /* Shorthand padding above resets padding-top, so the safe-area
+           allowance from the previous breakpoint needs restating here too. */
+        padding-top: calc(8px + env(safe-area-inset-top, 0px));
     }
-    .topbar-left { gap: 6px; }
-    .user-actions { gap: 2px; }
+    .topbar-left { gap: 6px; row-gap: 6px; }
+    .user-actions { gap: 9px; row-gap: 8px; }
     .lang-switch-group { padding: 2px; gap: 1px; margin-right: 2px; }
     .lang-switch-btn { padding: 4px 7px; font-size: 0.7rem; }
     .user-actions > button,

@@ -3,16 +3,17 @@
   --ink:        oklch(0.26 0.012 250);
   --ink-soft:   oklch(0.44 0.012 250);
   --ink-faint:  oklch(0.60 0.010 250);
-  --paper:      oklch(0.985 0.006 95);
+  --paper:      #ffffff;
   --paper-2:    oklch(0.965 0.008 95);
   --line:       oklch(0.80 0.010 250);
   --line-soft:  oklch(0.88 0.008 250);
   --seal:       oklch(0.42 0.10 156);
   --seal-deep:  oklch(0.34 0.09 156);
   --accent-bg:  oklch(0.95 0.02 156);
+  --danger:     oklch(0.68 0.17 25);
 
   --xs: 0.72rem; --sm: 0.82rem; --base: 0.94rem; --lg: 1.15rem;
-  --s1: 4px; --s2:8px; --s3:12px; --s4:16px; --s6:24px;
+  --s1: 4px; --s2:8px; --s3:12px; --s4:16px; --s6:24px; --s8:32px;
 }
 
 *{ box-sizing:border-box; }
@@ -20,7 +21,7 @@ html,body{ margin:0; padding:0; }
 
 body{
   background: oklch(0.62 0.010 250);
-  font-size:0.92rem;
+  font-size:0.9rem;
   font-family:"Noto Sans","Noto Serif Ethiopic",system-ui,sans-serif;
   color:var(--ink);
   -webkit-font-smoothing:antialiased;
@@ -52,26 +53,31 @@ body{
   box-shadow:0 0.5px 1.5px rgba(0,0,0,0.15);
 }
 .header-center{ text-align:center; }
-.header-center h3{ font-family:"Noto Serif Ethiopic",serif; font-size:0.78rem; color:var(--ink-soft); margin:2px 0; }
-.header-center h2{ font-size:1.08rem; font-weight:700; color:var(--ink); margin:2px 0; }
+.header-center h3{ font-family:"Noto Serif Ethiopic",serif; font-size:0.76rem; color:var(--ink-soft); margin:2px 0; }
+.header-center h2{ font-size:1.05rem; font-weight:700; color:var(--ink); margin:2px 0; }
+/* School name line stays out of the way if ever empty (e.g. previewed
+   outside the server, before transcript.js fills it). */
+.header-center h3#f-school-name-amh:empty,
+.header-center h2#f-school-name:empty{ display:none; }
 
-/* Sub header */
-.sub-header{ display:flex; justify-content:space-between; font-size:0.85rem; margin-top:6px; margin-bottom:10px; border-bottom:1px solid var(--line); padding-bottom:6px; }
-
+/* doc-title is a full-width banner ABOVE the info+photo row (not inside
+   the info column) so both columns start at the same top edge instead
+   of the photo sitting oddly high next to empty space. display:table
+   + margin:auto shrink-wraps and centers it reliably (plain margin:auto
+   does nothing for an inline-block). */
 .doc-title{
+  display:table;
   text-align:center;
-  font-size:0.78rem;
+  font-size:0.76rem;
   font-weight:700;
   letter-spacing:0.08em;
   text-transform:uppercase;
   color:var(--paper);
   background:var(--seal);
-  display:inline-block;
-  padding:5px 16px;
+  padding:4px 16px;
   border-radius:3px;
-  margin:10px auto 14px;
+  margin:6px auto 8px;
 }
-.title-info-col{ text-align:center; }
 
 /* Info: labeled field grid (label caption above, bold value below with a
    dotted rule) instead of run-on "Label: value" text with manual nbsp
@@ -85,14 +91,14 @@ body{
 .info-grid .field.wide{ grid-column:1 / -1; }
 .field label{
   display:block;
-  font-size:0.66rem;
+  font-size:0.65rem;
   font-weight:600;
   letter-spacing:0.02em;
   text-transform:uppercase;
   color:var(--ink-faint);
 }
 .field .val{
-  font-size:0.92rem;
+  font-size:0.9rem;
   font-weight:600;
   color:var(--ink);
   border-bottom:1px dotted var(--line);
@@ -100,32 +106,43 @@ body{
   min-height:1.3em;
 }
 
-/* Title/Info + Photo row */
-.title-photo-row{ display:grid; grid-template-columns:1fr 140px; gap:var(--s4); align-items:start; margin-top:var(--s4); }
+/* Title/Info + Photo row. align-items:start now works cleanly since
+   the doc-title banner no longer lives inside the left column — both
+   columns genuinely start level with each other. The right column is
+   86px — the actual width of the photo/caption/QR stack — not a wider
+   140px reservation: with the stack right-aligned, that extra 54px
+   just sat empty to its LEFT, on top of the 16px grid gap, reading as
+   a much bigger gap between the info fields and the photo than
+   actually intended. */
+.title-photo-row{ display:grid; grid-template-columns:1fr 86px; gap:var(--s4); align-items:start; }
 .title-info-col{ min-width:0; }
 
-/* Photo, with Student ID as a caption strip beneath it (ID card style) */
-.photo-wrap{ width:140px; display:flex; flex-direction:column; align-items:center; }
+/* Photo, with Student ID as a caption strip beneath it (ID card style),
+   and the verification QR code stacked below that — the column is
+   exactly as wide as this content now, so alignment is moot, but
+   flex-end is kept so it stays flush right if that ever changes. */
+.photo-wrap{ width:86px; display:flex; flex-direction:column; align-items:flex-end; }
 .photo-box{
-  width:86px; height:100px;
+  width:86px; height:98px;
   border:1.5px solid var(--line);
   border-bottom:none;
   background:var(--paper-2);
   display:flex; align-items:center; justify-content:center;
   color:var(--ink-faint);
+  overflow:hidden;
 }
+.photo-box img{ width:100%; height:100%; object-fit:cover; display:block; }
 .photo-caption{
   width:86px;
   background:var(--seal);
   color:var(--paper);
   text-align:center;
   padding:3px 2px 4px;
-  border-radius:0 0 3px 3px;
   line-height:1.3;
 }
 .photo-caption .id-label{
   display:block;
-  font-size:0.56rem;
+  font-size:0.55rem;
   font-weight:700;
   text-transform:uppercase;
   letter-spacing:0.04em;
@@ -133,31 +150,152 @@ body{
 }
 .photo-caption .id-value{
   display:block;
-  font-size:0.72rem;
+  font-size:0.7rem;
   font-weight:700;
   word-break:break-all;
 }
+.qr-wrap{ width:86px; margin-top:6px; display:flex; flex-direction:column; align-items:center; }
+.qr-box{
+  width:66px; height:66px;
+  border:1px solid var(--line);
+  border-radius:3px;
+  background:var(--paper);
+  display:flex; align-items:center; justify-content:center;
+  padding:2px;
+}
+.qr-box svg{ width:100%; height:100%; display:block; }
+.qr-caption{ font-size:0.55rem; color:var(--ink-faint); margin-top:2px; text-align:center; letter-spacing:0.02em; }
 
 /* Table styling like certificate */
-table{ width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; font-size:0.9rem; margin-top:8px; }
-th, td{ border:1px solid var(--line); padding:6px 8px; text-align:center; }
-thead th{ background:var(--seal); color:var(--paper); font-weight:700; padding:8px; }
+.table-wrap{ position:relative; }
+table{ width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; font-size:0.86rem; margin-top:8px; }
+th, td{ border:1px solid var(--line); padding:5px 7px; text-align:center; }
+thead th{ background:var(--seal); color:var(--paper); font-weight:700; padding:7px; }
 th.subject-col, td.subject-col{ text-align:left; padding-left:10px; width:20%; }
 tbody tr:nth-child(even) td{ background:oklch(0.975 0.006 95); }
 
-/* A subject that doesn't apply to a given year's stream (e.g. Physics
-   in a General-stream year) — struck through for just that year's
-   three columns, not the whole row, since one row spans all four
-   years and a subject can be applicable in some and not others. */
-td.not-applicable{ text-decoration:line-through; color:var(--ink-faint); opacity:0.65; }
+/* Summary rows (Absent/Total/Average/Rank) get the same green as the
+   header, like the header band, so they read as totals rather than
+   more subject rows. Written as `tbody tr.meta-row td` (not just
+   `.meta-row td`) so it reliably outranks the zebra-stripe rule above
+   regardless of whether a given summary row lands on an odd or even
+   position — the subject list length varies per school, so which
+   parity these rows fall on isn't fixed. */
+tbody tr.meta-row td{
+  background:var(--seal);
+  color:var(--paper);
+  font-weight:700;
+}
+tbody tr.meta-row td.subject-col{ color:var(--paper); }
 
-.note{ font-size:0.82rem; color:var(--ink-faint); margin-top:12px; margin-bottom:12px; }
+/* A subject that doesn't apply to a given year's stream (e.g. a
+   Natural-only subject in a Social-stream year, or vice versa) — struck
+   through with a double line for just that year's three columns, not
+   the whole row, since one row spans all four years and a subject can
+   be applicable in some and not others. Double line (rather than a
+   single strike) reads clearly as "not offered in this stream" at a
+   glance, distinct from a single-line correction mark. */
+td.not-applicable{
+  text-decoration:line-through;
+  text-decoration-style:double;
+  text-decoration-thickness:1.5px;
+  color:var(--ink-faint);
+  opacity:0.7;
+}
+
+/* A whole grade the student has no record for at all — never enrolled
+   here that year (e.g. transferred out after Grade 9, so Grades
+   10/11/12 never happened for them at this school) — is marked with
+   ONE continuous red diagonal line running the full height of each of
+   that grade's three columns (I/II/AV), not a fill in every cell. That
+   line is drawn by transcript.js on the <svg class="not-attended-lines">
+   overlay below, measured off the real rendered row positions — a
+   single stroke can't be expressed as a per-cell background, since it
+   has to span every row (subjects AND the Absent/Total/Average/Rank
+   rows) as one unbroken line. td.not-attended itself carries no visual
+   style; it's only a marker transcript.js queries to find each
+   column's cell edges and the block's top/bottom extent. Cells keep
+   whatever background they'd normally have (zebra stripe or the green
+   meta-row fill) — the line draws on top of that via the overlay, not
+   in place of it. */
+.not-attended-lines{
+  position:absolute;
+  top:0; left:0;
+  width:100%; height:100%;
+  pointer-events:none;
+}
+
+.note{ font-size:0.78rem; color:var(--ink-faint); margin-top:6px; margin-bottom:6px; }
+
+/* Farewell/congratulations note — only present when the student has
+   actually left (graduated or transferred out); server leaves it blank
+   for a still-enrolled student's transcript, and :empty hides the box
+   entirely so it doesn't leave a gap when there's nothing to show.
+   Lives inside the left (info) column now, below the info-grid — that
+   column is naturally shorter than the photo/QR column beside it, so
+   the note fills space that's already reserved by the row's height
+   instead of adding a new full-width block that pushes the table
+   further down the page. Free to breathe a bit more than a bare
+   full-width note would need to. */
+.farewell-note{
+  font-size:0.78rem;
+  line-height:1.4;
+  font-style:italic;
+  color:var(--ink-soft);
+  background:var(--accent-bg);
+  border-left:3px solid var(--seal);
+  padding:8px 12px;
+  margin-top:10px;
+  border-radius:0 4px 4px 0;
+}
+.farewell-note:empty{ display:none; margin-top:0; }
 
 /* Signatures: three-column */
-.signatures{ display:grid; grid-template-columns:1fr 120px 1fr; gap:16px; align-items:start; margin-top:8px; }
+.signatures{ display:grid; grid-template-columns:1fr 140px 1fr; gap:16px; align-items:end; margin-top:8px; }
 .sig-left, .sig-right{ display:flex; flex-direction:column; gap:6px; }
 .seal-slot{ display:flex; align-items:center; justify-content:center; }
-.seal-area{ width:80px; height:80px; border:1.5px dashed var(--line); border-radius:50%; display:flex; align-items:center; justify-content:center; color:var(--ink-faint); font-weight:700; }
+.seal-area{ width:100px; height:100px; border:1.5px dashed var(--line); border-radius:50%; display:flex; align-items:center; justify-content:center; color:var(--ink-faint); font-weight:700; overflow:hidden; }
+.seal-area img{ width:100%; height:100%; object-fit:contain; }
+/* A signature image sits just above its blank underline; when there's
+   no signature on file the slot is simply empty and the underline
+   alone stands in for "not yet signed" — same fallback as the
+   report card/certificate. */
+.sig-slot{ display:block; min-height:1px; }
+.sig-slot img{ display:block; max-height:32px; max-width:150px; margin-bottom:-4px; }
+/* Signature block: underline (with any signature image sitting just
+   above it, via .sig-slot above) followed by a small bilingual
+   "Signature / ፊርማ" caption directly beneath — matching the physical
+   transcript's own footer layout, where the caption reads as part of
+   the line itself rather than a "Sign" label sitting above an empty
+   slot. align-items:flex-start keeps the image, line, and caption
+   flush with the Registrar/Principal name and Date lines above them
+   (sig-left/sig-right's own column can be much wider than this content,
+   e.g. the far-right Principal column — centering within that column
+   made the whole block drift toward the middle instead of lining up
+   with the text above it). */
+.sig-block{ display:flex; flex-direction:column; align-items:flex-start; margin-top:4px; }
+/* The reusable .underline-field span elsewhere in this footer (student
+   name/date) is plain text with no visible line of its own — this is
+   the one place that actually needs a drawn line to sign on, so it's
+   scoped to just this slot rather than adding a line under every
+   underline-field in the footer. display:inline-block plus a fixed
+   width is required for the border to render at all: a bare <span> is
+   inline, and min-width has no effect on non-replaced inline elements,
+   which is why this line wasn't appearing. */
+.sig-block .underline-field{
+  display:inline-block;
+  width:120px;
+  height:0;
+  border-bottom:1.5px solid var(--ink);
+  margin-top:2px;
+}
+.sig-caption{
+  font-size:0.66rem;
+  color:var(--ink-faint);
+  text-align:left;
+  margin-top:3px;
+  letter-spacing:0.01em;
+}
 
 /* Responsive small screens */
 @media screen and (max-width:900px){ body{ padding:var(--s4); } .page{ padding:12mm; } .header{ grid-template-columns:60px 1fr 60px; } .signatures{ grid-template-columns:1fr; } }
@@ -166,33 +304,42 @@ td.not-applicable{ text-decoration:line-through; color:var(--ink-faint); opacity
 @page{ size:A4 portrait; margin:4mm; }
 @media print{
   html,body{ background:none; padding:0; margin:0; }
+  /* Collapses to the scaled height fitToOnePage() (transcript.js) sets
+     on it, with overflow:hidden clipping the leftover flow space that
+     scaling .page alone wouldn't remove — a transform shrinks how a box
+     LOOKS, not the layout footprint it still occupies, so without this
+     wrapper the print engine would keep reserving the original,
+     unscaled height and add a blank second page under the shrunk one. */
+  #page-scale-wrap{ overflow:hidden; }
   .page{
+    margin:0 auto;
     box-shadow:none;
     width:calc(100% - 8mm);
     max-width:calc(210mm - 8mm);
-    padding:8mm;
-    /* Fill the full printable area (297mm page minus the 4mm+4mm @page
-       margin = 289mm) so a short transcript still has its signatures
-       pinned to the bottom of the page, not floating right under the
-       table. Deliberately NOT max-height/overflow:hidden, though — the
-       subject table's row count now depends on how many subjects a
-       school has configured, so a school with a longer subject list
-       will produce a taller table than 289mm allows. Clipping the
-       overflow was silently cropping off the Principal's whole
-       signature block in that case; letting it flow onto a second page
-       instead is a far smaller problem than a signature vanishing from
-       a document whose own footer says it's invalid without one. */
-    min-height:289mm;
-    display:flex;
-    flex-direction:column;
-    justify-content:space-between;
+    padding:6mm 8mm;
+    /* No longer pinned to the full 297mm floor it gets on screen (see
+       the base .page rule's min-height) — that alone was already
+       forcing every printed transcript slightly past the @page content
+       area's 289mm (297mm minus its own 4mm top+bottom margin), and on
+       top of that, a school with a long subject list can add much more
+       real height beyond a single page. fitToOnePage() (transcript.js)
+       measures the actual rendered height against the true printable
+       area and applies a single transform: scale() only when needed,
+       so a short transcript still prints at a normal, readable size
+       instead of always being forced down to fit a worst-case row
+       count. */
+    min-height:0;
+    transform-origin:top center;
   }
+  .signatures{ margin-top:24px; padding-top:6px; }
   /* Photo must stay visible in print: the note on this transcript states
      it is invalid without the student's photograph, so hiding it here
      would have silently produced an invalid document. */
-  .photo-box{ width:70px; height:82px; }
-  .photo-caption{ width:70px; }
-  table{ font-size:0.85rem; }
-  th,td{ padding:4px 6px; }
-  .signatures{ gap:8px; }
+  .photo-box{ width:64px; height:76px; }
+  .photo-caption{ width:64px; }
+  .qr-wrap{ width:64px; }
+  .qr-box{ width:56px; height:56px; }
+  table{ font-size:0.78rem; }
+  th,td{ padding:3px 5px; }
+  thead th{ padding:5px; }
 }

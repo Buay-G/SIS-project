@@ -1,15 +1,36 @@
 /* 1. Global Reset & Body Background — matches teacher portal's plain
    background instead of the old frosted-glass photo background, for
-   visual consistency between the two sites. */
-* { box-sizing: border-box; }
+   visual consistency between the two sites.
+   margin/padding are zeroed on every element so no UA default (h1,
+   p, ul/li, fieldset, etc.) can push a box past its container's edge
+   and cause the page to scroll sideways; anywhere that default spacing
+   was actually doing useful work (headings, body copy) gets it back
+   explicitly below instead of leaving it to the browser stylesheet. */
+* { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-    margin: 0;
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     height: 100vh;
     overflow: hidden;
     background-color: #f8fafc;
 }
+
+/* Media is fluid by default — an embedded image/video/iframe/svg can
+   never force the page wider than its container regardless of the
+   file's native dimensions. */
+img, video, iframe, svg { max-width: 100%; height: auto; }
+
+/* Headings/body copy inside a tab lost their UA default spacing to
+   the reset above; restore it explicitly so page titles and intro
+   text don't sit flush against whatever follows them. */
+.tab-content h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #1e3a8a;
+    margin-bottom: 6px;
+}
+.tab-content p.muted { margin-bottom: 20px; }
+.tab-content p:not(.muted):not([style]) { margin-bottom: 12px; }
 
 /* 2. Container: Layout Wrapper */
 .dashboard-container {
@@ -230,6 +251,7 @@ body {
     cursor: pointer;
     font-size: 1rem;
     width: 36px; height: 36px;
+    padding: 0;                 /* ← add this line */
     border-radius: 8px;
     display: flex; align-items: center; justify-content: center;
     transition: background 0.15s;
@@ -247,7 +269,7 @@ body {
 }
 .notification-panel {
     position: absolute; top: calc(100% + 8px); right: 0;
-    width: 300px; max-height: 360px; overflow-y: auto;
+    width: 300px; max-width: calc(100vw - 24px); max-height: 360px; overflow-y: auto;
     background: white; border: 1px solid #e2e8f0; border-radius: 10px;
     box-shadow: 0 10px 25px rgba(0,0,0,0.12); z-index: 1100;
 }
@@ -354,6 +376,26 @@ button:hover { background-color: #142c66; }
 .stat-label { font-size: 0.85rem; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.03em; }
 
 /* --- Top bar avatar (opens Profile Settings) --- */
+.topbar-account {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    /* Groups the name + avatar as one visual unit instead of the name
+       floating off toward the settings gear with the same 6px gap
+       .user-actions uses between unrelated controls. */
+    margin-left: 2px;
+}
+.topbar-account-name {
+    color: #ffffff;
+    font-size: 0.85rem;
+    font-weight: 600;
+    line-height: 1.1;
+    white-space: nowrap;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+}
 .topbar-avatar {
     width: 36px; height: 36px;
     border-radius: 50%;
@@ -487,6 +529,19 @@ textarea:focus-visible,
     background: rgba(96, 165, 250, 0.28);
     border-color: rgba(96, 165, 250, 0.5);
 }
+/* Semester status chip: green while Academic VP has the semester open,
+   red once they've closed it — same chip, just re-colored/re-labeled
+   by loadCurrentSemesterChip() in app.js so it always matches
+   /api/term/current's semester_status. */
+.topbar-chip-open {
+    background: rgba(34, 197, 94, 0.28);
+    border-color: rgba(34, 197, 94, 0.5);
+}
+.topbar-chip-closed {
+    background: rgba(220, 38, 38, 0.35);
+    border-color: rgba(220, 38, 38, 0.6);
+    color: #fecaca;
+}
 
 /* --- Top bar: language switcher, seated next to the notification bell --- */
 .lang-switch-group {
@@ -588,7 +643,11 @@ textarea:focus-visible,
     font-size: 0.88rem;
     cursor: pointer;
     border: 1px solid transparent;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
 }
+.confirm-btn .lucide { width: 16px; height: 16px; }
 .confirm-btn-secondary { background: #f1f5f9; color: #334155; border-color: #e2e8f0; }
 .confirm-btn-secondary:hover { background: #e2e8f0; }
 .confirm-btn-danger { background: #dc2626; color: #fff; }
@@ -674,6 +733,7 @@ textarea:focus-visible,
 @media (max-width: 520px) {
     .user-actions { gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
     .topbar-chip { font-size: 0.66rem; padding: 3px 8px; }
+    .topbar-account-name { max-width: 90px; font-size: 0.78rem; }
     .toast-container { top: 8px; right: 8px; left: 8px; width: auto; max-width: none; }
 }
 /* =========================================================================
@@ -713,6 +773,13 @@ textarea:focus-visible,
 
 .notification-btn .lucide,
 .settings-btn .lucide { width: 18px; height: 18px; }
+
+/* Bell and settings-gear icons are self-hosted SVG <img>s
+   (assets/icons/bell.svg, assets/icons/settings.svg) instead of lucide
+   data-icons, so they always render even if the lucide library fails
+   to load. */
+.notif-bell-icon,
+.settings-gear-icon { width: 18px; height: 18px; display: block; }
 
 .file-upload-btn .lucide { width: 16px; height: 16px; }
 
@@ -763,6 +830,27 @@ textarea:focus-visible,
 
 @media (max-width: 520px) {
     .template-grid { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+}
+
+/* =========================================================================
+   11b. Mobile-first breakpoints
+   Everything above already has full coverage for phone widths via the
+   max-width rules in section 11 (the base/unqualified styles were written
+   assuming a wide viewport, then narrowed down). These two mobile-first
+   checkpoints sit on top of that and only tune spacing/columns that
+   genuinely benefit from more room, without touching the sidebar/drawer
+   mechanics above — those are already correct at every width.
+   ========================================================================= */
+@media (min-width: 768px) {
+    /* Tablet: form fields have room to sit two-up instead of one-up. */
+    .form-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (min-width: 1024px) {
+    /* Desktop and up: back to the original three-up form layout, and the
+       content area gets its full side padding back. */
+    .form-grid { grid-template-columns: repeat(3, 1fr); }
+    #content { padding: 0 32px 32px; }
 }
 /* 14. Student Registry Table ("Students" nav) — professional data-table
    layout replacing the old stacked search-box rows. Student ID leads,
@@ -831,6 +919,8 @@ table.data-table td.data-table-action button { padding: 7px 14px; font-size: 0.8
 }
 .status-pill.status-active { background: #e3f7e8; color: #1c7a3e; }
 .status-pill.status-pending { background: #fef3d6; color: #92650a; }
+.status-pill.status-inactive { background: #f1f5f9; color: #475569; }
+.status-pill.status-unregistered { background: #fde2e2; color: #b91c1c; }
 .status-pill.status-graduated { background: #e6ecfb; color: #1e3a8a; }
 .status-pill.status-transferring { background: #fde8d9; color: #b0480a; }
 .status-pill.status-transferred { background: #eceff3; color: #52606d; }
@@ -854,3 +944,91 @@ table.data-table td.data-table-action button { padding: 7px 14px; font-size: 0.8
     }
     table.data-table td.data-table-action button { padding: 6px 10px; font-size: 0.78rem; }
 }
+
+/* --- Report Card: "Download grade" picker (Documents tab) ---
+   Custom chevron + card wrapper so this doesn't read as a bare, plain
+   browser <select> sitting in the middle of the preview panel. */
+.grade-download-picker {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    background: #eef2ff;
+    border: 1px solid #c7d2fe;
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+}
+.grade-download-picker label {
+    font-weight: 700;
+    color: #1e3a8a;
+    font-size: 0.9rem;
+    white-space: nowrap;
+}
+.grade-download-picker select {
+    appearance: none;
+    -webkit-appearance: none;
+    width: auto;
+    min-width: 160px;
+    background-color: #fff;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%231e3a8a'%3E%3Cpath fill-rule='evenodd' d='M5.23 7.21a.75.75 0 011.06.02L10 11.148l3.71-3.918a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z' clip-rule='evenodd'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    background-size: 16px;
+    padding: 8px 34px 8px 12px;
+    border: 1px solid #a5b4fc;
+    border-radius: 6px;
+    font-weight: 600;
+    color: #1e3a8a;
+    cursor: pointer;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.grade-download-picker select:hover { border-color: #6366f1; }
+.grade-download-picker select:focus-visible {
+    outline: none;
+    border-color: #4338ca;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+}
+.grade-download-picker .muted { font-size: 0.8rem; margin: 0; }
+
+/* --- Section Setup: per-section "Max students" capacity control ---
+   Visually its own little card within the section row, distinct from
+   the Active checkbox / Delete controls next to it, so it reads as a
+   deliberate "update this value" action rather than blending into the
+   row's plain text. */
+.section-capacity-box {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #f8fafc;
+    border: 1px solid #dbe3ee;
+    border-radius: 6px;
+    padding: 6px 10px 6px 12px;
+}
+.section-capacity-box label {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: #475569;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+}
+.section-capacity-box input[type="number"] {
+    width: 90px;
+    padding: 6px 8px;
+    border: 1px solid #cbd5e1;
+    border-radius: 5px;
+    text-align: center;
+    font-weight: 600;
+}
+.section-capacity-box input[type="number"]:focus-visible {
+    outline: none;
+    border-color: #4338ca;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+}
+.section-capacity-box button {
+    padding: 6px 14px;
+    font-size: 0.82rem;
+    background-color: #059669;
+}
+.section-capacity-box button:hover { background-color: #047857; }

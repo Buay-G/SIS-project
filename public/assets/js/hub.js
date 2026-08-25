@@ -64,11 +64,15 @@ const LANG_LABEL_KEYS = {
 };
 
 // Where "Back to Portal" sends each role — matches the static module
-// mounts in server.js (app.use('/school-admin', ...), etc).
+// mounts in server.js (app.use('/school-admin', ...), etc). students
+// was pointing at the old generic '/portal/' mount instead of the
+// role-named '/students/' one every other entry here follows — that
+// sent a student back to a stale/legacy folder instead of the actual
+// student portal, regardless of which portal they'd come from.
 const PORTAL_HOME_BY_ROLE = {
     school_admins: '/school-admin/',
     teachers: '/teachers/',
-    students: '/portal/',
+    students: '/students/',
     registrar_users: '/registrar/',
     zonal_admins: '/zonal-admin/',
     super_admins: '/super-admin/',

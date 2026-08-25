@@ -5,8 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Gambella City Education Office</title>
     <link rel="stylesheet" href="styles.css" />
-    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/lucide@1.32.0/dist/umd/lucide.js"
+      integrity="sha384-3Qyee4XMy2g+a0PvD9+WWB5qfTkKRQ61ag4BM6FpB9QhzBHJ6na9CfI3g2HsDxv6"
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    ></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"
+      integrity="sha384-8FWZA6BGMXhsfO+BLtrJK0We6gg5o1JyO8xQm6peWDEUs17ACA5ziE/NIAkl9z2k"
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    ></script>
   </head>
   <body>
     <a href="#content" class="skip-link">Skip to content</a>
@@ -18,12 +28,15 @@
             src="/assets/images/town.jpg"
             alt=""
             class="brand-badge-img"
-            onerror="
-              this.style.display = 'none';
-              this.nextElementSibling.style.display = 'flex';
-            "
+            id="brandBadgeImg"
+            data-fallback-target="brandBadgeFallback"
           />
-          <span class="brand-badge-fallback" style="display: none">GCEO</span>
+          <span
+            class="brand-badge-fallback"
+            id="brandBadgeFallback"
+            style="display: none"
+            >GCEO</span
+          >
         </div>
         <div>
           <div class="brand-name" data-i18n="za_portal_title">
@@ -79,18 +92,10 @@
         </div>
         <div class="topbar-right">
           <div class="lang-toggle">
-            <button
-              class="lang-switch-btn"
-              data-lang="en"
-              onclick="setLang('en')"
-            >
+            <button class="lang-switch-btn" data-lang="en" type="button">
               EN
             </button>
-            <button
-              class="lang-switch-btn"
-              data-lang="am"
-              onclick="setLang('am')"
-            >
+            <button class="lang-switch-btn" data-lang="am" type="button">
               አማርኛ
             </button>
           </div>
@@ -123,7 +128,6 @@
               class="avatar profile-pic-btn"
               id="avatarInit"
               type="button"
-              onclick="goToProfile()"
               aria-label="Open profile settings"
               title="Profile settings"
             >

@@ -1,380 +1,1182 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en" data-role="students">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Student Portal</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="icon" href="/assets/images/Logo.png" type="image/png" />
+    <link rel="stylesheet" href="style.css" />
     <script src="/assets/js/guard.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
     <script src="/assets/js/i18n.js"></script>
-</head>
-<body>
+  </head>
+  <body>
     <div class="dashboard-container">
+      <nav class="sidebar" id="sidebar" aria-label="Main navigation">
+        <h2 class="logo">
+          <div class="sidebar-logos-row">
+            <!-- Zone logo: uploaded by a super admin via
+                       /api/super/zones/:zone_id/logo, not by this school —
+                       comes back on every portal's /api/me as zone_logo_url.
+                       Hidden until a zone has actually uploaded one. -->
+            <img
+              id="nav-zone-logo"
+              class="sidebar-logo-img"
+              alt=""
+              style="display: none"
+            />
+            <img
+              id="nav-school-logo"
+              class="sidebar-logo-img"
+              alt=""
+              style="display: none"
+            />
+          </div>
+          Student Portal <span id="nav-school-name">—</span>
+        </h2>
+        <ul class="nav-menu">
+          <li class="nav-group-label" data-i18n="nav_group_overview">
+            Overview
+          </li>
+          <li>
+            <a href="#" class="nav-link active" data-page="dashboard">
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <rect x="3" y="3" width="7" height="7" />
+                <rect x="14" y="3" width="7" height="7" />
+                <rect x="3" y="14" width="7" height="7" />
+                <rect x="14" y="14" width="7" height="7" />
+              </svg>
+              <span data-i18n="nav_dashboard">Dashboard</span>
+            </a>
+          </li>
+          <li>
+            <a href="#" class="nav-link" data-page="notifications">
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+              </svg>
+              <span data-i18n="nav_notifications">Notifications</span>
+              <span
+                id="notif-nav-badge"
+                class="nav-badge"
+                style="display: none"
+              ></span>
+            </a>
+          </li>
 
-        <nav class="sidebar" id="sidebar" aria-label="Main navigation">
-            <h2 class="logo">
-                <img id="nav-school-logo" class="sidebar-logo-img" alt="" style="display:none;" onerror="this.style.display='none';">
-                Student Portal <span id="nav-school-name">—</span>
-            </h2>
-            <ul class="nav-menu">
-                <li><a href="#" class="nav-link active" data-page="dashboard">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-                    <span data-i18n="nav_dashboard">Dashboard</span>
-                </a></li>
-                <li><a href="#" class="nav-link" data-page="marks">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-                    <span data-i18n="nav_marks">My Marks</span>
-                </a></li>
-                <li><a href="#" class="nav-link" data-page="textbooks">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-                    <span data-i18n="nav_textbooks">Textbooks</span>
-                </a></li>
-                <li id="nav-class-monitor" style="display:none;"><a href="#" class="nav-link" data-page="class-monitor">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                    <span data-i18n="nav_class_monitor">Class Attendance</span>
-                </a></li>
-                <li><a href="#" class="nav-link" data-page="absence">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="M9 16l2 2 4-4"/></svg>
-                    <span data-i18n="nav_absence">Absence Requests</span>
-                </a></li>
-                <li><a href="#" class="nav-link" data-page="notifications">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-                    <span data-i18n="nav_notifications">Notifications</span>
-                    <span id="notif-nav-badge" class="nav-badge" style="display:none;"></span>
-                </a></li>
-                <li><a href="#" class="nav-link" data-page="profile">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                    <span data-i18n="nav_profile">My Profile</span>
-                </a></li>
-                <li><a href="/hub.html" target="_blank" rel="noopener" class="nav-link nav-external">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="18" height="7" rx="1"/></svg>
-                    <span data-i18n="nav_hub">School Hub</span>
-                    <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true" style="margin-left:auto; opacity:0.6;"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                </a></li>
-                <!-- Deliberately a real external link (new tab), not an in-app page —
-                     hub.html is its own standalone site shared by students, teachers,
-                     and admin alike. It reuses this same login session/cookie, so the
-                     backend still scopes everything to req.user.school_id — a student
-                     or teacher from another school can't see this school's posts. -->
-                <li><a href="#" class="nav-link" data-page="documents">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
-                    <span data-i18n="nav_documents">My Documents</span>
-                </a></li>
-            </ul>
+          <li class="nav-group-label" data-i18n="nav_group_academics">
+            Academics &amp; Learning
+          </li>
+          <li>
+            <a href="#" class="nav-link" data-page="marks">
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path
+                  d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+                />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="16" y1="13" x2="8" y2="13" />
+                <line x1="16" y1="17" x2="8" y2="17" />
+              </svg>
+              <span data-i18n="nav_marks">My Marks</span>
+            </a>
+          </li>
+          <li>
+            <a href="#" class="nav-link" data-page="textbooks">
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                <path
+                  d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"
+                />
+              </svg>
+              <span data-i18n="nav_textbooks">Textbooks</span>
+            </a>
+          </li>
 
-            <div class="sidebar-footer">
-                <div id="nav-monitor-badge" class="nav-monitor-badge" style="display:none;">
-                    <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                    <span id="nav-monitor-badge-text"></span>
-                </div>
-                <button type="button" class="sidebar-signout-btn" onclick="signOutNow()">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-                    <span data-i18n="topbar_sign_out">Sign Out</span>
-                </button>
+          <li class="nav-group-label" data-i18n="nav_group_attendance">
+            Attendance &amp; Requests
+          </li>
+          <li id="nav-class-monitor" style="display: none">
+            <a href="#" class="nav-link" data-page="class-monitor">
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+              </svg>
+              <span data-i18n="nav_class_monitor">Class Attendance</span>
+            </a>
+          </li>
+          <li>
+            <a href="#" class="nav-link" data-page="absence">
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <rect x="3" y="4" width="18" height="18" rx="2" />
+                <line x1="16" y1="2" x2="16" y2="6" />
+                <line x1="8" y1="2" x2="8" y2="6" />
+                <line x1="3" y1="10" x2="21" y2="10" />
+                <path d="M9 16l2 2 4-4" />
+              </svg>
+              <span data-i18n="nav_absence">Absence Requests</span>
+            </a>
+          </li>
+
+          <li class="nav-group-label" data-i18n="nav_group_personal">
+            Personal &amp; Records
+          </li>
+          <li>
+            <a href="#" class="nav-link" data-page="profile">
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+              </svg>
+              <span data-i18n="nav_profile">My Profile</span>
+            </a>
+          </li>
+          <li>
+            <a href="#" class="nav-link" data-page="documents">
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path
+                  d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+                />
+                <path d="M14 2v6h6" />
+              </svg>
+              <span data-i18n="nav_documents">My Documents</span>
+            </a>
+          </li>
+
+          <li class="nav-group-label" data-i18n="nav_group_external_student">
+            External
+          </li>
+          <!-- A real external link, not an in-app page, opened in the same
+                     tab (target="_self") — hub.html is its own standalone site
+                     shared by students, teachers, and admin alike. It reuses
+                     this same login session/cookie, so the backend still
+                     scopes everything to req.user.school_id — a student or
+                     teacher from another school can't see this school's posts. -->
+          <li>
+            <a href="/hub.html" target="_self" class="nav-link nav-external">
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <rect x="3" y="3" width="7" height="7" rx="1" />
+                <rect x="14" y="3" width="7" height="7" rx="1" />
+                <rect x="3" y="14" width="18" height="7" rx="1" />
+              </svg>
+              <span data-i18n="nav_hub">School Hub</span>
+            </a>
+          </li>
+        </ul>
+
+        <div class="sidebar-footer">
+          <div
+            id="nav-monitor-badge"
+            class="nav-monitor-badge"
+            style="display: none"
+          >
+            <svg
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+              <circle cx="9" cy="7" r="4" />
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+            </svg>
+            <span id="nav-monitor-badge-text"></span>
+          </div>
+          <button
+            type="button"
+            id="sidebar-signout-btn"
+            class="sidebar-signout-btn"
+          >
+            <svg
+              width="16"
+              height="16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+            <span data-i18n="topbar_sign_out">Sign Out</span>
+          </button>
+        </div>
+      </nav>
+
+      <div id="sidebar-overlay" class="sidebar-overlay"></div>
+
+      <div id="toast-container" aria-live="polite"></div>
+
+      <main class="main-content" aria-live="polite">
+        <header class="top-bar">
+          <div class="topbar-row topbar-row-main">
+            <div class="topbar-left">
+              <button
+                id="sidebar-toggle"
+                class="sidebar-toggle-btn"
+                data-i18n-aria="sidebar_open"
+                aria-label="Open navigation menu"
+                aria-expanded="false"
+                aria-controls="sidebar"
+              >
+                <span class="sidebar-toggle-bar"></span>
+                <span class="sidebar-toggle-bar"></span>
+                <span class="sidebar-toggle-bar"></span>
+              </button>
+              <h1 class="page-title" id="page-title-text">—</h1>
             </div>
-        </nav>
 
-        <div id="sidebar-overlay" class="sidebar-overlay"></div>
-
-        <div id="toast-container" aria-live="polite"></div>
-
-        <main class="main-content" aria-live="polite">
-            <header class="top-bar">
-                <div class="topbar-left">
-                    <button id="sidebar-toggle" class="sidebar-toggle-btn" data-i18n-aria="sidebar_open" aria-label="Open navigation menu" aria-expanded="false" aria-controls="sidebar">
-                        <span class="sidebar-toggle-bar"></span>
-                        <span class="sidebar-toggle-bar"></span>
-                        <span class="sidebar-toggle-bar"></span>
+            <div class="topbar-right user-actions" id="topbar-user-actions">
+              <div class="lang-switch" role="group" aria-label="Language / ቋንቋ">
+                <button type="button" class="lang-switch-btn" data-lang="en">
+                  EN
+                </button>
+                <button type="button" class="lang-switch-btn" data-lang="am">
+                  አማ
+                </button>
+              </div>
+              <div class="notification-wrapper">
+                <button
+                  id="notification-btn"
+                  class="notification-btn"
+                  data-i18n-aria="topbar_notifications"
+                  aria-label="Notifications"
+                  aria-haspopup="true"
+                  aria-expanded="false"
+                  aria-controls="notification-panel"
+                >
+                  🔔<span
+                    id="notif-badge"
+                    class="notif-badge"
+                    style="display: none"
+                  ></span>
+                </button>
+                <div
+                  id="notification-panel"
+                  class="notification-panel"
+                  role="menu"
+                  style="display: none"
+                >
+                  <div class="notification-panel-header">
+                    <strong data-i18n="topbar_notifications"
+                      >Notifications</strong
+                    >
+                    <button
+                      id="notif-see-all-btn"
+                      class="notif-clear-btn"
+                      data-i18n="topbar_see_all"
+                    >
+                      See all
                     </button>
-                    <h1 class="page-title" id="page-title-text">—</h1>
-                    <span id="semester-badge" class="semester-badge semester-badge-open" style="display:none;"></span>
+                  </div>
+                  <div id="notification-panel-list">
+                    <p
+                      class="notif-empty"
+                      data-i18n="topbar_no_new_notifications"
+                    >
+                      No new notifications
+                    </p>
+                  </div>
                 </div>
-                <button type="button" id="topbar-more-btn" class="topbar-more-btn" aria-label="More" aria-haspopup="true" aria-expanded="false" aria-controls="topbar-user-actions" onclick="toggleTopbarActions()">⋮</button>
-                <div class="user-actions" id="topbar-user-actions">
-                    <div class="lang-switch" role="group" aria-label="Language / ቋንቋ">
-                        <button type="button" class="lang-switch-btn" data-lang="en" onclick="setLang('en')">EN</button>
-                        <button type="button" class="lang-switch-btn" data-lang="am" onclick="setLang('am')">አማ</button>
-                    </div>
-                    <div class="notification-wrapper">
-                        <button class="notification-btn" data-i18n-aria="topbar_notifications" aria-label="Notifications" onclick="toggleNotificationPanel()" aria-haspopup="true" aria-expanded="false" aria-controls="notification-panel">
-                            🔔<span id="notif-badge" class="notif-badge" style="display:none;"></span>
-                        </button>
-                        <div id="notification-panel" class="notification-panel" role="menu" style="display:none;">
-                            <div class="notification-panel-header">
-                                <strong data-i18n="topbar_notifications">Notifications</strong>
-                                <button class="notif-clear-btn" data-i18n="topbar_see_all" onclick="navigateTo('notifications')">See all</button>
-                            </div>
-                            <div id="notification-panel-list"><p class="notif-empty" data-i18n="topbar_no_new_notifications">No new notifications</p></div>
-                        </div>
-                    </div>
-                    <button class="help-btn" data-i18n-aria="topbar_help" aria-label="Help and support" onclick="openHelpModal()">❓</button>
-                    <div class="account-wrapper">
-                        <button class="account-btn" onclick="toggleAccountMenu()" aria-haspopup="true" aria-expanded="false" aria-controls="account-menu">
-                            <span id="nav-avatar" class="nav-avatar">?</span>
-                            <span id="nav-greeting" class="nav-greeting" data-i18n="greeting_default">Hi, Student!</span>
-                        </button>
-                        <div id="account-menu" class="account-menu" role="menu" style="display:none;">
-                            <button class="account-menu-item" data-i18n="topbar_profile_settings" onclick="navigateTo('profile'); closeAccountMenu();">⚙️ Profile Settings</button>
-                        </div>
-                    </div>
+              </div>
+              <button
+                id="help-btn-open"
+                class="help-btn"
+                data-i18n-aria="topbar_help"
+                aria-label="Help and support"
+              >
+                ❓
+              </button>
+              <div class="account-wrapper">
+                <button
+                  id="account-btn"
+                  class="account-btn"
+                  aria-haspopup="true"
+                  aria-expanded="false"
+                  aria-controls="account-menu"
+                >
+                  <span id="nav-avatar" class="nav-avatar">?</span>
+                  <span class="nav-account-text">
+                    <span
+                      id="nav-greeting"
+                      class="nav-greeting"
+                      data-i18n="greeting_default"
+                      >Hi, Student!</span
+                    >
+                    <span
+                      id="nav-role"
+                      class="nav-role"
+                      data-i18n="topbar_role_student"
+                      >Student</span
+                    >
+                  </span>
+                </button>
+                <div
+                  id="account-menu"
+                  class="account-menu"
+                  role="menu"
+                  style="display: none"
+                >
+                  <button
+                    id="account-profile-settings-btn"
+                    class="account-menu-item"
+                    data-i18n="topbar_profile_settings"
+                  >
+                    ⚙️ Profile Settings
+                  </button>
                 </div>
-            </header>
+              </div>
+            </div>
+          </div>
 
-            <!-- DASHBOARD -->
-            <section id="page-dashboard" class="page-content">
-                <h2 data-i18n="dashboard_heading">Dashboard</h2>
+          <div class="topbar-row topbar-row-tags">
+            <span
+              id="academic-year-badge"
+              class="academic-year-badge"
+              style="display: none"
+            ></span>
+            <span
+              id="moe-badge"
+              class="moe-badge"
+              style="display: none"
+            ></span>
+            <span
+              id="semester-badge"
+              class="semester-badge semester-badge-open"
+              style="display: none"
+            ></span>
+          </div>
+        </header>
 
-                <div id="recognition-award-banner" class="widget" style="display:none; margin-bottom:20px; background:linear-gradient(135deg,#fef3c7,#fde68a); border:1px solid #f59e0b;">
-                    <div id="recognition-award-text"></div>
+        <!-- DASHBOARD -->
+        <section id="page-dashboard" class="page-content">
+          <h2 data-i18n="dashboard_heading">Dashboard</h2>
+
+          <div
+            id="recognition-award-banner"
+            class="widget"
+            style="
+              display: none;
+              margin-bottom: 20px;
+              background: linear-gradient(135deg, #fef3c7, #fde68a);
+              border: 1px solid #f59e0b;
+            "
+          >
+            <div id="recognition-award-text"></div>
+          </div>
+          <div class="dashboard-grid" id="dashboard-cards">
+            <div class="widget">
+              <h3 data-i18n="dashboard_quick_summary">Quick Summary</h3>
+              <div id="dashboard-summary">
+                <p class="muted" data-i18n="loading">Loading…</p>
+              </div>
+            </div>
+            <div class="widget">
+              <h3 data-i18n="dashboard_recent_notifications">
+                Recent Notifications
+              </h3>
+              <div id="dashboard-notifs">
+                <p class="muted" data-i18n="loading">Loading…</p>
+              </div>
+            </div>
+            <div class="widget">
+              <h3 data-i18n="dashboard_textbook_status">Textbook Status</h3>
+              <div id="dashboard-textbooks">
+                <p class="muted" data-i18n="loading">Loading…</p>
+              </div>
+            </div>
+            <div class="widget">
+              <h3 data-i18n="dashboard_attendance_streak">Attendance Streak</h3>
+              <div id="dashboard-attendance">
+                <p class="muted" data-i18n="loading">Loading…</p>
+              </div>
+            </div>
+            <div class="widget">
+              <h3 data-i18n="dashboard_todays_classes">Today's Classes</h3>
+              <div id="dashboard-timetable">
+                <p class="muted" data-i18n="loading">Loading…</p>
+              </div>
+            </div>
+            <div class="widget" id="eth-calendar-widget">
+              <h3 data-i18n="dashboard_ethiopian_calendar">
+                Ethiopian Calendar
+              </h3>
+              <div id="eth-calendar-output">
+                <p class="muted" data-i18n="loading">Loading…</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- MARKS -->
+        <section id="page-marks" class="page-content" style="display: none">
+          <h2 data-i18n="marks_heading">My Marks</h2>
+          <div
+            id="incomplete-status-banner"
+            class="widget"
+            style="
+              display: none;
+              margin-bottom: 16px;
+              background: linear-gradient(135deg, #fef2f2, #fee2e2);
+              border: 1px solid #f87171;
+            "
+          ></div>
+          <div class="filter-row" style="margin-bottom: 16px">
+            <label for="marks-term-filter" class="sr-only"
+              >Filter by term</label
+            >
+            <select
+              id="marks-term-filter"
+              class="form-input"
+              style="max-width: 200px"
+            >
+              <option value="" data-i18n="marks_all_terms">All Terms</option>
+            </select>
+          </div>
+          <div id="marks-output">
+            <p class="muted" data-i18n="loading">Loading…</p>
+          </div>
+
+          <div
+            id="mark-appeal-form-container"
+            class="widget"
+            style="display: none; margin-top: 20px"
+          >
+            <h3 data-i18n="appeal_form_heading">Appeal a Mark</h3>
+            <p
+              id="mark-appeal-context"
+              class="muted"
+              style="margin-bottom: 12px"
+            ></p>
+            <label for="appeal-claimed-score" class="sr-only"
+              >What you believe the score should be</label
+            >
+            <input
+              type="number"
+              id="appeal-claimed-score"
+              class="form-input"
+              min="0"
+              max="100"
+              step="0.1"
+              style="margin-bottom: 12px; max-width: 160px"
+              placeholder="e.g. 50"
+              data-i18n-placeholder="appeal_claimed_score_placeholder"
+            />
+            <label for="appeal-reason" class="sr-only">Reason</label>
+            <textarea
+              id="appeal-reason"
+              class="form-input"
+              rows="3"
+              style="margin-bottom: 12px"
+              placeholder="Why do you believe this score is incorrect?"
+              data-i18n-placeholder="appeal_reason_placeholder"
+            ></textarea>
+            <div style="display: flex; gap: 10px">
+              <button
+                type="button"
+                id="appeal-submit-btn"
+                class="btn-primary"
+                style="width: auto"
+                data-i18n="appeal_submit"
+              >
+                Submit Appeal
+              </button>
+              <button
+                type="button"
+                id="appeal-cancel-btn"
+                class="btn-cancel"
+                style="width: auto"
+                data-i18n="appeal_cancel"
+              >
+                Cancel
+              </button>
+            </div>
+            <div id="mark-appeal-submit-message" class="password-message"></div>
+          </div>
+
+          <div id="mark-appeal-history-section" style="margin-top: 24px">
+            <h3 style="margin-bottom: 10px" data-i18n="appeal_history_heading">
+              Your Appeals
+            </h3>
+            <div id="mark-appeal-history-output"></div>
+          </div>
+        </section>
+
+        <!-- TEXTBOOKS -->
+        <section id="page-textbooks" class="page-content" style="display: none">
+          <h2 data-i18n="textbooks_heading">My Textbooks</h2>
+          <p
+            class="muted"
+            style="margin-bottom: 16px"
+            data-i18n="textbooks_desc"
+          >
+            Textbook distribution status for this school year.
+          </p>
+          <div id="textbooks-output">
+            <p class="muted" data-i18n="loading">Loading…</p>
+          </div>
+        </section>
+
+        <!-- NOTIFICATIONS -->
+        <section
+          id="page-notifications"
+          class="page-content"
+          style="display: none"
+        >
+          <h2 data-i18n="notifications_heading">Notifications</h2>
+          <div id="notifications-output">
+            <p class="muted" data-i18n="loading">Loading…</p>
+          </div>
+        </section>
+
+        <!-- CLASS MONITOR: today's class attendance -->
+        <section
+          id="page-class-monitor"
+          class="page-content"
+          style="display: none"
+        >
+          <h2 data-i18n="monitor_heading">Class Attendance</h2>
+          <p class="muted" style="margin-bottom: 20px" data-i18n="monitor_desc">
+            As Class Monitor, you can see who's present today and check in
+            classmates who arrive without their ID card scanned yet.
+          </p>
+
+          <div class="monitor-columns">
+            <!-- Left: scan QR + check-in + roster, grouped together as one flow -->
+            <div class="monitor-col-attendance">
+              <div class="widget" style="margin-bottom: 20px">
+                <button
+                  type="button"
+                  id="monitor-scan-toggle-btn"
+                  class="btn-primary"
+                  style="width: auto"
+                  data-i18n="monitor_scan_qr"
+                >
+                  Scan QR Code
+                </button>
+                <div
+                  id="monitor-scanner-panel"
+                  style="display: none; margin-top: 14px"
+                >
+                  <video
+                    id="monitor-scanner-video"
+                    playsinline
+                    style="
+                      width: 100%;
+                      max-width: 360px;
+                      border-radius: 8px;
+                      background: #000;
+                    "
+                  ></video>
+                  <canvas
+                    id="monitor-scanner-canvas"
+                    style="display: none"
+                  ></canvas>
+                  <p
+                    id="monitor-scanner-status"
+                    class="muted"
+                    style="margin-top: 8px"
+                    data-i18n="monitor_scan_point_camera"
+                  >
+                    Point the camera at a student's ID card QR code.
+                  </p>
                 </div>
-                <div class="dashboard-grid" id="dashboard-cards">
-                    <div class="widget">
-                        <h3 data-i18n="dashboard_quick_summary">Quick Summary</h3>
-                        <div id="dashboard-summary"><p class="muted" data-i18n="loading">Loading…</p></div>
-                    </div>
-                    <div class="widget">
-                        <h3 data-i18n="dashboard_recent_notifications">Recent Notifications</h3>
-                        <div id="dashboard-notifs"><p class="muted" data-i18n="loading">Loading…</p></div>
-                    </div>
-                    <div class="widget">
-                        <h3 data-i18n="dashboard_textbook_status">Textbook Status</h3>
-                        <div id="dashboard-textbooks"><p class="muted" data-i18n="loading">Loading…</p></div>
-                    </div>
-                    <div class="widget">
-                        <h3 data-i18n="dashboard_attendance_streak">Attendance Streak</h3>
-                        <div id="dashboard-attendance"><p class="muted" data-i18n="loading">Loading…</p></div>
-                    </div>
-                    <div class="widget">
-                        <h3 data-i18n="dashboard_todays_classes">Today's Classes</h3>
-                        <div id="dashboard-timetable"><p class="muted" data-i18n="loading">Loading…</p></div>
-                    </div>
+              </div>
+
+              <div
+                class="widget monitor-sticky-checkin"
+                style="margin-bottom: 16px"
+              >
+                <label for="monitor-manual-id" class="sr-only"
+                  >Student ID</label
+                >
+                <div style="display: flex; gap: 10px; flex-wrap: wrap">
+                  <input
+                    type="text"
+                    id="monitor-manual-id"
+                    class="form-input"
+                    style="flex: 1; min-width: 160px"
+                    placeholder="Student ID"
+                    data-i18n-placeholder="monitor_student_id_placeholder"
+                  />
+                  <button
+                    type="button"
+                    id="monitor-checkin-btn"
+                    class="btn-primary"
+                    style="width: auto"
+                    data-i18n="monitor_check_in"
+                  >
+                    Check In
+                  </button>
                 </div>
-            </section>
+                <div
+                  id="monitor-checkin-message"
+                  class="password-message"
+                ></div>
+                <hr
+                  style="
+                    border: none;
+                    border-top: 1px solid var(--border);
+                    margin: 14px 0 10px;
+                  "
+                />
+                <h3 style="margin: 0" data-i18n="monitor_roster_heading">
+                  Today's Attendance
+                </h3>
+                <p
+                  class="muted"
+                  id="monitor-absent-count-line"
+                  style="margin: 4px 0 0; font-size: 0.85rem"
+                ></p>
+              </div>
 
-            <!-- MARKS -->
-            <section id="page-marks" class="page-content" style="display:none;">
-                <h2 data-i18n="marks_heading">My Marks</h2>
-                <div class="filter-row" style="margin-bottom:16px;">
-                    <label for="marks-term-filter" class="sr-only">Filter by term</label>
-                    <select id="marks-term-filter" class="form-input" style="max-width:200px;">
-                        <option value="" data-i18n="marks_all_terms">All Terms</option>
-                    </select>
-                </div>
-                <div id="marks-output"><p class="muted" data-i18n="loading">Loading…</p></div>
+              <div id="monitor-roster-output">
+                <p class="muted" data-i18n="loading">Loading…</p>
+              </div>
+            </div>
 
-                <div id="mark-appeal-form-container" class="widget" style="display:none; margin-top:20px;">
-                    <h3 data-i18n="appeal_form_heading">Appeal a Mark</h3>
-                    <p id="mark-appeal-context" class="muted" style="margin-bottom:12px;"></p>
-                    <label for="appeal-claimed-score" class="sr-only">What you believe the score should be</label>
-                    <input type="number" id="appeal-claimed-score" class="form-input" min="0" max="100" step="0.1" style="margin-bottom:12px; max-width:160px;" placeholder="e.g. 50" data-i18n-placeholder="appeal_claimed_score_placeholder">
-                    <label for="appeal-reason" class="sr-only">Reason</label>
-                    <textarea id="appeal-reason" class="form-input" rows="3" style="margin-bottom:12px;" placeholder="Why do you believe this score is incorrect?" data-i18n-placeholder="appeal_reason_placeholder"></textarea>
-                    <div style="display:flex; gap:10px;">
-                        <button type="button" class="btn-primary" style="width:auto;" onclick="submitMarkAppeal()" data-i18n="appeal_submit">Submit Appeal</button>
-                        <button type="button" class="btn-cancel" style="width:auto;" onclick="closeMarkAppealForm()" data-i18n="appeal_cancel">Cancel</button>
-                    </div>
-                    <div id="mark-appeal-submit-message" class="password-message"></div>
-                </div>
+            <!-- Right: Today's Periods, its own box -->
+            <div class="monitor-col-periods">
+              <h3
+                style="margin-bottom: 10px"
+                data-i18n="monitor_periods_heading"
+              >
+                Today's Periods
+              </h3>
+              <p
+                class="muted"
+                style="margin-bottom: 12px"
+                data-i18n="monitor_periods_desc"
+              >
+                Mark whether the teacher for each period actually came to class.
+              </p>
+              <div id="monitor-periods-output">
+                <p class="muted" data-i18n="loading">Loading…</p>
+              </div>
+            </div>
+          </div>
+        </section>
 
-                <div id="mark-appeal-history-section" style="margin-top:24px;">
-                    <h3 style="margin-bottom:10px;" data-i18n="appeal_history_heading">Your Appeals</h3>
-                    <div id="mark-appeal-history-output"></div>
-                </div>
-            </section>
+        <!-- ABSENCE / PERMISSION REQUESTS -->
+        <section id="page-absence" class="page-content" style="display: none">
+          <h2 data-i18n="absence_heading">Absence Requests</h2>
+          <p class="muted" style="margin-bottom: 20px" data-i18n="absence_desc">
+            Tell your homeroom teacher why you were (or will be) away — e.g.
+            illness or taking a family member to hospital. They'll approve or
+            reject it.
+          </p>
 
-            <!-- TEXTBOOKS -->
-            <section id="page-textbooks" class="page-content" style="display:none;">
-                <h2 data-i18n="textbooks_heading">My Textbooks</h2>
-                <p class="muted" style="margin-bottom:16px;" data-i18n="textbooks_desc">Textbook distribution status for this school year.</p>
-                <div id="textbooks-output"><p class="muted" data-i18n="loading">Loading…</p></div>
-            </section>
+          <div class="widget" style="margin-bottom: 20px">
+            <h3 data-i18n="absence_new_request">New Request</h3>
+            <div
+              class="filter-row"
+              style="gap: 10px; flex-wrap: wrap; margin-bottom: 12px"
+            >
+              <div>
+                <label for="absence-date-from" class="sr-only">From date</label>
+                <input
+                  type="date"
+                  id="absence-date-from"
+                  class="form-input"
+                  data-i18n-aria="absence_from_date"
+                  aria-label="From date"
+                />
+              </div>
+              <div>
+                <label for="absence-date-to" class="sr-only">To date</label>
+                <input
+                  type="date"
+                  id="absence-date-to"
+                  class="form-input"
+                  data-i18n-aria="absence_to_date"
+                  aria-label="To date"
+                />
+              </div>
+            </div>
+            <label for="absence-reason" class="sr-only">Reason</label>
+            <textarea
+              id="absence-reason"
+              class="form-input"
+              rows="3"
+              style="margin-bottom: 12px"
+              placeholder="Reason (e.g. I had malaria and was admitted at the health center)"
+              data-i18n-placeholder="absence_reason_placeholder"
+            ></textarea>
+            <div class="photo-upload-row" style="margin-bottom: 12px">
+              <label
+                for="absence-attachment-input"
+                class="btn-cancel photo-upload-label"
+                data-i18n="absence_attach_document"
+                >Attach Document (optional)</label
+              >
+              <input
+                type="file"
+                id="absence-attachment-input"
+                accept="image/*,application/pdf"
+                style="display: none"
+              />
+              <span
+                id="absence-attachment-filename"
+                class="muted"
+                style="font-size: 0.82rem"
+              ></span>
+            </div>
+            <button
+              type="button"
+              id="absence-submit-btn"
+              class="btn-primary"
+              style="width: auto"
+              data-i18n="absence_submit"
+            >
+              Submit Request
+            </button>
+            <div id="absence-submit-message" class="password-message"></div>
+          </div>
 
-            <!-- NOTIFICATIONS -->
-            <section id="page-notifications" class="page-content" style="display:none;">
-                <h2 data-i18n="notifications_heading">Notifications</h2>
-                <div id="notifications-output"><p class="muted" data-i18n="loading">Loading…</p></div>
-            </section>
+          <h3 style="margin-bottom: 10px" data-i18n="absence_history">
+            Your Requests
+          </h3>
+          <div id="absence-history-output">
+            <p class="muted" data-i18n="loading">Loading…</p>
+          </div>
+        </section>
 
-            <!-- CLASS MONITOR: today's class attendance -->
-            <section id="page-class-monitor" class="page-content" style="display:none;">
-                <h2 data-i18n="monitor_heading">Class Attendance</h2>
-                <p class="muted" style="margin-bottom:20px;" data-i18n="monitor_desc">As Class Monitor, you can see who's present today and check in classmates who arrive without their ID card scanned yet.</p>
+        <!-- PROFILE -->
+        <section id="page-profile" class="page-content" style="display: none">
+          <h2 data-i18n="profile_heading">My Profile</h2>
+          <div class="profile-grid">
+            <div class="widget">
+              <h3 data-i18n="profile_identity">Identity</h3>
+              <div
+                class="avatar-initials"
+                id="profile-initials"
+                aria-hidden="true"
+              >
+                ?
+              </div>
+              <div class="photo-upload-row">
+                <label
+                  for="profile-photo-input"
+                  class="btn-cancel photo-upload-label"
+                  data-i18n="profile_change_photo"
+                  >Change Profile Photo</label
+                >
+                <input
+                  type="file"
+                  id="profile-photo-input"
+                  accept="image/*"
+                  style="display: none"
+                />
+              </div>
+              <div id="profile-photo-message" class="password-message"></div>
+              <p>
+                <strong data-i18n="profile_full_name">Full Name:</strong>
+                <span id="p-name">—</span>
+              </p>
+              <p>
+                <strong data-i18n="profile_student_id">Student ID:</strong>
+                <span id="p-id">—</span>
+              </p>
+              <p>
+                <strong data-i18n="profile_sex">Sex:</strong>
+                <span id="p-sex">—</span>
+              </p>
+              <p>
+                <strong data-i18n="profile_status">Status:</strong>
+                <span id="p-status">—</span>
+              </p>
+            </div>
+            <div class="widget">
+              <h3 data-i18n="profile_academic_info">Academic Info</h3>
+              <p>
+                <strong data-i18n="profile_grade">Grade:</strong>
+                <span id="p-grade">—</span>
+              </p>
+              <p>
+                <strong data-i18n="profile_section">Section:</strong>
+                <span id="p-section">—</span>
+              </p>
+              <p>
+                <strong data-i18n="profile_stream">Stream:</strong>
+                <span id="p-stream">—</span>
+              </p>
+              <p>
+                <strong data-i18n="profile_school">School:</strong>
+                <span id="p-school">—</span>
+              </p>
+            </div>
+            <div class="widget">
+              <h3 data-i18n="profile_id_photo_heading">ID Card Photo</h3>
+              <p
+                class="muted"
+                style="margin-bottom: 10px"
+                data-i18n="profile_id_photo_desc"
+              >
+                Must be portrait, at least 300×360px, roughly a 5:6 width:height
+                ratio — like a passport photo. This is the photo that appears on
+                your ID card, separate from your profile photo above.
+              </p>
+              <div
+                class="id-photo-preview"
+                id="id-photo-preview"
+                data-i18n="profile_no_photo"
+              >
+                No photo uploaded yet
+              </div>
+              <p
+                class="muted"
+                style="margin: 6px 0 0; font-size: 0.8rem"
+                data-i18n="profile_id_photo_request_note"
+              >
+                Changing your ID photo requires approval from your homeroom
+                teacher before it becomes official.
+              </p>
+              <div
+                id="id-photo-request-status"
+                class="request-status-box"
+                style="display: none"
+              ></div>
+              <div class="photo-upload-row">
+                <label
+                  for="id-photo-input"
+                  class="btn-cancel photo-upload-label"
+                  data-i18n="profile_request_id_photo"
+                  >Request ID Photo Change</label
+                >
+                <input
+                  type="file"
+                  id="id-photo-input"
+                  accept="image/*"
+                  style="display: none"
+                />
+              </div>
+              <div id="id-photo-message" class="password-message"></div>
+            </div>
+            <div class="widget">
+              <h3 data-i18n="profile_account_heading">Account</h3>
+              <p>
+                <strong data-i18n="profile_lms_username">LMS Username:</strong>
+                <span id="p-lms">—</span>
+              </p>
+              <p>
+                <strong data-i18n="profile_email">Email:</strong>
+                <span id="p-email">—</span>
+              </p>
+              <p>
+                <strong data-i18n="profile_assigned_pc">Assigned PC:</strong>
+                <span id="p-pc">—</span>
+              </p>
+            </div>
+            <div class="widget">
+              <h3 data-i18n="profile_security_heading">Account Security</h3>
+              <p
+                class="muted"
+                style="margin-bottom: 14px"
+                data-i18n="profile_security_desc"
+              >
+                If this is your first time logging in, change your password from
+                the default.
+              </p>
+              <div class="password-field-group">
+                <label for="curr-pass" class="sr-only">Current password</label>
+                <input
+                  type="password"
+                  id="curr-pass"
+                  class="form-input"
+                  placeholder="Current Password"
+                  data-i18n-placeholder="profile_current_password"
+                />
+                <label for="new-pass" class="sr-only">New password</label>
+                <input
+                  type="password"
+                  id="new-pass"
+                  class="form-input"
+                  placeholder="New Password"
+                  data-i18n-placeholder="profile_new_password"
+                />
+                <label for="confirm-pass" class="sr-only"
+                  >Confirm new password</label
+                >
+                <input
+                  type="password"
+                  id="confirm-pass"
+                  class="form-input"
+                  placeholder="Confirm New Password"
+                  data-i18n-placeholder="profile_confirm_password"
+                />
+              </div>
+              <button
+                type="button"
+                id="update-password-btn"
+                class="btn-primary"
+                data-i18n="profile_update_password"
+              >
+                Update Password
+              </button>
+              <div id="password-message" class="password-message"></div>
+            </div>
+          </div>
+        </section>
 
-                <div class="monitor-columns">
-                    <!-- Left: scan QR + check-in + roster, grouped together as one flow -->
-                    <div class="monitor-col-attendance">
-                        <div class="widget" style="margin-bottom:20px;">
-                            <button type="button" id="monitor-scan-toggle-btn" class="btn-primary" style="width:auto;" onclick="toggleMonitorScanner()" data-i18n="monitor_scan_qr">Scan QR Code</button>
-                            <div id="monitor-scanner-panel" style="display:none; margin-top:14px;">
-                                <video id="monitor-scanner-video" playsinline style="width:100%; max-width:360px; border-radius:8px; background:#000;"></video>
-                                <canvas id="monitor-scanner-canvas" style="display:none;"></canvas>
-                                <p id="monitor-scanner-status" class="muted" style="margin-top:8px;" data-i18n="monitor_scan_point_camera">Point the camera at a student's ID card QR code.</p>
-                            </div>
-                        </div>
+        <!-- MY DOCUMENTS: ID Card + Certificate, tabbed -->
+        <section id="page-documents" class="page-content" style="display: none">
+          <h2 data-i18n="documents_heading">My Documents</h2>
 
-                        <div class="widget monitor-sticky-checkin" style="margin-bottom:16px;">
-                            <label for="monitor-manual-id" class="sr-only">Student ID</label>
-                            <div style="display:flex; gap:10px; flex-wrap:wrap;">
-                                <input type="text" id="monitor-manual-id" class="form-input" style="flex:1; min-width:160px;" placeholder="Student ID" data-i18n-placeholder="monitor_student_id_placeholder" oninput="filterMonitorRoster()">
-                                <button type="button" class="btn-primary" style="width:auto;" onclick="monitorManualCheckin()" data-i18n="monitor_check_in">Check In</button>
-                            </div>
-                            <div id="monitor-checkin-message" class="password-message"></div>
-                            <hr style="border:none; border-top:1px solid var(--border); margin:14px 0 10px;">
-                            <h3 style="margin:0;" data-i18n="monitor_roster_heading">Today's Attendance</h3>
-                            <p class="muted" id="monitor-absent-count-line" style="margin:4px 0 0; font-size:0.85rem;"></p>
-                        </div>
+          <div class="filter-row" style="gap: 10px; margin-bottom: 20px">
+            <button
+              type="button"
+              id="doc-tab-btn-idcard"
+              class="btn-primary"
+              style="width: auto"
+              data-i18n="nav_idcard"
+            >
+              My ID
+            </button>
+            <button
+              type="button"
+              id="doc-tab-btn-certificate"
+              class="btn-cancel"
+              style="width: auto"
+              data-i18n="nav_certificate"
+            >
+              My Certificate
+            </button>
+          </div>
 
-                        <div id="monitor-roster-output"><p class="muted" data-i18n="loading">Loading…</p></div>
-                    </div>
+          <div id="doc-tab-idcard">
+            <p
+              class="muted"
+              style="margin-bottom: 20px"
+              data-i18n="idcard_desc"
+            >
+              Present this alongside a physical copy if required by school
+              policy.
+            </p>
+            <div id="idcard-output">
+              <p class="muted" data-i18n="loading">Loading…</p>
+            </div>
+            <div style="display: flex; gap: 10px; margin-top: 16px">
+              <button
+                type="button"
+                id="flip-idcard-btn"
+                class="btn-cancel"
+                style="width: auto"
+                data-i18n="idcard_flip"
+              >
+                Flip Card
+              </button>
+              <button
+                type="button"
+                id="print-idcard-btn"
+                class="btn-cancel"
+                style="width: auto"
+                data-i18n="idcard_print"
+              >
+                Print ID Card
+              </button>
+            </div>
+          </div>
 
-                    <!-- Right: Today's Periods, its own box -->
-                    <div class="monitor-col-periods">
-                        <h3 style="margin-bottom:10px;" data-i18n="monitor_periods_heading">Today's Periods</h3>
-                        <p class="muted" style="margin-bottom:12px;" data-i18n="monitor_periods_desc">Mark whether the teacher for each period actually came to class.</p>
-                        <div id="monitor-periods-output"><p class="muted" data-i18n="loading">Loading…</p></div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- ABSENCE / PERMISSION REQUESTS -->
-            <section id="page-absence" class="page-content" style="display:none;">
-                <h2 data-i18n="absence_heading">Absence Requests</h2>
-                <p class="muted" style="margin-bottom:20px;" data-i18n="absence_desc">Tell your homeroom teacher why you were (or will be) away — e.g. illness or taking a family member to hospital. They'll approve or reject it.</p>
-
-                <div class="widget" style="margin-bottom:20px;">
-                    <h3 data-i18n="absence_new_request">New Request</h3>
-                    <div class="filter-row" style="gap:10px; flex-wrap:wrap; margin-bottom:12px;">
-                        <div>
-                            <label for="absence-date-from" class="sr-only">From date</label>
-                            <input type="date" id="absence-date-from" class="form-input" data-i18n-aria="absence_from_date" aria-label="From date">
-                        </div>
-                        <div>
-                            <label for="absence-date-to" class="sr-only">To date</label>
-                            <input type="date" id="absence-date-to" class="form-input" data-i18n-aria="absence_to_date" aria-label="To date">
-                        </div>
-                    </div>
-                    <label for="absence-reason" class="sr-only">Reason</label>
-                    <textarea id="absence-reason" class="form-input" rows="3" style="margin-bottom:12px;" placeholder="Reason (e.g. I had malaria and was admitted at the health center)" data-i18n-placeholder="absence_reason_placeholder"></textarea>
-                    <div class="photo-upload-row" style="margin-bottom:12px;">
-                        <label for="absence-attachment-input" class="btn-cancel photo-upload-label" data-i18n="absence_attach_document">Attach Document (optional)</label>
-                        <input type="file" id="absence-attachment-input" accept="image/*,application/pdf" style="display:none;" onchange="onAbsenceAttachmentChange(this)">
-                        <span id="absence-attachment-filename" class="muted" style="font-size:0.82rem;"></span>
-                    </div>
-                    <button type="button" class="btn-primary" style="width:auto;" onclick="submitAbsenceRequest()" data-i18n="absence_submit">Submit Request</button>
-                    <div id="absence-submit-message" class="password-message"></div>
-                </div>
-
-                <h3 style="margin-bottom:10px;" data-i18n="absence_history">Your Requests</h3>
-                <div id="absence-history-output"><p class="muted" data-i18n="loading">Loading…</p></div>
-            </section>
-
-            <!-- PROFILE -->
-            <section id="page-profile" class="page-content" style="display:none;">
-                <h2 data-i18n="profile_heading">My Profile</h2>
-                <div class="profile-grid">
-                    <div class="widget">
-                        <h3 data-i18n="profile_identity">Identity</h3>
-                        <div class="avatar-initials" id="profile-initials" aria-hidden="true">?</div>
-                        <div class="photo-upload-row">
-                            <label for="profile-photo-input" class="btn-cancel photo-upload-label" data-i18n="profile_change_photo">Change Profile Photo</label>
-                            <input type="file" id="profile-photo-input" accept="image/*" style="display:none;" onchange="uploadProfilePhoto(this)">
-                        </div>
-                        <div id="profile-photo-message" class="password-message"></div>
-                        <p><strong data-i18n="profile_full_name">Full Name:</strong> <span id="p-name">—</span></p>
-                        <p><strong data-i18n="profile_student_id">Student ID:</strong> <span id="p-id">—</span></p>
-                        <p><strong data-i18n="profile_sex">Sex:</strong> <span id="p-sex">—</span></p>
-                        <p><strong data-i18n="profile_status">Status:</strong> <span id="p-status">—</span></p>
-                    </div>
-                    <div class="widget">
-                        <h3 data-i18n="profile_academic_info">Academic Info</h3>
-                        <p><strong data-i18n="profile_grade">Grade:</strong> <span id="p-grade">—</span></p>
-                        <p><strong data-i18n="profile_section">Section:</strong> <span id="p-section">—</span></p>
-                        <p><strong data-i18n="profile_stream">Stream:</strong> <span id="p-stream">—</span></p>
-                        <p><strong data-i18n="profile_school">School:</strong> <span id="p-school">—</span></p>
-                    </div>
-                    <div class="widget">
-                        <h3 data-i18n="profile_id_photo_heading">ID Card Photo</h3>
-                        <p class="muted" style="margin-bottom:10px;" data-i18n="profile_id_photo_desc">Must be portrait, at least 300×360px, roughly a 5:6 width:height ratio — like a passport photo. This is the photo that appears on your ID card, separate from your profile photo above.</p>
-                        <div class="id-photo-preview" id="id-photo-preview" data-i18n="profile_no_photo">No photo uploaded yet</div>
-                        <p class="muted" style="margin:6px 0 0; font-size:0.8rem;" data-i18n="profile_id_photo_request_note">Changing your ID photo requires approval from your homeroom teacher before it becomes official.</p>
-                        <div id="id-photo-request-status" class="request-status-box" style="display:none;"></div>
-                        <div class="photo-upload-row">
-                            <label for="id-photo-input" class="btn-cancel photo-upload-label" data-i18n="profile_request_id_photo">Request ID Photo Change</label>
-                            <input type="file" id="id-photo-input" accept="image/*" style="display:none;" onchange="uploadIDPhoto(this)">
-                        </div>
-                        <div id="id-photo-message" class="password-message"></div>
-                    </div>
-                    <div class="widget">
-                        <h3 data-i18n="profile_account_heading">Account</h3>
-                        <p><strong data-i18n="profile_lms_username">LMS Username:</strong> <span id="p-lms">—</span></p>
-                        <p><strong data-i18n="profile_email">Email:</strong> <span id="p-email">—</span></p>
-                        <p><strong data-i18n="profile_assigned_pc">Assigned PC:</strong> <span id="p-pc">—</span></p>
-                    </div>
-                    <div class="widget">
-                        <h3 data-i18n="profile_security_heading">Account Security</h3>
-                        <p class="muted" style="margin-bottom:14px;" data-i18n="profile_security_desc">If this is your first time logging in, change your password from the default.</p>
-                        <div class="password-field-group">
-                            <label for="curr-pass" class="sr-only">Current password</label>
-                            <input type="password" id="curr-pass" class="form-input" placeholder="Current Password" data-i18n-placeholder="profile_current_password">
-                            <label for="new-pass" class="sr-only">New password</label>
-                            <input type="password" id="new-pass" class="form-input" placeholder="New Password" data-i18n-placeholder="profile_new_password">
-                            <label for="confirm-pass" class="sr-only">Confirm new password</label>
-                            <input type="password" id="confirm-pass" class="form-input" placeholder="Confirm New Password" data-i18n-placeholder="profile_confirm_password">
-                        </div>
-                        <button type="button" class="btn-primary" onclick="updatePassword()" data-i18n="profile_update_password">Update Password</button>
-                        <div id="password-message" class="password-message"></div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- MY DOCUMENTS: ID Card + Certificate, tabbed -->
-            <section id="page-documents" class="page-content" style="display:none;">
-                <h2 data-i18n="documents_heading">My Documents</h2>
-
-                <div class="filter-row" style="gap:10px; margin-bottom:20px;">
-                    <button type="button" id="doc-tab-btn-idcard" class="btn-primary" style="width:auto;" onclick="switchDocumentTab('idcard')" data-i18n="nav_idcard">My ID</button>
-                    <button type="button" id="doc-tab-btn-certificate" class="btn-cancel" style="width:auto;" onclick="switchDocumentTab('certificate')" data-i18n="nav_certificate">My Certificate</button>
-                </div>
-
-                <div id="doc-tab-idcard">
-                    <p class="muted" style="margin-bottom:20px;" data-i18n="idcard_desc">Present this alongside a physical copy if required by school policy.</p>
-                    <div id="idcard-output"><p class="muted" data-i18n="loading">Loading…</p></div>
-                    <div style="display:flex; gap:10px; margin-top:16px;">
-                        <button type="button" class="btn-cancel" style="width:auto;" onclick="flipIDCard()" data-i18n="idcard_flip">Flip Card</button>
-                        <button type="button" class="btn-cancel" style="width:auto;" onclick="window.print()" data-i18n="idcard_print">Print ID Card</button>
-                    </div>
-                </div>
-
-                <div id="doc-tab-certificate" style="display:none;">
-                    <div id="certificate-output"><p class="muted" data-i18n="loading">Loading…</p></div>
-                    <div id="certificate-request-status" class="request-status-box" style="display:none;"></div>
-                    <div style="display:flex; gap:10px; margin-top:16px; flex-wrap:wrap;">
-                        <button type="button" id="certificate-request-btn" class="btn-cancel" style="width:auto; display:none;" onclick="requestCertificate()" data-i18n="certificate_request">Request</button>
-                        <button type="button" id="certificate-download-btn" class="btn-primary" style="width:auto; display:none;" onclick="downloadCertificate()" data-i18n="certificate_print_download">Download</button>
-                    </div>
-                </div>
-            </section>
-        </main>
+          <div id="doc-tab-certificate" style="display: none">
+            <div id="certificate-output">
+              <p class="muted" data-i18n="loading">Loading…</p>
+            </div>
+            <div
+              id="certificate-status-note"
+              class="request-status-box"
+              style="display: none"
+            ></div>
+            <div
+              style="
+                display: flex;
+                gap: 10px;
+                margin-top: 16px;
+                flex-wrap: wrap;
+              "
+            >
+              <button
+                type="button"
+                id="certificate-download-btn"
+                class="btn-primary"
+                style="width: auto; display: none"
+                data-i18n="certificate_print_download"
+              >
+                Download
+              </button>
+            </div>
+          </div>
+        </section>
+      </main>
     </div>
 
     <!-- HELP MODAL -->
-    <div id="help-modal" class="confirm-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="help-modal-title" style="display:none;">
-        <div class="confirm-modal-box" style="max-width:480px;">
-            <h3 id="help-modal-title" data-i18n="help_heading">Help &amp; Support</h3>
-            <p class="muted" style="margin-bottom:16px;" data-i18n="help_desc">Send a message to the school's support team. This opens your email app with the message pre-filled.</p>
-            <label for="help-subject" class="sr-only">Subject</label>
-            <input type="text" id="help-subject" placeholder="Subject" class="form-input" style="margin-bottom:10px;" data-i18n-placeholder="help_subject_placeholder">
-            <label for="help-body" class="sr-only">Describe your issue</label>
-            <textarea id="help-body" placeholder="Describe your issue..." class="form-input" style="margin-bottom:14px; height:120px;" data-i18n-placeholder="help_body_placeholder"></textarea>
-            <div class="confirm-modal-actions">
-                <button class="btn-cancel" onclick="closeHelpModal()" data-i18n="help_cancel">Cancel</button>
-                <button class="btn-primary" style="width:auto;" onclick="submitHelpRequest()" data-i18n="help_send">Send</button>
-            </div>
+    <div
+      id="help-modal"
+      class="confirm-modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="help-modal-title"
+      style="display: none"
+    >
+      <div class="confirm-modal-box" style="max-width: 480px">
+        <h3 id="help-modal-title" data-i18n="help_heading">
+          Help &amp; Support
+        </h3>
+        <p class="muted" style="margin-bottom: 16px" data-i18n="help_desc">
+          Send a message to the school's support team. This opens your email app
+          with the message pre-filled.
+        </p>
+        <label for="help-subject" class="sr-only">Subject</label>
+        <input
+          type="text"
+          id="help-subject"
+          placeholder="Subject"
+          class="form-input"
+          style="margin-bottom: 10px"
+          data-i18n-placeholder="help_subject_placeholder"
+        />
+        <label for="help-body" class="sr-only">Describe your issue</label>
+        <textarea
+          id="help-body"
+          placeholder="Describe your issue..."
+          class="form-input"
+          style="margin-bottom: 14px; height: 120px"
+          data-i18n-placeholder="help_body_placeholder"
+        ></textarea>
+        <div class="confirm-modal-actions">
+          <button
+            id="help-modal-cancel-btn"
+            class="btn-cancel"
+            data-i18n="help_cancel"
+          >
+            Cancel
+          </button>
+          <button
+            id="help-modal-send-btn"
+            class="btn-primary"
+            style="width: auto"
+            data-i18n="help_send"
+          >
+            Send
+          </button>
         </div>
+      </div>
+    </div>
+
+    <!-- SIGN OUT CONFIRMATION MODAL -->
+    <div
+      id="signout-modal"
+      class="confirm-modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="signout-modal-title"
+      style="display: none"
+    >
+      <div class="confirm-modal-box" style="max-width: 420px">
+        <h3 id="signout-modal-title" data-i18n="signout_modal_title">
+          Sign Out
+        </h3>
+        <p class="muted" style="margin-bottom: 16px" data-i18n="signout_modal_desc">
+          Are you sure you want to sign out?
+        </p>
+        <div class="confirm-modal-actions">
+          <button
+            id="signout-modal-cancel-btn"
+            class="btn-cancel"
+            data-i18n="signout_modal_cancel"
+          >
+            Cancel
+          </button>
+          <button
+            id="signout-modal-confirm-btn"
+            class="btn-danger"
+            data-i18n="signout_modal_confirm"
+          >
+            Sign Out
+          </button>
+        </div>
+      </div>
     </div>
 
     <script src="script.js"></script>
-</body>
+  </body>
 </html>

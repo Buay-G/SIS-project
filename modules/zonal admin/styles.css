@@ -616,7 +616,16 @@ tr:hover td{background:#fafcfb;}
 
 @media (max-width: 720px){
   .topbar{flex-direction:column;align-items:stretch;}
-  .topbar-right{justify-content:space-between;}
+  /* .topbar-right holds 3 differently-sized groups (lang toggle, bell,
+     avatar/name). space-between here spread all three to opposite
+     edges with big uneven gaps between them — looked scattered rather
+     than like one cohesive control row. Instead: let lang-toggle + bell
+     sit together with their normal gap on the left (the default
+     flex-start), and push only the avatar/name block to the right via
+     margin-left:auto — a clean two-cluster row instead of three
+     floating pieces. */
+  .topbar-right{justify-content:flex-start;flex-wrap:wrap;}
+  .topbar-right .who{margin-left:auto;}
   .who-name, .who-role{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .cards{grid-template-columns:1fr 1fr;}
   .gender-strip{flex-wrap:wrap;}

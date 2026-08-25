@@ -21,6 +21,7 @@ body {
     background: var(--bg);
     color: var(--text);
     height: 100vh;
+    height: 100dvh; /* real device browser chrome (address bar / gesture bar) eats into 100vh, cutting off fixed-height panels like the mobile sidebar; dvh accounts for the actually-visible area */
     overflow: hidden;
 }
 
@@ -29,6 +30,7 @@ body {
     display: grid;
     grid-template-columns: var(--sidebar-width) 1fr;
     height: 100vh;
+    height: 100dvh;
 }
 
 /* ---- SIDEBAR ---- */
@@ -61,11 +63,23 @@ body {
     margin-top: 3px;
     text-transform: uppercase;
 }
+/* Holds the zone logo (super-admin-uploaded, optional) and the school
+   logo side by side above the "Student Portal" text. Works the same
+   whether one or both are present/loaded — flex + justify-content:
+   center keeps a single logo centered exactly as before, and adds a
+   second one next to it instead of stacking. */
+.sidebar-logos-row {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+}
 .sidebar-logo-img {
     display: block;
     width: 48px;
     height: 48px;
-    margin: 0 auto 10px;
+    margin: 0;
     border-radius: 10px;
     object-fit: cover;
     background: white;
@@ -91,6 +105,16 @@ body {
 .nav-link:hover { background: rgba(255,255,255,0.1); color: #fff; border-left-color: rgba(255,255,255,0.35); }
 .nav-link.active { background: rgba(37,99,235,0.5); color: #fff; border-left-color: #60a5fa; font-weight: 600; }
 .nav-divider { height: 1px; background: rgba(255,255,255,0.1); margin: 8px 4px; list-style: none; }
+.nav-group-label {
+    list-style: none;
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: rgba(255,255,255,0.38);
+    padding: 14px 12px 6px;
+}
+.nav-group-label:first-child { padding-top: 4px; }
 .nav-external { color: rgba(255,255,255,0.45); font-size: 0.82rem; }
 .nav-external:hover { color: rgba(255,255,255,0.8); background: rgba(255,255,255,0.07); }
 
@@ -171,58 +195,61 @@ body {
     top: 0;
     z-index: 100;
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background: linear-gradient(135deg, #1e3a8a 0%, #1565a8 100%);
-    padding: 0 20px;
-    height: 58px;
+    flex-direction: column;
+    gap: 8px;
+    background: linear-gradient(135deg, #0f2151 0%, #1e3a8a 100%);
+    padding: 12px 20px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.2);
     border-radius: 0 0 10px 10px;
     margin-bottom: 16px;
     flex-shrink: 0;
 }
+.topbar-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.topbar-row-tags { justify-content: flex-start; }
 .topbar-left {
     display: flex;
     align-items: center;
     gap: 12px;
     min-width: 0;
-    flex: 1;
+    flex: 1 1 auto;
     overflow: hidden;
 }
 .page-title {
     margin: 0;
-    font-size: 1rem;
-    font-weight: 700;
+    font-size: 1.15rem;
+    font-weight: 800;
     color: #fff;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    letter-spacing: 0.01em;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     min-width: 0;
 }
-.user-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.nav-greeting { color: rgba(255,255,255,0.9); font-size: 0.85rem; font-weight: 600; }
-
-/* Mobile-only "more" button: collapses the language switch / notifications /
-   help / account controls behind a single tap instead of cramming them all
-   into the top bar next to the page title and semester badge. */
-.topbar-more-btn {
-    display: none;
+/* Right-hand cluster of the main row: academic-year badge, language switch,
+   notification bell, help, and the account button all sit together as one
+   group instead of being spread across separate full-width rows. */
+.topbar-right {
+    display: flex;
     align-items: center;
-    justify-content: center;
-    width: 34px;
-    height: 34px;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
     flex-shrink: 0;
-    background: rgba(255,255,255,0.12);
-    border: none;
-    border-radius: 8px;
-    color: white;
-    font-size: 1.3rem;
-    line-height: 1;
-    cursor: pointer;
 }
-.topbar-more-btn:hover { background: rgba(255,255,255,0.2); }
+.nav-greeting { display: block; color: #fff; font-size: 0.85rem; font-weight: 700; line-height: 1.25; white-space: nowrap; }
+.nav-role { display: block; color: rgba(255,255,255,0.68); font-size: 0.72rem; font-weight: 500; line-height: 1.2; }
+.nav-account-text { display: flex; flex-direction: column; text-align: left; min-width: 0; }
+
+/* Mobile-only "more" button kept for backwards compatibility with older
+   markup, but the top bar now wraps every control onto its own row instead
+   of hiding them behind a tap, so this stays hidden. */
+.topbar-more-btn { display: none !important; }
 
 /* Semester status badge — shows the term Academic VP has open (POST
    /api/term/set) so students always know which semester is active. */
@@ -243,18 +270,61 @@ body {
 .semester-badge-open { background: rgba(34,197,94,0.18); color: #4ade80; border: 1px solid rgba(74,222,128,0.4); }
 .semester-badge-closed { background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.65); border: 1px solid rgba(255,255,255,0.2); }
 
+/* Academic-year and MOE code badges — sit above/below the semester badge,
+   both softer/translucent pills so the semester status (the one most
+   likely to draw the eye) still stands out via its solid dot + color. */
+.academic-year-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 5px 12px;
+    border-radius: 999px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    background: rgba(99,102,241,0.18);
+    color: #a5b4fc;
+    border: 1px solid rgba(165,180,252,0.4);
+}
+.academic-year-badge::before { content: '📅'; font-size: 0.85em; line-height: 1; }
+.moe-badge {
+    display: inline-flex;
+    align-items: center;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    padding: 5px 11px;
+    border-radius: 999px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    background: rgba(255,255,255,0.14);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.22);
+}
+
 /* Hamburger */
 .sidebar-toggle-btn {
     display: none;
     flex-direction: column;
+    align-items: center;
     justify-content: center;
-    gap: 4px;
-    width: 36px; height: 36px;
-    background: none; border: none; cursor: pointer;
-    padding: 6px; border-radius: 6px;
+    gap: 5px;
+    width: 40px; height: 40px;
+    background: rgba(255,255,255,0.14);
+    border: none; cursor: pointer;
+    padding: 0; border-radius: 8px;
+    box-sizing: border-box;
+    flex-shrink: 0;
 }
-.sidebar-toggle-btn:hover { background: rgba(255,255,255,0.15); }
-.sidebar-toggle-bar { display: block; width: 100%; height: 2px; background: white; border-radius: 2px; }
+.sidebar-toggle-btn:hover { background: rgba(255,255,255,0.24); }
+.sidebar-toggle-bar {
+    display: block;
+    width: 20px; height: 3px;
+    background: #ffffff;
+    border-radius: 3px;
+    flex-shrink: 0;
+}
 .sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 998; }
 .sidebar-overlay-visible { display: block; }
 
@@ -522,10 +592,10 @@ textarea.form-input { line-height: 1.5; resize: none; height: 90px; }
 .lang-switch-btn {
     background: transparent;
     border: none;
-    color: rgba(255,255,255,0.75);
+    color: rgba(255,255,255,0.8);
     font-size: 0.78rem;
-    font-weight: 600;
-    padding: 6px 12px;
+    font-weight: 700;
+    padding: 6px 14px;
     border-radius: 999px;
     cursor: pointer;
     transition: background 0.15s, color 0.15s;
@@ -592,24 +662,24 @@ textarea.form-input { line-height: 1.5; resize: none; height: 90px; }
 /* ---- ACCOUNT DROPDOWN (Profile Settings / Sign Out, under the greeting) ---- */
 .account-wrapper { position: relative; }
 .account-btn {
-    background: rgba(255,255,255,0.14);
+    background: transparent;
     border: none;
     color: white;
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 5px 12px 5px 5px;
+    gap: 9px;
+    padding: 3px 6px 3px 3px;
     border-radius: 20px;
     cursor: pointer;
     transition: background 0.15s;
 }
-.account-btn:hover { background: rgba(255,255,255,0.26); }
+.account-btn:hover { background: rgba(255,255,255,0.12); }
 .nav-avatar {
-    width: 26px; height: 26px;
+    width: 34px; height: 34px;
     border-radius: 50%;
     background: rgba(255,255,255,0.25);
     color: white;
-    font-size: 0.72rem;
+    font-size: 0.78rem;
     font-weight: 700;
     display: flex;
     align-items: center;
@@ -703,6 +773,17 @@ textarea.form-input { line-height: 1.5; resize: none; height: 90px; }
     font-size: 0.88rem;
 }
 .btn-cancel:hover { background: #e2e8f0; }
+.btn-danger {
+    background: #dc2626;
+    color: white;
+    border: none;
+    padding: 10px 18px;
+    border-radius: 7px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.88rem;
+}
+.btn-danger:hover { background: #b91c1c; }
 
 /* ---- ACCOUNT SECURITY ---- */
 .password-field-group {
@@ -785,6 +866,18 @@ textarea.form-input { line-height: 1.5; resize: none; height: 90px; }
 @media (max-width: 480px) {
     #toast-container { top: 10px; left: 12px; right: 12px; transform: none; }
     .toast { max-width: none; }
+}
+
+/* Confirm/sign-out modal (shared by the Help modal too) on narrow
+   screens: shrink padding, let the box hug the viewport edges, and
+   stack the action buttons full-width instead of squeezing them
+   side by side. */
+@media (max-width: 480px) {
+    .confirm-modal-box { width: 92vw; padding: 18px; }
+    .confirm-modal-actions { flex-direction: column-reverse; }
+    .confirm-modal-actions .btn-cancel,
+    .confirm-modal-actions .btn-danger,
+    .confirm-modal-actions .btn-primary { width: 100%; }
 }
 
 /* ---- PRIMARY BUTTON (used by Update Password / Help modal Send) ---- */
@@ -923,8 +1016,8 @@ textarea.form-input { line-height: 1.5; resize: none; height: 90px; }
     #doc-tab-idcard > p.muted { display: none !important; }
 
     /* ---- CR-80 card-sized print (landscape) ----
-       True badge size: 3.375in wide × 2.125in tall (204px @ 96dpi/CSS-in
-       → 324px wide) per face. Rather than rebuild the layout at card
+       True badge size: 3.375in wide × 2.125in tall (324px × 204px @
+       96dpi/CSS-in) per face. Rather than rebuild the layout at card
        scale — a second design to keep in sync with the on-screen 430px
        mockup forever after — this shrinks the EXISTING design down
        proportionally with transform: scale(), so photo/text/logo/
@@ -933,47 +1026,65 @@ textarea.form-input { line-height: 1.5; resize: none; height: 90px; }
 
        --idcard-scale: 3.375in (324px) ÷ 430px natural on-screen width.
 
+       PROBLEM: .id-card has no fixed height on screen — the front and
+       back divs each size themselves to their own content, and that
+       content is NOT the same height: the front's footer (dashed
+       border + padding + principal-signature line + Issued/Valid-until
+       block) measures ~277px, while the back's footer (just a return
+       note + QR) measures ~257px. Scaling both by the same factor
+       preserves that ~20px gap proportionally, so the front visibly
+       prints bigger than the back — even though a real badge's two
+       faces are the exact same physical rectangle.
+
+       FIX: force both faces to an explicit height equal to the true
+       card aspect ratio (3.375 : 2.125) at 430px wide, BEFORE the
+       scale transform is applied — i.e. 430px × (2.125/3.375) ≈
+       270.74px. That's --idcard-natural-h below. Both .id-card-front
+       and .id-card-back become a column flexbox at that fixed height;
+       .id-card-body / .id-card-back-body get flex: 1 so the shorter
+       back content stretches to fill the extra space and its footer/
+       address-bar still sits flush on the bottom edge, matching the
+       front. .id-card's existing overflow: hidden clips the rare case
+       where content is a hair taller than the fixed height instead of
+       spilling out of the "physical" card.
+
+       Because both faces now share the exact same box height, the
+       reserved blank margin transform: scale() leaves above/below each
+       face (scaling shrinks the CONTENTS, not the box) is identical on
+       both — so the single --idcard-natural-h below drives an EXACT
+       10px gap, not an estimate.
+
        transform-origin is explicitly 'center' (the default) to match
-       how the scale is applied — which means the shrunk card sits
-       centered inside its OWN unscaled, ~265-320px-tall layout box
-       (scaling the contents doesn't shrink the box reserved for them).
-       That leaves a blank margin split above AND below the visible
-       card. Stacked front-then-back with no correction, that reserved
-       space stacks up between them — nowhere near the 10px gap we
-       actually want.
+       how the scale is applied.
 
-       --idcard-natural-h is a calibrated, deliberately conservative
-       estimate of that reserved box height (based on the shortest
-       realistic version of this content — no principal signature
-       image, no MOE school-code row) — deliberately an underestimate
-       so the computed margin can never overlap the two faces; if the
-       real content is taller (signature image present, school code
-       shown), the printed gap will be a bit MORE than 10px, never
-       negative. The margin below converts that leftover reserved
-       space into exactly --idcard-gap of real visual gap.
-
-       The Issued/Valid-until block (.id-card-validity) below is
-       shrunk print-only: it was the tallest part of the front face's
-       footer, taller than the signature column next to it — which
-       made the front render noticeably taller than the back (whose
-       footer is just a return note + QR) even though both get the
-       same scale. Trimming it here brings the two faces' natural
-       heights close together (front ~266px, back ~274px) instead of
-       leaving a visible size mismatch between them.
+       The Issued/Valid-until block (.id-card-validity) is still
+       trimmed print-only below — it's the tightest-fitting part of the
+       fixed-height front face, so keeping it compact avoids it getting
+       clipped by overflow: hidden.
 
        If this design's content changes meaningfully, re-check an
-       actual print preview and adjust --idcard-natural-h to match. */
+       actual print preview. */
     .id-card-flip-wrap {
         --idcard-scale: 0.7535;
-        --idcard-natural-h: 266px;
+        --idcard-natural-h: 270.74px;
         --idcard-gap: 10px;
         margin: 0;
         padding: 0;
     }
     .id-card-front, .id-card-back {
-        display: block !important;
+        display: flex !important;
+        flex-direction: column;
+        height: var(--idcard-natural-h);
         transform: scale(var(--idcard-scale));
         transform-origin: center;
+    }
+    /* Lets the shorter back face (and, defensively, the front) stretch
+       to fill the fixed card height above, so whichever footer/
+       address-bar comes last sits flush on the bottom edge instead of
+       leaving blank space beneath it. */
+    .id-card-body, .id-card-back-body {
+        flex: 1 1 auto;
+        min-height: 0;
     }
     /* No page-break — both faces now print on the SAME page, stacked
        vertically, instead of the front forcing a break to a second
@@ -988,6 +1099,23 @@ textarea.form-input { line-height: 1.5; resize: none; height: 90px; }
     .id-card-validity strong { margin-top: 1px; }
     /* Flip/Print buttons are already covered by the .btn-cancel rule
        above (both use that class) — nothing else to hide here. */
+
+    /* Print-only trim of the back face's Terms & Conditions block. At
+       on-screen size, the 4 terms bullets + heading + return-note run
+       ~325px tall naturally, well past the ~271px fixed card height
+       above — so the QR code (pinned to the bottom of .id-card-back
+       via flex) was overflowing past the shrunk back-body box and
+       getting drawn over by the address bar beneath it instead of
+       sitting fully visible above it. Trimming font-size/line-height/
+       spacing here (print-only; on-screen terms text is untouched)
+       reclaims enough height for the QR to render in full. */
+    .id-card-back-body { padding: 16px 16px 6px; }
+    .id-card-back-body h4 { font-size: 0.84rem; margin-bottom: 7px; }
+    .id-card-terms { font-size: 0.7rem; line-height: 1.38; padding-left: 15px; }
+    .id-card-terms li { margin-bottom: 4px; }
+    .id-card-return-note { font-size: 0.7rem; margin-top: 7px; }
+    .id-card-back-footer { margin-top: 4px; }
+    .id-card-address-bar { padding: 7px 10px; font-size: 0.6rem; line-height: 1.3; }
 
     /* Browsers skip background colors/gradients/images when printing by
        default (to save ink), which is what was wiping out the header
@@ -1023,7 +1151,6 @@ body.dark-theme .widget,
 body.dark-theme .marks-subject-card,
 body.dark-theme .notif-card { background: #1e293b; }
 body.dark-theme .marks-subject-header { background: #273548; }
-body.dark-theme .top-bar { background: linear-gradient(135deg, #0f172a, #1e3a8a); }
 body.dark-theme th { background: #0f172a; }
 body.dark-theme td { border-color: #334155; }
 body.dark-theme .notif-unread { background: #1e2d45; }
@@ -1035,16 +1162,18 @@ body.dark-theme .form-input { background: #1e293b; border-color: #475569; color:
     .dashboard-container { grid-template-columns: 1fr; }
     .sidebar {
         position: fixed; top: 0; left: 0;
-        height: 100vh; width: min(260px, 80vw);
+        height: 100vh; height: 100dvh; width: min(260px, 80vw);
         z-index: 999;
         transform: translateX(-100%);
         transition: transform 0.25s ease;
     }
     .sidebar.sidebar-open { transform: translateX(0); box-shadow: 4px 0 20px rgba(0,0,0,0.3); }
     .sidebar-toggle-btn { display: flex; }
-    .top-bar { padding: 0 10px; height: 50px; border-radius: 0; margin-bottom: 10px; }
-    .page-title { font-size: 0.78rem; }
+    .top-bar { padding: 10px; border-radius: 0; margin-bottom: 10px; }
+    .page-title { font-size: 0.95rem; }
     .topbar-left { gap: 8px; }
+    .topbar-row-main { flex-direction: column; align-items: stretch; }
+    .topbar-right { justify-content: flex-start; }
     .page-content { padding: 0 14px 24px; }
     .dashboard-grid, .profile-grid { grid-template-columns: 1fr; }
     .table-container { min-width: 0; }
@@ -1056,24 +1185,49 @@ body.dark-theme .form-input { background: #1e293b; border-color: #475569; color:
 @media (max-width: 480px) {
     .widget { padding: 14px; }
     .page-content h2 { font-size: 1.2rem; }
-
-    .topbar-more-btn { display: flex; }
-    .user-actions {
-        display: none;
-        position: absolute;
-        top: calc(100% + 8px);
-        right: 10px;
-        flex-direction: column;
-        align-items: stretch;
-        gap: 10px;
-        min-width: 210px;
-        background: linear-gradient(135deg, #1e3a8a 0%, #1565a8 100%);
-        border-radius: 10px;
-        box-shadow: 0 10px 28px rgba(0,0,0,0.35);
-        padding: 12px;
-        z-index: 200;
-    }
-    .user-actions.topbar-actions-open { display: flex; }
-    .user-actions .lang-switch { align-self: flex-start; }
-    .user-actions .account-btn { width: 100%; justify-content: flex-start; }
 }
+/* ---- Ethiopian calendar widget (dashboard) ---- */
+.eth-cal-subtitle { color: #64748b; font-size: 0.85rem; margin: -4px 0 14px; }
+.eth-cal-today-box {
+    background: #eef1fd;
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+}
+.eth-cal-today-date { font-size: 1.3rem; font-weight: 800; color: #1e3a8a; line-height: 1.3; }
+.eth-cal-today-sub { color: #64748b; font-size: 0.85rem; margin-top: 2px; }
+.eth-cal-section-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #94a3b8;
+    margin-bottom: 8px;
+}
+.eth-cal-holiday-list { display: flex; flex-direction: column; }
+.eth-cal-holiday-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid #eef1f5;
+}
+.eth-cal-holiday-row:last-child { border-bottom: none; padding-bottom: 0; }
+.eth-cal-date-badge {
+    flex-shrink: 0;
+    background: #e7ebfb;
+    color: #1e3a8a;
+    font-weight: 700;
+    font-size: 0.78rem;
+    padding: 5px 10px;
+    border-radius: 7px;
+    white-space: nowrap;
+}
+.eth-cal-holiday-name { flex: 1; font-size: 0.9rem; color: #1e293b; }
+.eth-cal-tentative { color: #94a3b8; font-style: italic; font-weight: 400; font-size: 0.85em; }
+.eth-cal-days-until { flex-shrink: 0; color: #d97706; font-weight: 700; font-size: 0.82rem; white-space: nowrap; }
+body.dark-theme .eth-cal-today-box { background: rgba(99,102,241,0.15); }
+body.dark-theme .eth-cal-today-date { color: #a5b4fc; }
+body.dark-theme .eth-cal-date-badge { background: rgba(99,102,241,0.2); color: #a5b4fc; }
+body.dark-theme .eth-cal-holiday-name { color: #f1f5f9; }
+body.dark-theme .eth-cal-holiday-row { border-bottom-color: #334155; }

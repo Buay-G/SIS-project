@@ -29,10 +29,21 @@
 
 * { box-sizing: border-box; }
 
+/* overscroll-behavior isn't inherited — it only takes effect on an
+   element that's itself an overflow:auto/scroll container, so this
+   line only covers document-level scrolling (a fallback in case
+   anything ever ends up scrolling the page itself instead of a
+   contained panel). Every actual scroll container below (.main-content,
+   .nav-menu, .modal-box, .msg-list, etc.) needs — and has — its own
+   explicit overscroll-behavior: none, since this doesn't cascade down
+   to them automatically. */
+html { overscroll-behavior: none; }
+
 html, body {
     height: 100%;
     margin: 0;
     overflow: hidden; /* only .main-content scrolls — see below */
+    overscroll-behavior: none; /* stops the page itself from bouncing/pulling down for a browser "refresh" gesture, on top of the panels below */
 }
 body {
     font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
@@ -91,7 +102,9 @@ a { color: inherit; }
     display: flex; align-items: center; justify-content: center;
     font-weight: 800; color: #1f2a24; font-size: 0.95rem;
     flex-shrink: 0;
+    overflow: hidden;
 }
+.logo-badge img { width: 100%; height: 100%; object-fit: cover; }
 .logo-text { font-weight: 800; letter-spacing: 0.04em; font-size: 1rem; }
 .logo-sub { display: block; font-size: 0.68rem; font-weight: 500; color: rgba(255,255,255,0.65); letter-spacing: 0.03em; }
 
@@ -101,12 +114,13 @@ a { color: inherit; }
     padding: 14px 10px;
     flex: 1;
     overflow-y: auto;
+    overscroll-behavior: none;
 }
 .nav-menu li { margin-bottom: 2px; }
 .nav-link {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 14px;
     padding: 11px 14px;
     border-radius: 9px;
     color: rgba(255,255,255,0.8);
@@ -115,7 +129,7 @@ a { color: inherit; }
     font-weight: 500;
     transition: background 0.15s, color 0.15s;
 }
-.nav-link .nav-icon { width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.nav-link .nav-icon { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .nav-icon .lucide-icon { width: 18px; height: 18px; }
 .nav-link:hover { background: rgba(255,255,255,0.08); color: #fff; }
 .nav-link.active { background: var(--accent); color: #22321f; font-weight: 700; }
@@ -167,15 +181,36 @@ a { color: inherit; }
 .logout-btn:hover { background: rgba(239,68,68,0.32); color: #fff; }
 
 /* ---------- Top bar ---------- */
-.top-bar {
-    position: sticky; top: 0; z-index: 50;
-    display: flex; align-items: center; gap: 16px;
+/* flex-wrap + min-height (not a fixed height) is the key fix here: with a
+   fixed height and no wrap, once the title/meta/academic-year/right-side
+   groups no longer fit on one line (narrow viewport OR browser zoom, which
+   is really just a narrower effective viewport) the flex children refused
+   to wrap and instead got vertically centered against a box too short to
+   hold them — pushing content above y:0 and off-screen, which is what
+   produced the "cut-off Dashboard heading" look. Letting the bar grow
+   downward and wrap onto extra rows keeps everything on-screen and legible
+   at any width/zoom level, and mirrors the stacked-badge layout used by
+   the teacher portal's top bar. */
+.top-bar, .sticky-top-header {
+    /* left: 0 alongside top: 0 pins this at the top-LEFT corner of
+       .main-content's scrollport, not just its top edge — needed so a
+       page whose table is wider than the viewport (and therefore makes
+       .main-content itself scroll horizontally, its one existing,
+       intentional horizontal-scroll mechanism — see the .data-table-wrap
+       note further down) doesn't drag this sideways out of view as the
+       user scrolls right to reach hidden columns. Without this, the
+       header would still stick vertically but slide off-screen
+       horizontally, since position: sticky only pins the axis it's
+       given an offset for. */
+    position: sticky; top: 0; left: 0; z-index: 50;
+    display: flex; align-items: center; flex-wrap: wrap; row-gap: 10px; column-gap: 16px;
     background: linear-gradient(135deg, var(--primary-dark) 0%, var(--primary) 100%);
-    padding: 0 24px; height: 70px; flex-shrink: 0;
+    padding: 12px 24px; min-height: 70px; flex-shrink: 0;
     box-shadow: 0 2px 8px rgba(0,0,0,0.15);
 }
-.top-bar-titlegroup { display: flex; flex-direction: column; justify-content: center; gap: 3px; min-width: 0; }
-.page-title-text { color: #fff; font-size: 1.1rem; font-weight: 800; margin: 0; white-space: nowrap; line-height: 1.1; }
+.top-bar-titlegroup { display: flex; flex-direction: column; justify-content: center; gap: 3px; min-width: 0; flex: 1 1 220px; }
+.top-bar-title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.page-title-text { color: #fff; font-size: 1.1rem; font-weight: 800; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; line-height: 1.1; flex-shrink: 0; }
 .topbar-school-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .topbar-meta-chip {
     font-size: 0.66rem; font-weight: 700; white-space: nowrap;
@@ -193,11 +228,14 @@ a { color: inherit; }
     border: 1px solid rgba(255,255,255,0.18);
     border-radius: 10px; padding: 8px 14px;
     color: rgba(255,255,255,0.92); font-size: 0.85rem; font-weight: 600;
-    white-space: nowrap;
+    white-space: nowrap; flex-shrink: 0;
 }
 .top-academic-year .lucide-icon { flex-shrink: 0; opacity: 0.85; }
 
-.top-bar-right { margin-left: auto; display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
+/* margin-left: auto keeps this pinned to the right edge of whichever row
+   it lands on once the bar wraps, same as before — it just now also gets
+   its own full row on narrow screens instead of being squeezed. */
+.top-bar-right { margin-left: auto; display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 10px 14px; flex-shrink: 0; }
 
 .lang-switch-group { display: flex; background: rgba(255,255,255,0.12); border-radius: 8px; overflow: hidden; }
 .lang-switch-btn {
@@ -233,7 +271,7 @@ a { color: inherit; }
     padding: 12px 16px; font-weight: 800; font-size: 0.85rem;
     border-bottom: 1px solid var(--border); background: var(--bg);
 }
-.alerts-dropdown-body { overflow-y: auto; max-height: 360px; padding: 4px 0; }
+.alerts-dropdown-body { overflow-y: auto; max-height: 360px; padding: 4px 0; overscroll-behavior: none; }
 .alerts-dropdown-empty { padding: 24px 16px; text-align: center; color: var(--muted); font-size: 0.85rem; }
 .alert-item {
     padding: 10px 16px; border-bottom: 1px solid var(--border);
@@ -246,7 +284,7 @@ a { color: inherit; }
 .alert-item-actions { display: flex; gap: 6px; margin-top: 2px; flex-wrap: wrap; }
 .alert-item-actions .btn { padding: 4px 10px; font-size: 0.72rem; }
 
-.topbar-profile { display: flex; align-items: center; gap: 8px; color: #fff; }
+.topbar-profile { display: flex; align-items: center; gap: 8px; color: #fff; min-width: 0; }
 .topbar-profile-avatar {
     width: 36px; height: 36px; border-radius: 50%;
     background: var(--accent); color: #22321f; font-weight: 800;
@@ -255,6 +293,8 @@ a { color: inherit; }
     border: 2px solid rgba(255,255,255,0.3);
 }
 .topbar-profile-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.topbar-profile-text { min-width: 0; }
+.topbar-profile-name, .topbar-profile-title { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar-profile-name { font-size: 0.82rem; font-weight: 700; line-height: 1.1; }
 .topbar-profile-title { font-size: 0.68rem; color: rgba(255,255,255,0.65); }
 
@@ -265,7 +305,18 @@ a { color: inherit; }
    the grid/flex default), which lets it grow past .dashboard-container
    and hands scrolling over to the page/body instead of staying
    contained here where overflow-y: auto expects to do the work. */
-.main-content { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow-y: auto; overflow-x: auto; }
+.main-content { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow-y: auto; overflow-x: auto; overscroll-behavior: none; -webkit-overflow-scrolling: touch; }
+/* Reusable "this box owns its own scrollbar" utility — for a self-
+   contained list/table area that needs to scroll independently of
+   .main-content (e.g. inside a widget or a fixed-height panel), rather
+   than the page-wide sticky system above (which scrolls against
+   .main-content itself and is what #page-students and friends use).
+   Requires a flex/grid ancestor with its own bounded height so
+   min-height: 0 has something to shrink against — see the
+   .main-content comment above for why min-height: 0 is needed at all. */
+.scrollable-content-container {
+    flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: none;
+}
 .page-content { padding: 22px 28px 40px; }
 .page-content h2 { margin: 0 0 4px; font-size: 1.3rem; }
 .page-subtitle { color: var(--muted); font-size: 0.85rem; margin: 0 0 20px; }
@@ -340,7 +391,7 @@ a { color: inherit; }
 .eth-cal-today-eth { font-size: 1.3rem; font-weight: 800; color: var(--primary); }
 .eth-cal-today-meta { font-size: 0.8rem; color: var(--muted); }
 .eth-cal-holidays-heading { font-size: 0.78rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 8px; }
-.eth-holiday-list { display: flex; flex-direction: column; gap: 2px; max-height: 340px; overflow-y: auto; }
+.eth-holiday-list { display: flex; flex-direction: column; gap: 2px; max-height: 340px; overflow-y: auto; overscroll-behavior: none; }
 .eth-holiday-row {
     display: flex; align-items: center; gap: 12px; padding: 9px 6px;
     border-bottom: 1px solid var(--border);
@@ -370,7 +421,7 @@ a { color: inherit; }
 .donut-slice { transition: opacity 0.15s ease; }
 .donut-slice:hover { opacity: 0.8; }
 .donut-center-label {
-    position: absolute; inset: 0;
+    position: absolute; top: 0; right: 0; bottom: 0; left: 0;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     pointer-events: none;
 }
@@ -379,7 +430,7 @@ a { color: inherit; }
     font-size: 0.62rem; font-weight: 700; color: var(--muted);
     text-transform: uppercase; letter-spacing: 0.06em;
 }
-.chart-legend { flex: 1; min-width: 160px; display: flex; flex-direction: column; gap: 2px; }
+.chart-legend { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .chart-legend-row {
     display: flex; align-items: center; gap: 8px;
     font-size: 0.82rem; padding: 6px 4px; border-radius: 8px;
@@ -387,9 +438,70 @@ a { color: inherit; }
 }
 .chart-legend-row:hover { background: #f7faf8; }
 .chart-legend-dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
-.chart-legend-label { flex: 1; color: var(--text); font-weight: 600; }
-.chart-legend-value { font-weight: 800; color: var(--text); }
-.chart-legend-pct { font-size: 0.72rem; color: var(--muted); min-width: 34px; text-align: right; }
+.chart-legend-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 600; }
+.chart-legend-value { flex-shrink: 0; font-weight: 800; color: var(--text); }
+.chart-legend-pct { flex-shrink: 0; font-size: 0.72rem; color: var(--muted); min-width: 34px; text-align: right; }
+
+/* ---------- Last-semester snapshot (nested mini charts) ---------- */
+/* The 4 mini pie-chart cards inside the Principal dashboard's "Last
+   Semester" widget used to sit in a bare inline grid with
+   minmax(140px, 1fr) columns — too narrow for a 120px donut plus its
+   legend, so at most in-between widths they'd cram/overlap instead of
+   sitting cleanly in their own boxes. Widening the minimum column and
+   giving the nested cards a flatter style (no shadow/heavy border,
+   since they're already inside the outer "Last Semester" card and a
+   second full box-shadow read as a box-within-a-box) fixes both the
+   squeeze and the double-card look at once. */
+.last-semester-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 14px;
+    align-items: stretch;
+}
+.last-semester-grid .widget {
+    background: var(--bg);
+    box-shadow: none;
+    padding: 14px;
+}
+.last-semester-grid .chart-flex { gap: 14px; }
+
+/* ---------- Teacher QR attendance scanner ---------- */
+/* html5-qrcode renders its camera preview + its own built-in
+   file-upload fallback into this box; it's empty until
+   Html5Qrcode.start() runs (see initTeacherQrScanner in script.js), so
+   it needs a visible border/background even blank or the widget looks
+   broken while idle. max-width keeps the camera feed from stretching
+   full-card-width on wide screens, where it'd otherwise look
+   oversized relative to everything else on the page. */
+.qr-reader-box {
+    max-width: 340px; margin: 12px 0;
+    border: 1px dashed var(--border); border-radius: 10px;
+    background: var(--bg); overflow: hidden; min-height: 60px;
+}
+#teacher-qr-scan-result { margin-top: 10px; }
+.qr-scan-feedback {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; border-radius: 10px; font-size: 0.85rem; font-weight: 600;
+}
+.qr-scan-feedback.success { background: var(--success-bg); color: var(--success); }
+.qr-scan-feedback.info { background: var(--info-bg); color: var(--info); }
+.qr-scan-feedback.error { background: var(--danger-bg); color: var(--danger); }
+
+.teacher-attendance-groups { display: flex; flex-direction: column; gap: 16px; }
+.teacher-attendance-group-heading {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 0.8rem; font-weight: 700; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 8px;
+}
+.teacher-attendance-chip-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.teacher-attendance-chip {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 999px; padding: 5px 12px; font-size: 0.8rem; font-weight: 600;
+}
+.teacher-attendance-chip.status-not_marked { border-color: rgba(240,180,41,0.4); color: var(--warning); }
+.teacher-attendance-chip.status-absent { border-color: rgba(185,28,28,0.3); color: var(--danger); }
+.teacher-attendance-chip.status-present { border-color: rgba(21,128,61,0.3); color: var(--success); }
 
 /* ---------- Digital Signature Suite: upload dropzones ---------- */
 .doc-upload-grid {
@@ -732,7 +844,7 @@ a { color: inherit; }
 .msg-tab:hover { color: var(--primary); }
 .msg-tab.active { color: var(--primary); border-bottom-color: var(--accent); }
 
-.msg-list { flex: 1; overflow-y: auto; min-height: 0; }
+.msg-list { flex: 1; overflow-y: auto; min-height: 0; overscroll-behavior: none; }
 .msg-row { padding: 12px 16px; border-bottom: 1px solid var(--border); cursor: pointer; }
 .msg-row:hover { background: #f7faf8; }
 .msg-row.selected { background: var(--info-bg); }
@@ -743,7 +855,7 @@ a { color: inherit; }
 .msg-row-subject { font-size: 0.8rem; color: var(--text); margin-top: 2px; }
 .msg-row-snippet { font-size: 0.76rem; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.msg-detail-pane { flex: 1; display: flex; flex-direction: column; padding: 26px 28px; overflow-y: auto; min-width: 0; }
+.msg-detail-pane { flex: 1; display: flex; flex-direction: column; padding: 26px 28px; overflow-y: auto; min-width: 0; overscroll-behavior: none; }
 .msg-detail-empty { margin: auto; color: var(--muted); font-size: 0.9rem; text-align: center; }
 .msg-detail-header { border-bottom: 1px solid var(--border); padding-bottom: 14px; margin-bottom: 16px; }
 .msg-detail-subject { font-size: 1.15rem; font-weight: 800; margin: 0 0 6px; color: var(--text); }
@@ -860,6 +972,13 @@ a { color: inherit; }
        the single unambiguous sticky reference. Corner rounding is done
        on the header/footer cells directly below instead of via
        overflow-clipping here.
+
+       This is still the right default for pages that keep the
+       .uses-sticky-list opt-in. #page-students dropped that opt-in
+       (see the mobile media query below) specifically so its roster
+       table gets a self-contained horizontal scrollbar via the
+       `:not(.uses-sticky-list)` rules instead — its own card owns the
+       scrollbar below ~900px, rather than .main-content.
     */
     border: 1px solid var(--border);
     border-radius: 12px;
@@ -869,24 +988,100 @@ table.data-table thead th:first-child { border-top-left-radius: 11px; }
 table.data-table thead th:last-child { border-top-right-radius: 11px; }
 table.data-table tbody tr:last-child td:first-child { border-bottom-left-radius: 11px; }
 table.data-table tbody tr:last-child td:last-child { border-bottom-right-radius: 11px; }
-/* Column headers stay visible while rows scroll past underneath, on
-   every page that just has a plain title above its table. Sticks right
-   below the 70px topbar (position:sticky is on the th, referencing
-   .main-content as the scrolling ancestor — see the note on
-   .data-table-wrap above for why that reference stays intact). #page-students
-   opts out below since it already has a taller sticky block (title +
-   stat cards + tabs) that would otherwise overlap this at the same top
-   offset.
-   Background/color live on the th itself, not on thead — a stuck th is
-   the thing that actually moves, so it needs to carry its own paint
-   with it. Putting the background on thead as well just repaints an
-   empty box at the thead's original, now-vacated position, showing up
-   as a second, textless green bar stacked above the real header. */
+/* ID cell showing a small avatar alongside the ID text (student/teacher
+   rosters) — photo when one's on file, initials otherwise (see
+   tableAvatarHtml() in script.js). Kept compact so it doesn't blow out
+   row height or column width the way the full-size profile avatar
+   elsewhere in the app would. */
+.table-id-cell { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.table-avatar {
+    width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
+    background: var(--accent); color: #22321f; font-weight: 800; font-size: 0.65rem;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden; border: 1px solid var(--border);
+}
+.table-avatar img { width: 100%; height: 100%; object-fit: cover; }
+/* Student roster ID photo — clickable so a school admin can preview the
+   full-size photo the student uploaded for their ID (see previewIdPhoto()
+   in script.js). */
+.table-avatar-clickable { cursor: pointer; position: relative; }
+.table-avatar-clickable:hover { box-shadow: 0 0 0 2px var(--accent); }
+/* A small zoom-in glyph that only shows on hover/focus — the ring above
+   already signals "clickable" but doesn't say what clicking DOES, so
+   this makes "click to preview the photo" obvious at a glance instead
+   of something you have to discover by accident. */
+.table-avatar-clickable::after {
+    content: "";
+    position: absolute; inset: 0; border-radius: 50%;
+    background: rgba(20,83,45,0.55) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cpath d='m21 21-4.3-4.3'/%3E%3Cpath d='M11 8v6M8 11h6'/%3E%3C/svg%3E") center/12px no-repeat;
+    opacity: 0; transition: opacity 0.12s ease;
+}
+.table-avatar-clickable:hover::after, .table-avatar-clickable:focus-visible::after { opacity: 1; }
+.id-photo-preview-wrap { display: flex; justify-content: center; margin: 4px 0; }
+.id-photo-preview-img {
+    max-width: 100%; max-height: 60vh; border-radius: 10px; border: 1px solid var(--border);
+    object-fit: contain;
+}
+/* ---------- Global sticky layout system ----------
+   Three reusable pieces, usable on ANY page, in this stacking order:
+
+     .sticky-top-header   (alias of .top-bar, already global — the app
+                            bar/nav) ......................... z-index 30+
+     .page-sticky-header   (optional — a page's title/stat-cards/tabs
+                            block, sticks right under the top header)
+                                                                z-index 25
+     .sticky-filter-bar    (optional — filter dropdowns/search/action
+                            buttons, sticks right under whichever of the
+                            above precede it, opaque background so rows
+                            don't show through) ................ z-index 20
+     table.data-table thead th (column headers, sticks right under
+                            whichever of the above precede it) .. z-index 15
+     table rows / list content (plain flow, effectively z-index 1 —
+                            nothing above needs to be raised over them)
+
+   None of these hardcode a page ID. Every offset is a CSS custom
+   property computed generically for whichever page/tab is currently
+   active by updateStickyOffsets() in script.js (see that function's
+   comment for how): --topbar-height (the app bar's real, possibly
+   wrapped height), --sticky-header-offset (top-header + page header,
+   for the filter bar to stick under), and --sticky-content-offset
+   (+ filter bar, for the table's thead to stick under). A page that
+   has no .page-sticky-header/.sticky-filter-bar simply gets both vars
+   equal to --topbar-height, which is the old "thead sticks right under
+   the topbar" behavior every plain page already had.
+   To make ANY other table/list sticky the same way #page-students'
+   Roster tab is: wrap the title/stat-row/tabs in .page-sticky-header
+   (optional) and add .sticky-filter-bar to the filter toolbar-row
+   (optional) — no new CSS or JS is needed, the vars above pick it up
+   automatically. See the .data-table-wrap note above for why
+   .data-table-wrap itself must stay free of overflow-x/y wherever this
+   is used (it would hijack the thead's sticky reference away from
+   .main-content). */
 table.data-table thead th {
-    position: sticky; top: 70px; z-index: 30;
+    position: sticky; top: var(--sticky-content-offset, 70px); z-index: 15;
+    /* Background/color live on the th itself, not on thead — a stuck th
+       is the thing that actually moves, so it needs to carry its own
+       paint with it. Putting the background on thead as well just
+       repaints an empty box at the thead's original, now-vacated
+       position, showing up as a second, textless green bar stacked
+       above the real header. */
     background: var(--primary); color: #fff;
 }
-#page-students table.data-table thead th { position: static; }
+/* Filter dropdowns/search bars/action buttons: frozen in place right
+   under whichever sticky header(s) precede it on the page, instead of
+   scrolling away with the list/table. Solid background so rows don't
+   show through as they scroll past underneath. .sa-students-toolbar
+   is kept as an alias so any old markup still using that class name
+   keeps working. */
+.sticky-filter-bar, .sa-students-toolbar {
+    /* left: 0, same reasoning as .top-bar/.page-sticky-header above. */
+    position: sticky;
+    top: var(--sticky-header-offset, 190px);
+    left: 0;
+    z-index: 20;
+    background: var(--card);
+    padding-top: 4px; padding-bottom: 4px;
+}
 /* The Analysis Report table (23 columns) is wider than any other table
    in the app — wide enough that .main-content itself needs a
    horizontal scrollbar to show it, which also drags the topbar
@@ -957,15 +1152,23 @@ table.data-table tbody tr:hover { background: #f7faf8; }
 }
 .tt-period-chip-break { background: var(--warning-bg); color: var(--warning); }
 .tt-period-chip-eth { opacity: 0.75; font-weight: 500; }
+/* This table is a small, page-embedded editable grid, not a long
+   scrollable list — the sticky-header rule above (table.data-table
+   thead th { position: sticky; top: 70px }) is meant for those, and
+   inside .tt-grid-wrap's own scroll container it was sticking the
+   header at the wrong offset, overlapping period 1's row above it
+   instead of sitting cleanly on top of it.
+   NOTE: this selector deliberately repeats both classes
+   (table.data-table.tt-grid-table, not just .tt-grid-table) so its
+   specificity actually beats the base rule above — a single-class
+   version loses to "table.data-table thead th" because that rule has
+   three element selectors against this one's two, and specificity
+   compares before source order. The week-view table further down this
+   same page only carries .data-table, so it's unaffected and keeps its
+   sticky header. */
 .tt-grid-wrap { margin-top: 16px; overflow-x: auto; }
 .tt-grid-table { min-width: 100%; }
-/* This table is a small, page-embedded editable grid, not a long
-   scrollable list — the sticky-header rule further down
-   (table.data-table thead th { position: sticky; top: 70px }) is meant
-   for those, and inside .tt-grid-wrap's own scroll container it was
-   sticking the header at the wrong offset, overlapping period 1's row
-   above it instead of sitting cleanly on top of it. */
-.tt-grid-table thead th { position: static; top: auto; z-index: auto; }
+table.data-table.tt-grid-table thead th { position: static; top: auto; z-index: auto; }
 .tt-grid-table th, .tt-grid-table td { vertical-align: top; }
 .tt-grid-period-cell { white-space: nowrap; font-weight: 600; text-align: center; }
 .tt-grid-cell { width: 100%; min-width: 140px; }
@@ -1069,20 +1272,31 @@ table.data-table tbody tr:hover { background: #f7faf8; }
 .form-control-static.is-empty { color: var(--muted); font-style: italic; }
 
 /* ---------- Tabs ---------- */
-.tab-row { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+/* overflow-x: auto so a row of tabs too wide for a narrow screen scrolls
+   within itself instead of forcing .page-sticky-header — and everything
+   sharing its horizontal scroll context, including .main-content and the
+   stat cards above it — wider than the viewport. flex-shrink: 0 on
+   .tab-btn keeps labels from being squashed instead of just scrolling. */
+.tab-row { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
-/* A page's title/stat-cards/tabs can opt into staying pinned while only
-   the table below scrolls, by wrapping them in .page-sticky-header. Sticks
-   just under the 70px topbar (which is itself sticky at top:0), with a
-   solid background so table rows don't show through as they scroll past. */
+/* Any page's title/stat-cards/tabs can opt into staying pinned while
+   only the list/table below scrolls, by wrapping them in
+   .page-sticky-header — same global system described in the "Tables"
+   section above. Sticks just under the top header (which is itself
+   sticky at top:0), with a solid background so rows don't show through
+   as they scroll past. */
 .page-sticky-header {
-    position: sticky; top: 70px; z-index: 40;
+    /* left: 0 for the same reason as .top-bar above — keeps this pinned
+       to the scrollport's left edge if the page's table forces
+       .main-content to scroll horizontally, instead of sliding away. */
+    position: sticky; top: var(--topbar-height, 70px); left: 0; z-index: 25;
     background: var(--bg);
     padding-bottom: 4px;
 }
 .page-sticky-header .stat-row:last-child,
 .page-sticky-header .tab-row:last-child { margin-bottom: 0; }
 .tab-btn {
+    flex-shrink: 0;
     padding: 10px 16px; border: none; background: transparent; cursor: pointer;
     font-size: 0.85rem; font-weight: 700; color: var(--muted);
     border-bottom: 2px solid transparent; margin-bottom: -1px;
@@ -1097,6 +1311,7 @@ table.data-table tbody tr:hover { background: #f7faf8; }
 .modal-box {
     background: #fff; border-radius: 14px; padding: 24px;
     width: 92%; max-width: 440px; max-height: 86vh; overflow-y: auto;
+    overscroll-behavior: none;
 }
 /* For modals whose content is a wide data-table (e.g. the graduation
    batch student list: Student ID/Name/Class/Stream) rather than a
@@ -1106,6 +1321,12 @@ table.data-table tbody tr:hover { background: #f7faf8; }
    dialogs elsewhere keep their compact width. */
 .modal-box.modal-box-wide { max-width: 720px; }
 .modal-box h3 { margin-top: 0; }
+/* Confirm/prompt dialogs (Cancel + Logout/Confirm) previously sized
+   each button to its own text, so a short "Cancel" sat noticeably
+   narrower than "Logout" next to it — visually lopsided rather than a
+   balanced pair. flex:1 makes both share the row evenly regardless of
+   label length/language (Amharic labels run longer than English). */
+.modal-box .form-actions .btn { flex: 1; }
 
 /* ---------- Toast ---------- */
 .toast {
@@ -1206,19 +1427,79 @@ table.data-table tbody tr:hover { background: #f7faf8; }
     .profile-header-card { flex-wrap: wrap; text-align: center; justify-content: center; }
     .profile-id-chip { margin: 6px auto 0; }
     .chart-flex { justify-content: center; text-align: left; }
-    .topbar-meta-chip-moe { display: none; }
 
-    /* Sticky table headers only make sense against the full-height
-       desktop layout; below this width they risk landing mid-table (see
-       the notes on .data-table-wrap / thead th above). Turning sticky off
-       and giving each table its own contained horizontal scrollbar here
-       is simpler and safer than trying to keep every page's sticky-offset
-       math correct at every width. */
+    /* Sticky headers need a JS-measured offset (see updateStickyOffsets()
+       in script.js) that accounts for the top-bar's actual wrapped
+       height at this width — that's already global/generic, so any page
+       can opt in, not just #page-students, by adding the
+       `.uses-sticky-list` class to its .page-content section (done for
+       #page-students below; the Analysis Report page's filter bar opts
+       in too, but keeps its thead static since that page's 23-column
+       table genuinely needs its own horizontal scrollbar, see
+       #page-analysis-report rules above). Pages that DON'T add the class
+       keep the old safe default below: sticky turned off, each table
+       given its own contained horizontal scrollbar instead of trying to
+       keep sticky-offset math correct at every width. */
+    .page-content:not(.uses-sticky-list) .page-sticky-header,
+    .page-content:not(.uses-sticky-list) .sticky-filter-bar,
+    .page-content:not(.uses-sticky-list) .sa-students-toolbar { position: static; }
     table.data-table thead th { position: static; }
-    .data-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-    table.data-table { min-width: 640px; }
-    .page-sticky-header { position: static; }
+    .page-content.uses-sticky-list table.data-table thead th { position: sticky; }
+    /* A page opted into .uses-sticky-list still needs ITS thead kept
+       static if its own table needs local horizontal scroll (see
+       #page-analysis-report rules above, which set position: static
+       again — CSS cascade order means that later, more specific rule
+       still wins over this one). */
+    .page-content:not(.uses-sticky-list) .data-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .page-content:not(.uses-sticky-list) table.data-table { min-width: 640px; }
+    /* A .uses-sticky-list page's table is left to overflow .main-content
+       itself instead of getting its own local horizontal scrollbar (the
+       treatment above) — .main-content is already the portal's one
+       intentional horizontal-scroll container (see the .data-table-wrap
+       note in the Tables section: giving the wrap its OWN overflow would
+       hijack the thead's sticky "top" reference away from
+       .main-content). That used to also drag the entire sticky top-bar/
+       header stack sideways as the user scrolled right, since
+       position: sticky only pins the axis it's given an offset for — now
+       fixed globally by giving .top-bar/.page-sticky-header/
+       .sticky-filter-bar a `left: 0` alongside their `top`, so they stay
+       pinned to the scrollport's left edge no matter how far right the
+       table scrolls (see those rules earlier in this file). Columns keep
+       their natural width and stay on one line — swipe/scroll sideways
+       to reach any that don't fit, exactly like scrolling down reaches
+       rows that don't fit. width: fit-content (with min-width: 100% so
+       it's never narrower than the viewport) lets .data-table-wrap's
+       own border/rounded corners grow to match the table's true width
+       instead of staying clipped to the viewport while the table pokes
+       out past them. */
+    .page-content.uses-sticky-list .data-table-wrap { width: fit-content; min-width: 100%; }
     .modal-box { overflow-x: hidden; }
+
+    /* Previously this gave .top-bar-titlegroup flex-basis:100%, which
+       pushed the WHOLE title block (title text + academic-year badge +
+       school-meta chips) onto its own row below the hamburger button —
+       leaving the toggle stranded alone up top, visually unrelated to
+       the page title it opens. Letting the titlegroup keep its normal
+       flexible sizing (flex: 1 1 220px, set globally above) instead
+       lets the title text sit directly beside the hamburger on the
+       same row, which is what "aligned with the hamburger" means in
+       practice. The badge/chips still wrap safely onto their own
+       line(s) underneath *within* the titlegroup's own column layout
+       (title-row is flex-wrap, topbar-school-meta is flex-wrap) — they
+       just no longer drag the title text down with them.
+       flex-start (instead of center) keeps the toggle's TOP edge level
+       with the title text's top edge regardless of how many lines the
+       badge/chips end up wrapping onto below it; the few px of padding
+       on the toggle nudges its icon down to roughly the title text's
+       vertical center. */
+    .top-bar { align-items: flex-start; }
+    .top-bar-titlegroup { min-width: 0; }
+    .sidebar-toggle { margin-top: 2px; }
+    /* Icons/profile/lang-switch always get their own full row on
+       mobile (previously this only kicked in below 520px) so they
+       never end up squeezed onto row 1 next to the toggle at
+       in-between widths (521-900px). */
+    .top-bar-right { flex-basis: 100%; }
 }
 
 @media (max-width: 520px) {
@@ -1227,12 +1508,26 @@ table.data-table tbody tr:hover { background: #f7faf8; }
     .stat-card { padding: 14px; gap: 10px; }
     .stat-card .stat-value { font-size: 1.25rem; }
     .widget-grid { grid-template-columns: 1fr; }
-    .top-bar { padding: 0 14px; gap: 10px; }
+    .top-bar { padding: 10px 14px; column-gap: 10px; row-gap: 8px; }
     .page-title-text { font-size: 1rem; }
-    .topbar-profile-name, .topbar-profile-title { display: none; }
+    .topbar-profile-name, .topbar-profile-title { max-width: 92px; }
     #topbar-school-name { display: none; }
+    /* Shrunk to a compact chip rather than dropped — it now sits right
+       next to the Dashboard title in its own row (.top-bar-title-row),
+       not competing with the icon row for space the way it did before. */
+    .top-academic-year { padding: 4px 10px; font-size: 0.7rem; gap: 5px; }
+    .top-academic-year .lucide-icon { width: 13px; height: 13px; }
+    .top-bar-right { flex-basis: 100%; }
     .doc-upload-grid { grid-template-columns: 1fr; }
     .profile-header-card { padding: 18px; gap: 14px; }
     .chart-flex { flex-direction: column; align-items: flex-start; }
     .donut-wrap { align-self: center; }
+
+    /* ---------- Modal (confirm/prompt dialogs, incl. sign-out) ---------- */
+    /* Buttons stay inline/side-by-side (row) at every width — the
+       equal-width flex:1 rule above (line ~1329) already keeps them
+       balanced regardless of label length, so there's no need to stack
+       them into two full rows even on narrow phones. Just tighten the
+       box's own padding/width here so it uses the small screen well. */
+    .modal-box { padding: 18px; border-radius: 12px; width: 94%; }
 }

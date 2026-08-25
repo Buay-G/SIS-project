@@ -3,7 +3,7 @@
 // them shows the security intercept instead of opening the tab.
 // TODO: if the recorder/registrar split later covers more tabs (section
 // setup, transfers, template hub, etc.), add their tab IDs here.
-const REGISTRAR_ONLY_TABS = ['promotion', 'recorder-mgmt', 'section-setup', 'placement-wizard', 'documents', 'templates', 'graduation-wizard'];
+const REGISTRAR_ONLY_TABS = ['recorder-mgmt', 'section-setup', 'placement-wizard', 'documents', 'templates', 'graduation-wizard'];
 
 let currentUser = null;
 
@@ -125,6 +125,14 @@ function isRecorderOnly() {
 
 function applyRolePermissions() {
     if (!currentUser) return;
+    // Promotion/Stream is shared ground between Registrar and Recorder
+    // (like Students / New Entry / Information Update), unlike the
+    // Registrar-only tabs below — so it's shown to either role rather
+    // than gated behind currentUser.is_registrar.
+    const promotionNav = document.getElementById('nav-promotion');
+    if (promotionNav) {
+        promotionNav.style.display = (currentUser.is_registrar || currentUser.is_recorder) ? 'block' : 'none';
+    }
     const mgmtNav = document.getElementById('nav-recorder-mgmt');
     if (mgmtNav) {
         mgmtNav.style.display = currentUser.is_registrar ? 'block' : 'none';
@@ -179,6 +187,7 @@ function applyRolePermissions() {
         loadOutgoingTransfers();
         loadIncomingTransfers();
         loadDashboardStats();
+        loadAcademicYearOptions();
         loadStudentRegistry();
     }
 }
@@ -227,12 +236,184 @@ function closeRecorderIntercept() {
 }
 
 document.addEventListener('DOMContentLoaded', loadCurrentUser);
-document.addEventListener('DOMContentLoaded', () => {
-    if (window.lucide) lucide.createIcons();
-});
+document.addEventListener('DOMContentLoaded', initIconsWithRetry);
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeSidebar();
 });
+
+// Icons (including the topbar bell/settings buttons) render blank
+// whenever `if (window.lucide) lucide.createIcons()` runs before the
+// CDN <script> has actually finished attaching `window.lucide` — a
+// slow network, an ad/tracker blocker touching jsdelivr, or a
+// corporate firewall all cause exactly this, and the old one-shot
+// check just silently gave up forever with no retry and no visible
+// error. This waits for the library (a few short retries covers real
+// network latency), logs a clear console warning if it truly never
+// shows up instead of failing silently, and is exported so any code
+// path that injects fresh `data-lucide` markup after the initial
+// paint (toasts, dynamically-built lists) can re-run it too.
+function initIconsWithRetry(attemptsLeft = 20) {
+    if (window.lucide) {
+        lucide.createIcons();
+        return;
+    }
+    if (attemptsLeft <= 0) {
+        console.warn('Lucide icons failed to load — sidebar nav icons will not render. Check that cdn.jsdelivr.net is reachable. (The notification bell and settings gear are unaffected — they now render from self-hosted SVG images.)');
+        return;
+    }
+    setTimeout(() => initIconsWithRetry(attemptsLeft - 1), 150);
+}
+window.refreshIcons = () => { if (window.lucide) lucide.createIcons(); };
+
+// --- 1c. Event wiring ---
+// Every interactive element that used to carry an inline onclick/onchange
+// attribute now carries a data-tab / data-action / data-onchange attribute
+// instead (CSP's default script-src blocks inline handlers, and this keeps
+// behavior out of the markup). Three delegated listeners cover the bulk of
+// them; a handful of elements that don't fit the generic pattern (reading a
+// live variable, a keyboard shortcut, a file input's own element) get their
+// own explicit listener below that.
+document.addEventListener('DOMContentLoaded', () => {
+    // data-tab="X" -> switchTab('X'). Used by every sidebar nav button plus
+    // the "Browse every registered student" button on the dashboard.
+    document.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-tab]');
+        if (el) switchTab(el.dataset.tab);
+    });
+
+    // data-action="fnName" [data-arg="x"] | [data-args='["x","y"]'] -> fnName(x)
+    // / fnName(x, y) / fnName(). Covers every other click-to-run-a-function
+    // button/link/icon, including rows built dynamically via innerHTML
+    // (see escAttr/dataArg/dataArgs helpers used when building those strings).
+    document.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-action]');
+        if (!el) return;
+        const fn = window[el.dataset.action];
+        if (typeof fn !== 'function') {
+            console.error(`No handler function named "${el.dataset.action}"`);
+            return;
+        }
+        if ('args' in el.dataset) fn(...JSON.parse(el.dataset.args));
+        else if ('arg' in el.dataset) fn(el.dataset.arg);
+        else fn();
+    });
+
+    // data-onchange="fnName" -> fnName() on change. Covers the grade/stream
+    // selects and the status/grade filters on the student registry.
+    document.addEventListener('change', (e) => {
+        const el = e.target.closest('[data-onchange]');
+        if (!el) return;
+        const fn = window[el.dataset.onchange];
+        if (typeof fn === 'function') fn();
+    });
+    // data-onchange-checked="fnName" [data-arg="x"] -> fnName(x, this.checked).
+    // For checkboxes whose handler needs the row's id plus the new state
+    // (e.g. toggling a section active/inactive).
+    document.addEventListener('change', (e) => {
+        const el = e.target.closest('[data-onchange-checked]');
+        if (!el) return;
+        const fn = window[el.dataset.onchangeChecked];
+        if (typeof fn === 'function') fn(el.dataset.arg, el.checked);
+    });
+    // data-onchange-self="fnName" -> fnName(this). For the "select all"
+    // graduation checkbox, whose handler needs the checkbox element itself.
+    document.addEventListener('change', (e) => {
+        const el = e.target.closest('[data-onchange-self]');
+        if (!el) return;
+        const fn = window[el.dataset.onchangeSelf];
+        if (typeof fn === 'function') fn(el);
+    });
+
+    // Student search box: Enter runs the same search as the Search button.
+    document.getElementById('student_registry_search')
+        ?.addEventListener('keyup', (e) => {
+            if (e.key === 'Enter') loadStudentRegistry();
+        });
+
+    // Profile avatar image + account name: keyboard-activatable
+    // (role="button", tabindex=0) since neither is a real <button>.
+    document.getElementById('topbar-avatar')?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            openProfileSettings();
+        }
+    });
+    document.getElementById('topbar-account-name')?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            openProfileSettings();
+        }
+    });
+
+    // Sidebar footer links: prevent the "#" href from jumping the page.
+    document.getElementById('return-to-portal-link')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        returnToPortal();
+    });
+    document.getElementById('sidebar-logout-link')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        registrarLogout();
+    });
+
+    // Documents tab: these three read whichever student is currently loaded
+    // at click time, so they need a live closure rather than a static
+    // data-arg value.
+    document.getElementById('doc-preview-report-card-btn')
+        ?.addEventListener('click', () => previewReportCard(currentDocStudentId));
+    document.getElementById('doc-preview-transcript-btn')
+        ?.addEventListener('click', () => previewTranscript(currentDocStudentId));
+    document.getElementById('doc-download-id-card-btn')
+        ?.addEventListener('click', () => downloadIdCard(currentDocStudentId));
+
+    // Modal backdrops: clicking the dimmed overlay itself (not its content
+    // box) closes the modal.
+    document.getElementById('student-history-modal')?.addEventListener('click', (e) => {
+        if (e.target === e.currentTarget) closeStudentHistory();
+    });
+    document.getElementById('profile-settings-modal')?.addEventListener('click', (e) => {
+        if (e.target === e.currentTarget) closeProfileSettings();
+    });
+    document.getElementById('queue-view-modal')?.addEventListener('click', (e) => {
+        if (e.target === e.currentTarget) closeQueueViewModal();
+    });
+
+    // Profile settings file inputs: uploading passes the input element
+    // itself, same as the old onchange="fn(this)" did.
+    document.getElementById('settings-avatar-input')?.addEventListener('change', function () {
+        uploadRegistrarAvatar(this);
+    });
+    document.getElementById('settings-signature-input')?.addEventListener('change', function () {
+        uploadRegistrarSignature(this);
+    });
+});
+
+// --- 1d. Helpers for building data-action markup from a template string ---
+// Rows rendered via innerHTML (recorder list, sections, student registry,
+// transfer lists, notifications, etc.) need the same data-action wiring the
+// static HTML uses, but the value being embedded (a student ID, a name) has
+// to be HTML-attribute-safe first, or a name containing a quote could break
+// out of the attribute or wire up the wrong handler.
+function escAttr(value) {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+// e.g. `<button ${dataArg('viewStudentHistory', s.student_id)}>` ->
+// data-action="viewStudentHistory" data-arg="NHS2401001"
+function dataArg(action, value) {
+    return `data-action="${escAttr(action)}" data-arg="${escAttr(value)}"`;
+}
+// e.g. `<button ${dataArgs('runPlacement', [b.class_level, b.stream])}>` ->
+// data-action="runPlacement" data-args="[10,&quot;Natural&quot;]"
+function dataArgs(action, values) {
+    return `data-action="${escAttr(action)}" data-args="${escAttr(JSON.stringify(values))}"`;
+}
+// e.g. `<input type="checkbox" ${dataOnchangeChecked('toggleSectionActive', s.id)} />`
+function dataOnchangeChecked(fnName, arg) {
+    return `data-onchange-checked="${escAttr(fnName)}" data-arg="${escAttr(arg)}"`;
+}
 
 // --- 1b. Toasts & Confirm dialogs ---
 // Replaces native alert()/confirm() with a styled, non-blocking toast and a
@@ -386,7 +567,7 @@ function updateStreamOptions() {
 // --- 3. Database Interactions ---
 
 async function submitRegistration() {
-    const btn = document.querySelector('button[onclick="submitRegistration()"]');
+    const btn = document.querySelector('button[data-action="submitRegistration"]');
     const originalText = btn.innerText;
     
     const data = {
@@ -416,7 +597,7 @@ async function submitRegistration() {
         if (res.ok) {
             const successMsg = document.querySelector('#success-modal p');
             successMsg.innerText = `Student Registered Successfully! ID: ${result.student_id} | Section: Awaiting Placement | PC: ${result.assigned_pc}`;
-            showSuccess(); 
+            showSuccess('registration');
             document.getElementById('registration-form').reset();
             document.getElementById('reg_stream').innerHTML = '<option value="">Select Stream</option>';
         } else {
@@ -478,7 +659,9 @@ async function submitUpdate() {
 
         if (res.ok) {
             const result = await res.json().catch(() => ({}));
-            showSuccess();
+            const successMsg = document.querySelector('#success-modal p');
+            successMsg.innerText = "Student record updated successfully.";
+            showSuccess('update');
             // Grade/stream changed here means the server reset this
             // student's section — flag it so the Registrar knows to run
             // the Placement Wizard for them, instead of finding out later
@@ -500,7 +683,7 @@ async function submitUpdate() {
 
 async function fetchForPromotion() {
     const id = document.getElementById('promo-id').value.trim();
-    const btn = document.querySelector('button[onclick="fetchForPromotion()"]');
+    const btn = document.querySelector('button[data-action="fetchForPromotion"]');
     if (!id) return showAlert("Please enter a Student ID");
 
     btn.innerText = "Searching...";
@@ -549,6 +732,14 @@ async function fetchForPromotion() {
         document.getElementById('override-reason-box').style.display = 'none';
         document.getElementById('override-reason').value = '';
 
+        // Reset the locked-outcome UI back to "not locked" before
+        // deciding below — otherwise a leftover state from the
+        // previous student's search would stick around.
+        document.getElementById('promo-decision-choice').style.display = 'block';
+        document.getElementById('promo-locked-outcome').style.display = 'none';
+        document.getElementById('promote-fields').style.display = 'block';
+        window.isLockedToCutoff = false;
+
         if (currentGrade >= 12) {
             newGradeSelect.innerHTML = '<option value="">No higher grade — graduation is handled separately</option>';
             promoteRadio.disabled = true;
@@ -567,9 +758,30 @@ async function fetchForPromotion() {
                 streamContainer.style.display = 'none';
             }
 
-            // Pre-select whichever action the cutoff already suggests.
-            if (eligibility && eligibility.category === 'Eligible for Promotion') promoteRadio.checked = true;
-            else if (eligibility && eligibility.category === 'Detained/Retained') retainRadio.checked = true;
+            // Grades 9-11 are locked to the Academic VP's cutoff — the
+            // server ignores whatever action is submitted and applies
+            // the cutoff result automatically (PUT /api/promote/:id),
+            // with no override path at all. So instead of letting the
+            // Registrar pick Promote/Retain, hide that choice and show
+            // the computed outcome as read-only. The stream picker
+            // above still applies (a real choice the Registrar makes),
+            // but only matters when the outcome is actually a promotion.
+            window.isLockedToCutoff = true;
+            document.getElementById('promo-decision-choice').style.display = 'none';
+            const lockedBox = document.getElementById('promo-locked-outcome');
+            const lockedText = document.getElementById('locked-outcome-text');
+            lockedBox.style.display = 'block';
+
+            if (eligibility && eligibility.category === 'Eligible for Promotion') {
+                lockedText.innerHTML = `<span style="color:#27ae60; font-weight:bold;">Promote to Grade ${currentGrade + 1}</span>`;
+                document.getElementById('promote-fields').style.display = 'block';
+            } else if (eligibility && eligibility.category === 'Detained/Retained') {
+                lockedText.innerHTML = `<span style="color:#e74c3c; font-weight:bold;">Retain in Grade ${currentGrade}</span>`;
+                document.getElementById('promote-fields').style.display = 'none';
+            } else {
+                lockedText.innerHTML = `<span style="color:#7f8c8d; font-weight:bold;">No decision yet — no marks on record</span>`;
+                document.getElementById('promote-fields').style.display = 'none';
+            }
         }
         updateOverrideVisibility();
     } catch (error) {
@@ -584,10 +796,16 @@ async function fetchForPromotion() {
 // with the auto-computed category — matches the server's own check, so
 // nobody hits a surprise 400 after already filling out the form.
 function updateOverrideVisibility() {
-    const action = document.querySelector('input[name="promo-action"]:checked')?.value;
-    const elig = window.currentEligibility;
     const box = document.getElementById('override-reason-box');
     if (!box) return;
+    // Grades 9-11 have no override at all (see fetchForPromotion) — the
+    // box never applies there, regardless of what's checked.
+    if (window.isLockedToCutoff) {
+        box.style.display = 'none';
+        return;
+    }
+    const action = document.querySelector('input[name="promo-action"]:checked')?.value;
+    const elig = window.currentEligibility;
     const expected = elig && elig.category === 'Eligible for Promotion' ? 'promote'
         : elig && elig.category === 'Detained/Retained' ? 'retain' : null;
     box.style.display = (expected && action && action !== expected) ? 'block' : 'none';
@@ -595,14 +813,32 @@ function updateOverrideVisibility() {
 
 async function submitPromotion() {
     const id = document.getElementById('promo-id').value;
-    const action = document.querySelector('input[name="promo-action"]:checked')?.value;
-    if (!action) return showAlert("Choose Promote or Retain.");
+
+    let action;
+    if (window.isLockedToCutoff) {
+        // Grades 9-11: nothing for the Registrar to choose — the action
+        // is whatever the cutoff computed. The server re-derives and
+        // enforces this itself either way (PUT /api/promote/:id ignores
+        // whatever action is submitted for these grades), but deriving
+        // it here too means the right fields (new grade/stream) get
+        // sent, and lets us block the click when there's nothing to
+        // decide yet rather than waiting on a server error.
+        const elig = window.currentEligibility;
+        action = elig && elig.category === 'Eligible for Promotion' ? 'promote'
+            : elig && elig.category === 'Detained/Retained' ? 'retain' : null;
+        if (!action) return showAlert("This student has no marks on record yet — a decision can't be made until they do.");
+    } else {
+        action = document.querySelector('input[name="promo-action"]:checked')?.value;
+        if (!action) return showAlert("Choose Promote or Retain.");
+    }
 
     const data = {
         action,
         class_level: action === 'promote' ? document.getElementById('new-grade').value : undefined,
         stream: action === 'promote' ? (document.getElementById('stream-select').value || 'General') : undefined,
-        override_reason: document.getElementById('override-reason').value.trim() || undefined
+        // No override is possible for grades 9-11 (see fetchForPromotion) —
+        // the server ignores it for those anyway, but don't even send it.
+        override_reason: window.isLockedToCutoff ? undefined : (document.getElementById('override-reason').value.trim() || undefined)
     };
 
     try {
@@ -636,7 +872,10 @@ function resetPromotionForNextStudent() {
     document.getElementById('action-retain').checked = false;
     document.getElementById('override-reason-box').style.display = 'none';
     document.getElementById('override-reason').value = '';
+    document.getElementById('promo-decision-choice').style.display = 'block';
+    document.getElementById('promo-locked-outcome').style.display = 'none';
     window.currentEligibility = null;
+    window.isLockedToCutoff = false;
     // The Placement Wizard's "recently promoted" list is stale now too —
     // refresh it if that function is loaded, so the freshly-promoted
     // student shows up there without the Registrar switching tabs.
@@ -644,13 +883,37 @@ function resetPromotionForNextStudent() {
     document.getElementById('promo-id').focus();
 }
 
-function showSuccess() {
+// Which form triggered the success modal — set right before showSuccess()
+// so closeSuccess() knows what "ready for another one" means without
+// having to guess from whatever tab happens to be active.
+let successModalContext = null;
+
+function showSuccess(context) {
+    successModalContext = context || null;
     document.getElementById('success-modal').style.display = 'block';
 }
 
+// Used to just location.reload() the whole page here, which is why
+// finishing a registration or an update dumped the Registrar back on
+// the Dashboard instead of leaving them on the same form ready to do
+// another one — a real workflow problem when they're working through
+// a stack of new students or updates back-to-back. Now it just clears/
+// refocuses the form that was actually submitted and leaves the tab
+// exactly where it was.
 function closeSuccess() {
     document.getElementById('success-modal').style.display = 'none';
-    location.reload(); 
+    if (successModalContext === 'registration') {
+        // The form itself was already reset right after the successful
+        // POST (see submitRegistration) — just get the cursor back to
+        // the first field for the next student.
+        document.getElementById('reg_first')?.focus();
+    } else if (successModalContext === 'update') {
+        document.getElementById('update-form')?.reset();
+        document.getElementById('upd_id').value = '';
+        document.getElementById('search-id').value = '';
+        document.getElementById('search-id')?.focus();
+    }
+    successModalContext = null;
 }
 
 // --- 4. Recorder Management (Registrar only) ---
@@ -670,7 +933,7 @@ async function loadRecorders() {
         listEl.innerHTML = recorders.map(r => `
             <div class="search-box" style="justify-content: space-between; align-items:center;">
                 <span>${r.first_name} ${r.middle_name || ''} ${r.last_name} (${r.teacher_id})</span>
-                <button type="button" onclick="removeRecorder('${r.teacher_id}')" style="background:#e74c3c;">Remove</button>
+                <button type="button" ${dataArg('removeRecorder', r.teacher_id)} style="background:#e74c3c;">Remove</button>
             </div>
         `).join('');
 
@@ -786,18 +1049,33 @@ async function loadSections() {
         container.innerHTML = Object.entries(groups).map(([label, rows]) => `
             <h4 style="margin-bottom:8px;">${label}</h4>
             ${rows.map(s => `
-                <div class="search-box" style="justify-content: space-between; align-items:center;">
-                    <span><strong>${s.section_name}</strong> ${s.max_capacity ? `(max ${s.max_capacity})` : '(no capacity limit)'}</span>
+                <div class="search-box" style="justify-content: space-between; align-items:center; flex-wrap:wrap;">
+                    <span><strong>${s.section_name}</strong></span>
+                    <span class="section-capacity-box">
+                        <label for="sec-cap-${s.id}">Max students</label>
+                        <input
+                            type="number"
+                            id="sec-cap-${s.id}"
+                            min="1"
+                            value="${s.max_capacity ?? ''}"
+                            placeholder="No limit"
+                        />
+                        <button type="button" ${dataArgs('updateSectionCapacity', [s.id, `sec-cap-${s.id}`])}>
+                            <i data-lucide="save" aria-hidden="true" style="width:14px; height:14px;"></i>
+                            Update
+                        </button>
+                    </span>
                     <span style="display:flex; align-items:center; gap:10px;">
                         <label style="font-weight:normal; margin:0;">
-                            <input type="checkbox" ${s.is_active ? 'checked' : ''} onchange="toggleSectionActive(${s.id}, this.checked)" />
+                            <input type="checkbox" ${s.is_active ? 'checked' : ''} ${dataOnchangeChecked('toggleSectionActive', s.id)} />
                             Active
                         </label>
-                        <button type="button" onclick="deleteSection(${s.id})" style="background:#e74c3c;">Delete</button>
+                        <button type="button" ${dataArg('deleteSection', s.id)} style="background:#e74c3c;">Delete</button>
                     </span>
                 </div>
             `).join('')}
         `).join('');
+        window.refreshIcons();
     } catch (err) {
         console.error(err);
         container.innerHTML = '<p class="muted">Could not load sections.</p>';
@@ -806,7 +1084,10 @@ async function loadSections() {
 
 // Populates the Documents tab's "Bulk Documents" section picker from
 // the same active sections used in Section Setup, so there's one
-// source of truth for what a "section" is.
+// source of truth for what a "section" is. Each option now shows its
+// live student_count (from /api/registrar/sections) so a Registrar
+// can see a section is empty before picking it, rather than only
+// finding out after the bulk download comes back with nothing.
 async function loadBulkSectionOptions() {
     const select = document.getElementById('bulk-doc-section');
     if (!select) return;
@@ -818,7 +1099,11 @@ async function loadBulkSectionOptions() {
         select.innerHTML = active.length === 0
             ? '<option value="">No active sections configured</option>'
             : '<option value="">Select a section…</option>' + active
-                .map(s => `<option value="${s.class_level}|${s.section_name}|${s.stream}">Grade ${s.class_level} — ${s.section_name} (${s.stream})</option>`)
+                .map(s => {
+                    const count = s.student_count || 0;
+                    const label = `Grade ${s.class_level} — ${s.section_name} (${s.stream}) — ${count} student${count === 1 ? '' : 's'}`;
+                    return `<option value="${s.class_level}|${s.section_name}|${s.stream}" ${count === 0 ? 'disabled' : ''}>${label}${count === 0 ? ' — empty' : ''}</option>`;
+                })
                 .join('');
     } catch (err) {
         console.error(err);
@@ -836,6 +1121,18 @@ async function downloadBulkDocument(url, fallbackFilename) {
         const res = await fetch(url, { credentials: 'include' });
         if (!res.ok) {
             const body = await res.json().catch(() => null);
+            if (body?.pending_placement) {
+                // These students exist but haven't been seated into a
+                // section yet (fresh promotion / info update) — point
+                // straight at the Placement Wizard instead of leaving
+                // the registrar to guess why the bulk export came back
+                // empty.
+                showAlert(body.error, "error");
+                if (confirm(`${body.error}\n\nOpen the Placement Wizard now?`)) {
+                    switchTab('placement-wizard');
+                }
+                return;
+            }
             showAlert(body?.error || "Could not generate that document.", "error");
             return;
         }
@@ -925,6 +1222,44 @@ async function toggleSectionActive(id, isActive) {
     }
 }
 
+// Lets a section's max_capacity be raised (or lowered/cleared) in
+// place — e.g. once a section is already fully set up and just needs
+// room for a couple more students, there's no need to delete it and
+// set it back up from scratch. Existing students already placed there
+// aren't affected either way; this only changes how many MORE the
+// Placement Wizard is willing to seat into it. Requires re-entering the
+// Registrar's own password first — same step-up confirmation pattern
+// used before starting/cancelling a transfer — since raising a class's
+// size is a real capacity decision, not a cosmetic edit.
+async function updateSectionCapacity(id, inputId) {
+    const input = document.getElementById(inputId);
+    const raw = input ? input.value.trim() : '';
+    if (raw && (isNaN(raw) || Number(raw) < 1)) {
+        return showAlert("Enter a valid capacity, or leave it blank for no limit.");
+    }
+    const password = await showPasswordPrompt(t('reg_section_capacity_password_prompt'));
+    if (password === null) return;
+    if (!password) return showAlert("Enter your password to continue.", "error");
+
+    try {
+        const res = await fetch(`http://localhost:3001/api/registrar/sections/${id}`, {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ max_capacity: raw ? Number(raw) : null, password })
+        });
+        const result = await res.json();
+        if (!res.ok) return showAlert(result.error || "Could not update capacity.");
+        showAlert("Section capacity updated.", "success");
+        await loadSections();
+        loadBulkSectionOptions();
+        await loadUnassignedQueue();
+    } catch (err) {
+        console.error(err);
+        showAlert(t("reg_server_error"));
+    }
+}
+
 async function deleteSection(id) {
     if (!(await showConfirm(t('reg_delete_section_confirm')))) return;
     try {
@@ -946,9 +1281,12 @@ async function deleteSection(id) {
 
 // "Registered so far" — every student currently sitting unassigned,
 // whether they arrived via New Entry Registration or a completed
-// transfer, each labeled with when they enrolled.
-async function loadPlacementRegistered() {
-    const container = document.getElementById('placement-registered-list');
+// transfer, each labeled with when they enrolled. containerId defaults
+// to the Placement Wizard tab's own list, but the New Entry Registration
+// "View Registered So Far" button (see viewRegisteredQueue below) points
+// this at the queue-view modal instead.
+async function loadPlacementRegistered(containerId = 'placement-registered-list') {
+    const container = document.getElementById(containerId);
     if (!container) return;
     try {
         const res = await fetch('http://localhost:3001/api/registrar/placement/registered', { credentials: 'include' });
@@ -972,9 +1310,12 @@ async function loadPlacementRegistered() {
 
 // "Promoted students" — recent grade-ups (last 90 days), shown here
 // since a fresh promotion batch is usually exactly why a Registrar
-// opens the Placement Wizard next.
-async function loadPlacementPromoted() {
-    const container = document.getElementById('placement-promoted-list');
+// opens the Placement Wizard next. containerId defaults to the
+// Placement Wizard tab's own list, but Promotion/Stream's "View
+// Promoted So Far" button (see viewPromotedQueue below) points this at
+// the queue-view modal instead.
+async function loadPlacementPromoted(containerId = 'placement-promoted-list') {
+    const container = document.getElementById(containerId);
     if (!container) return;
     try {
         const res = await fetch('http://localhost:3001/api/registrar/placement/promoted', { credentials: 'include' });
@@ -1015,7 +1356,7 @@ async function loadUnassignedQueue() {
             <div class="search-box" style="flex-direction:column; align-items:stretch;">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                     <span><strong>Grade ${b.class_level} - ${b.stream}</strong> — ${b.students.length} waiting</span>
-                    <button type="button" onclick="runPlacement(${b.class_level}, '${b.stream}')"
+                    <button type="button" ${dataArgs('runPlacement', [b.class_level, b.stream])}
                         ${b.active_sections_configured === 0 ? 'disabled title="No active sections configured for this grade/stream"' : ''}>
                         Run Placement
                     </button>
@@ -1029,6 +1370,44 @@ async function loadUnassignedQueue() {
         console.error(err);
         container.innerHTML = '<p class="muted">Could not load the unassigned queue.</p>';
     }
+}
+
+// --- 6b. "View" preview modal for New Entry Registration / Promotion ---
+// Lets a Registrar glance at who they've registered/promoted so far
+// right from those tabs, without having to switch to the Placement
+// Wizard first — then jump straight there via the modal's own button
+// once they're ready to actually seat those students into sections.
+// Reuses loadPlacementRegistered/loadPlacementPromoted against the
+// modal's own list container (see the containerId param added above)
+// rather than duplicating that rendering logic.
+function openQueueViewModal(headingKey) {
+    const modal = document.getElementById('queue-view-modal');
+    if (!modal) return;
+    const heading = document.getElementById('queue-view-heading');
+    if (heading) heading.setAttribute('data-i18n', headingKey);
+    applyTranslations();
+    modal.style.display = 'flex';
+    if (window.lucide) lucide.createIcons({ root: modal });
+}
+
+function viewRegisteredQueue() {
+    openQueueViewModal('reg_placement_registered_heading');
+    loadPlacementRegistered('queue-view-list');
+}
+
+function viewPromotedQueue() {
+    openQueueViewModal('reg_placement_promoted_heading');
+    loadPlacementPromoted('queue-view-list');
+}
+
+function closeQueueViewModal() {
+    const modal = document.getElementById('queue-view-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+function goToPlacementWizardFromModal() {
+    closeQueueViewModal();
+    switchTab('placement-wizard');
 }
 
 async function runPlacement(class_level, stream) {
@@ -1097,24 +1476,65 @@ async function runPlacementAll() {
 function statusPillClass(status) {
     const s = String(status || '').toLowerCase();
     if (s === 'active') return 'status-active';
-    if (s === 'pending') return 'status-pending';
+    if (s === 'pending promotion') return 'status-pending';
+    if (s === 'inactive') return 'status-inactive';
+    if (s === 'unregistered') return 'status-unregistered';
     if (s === 'graduated') return 'status-graduated';
     if (s.startsWith('transferred - pending')) return 'status-transferring';
     if (s.startsWith('transferred')) return 'status-transferred';
     return '';
 }
 
-async function loadStudentRegistry() {
-    const container = document.getElementById('student-registry-list');
-    if (!container) return;
+// Populates the Academic Year filter dropdown on the Student Registry —
+// the current year plus every past year a Semester-2 closure has ever
+// rolled over into (see rolloverAcademicYear server-side). Called once
+// on load and again after a language switch.
+async function loadAcademicYearOptions() {
+    const select = document.getElementById('student_registry_academic_year');
+    if (!select) return;
+    try {
+        const res = await fetch('http://localhost:3001/api/registrar/academic-years', { credentials: 'include' });
+        if (!res.ok) throw new Error('Could not load academic years');
+        const years = await res.json();
+        const prevValue = select.value;
+        select.innerHTML = years.map(y =>
+            `<option value="${y.is_current ? '' : y.id}">${escAttr(y.label)}${y.is_current ? ' (Current)' : ''}</option>`
+        ).join('');
+        select.value = prevValue || '';
+    } catch (err) {
+        console.error(err);
+        select.innerHTML = '<option value="">Current Year</option>';
+    }
+}
+
+async function exportStudentRegistryCsv() {
+    const params = buildStudentRegistryParams();
+    window.open(`http://localhost:3001/api/registrar/students/export.csv?${params.toString()}`, '_blank');
+}
+
+async function exportStudentRegistryPdf() {
+    const params = buildStudentRegistryParams();
+    window.open(`http://localhost:3001/api/registrar/students/export.pdf?${params.toString()}`, '_blank');
+}
+
+function buildStudentRegistryParams() {
     const statusFilter = document.getElementById('student_registry_status')?.value || '';
     const gradeFilter = document.getElementById('student_registry_grade')?.value || '';
     const q = document.getElementById('student_registry_search')?.value || '';
+    const academicYearId = document.getElementById('student_registry_academic_year')?.value || '';
 
     const params = new URLSearchParams();
     if (statusFilter) params.set('status', statusFilter);
     if (gradeFilter) params.set('class_level', gradeFilter);
     if (q.trim()) params.set('q', q.trim());
+    if (academicYearId) params.set('academic_year_id', academicYearId);
+    return params;
+}
+
+async function loadStudentRegistry() {
+    const container = document.getElementById('student-registry-list');
+    if (!container) return;
+    const params = buildStudentRegistryParams();
 
     try {
         const res = await fetch(`http://localhost:3001/api/registrar/students?${params.toString()}`, { credentials: 'include' });
@@ -1143,14 +1563,14 @@ async function loadStudentRegistry() {
                             <tr>
                                 <td class="data-table-id">${s.student_id}</td>
                                 <td>
-                                    <button type="button" class="student-name-link" onclick="viewStudentHistory('${s.student_id}')">${s.full_name}</button>
+                                    <button type="button" class="student-name-link" ${dataArg('viewStudentHistory', s.student_id)}>${s.full_name}</button>
                                 </td>
                                 <td>${t('reg_grade_label')} ${s.class_level}${s.section ? '-' + s.section : ''}${s.stream ? ' — ' + s.stream : ''}</td>
                                 <td><span class="status-pill ${statusPillClass(s.status)}">${s.status || '—'}</span></td>
                                 <td class="data-table-meta">${formatYearBilingual(s.enrolled_at) || '—'}</td>
                                 <td class="data-table-meta">${s.left_at ? formatYearBilingual(s.left_at) : '—'}</td>
                                 <td class="data-table-action">
-                                    <button type="button" onclick="viewStudentHistory('${s.student_id}')">${t('reg_view_history')}</button>
+                                    <button type="button" ${dataArg('viewStudentHistory', s.student_id)}>${t('reg_view_history')}</button>
                                 </td>
                             </tr>
                         `).join('')}
@@ -1297,7 +1717,7 @@ async function loadApprovedTransferRequests() {
                     ${reqRow.reason ? `<br><span class="muted" style="font-size: 12px;">${reqRow.reason}</span>` : ''}
                     <br><span class="muted" style="font-size: 12px;">${formatDateBilingual(reqRow.decided_at)}</span>
                 </span>
-                <button type="button" onclick="startOutgoingTransfer('${reqRow.student_id}')">${t('reg_generate_code')}</button>
+                <button type="button" ${dataArg('startOutgoingTransfer', reqRow.student_id)}>${t('reg_generate_code')}</button>
             </div>
         `).join('');
     } catch (err) {
@@ -1328,7 +1748,7 @@ async function loadOutgoingTransfers() {
                     ${row.new_student_id ? ` &rarr; ${row.new_student_id}` : ''}
                     <br><span class="muted" style="font-size: 12px;">${formatDateBilingual(row.initiated_at)}</span>
                 </span>
-                ${row.status === 'pending' ? `<button type="button" onclick="cancelOutgoingTransfer(${row.id})" style="background:#e74c3c;">Cancel</button>` : ''}
+                ${row.status === 'pending' ? `<button type="button" ${dataArg('cancelOutgoingTransfer', row.id)} style="background:#e74c3c;">Cancel</button>` : ''}
             </div>
         `).join('');
     } catch (err) {
@@ -1394,7 +1814,7 @@ async function lookupIncomingTransfer() {
             <div class="search-box" style="flex-direction: column; align-items: flex-start;">
                 <p><strong>${s.first_name} ${s.middle_name || ''} ${s.last_name}</strong></p>
                 <p>Grade ${s.class_level} — ${s.stream} &nbsp; | &nbsp; ${s.sex}</p>
-                <button type="button" onclick="completeIncomingTransfer('${result.transfer_code}')">Confirm Import</button>
+                <button type="button" ${dataArg('completeIncomingTransfer', result.transfer_code)}>Confirm Import</button>
                 <div style="width:100%; margin-top:10px;">${renderStudentHistoryHtml(result.history)}</div>
             </div>
         `;
@@ -1574,6 +1994,9 @@ async function previewReportCard(student_id, targetId) {
             ? '<p class="muted">No marks pushed for this student yet.</p>'
             : result.report.map(cl => `
                 <h4>Grade ${cl.class_level} — ${cl.section} (${cl.stream})</h4>
+                ${cl.subjects.length === 0 ? `
+                <p class="muted" style="margin-bottom:15px;">No marks synced for Grade ${cl.class_level} yet — a report card can still be generated, but every subject will print blank.</p>
+                ` : `
                 <table style="width:100%; border-collapse:collapse; margin-bottom:15px;">
                     <thead><tr style="background:#2c3e50; color:white;">
                         <th style="padding:6px; text-align:left; border:1px solid #ddd;">Subject</th>
@@ -1585,24 +2008,53 @@ async function previewReportCard(student_id, targetId) {
                         ${cl.subjects.map(s => `<tr><td style="padding:6px; border:1px solid #ddd;">${s.subject_name}</td><td style="padding:6px; border:1px solid #ddd; text-align:center;">${s.semester_1 ?? '—'}</td><td style="padding:6px; border:1px solid #ddd; text-align:center;">${s.semester_2 ?? '—'}</td><td style="padding:6px; border:1px solid #ddd; text-align:center;">${s.year_average ?? '—'}</td></tr>`).join('')}
                     </tbody>
                 </table>
+                `}
             `).join('');
+
+        // Lets the Registrar pick which grade's report card to actually
+        // download/print — a student now in Grade 12 might only need
+        // their Grade 9 record reissued, not their most recent one.
+        // Includes the student's CURRENT grade even if no marks have
+        // synced for it yet (see computeReportCardData), so a just-
+        // promoted student's new grade is always an option here, not
+        // just their last fully-synced one. Defaults to the highest
+        // (most recent) grade, matching what downloadReportCard used to
+        // always do before this existed.
+        const selectId = `${targetId || 'doc-report-card-preview'}-grade-select`;
+        const gradePickerHtml = result.report.length === 0 ? '' : `
+                <div class="grade-download-picker">
+                    <label for="${selectId}">Download grade:</label>
+                    <select id="${selectId}">
+                        ${result.report.map(cl => `<option value="${cl.class_level}">Grade ${cl.class_level}${cl.subjects.length === 0 ? ' (no marks yet)' : ''}</option>`).join('')}
+                    </select>
+                    <p class="muted">Pick any grade this student has a record for — not just their current one.</p>
+                </div>`;
 
         preview.innerHTML = `
             <div style="border:1px solid #ddd; border-radius:8px; padding:20px; margin-top:15px; background:#f9f9f9;">
                 <p><strong>${fullName}</strong> (${result.student.student_id})</p>
                 ${sectionsHtml}
-                <button type="button" onclick="downloadReportCard('${student_id}')">Download PDF</button>
+                ${gradePickerHtml}
+                <button type="button" ${dataArgs('downloadReportCard', [student_id, selectId])}>Download PDF</button>
                 <p class="muted" style="font-size:12px; margin-top:10px;">${formatDateBilingual(new Date())}</p>
             </div>
         `;
+        // Default the picker to the most recent grade on file.
+        if (result.report.length > 0) {
+            const select = document.getElementById(selectId);
+            if (select) select.value = result.report[result.report.length - 1].class_level;
+        }
     } catch (err) {
         console.error(err);
         preview.innerHTML = '<p class="muted">Server connection error.</p>';
     }
 }
 
-function downloadReportCard(student_id) {
-    window.open(`http://localhost:3001/api/registrar/documents/report-card/${encodeURIComponent(student_id)}/pdf`, '_blank');
+function downloadReportCard(student_id, gradeSelectId) {
+    const gradeSelect = gradeSelectId ? document.getElementById(gradeSelectId) : null;
+    const classLevel = gradeSelect ? gradeSelect.value : '';
+    const params = classLevel ? `?${new URLSearchParams({ class_level: classLevel })}` : '';
+    window.open(`http://localhost:3001/api/registrar/documents/report-card/${encodeURIComponent(student_id)}/pdf${params}`, '_blank');
     setTimeout(loadIssuanceLog, 1500);
     setTimeout(() => loadDocumentHistory(student_id), 1500);
 }
@@ -1698,7 +2150,7 @@ async function loadGraduationEligible() {
         container.innerHTML = `
             <div class="search-box" style="justify-content: flex-start; gap: 10px; background:#eef2f7;">
                 <label style="font-weight: 600; display:flex; align-items:center; gap:10px;">
-                    <input type="checkbox" id="grad-select-all" onchange="toggleSelectAllGraduates(this)" />
+                    <input type="checkbox" id="grad-select-all" data-onchange-self="toggleSelectAllGraduates" />
                     <span>Select all (${students.length})</span>
                 </label>
             </div>
@@ -1708,7 +2160,7 @@ async function loadGraduationEligible() {
             return `
                 <div class="search-box" style="justify-content: space-between; align-items: center;">
                     <label style="font-weight: normal; display:flex; align-items:center; gap:10px;">
-                        <input type="checkbox" class="grad-checkbox" value="${s.student_id}" onchange="syncGradSelectAllState()" />
+                        <input type="checkbox" class="grad-checkbox" value="${s.student_id}" data-onchange="syncGradSelectAllState" />
                         <span><strong>${fullName}</strong> (${s.student_id}) — Avg: ${s.year_average ?? '—'}</span>
                     </label>
                     <span style="${badge} font-weight:600;">${s.category}</span>
@@ -1828,7 +2280,7 @@ function renderRegistrarNotifications(items) {
             list.innerHTML = '<p class="notif-empty">No new notifications</p>';
         } else {
             list.innerHTML = items.map(item => `
-                <div class="notif-item" onclick="handleRegistrarNotificationClick('${item.type}', '${item.student_id}')">
+                <div class="notif-item" ${dataArgs('handleRegistrarNotificationClick', [item.type, item.student_id])}>
                     <strong>${item.text}</strong>
                     <span class="muted" style="font-size:11px;">${formatDateBilingual(item.at)}</span>
                 </div>
@@ -1897,15 +2349,26 @@ document.addEventListener('click', (event) => {
 // /api/me, same fields the teacher portal's chrome already uses. The
 // school logo itself is Principal-controlled (POST /api/school/logo on
 // their side) — this just displays whatever they've set.
+// Mirrors server.js's buildSchoolDisplayName exactly: "Newland" +
+// "SECONDARY SCHOOL" -> "NEWLAND SECONDARY SCHOOL". school_level isn't
+// implied by school_name alone (two schools can share a name at
+// different levels), so the sidebar/topbar need both fields, not just
+// school_name.
+function buildSchoolDisplayName(schoolName, schoolLevel) {
+    return [schoolName, schoolLevel].filter(Boolean).join(' ').toUpperCase() || '—';
+}
+
 function applyProfileChrome() {
     if (!currentUser) return;
 
+    const displayName = buildSchoolDisplayName(currentUser.school_name, currentUser.school_level);
+
     const schoolName = document.getElementById('sidebar-school-name');
-    if (schoolName) schoolName.textContent = currentUser.school_name || '—';
+    if (schoolName) schoolName.textContent = displayName;
 
     const topbarSchoolName = document.getElementById('topbar-school-name');
     if (topbarSchoolName) {
-        topbarSchoolName.textContent = currentUser.school_name || '—';
+        topbarSchoolName.textContent = displayName;
     }
 
     const moeChip = document.getElementById('topbar-moe-code');
@@ -1923,6 +2386,16 @@ function applyProfileChrome() {
         roleBadge.textContent = currentUser.is_registrar ? 'Registrar' : currentUser.is_recorder ? 'Recorder' : '—';
     }
 
+    const accountName = document.getElementById('topbar-account-name');
+    if (accountName) {
+        if (currentUser.admin_full_name) {
+            accountName.textContent = currentUser.admin_full_name;
+            accountName.hidden = false;
+        } else {
+            accountName.hidden = true;
+        }
+    }
+
     const avatar = document.getElementById('topbar-avatar');
     if (avatar) {
         if (currentUser.avatar_url) {
@@ -1938,24 +2411,45 @@ function applyProfileChrome() {
 
 // Current semester chip in the top bar — reads the same /api/term/current
 // endpoint every logged-in page uses, so it always matches what Academic
-// VP has actually declared open (e.g. "Semester 1").
+// VP has actually declared open/closed (e.g. "Semester 1 — Open", or
+// "Semester 1 — Closed" in red once they've closed it via POST
+// /api/term/close). Also drops the current academic year — already
+// formatted as "2018 E.C. (2025/26 GC)" by getCurrentAcademicYearLabel()
+// server-side — into its own chip right next to it.
 async function loadCurrentSemesterChip() {
     const chip = document.getElementById('topbar-semester');
-    if (!chip) return;
+    const yearChip = document.getElementById('topbar-academic-year');
+    if (!chip && !yearChip) return;
     try {
         const res = await fetch('http://localhost:3001/api/term/current', { credentials: 'include' });
         if (!res.ok) throw new Error('Could not load current term.');
         const data = await res.json();
-        const match = /\d+/.exec(data.current_term || '');
-        if (match) {
-            chip.textContent = t('reg_semester_label', { n: match[0] });
-            chip.hidden = false;
-        } else {
-            chip.hidden = true;
+
+        if (chip) {
+            const match = /\d+/.exec(data.current_term || '');
+            if (match) {
+                const isOpen = data.semester_status !== 'closed';
+                chip.textContent = `${t('reg_semester_label', { n: match[0] })} — ${isOpen ? t('reg_status_open') : t('reg_status_closed')}`;
+                chip.classList.remove('topbar-chip-accent', 'topbar-chip-open', 'topbar-chip-closed');
+                chip.classList.add(isOpen ? 'topbar-chip-open' : 'topbar-chip-closed');
+                chip.hidden = false;
+            } else {
+                chip.hidden = true;
+            }
+        }
+
+        if (yearChip) {
+            if (data.academic_year) {
+                yearChip.textContent = data.academic_year;
+                yearChip.hidden = false;
+            } else {
+                yearChip.hidden = true;
+            }
         }
     } catch (err) {
         console.error(err);
-        chip.hidden = true;
+        if (chip) chip.hidden = true;
+        if (yearChip) yearChip.hidden = true;
     }
 }
 

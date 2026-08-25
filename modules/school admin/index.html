@@ -6,13 +6,18 @@
     <title>School Admin Portal</title>
     <link rel="stylesheet" href="styles.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.0.3/qrcode.min.js"></script>
+    <!-- Camera-based QR scanning for the Admin VP's teacher check-in
+         page (see #teacher-qr-reader). qrcode-generator above only
+         renders codes (ID cards); this reads them via the device
+         camera. -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
   </head>
   <body>
     <div class="dashboard-container">
       <!-- ============ SIDEBAR ============ -->
       <nav class="sidebar" id="sidebar" aria-label="Main navigation">
         <div class="logo">
-          <div class="logo-badge">SA</div>
+          <div class="logo-badge" id="sa-logo-badge">SA</div>
           <div>
             <span class="logo-text" data-i18n="sa_portal_title"
               >School Admin</span
@@ -898,6 +903,7 @@
             class="sidebar-toggle"
             id="sidebar-toggle"
             aria-label="Open navigation menu"
+            data-i18n-aria="sidebar_open"
           >
             <svg
               class="lucide-icon"
@@ -917,18 +923,41 @@
             </svg>
           </button>
           <div class="top-bar-titlegroup">
-            <h1
-              class="page-title-text"
-              id="sa-page-title"
-              data-i18n="sa_nav_dashboard"
-            >
-              Dashboard
-            </h1>
+            <div class="top-bar-title-row">
+              <h1
+                class="page-title-text"
+                id="sa-page-title"
+                data-i18n="sa_nav_dashboard"
+              >
+                Dashboard
+              </h1>
+              <div class="top-academic-year" id="topbar-academic-year">
+                <svg
+                  class="lucide-icon"
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M8 2v3" />
+                  <path d="M16 2v3" />
+                  <rect x="3" y="3" width="18" height="18" rx="2" />
+                  <path d="M3 9h18" />
+                </svg>
+                <span id="topbar-academic-year-text">—</span>
+              </div>
+            </div>
             <div class="topbar-school-meta">
               <span class="topbar-meta-chip" id="topbar-school-name">—</span>
               <span
                 class="topbar-meta-chip topbar-meta-chip-moe"
                 id="topbar-moe-code"
+                data-i18n="sa_topbar_moe_unknown"
                 >MOE —</span
               >
               <span
@@ -937,26 +966,6 @@
                 >—</span
               >
             </div>
-          </div>
-          <div class="top-academic-year" id="topbar-academic-year">
-            <svg
-              class="lucide-icon"
-              xmlns="http://www.w3.org/2000/svg"
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M8 2v3" />
-              <path d="M16 2v3" />
-              <rect x="3" y="3" width="18" height="18" rx="2" />
-              <path d="M3 9h18" />
-            </svg>
-            <span id="topbar-academic-year-text">—</span>
           </div>
           <div class="top-bar-right">
             <div
@@ -970,7 +979,6 @@
                 data-lang="en"
                 role="tab"
                 aria-selected="true"
-                onclick="setLang('en')"
               >
                 EN
               </button>
@@ -980,7 +988,6 @@
                 data-lang="am"
                 role="tab"
                 aria-selected="false"
-                onclick="setLang('am')"
               >
                 አማ
               </button>
@@ -990,7 +997,7 @@
                 class="topbar-icon-btn"
                 id="sa-alerts-btn"
                 title="Alerts"
-                onclick="toggleAlertsDropdown()"
+                data-i18n-title="sa_alerts_tooltip"
               >
                 <svg
                   class="lucide-icon"
@@ -1036,7 +1043,7 @@
                 <span id="sa-avatar-initials-text">--</span>
                 <img id="sa-avatar-img" style="display: none" alt="" />
               </div>
-              <div>
+              <div class="topbar-profile-text">
                 <div class="topbar-profile-name" id="sa-profile-name">—</div>
                 <div class="topbar-profile-title" id="sa-profile-title">—</div>
               </div>
@@ -1089,9 +1096,21 @@
           </div>
 
           <div class="widget">
-            <h3 data-i18n="sa_teacher_setup_roster_heading">
-              School Teacher Roster
-            </h3>
+            <div
+              class="form-actions"
+              style="justify-content: space-between; align-items: center"
+            >
+              <h3 style="margin: 0" data-i18n="sa_teacher_setup_roster_heading">
+                School Teacher Roster
+              </h3>
+              <button
+                class="btn btn-secondary"
+                data-action="openTeacherDownloadFormatModal"
+                data-i18n="sa_teacher_roster_download_btn"
+              >
+                Download Roster
+              </button>
+            </div>
             <div class="data-table-wrap">
               <table class="data-table">
                 <thead>
@@ -1099,7 +1118,12 @@
                     <th data-i18n="sa_col_teacher_id">Teacher ID</th>
                     <th data-i18n="sa_col_name">Name</th>
                     <th data-i18n="sa_col_contact">Contact</th>
+                    <th data-i18n="sa_col_education_level">
+                      Level of Education
+                    </th>
+                    <th data-i18n="sa_col_fayda_number">Fayda Number</th>
                     <th data-i18n="sa_col_status">Teaching Load</th>
+                    <th data-i18n="sa_col_action">Action</th>
                   </tr>
                 </thead>
                 <tbody id="sa-teacher-setup-tbody"></tbody>
@@ -1116,9 +1140,49 @@
           </p>
 
           <div class="widget" style="margin-bottom: 18px">
+            <h3>
+              <span data-i18n="sa_qr_scan_heading">Scan Teacher ID (QR)</span>
+              <span
+                class="badge badge-none"
+                id="teacher-qr-cutoff-note"
+                data-i18n="sa_qr_cutoff_note"
+                >Unscanned teachers are auto-marked absent at 11:00 Ethiopian
+                time</span
+              >
+            </h3>
+            <p class="page-subtitle" data-i18n="sa_qr_scan_sub">
+              Scan each teacher's ID card as they arrive. Anyone not scanned
+              by the cutoff is marked absent automatically.
+            </p>
+            <div id="teacher-qr-reader" class="qr-reader-box"></div>
+            <div class="form-actions" style="margin-top: 10px">
+              <button
+                class="btn btn-accent"
+                id="teacher-qr-start-btn"
+                data-i18n="sa_qr_start_scan"
+              >
+                Start Scanning
+              </button>
+              <button
+                class="btn btn-ghost"
+                id="teacher-qr-stop-btn"
+                style="display: none"
+                data-i18n="sa_qr_stop_scan"
+              >
+                Stop Scanning
+              </button>
+            </div>
+            <div id="teacher-qr-scan-result"></div>
+          </div>
+
+          <div class="widget" style="margin-bottom: 18px">
             <h3 data-i18n="sa_mark_attendance_heading">
               Mark Today's Attendance
             </h3>
+            <p class="form-hint" data-i18n="sa_mark_attendance_manual_hint">
+              Only needed if a teacher can't scan (lost/forgotten ID card) —
+              scanning above is the normal way to check a teacher in.
+            </p>
             <div class="form-row">
               <div class="form-group">
                 <label data-i18n="sa_teacher_id_label">Teacher ID</label>
@@ -1145,6 +1209,26 @@
             >
               Record
             </button>
+          </div>
+
+          <div class="widget" style="margin-bottom: 18px">
+            <h3>
+              <span data-i18n="sa_not_arrived_heading"
+                >Who Hasn't Arrived Yet</span
+              >
+              <button
+                class="btn btn-ghost btn-sm"
+                id="teacher-attendance-refresh-btn"
+                data-i18n="sa_refresh"
+              >
+                Refresh
+              </button>
+            </h3>
+            <div id="teacher-attendance-today-body">
+              <div class="widget-loading" data-i18n="sa_loading">
+                Loading...
+              </div>
+            </div>
           </div>
 
           <div class="widget" style="margin-bottom: 18px">
@@ -1362,6 +1446,9 @@
               <div class="form-group">
                 <label data-i18n="sa_start_time_label">Start Time</label>
                 <input type="time" id="tt-start-time" />
+                <span class="form-hint" data-i18n="sa_tt_start_time_hint"
+                  >This is Ethiopian time — not standard/GC time.</span
+                >
                 <span class="form-hint" id="tt-start-time-eth"></span>
               </div>
             </div>
@@ -1377,9 +1464,21 @@
                   max="12"
                   value="6"
                 />
+              </div>
+              <div class="form-group">
+                <label data-i18n="sa_tt_period_minutes_label"
+                  >Minutes per Period</label
+                >
+                <input
+                  type="number"
+                  id="tt-period-minutes"
+                  min="5"
+                  max="120"
+                  value="40"
+                />
                 <span class="form-hint" data-i18n="sa_tt_period_length_hint"
-                  >Every period is automatically 40 minutes, chained from the
-                  start time.</span
+                  >Every period is chained back-to-back using the length you set
+                  here.</span
                 >
               </div>
               <div class="form-group">
@@ -1632,10 +1731,6 @@
                   <option value="" data-i18n="sa_select_class_level">
                     Select class level...
                   </option>
-                  <option value="9">9</option>
-                  <option value="10">10</option>
-                  <option value="11">11</option>
-                  <option value="12">12</option>
                 </select>
               </div>
               <div class="form-group">
@@ -1644,11 +1739,10 @@
                   <option value="" data-i18n="sa_select_section">
                     Select section...
                   </option>
-                  <option value="A">A</option>
-                  <option value="B">B</option>
-                  <option value="C">C</option>
-                  <option value="D">D</option>
                 </select>
+                <span class="form-hint" data-i18n="sa_tt_section_hint"
+                  >Only sections set up by the Registrar are shown.</span
+                >
               </div>
             </div>
             <div class="form-group">
@@ -1774,8 +1868,12 @@
             <div class="form-group">
               <label data-i18n="sa_term_label">Term</label>
               <select id="semester-term-select">
-                <option value="Semester 1">Semester 1</option>
-                <option value="Semester 2">Semester 2</option>
+                <option value="Semester 1" data-i18n="sa_term_s1">
+                  Semester 1
+                </option>
+                <option value="Semester 2" data-i18n="sa_term_s2">
+                  Semester 2
+                </option>
               </select>
             </div>
             <div class="form-actions">
@@ -1973,7 +2071,7 @@
             Semester/yearly result analysis, by class level — for head office
             and zonal review.
           </p>
-          <div class="toolbar-row">
+          <div class="toolbar-row sticky-filter-bar">
             <div class="form-group">
               <label for="ar-term-select" data-i18n="sa_ar_term_label"
                 >Term</label
@@ -2197,7 +2295,7 @@
           </div>
 
           <div id="tab-students-roster" class="tab-panel">
-            <div class="form-row" style="max-width: 760px">
+            <div class="toolbar-row sticky-filter-bar">
               <div class="form-group">
                 <input
                   type="text"
@@ -2227,6 +2325,28 @@
                   </option>
                 </select>
               </div>
+              <div class="form-group">
+                <select id="students-status-filter">
+                  <option value="" data-i18n="sa_all_statuses">
+                    All Statuses
+                  </option>
+                </select>
+              </div>
+              <div class="form-group">
+                <select id="students-year-filter">
+                  <option value="" data-i18n="sa_current_year">
+                    Current Year
+                  </option>
+                </select>
+              </div>
+              <button
+                class="btn btn-primary"
+                data-action="openStudentDownloadFormatModal"
+                data-i18n="sa_student_roster_download_btn"
+                style="margin-left: auto"
+              >
+                Download Roster
+              </button>
             </div>
             <div class="data-table-wrap">
               <table class="data-table">
@@ -2237,6 +2357,7 @@
                     <th data-i18n="sa_col_class">Class</th>
                     <th data-i18n="sa_col_section">Section</th>
                     <th data-i18n="sa_col_stream">Stream</th>
+                    <th data-i18n="sa_col_fayda_number">Fayda Number</th>
                     <th data-i18n="sa_col_status">Status</th>
                   </tr>
                 </thead>
@@ -2309,6 +2430,19 @@
             <p class="page-subtitle" data-i18n="sa_transferred_sub">
               Students transferred out of your school so far this year.
             </p>
+            <div class="toolbar-row sticky-filter-bar">
+              <div class="form-group">
+                <select id="transferred-year-filter"></select>
+              </div>
+              <button
+                class="btn btn-primary"
+                data-action="openTransferredDownloadFormatModal"
+                data-i18n="sa_student_roster_download_btn"
+                style="margin-left: auto"
+              >
+                Download Roster
+              </button>
+            </div>
             <div class="data-table-wrap">
               <table class="data-table">
                 <thead>
@@ -2331,17 +2465,31 @@
             style="display: none"
           >
             <p class="page-subtitle" data-i18n="sa_batches_sub">
-              This year's graduation batches, published by the Registrar. Click
-              a batch to see its students.
+              Students who have graduated, published by the Registrar.
             </p>
+            <div class="toolbar-row sticky-filter-bar">
+              <div class="form-group">
+                <select id="batches-year-filter"></select>
+              </div>
+              <button
+                class="btn btn-primary"
+                data-action="openGraduationDownloadFormatModal"
+                data-i18n="sa_student_roster_download_btn"
+                style="margin-left: auto"
+              >
+                Download Roster
+              </button>
+            </div>
             <div class="data-table-wrap">
               <table class="data-table">
                 <thead>
                   <tr>
-                    <th data-i18n="sa_col_batch">Batch</th>
-                    <th data-i18n="sa_col_total">Total</th>
-                    <th data-i18n="sa_col_male">Male</th>
-                    <th data-i18n="sa_col_female">Female</th>
+                    <th data-i18n="sa_col_student_id">ID</th>
+                    <th data-i18n="sa_col_name">Name</th>
+                    <th data-i18n="sa_col_fayda_number">Fayda Number</th>
+                    <th data-i18n="sa_col_enrollment_year">Enrollment Year</th>
+                    <th data-i18n="sa_col_graduation_year">Graduation Year</th>
+                    <th data-i18n="sa_col_status">Status</th>
                   </tr>
                 </thead>
                 <tbody id="sa-batches-tbody"></tbody>
@@ -2551,11 +2699,7 @@
                     <button
                       type="button"
                       class="btn btn-ghost btn-sm"
-                      onclick="
-                        document
-                          .getElementById('profile-signature-file')
-                          .click()
-                      "
+                      data-file-input-target="profile-signature-file"
                       data-i18n="sa_upload_change_btn"
                     >
                       Change
@@ -2569,7 +2713,7 @@
                   />
                 </div>
 
-                <div class="doc-upload-card">
+                <div class="doc-upload-card" id="profile-stamp-card">
                   <label class="doc-upload-dropzone" for="profile-stamp-file">
                     <img
                       id="profile-stamp-preview"
@@ -2609,9 +2753,7 @@
                     <button
                       type="button"
                       class="btn btn-ghost btn-sm"
-                      onclick="
-                        document.getElementById('profile-stamp-file').click()
-                      "
+                      data-file-input-target="profile-stamp-file"
                       data-i18n="sa_upload_change_btn"
                     >
                       Change
@@ -2672,11 +2814,7 @@
                       type="button"
                       class="btn btn-ghost btn-sm"
                       id="profile-school-seal-change-btn"
-                      onclick="
-                        document
-                          .getElementById('profile-school-seal-file')
-                          .click()
-                      "
+                      data-file-input-target="profile-school-seal-file"
                       data-i18n="sa_upload_change_btn"
                     >
                       Change
@@ -2746,9 +2884,7 @@
                     <button
                       type="button"
                       class="btn btn-ghost btn-sm"
-                      onclick="
-                        document.getElementById('profile-id-photo-file').click()
-                      "
+                      data-file-input-target="profile-id-photo-file"
                       data-i18n="sa_upload_change_btn"
                     >
                       Change
@@ -2815,12 +2951,6 @@
                       src=""
                       alt=""
                       style="display: none"
-                      onerror="
-                        this.style.display = 'none';
-                        document.getElementById(
-                          'idcard-photo-placeholder',
-                        ).style.display = 'flex';
-                      "
                     />
                     <div
                       id="idcard-photo-placeholder"
@@ -2936,7 +3066,7 @@
             <button
               type="button"
               class="btn btn-primary"
-              onclick="flipIdCard()"
+              id="idcard-flip-btn"
               data-i18n="sa_idcard_flip"
             >
               Flip Card
@@ -2944,7 +3074,7 @@
             <button
               type="button"
               class="btn btn-accent"
-              onclick="printIdCard()"
+              id="idcard-print-btn"
               data-i18n="sa_idcard_print"
             >
               Print ID Card

@@ -32,15 +32,30 @@ function formatSchoolNameWithLevel(name, level) {
     return `${name} (${levelLabel})`;
 }
 
+// The top-bar title used to always show the school name, which meant a
+// teacher on (say) the Upload Marks page saw the exact same header as on
+// the Dashboard — nothing told them which section of the app they were
+// in. It now mirrors whichever sidebar nav item is active, taken from
+// that link's own label so it's already in the right language and never
+// drifts out of sync with the sidebar wording.
+let currentPageTitleKey = 'nav_dashboard';
+function updatePageTitle(i18nKey, fallbackText) {
+    currentPageTitleKey = i18nKey || currentPageTitleKey;
+    const titleEl = document.getElementById('page-title-text');
+    if (!titleEl) return;
+    titleEl.textContent = (typeof t === 'function' && currentPageTitleKey)
+        ? t(currentPageTitleKey)
+        : (fallbackText || titleEl.textContent);
+}
+
 // i18n.js calls this after every language switch so JS-rendered content
 // (built with t() at fetch time, not data-i18n attributes) gets redrawn
 // in the new language too — data-i18n elements are already handled by
 // i18n.js's own applyTranslations().
 window.onSisLangChange = () => {
+    updatePageTitle();
     if (CURRENT_SCHOOL_NAME) {
         const combined = formatSchoolNameWithLevel(CURRENT_SCHOOL_NAME, CURRENT_SCHOOL_LEVEL);
-        const titleEl = document.getElementById('page-title-text');
-        if (titleEl) titleEl.textContent = combined;
         const logoEl = document.getElementById('nav-school-name');
         if (logoEl) logoEl.textContent = combined;
     }
@@ -74,14 +89,16 @@ async function checkAuthAndInit() {
         CURRENT_SCHOOL_NAME = data.school_name;
         CURRENT_SCHOOL_LEVEL = data.school_level;
 
-        // Update both the top-bar title and the sidebar logo subtitle
+        // The sidebar logo subtitle still shows the school name — the
+        // top-bar title itself now tracks the active nav page instead
+        // (see updatePageTitle) so it works as a "which page am I on"
+        // indicator rather than repeating the school name on every page.
         if (CURRENT_SCHOOL_NAME) {
             const combined = formatSchoolNameWithLevel(CURRENT_SCHOOL_NAME, CURRENT_SCHOOL_LEVEL);
-            const titleEl = document.getElementById('page-title-text');
-            if (titleEl) titleEl.textContent = combined;
             const logoEl = document.getElementById('nav-school-name');
             if (logoEl) logoEl.textContent = combined;
         }
+        updatePageTitle('nav_dashboard');
 
         // Show the school's logo in the nav header automatically once a
         // zonal/school admin has uploaded one (POST /api/admin/school-logo)
@@ -295,6 +312,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         loadHomeroomInfo(),
         loadDashboardTodaysClasses(),
         loadDashboardStudentPerformance(),
+        loadDashboardHistory(),
         loadSemesterStatus(),
         renderEthiopianCalendarWidget()
     ]);
@@ -306,6 +324,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupConductFilter();
     setupSidebarToggle();
     setupMyClassScannerInput();
+    setupStaticEventListeners();
+    setupDynamicActionDelegation();
 
     // Fetch notifications on load, then poll every 60 seconds
     loadNotifications();
@@ -566,11 +586,18 @@ function renderSemesterStatusBadge(data) {
     const isOpen = data.semester_status !== 'closed';
     badge.className = `semester-status-badge ${isOpen ? 'semester-status-open' : 'semester-status-closed'}`;
 
+    // data.current_term should always come back populated (the server
+    // defaults it to 'Semester 1' when a school has no setting saved yet
+    // — see getCurrentTerm in server.js), but guard here too: filling
+    // '{term}' with '' would otherwise leave a dangling "— Closed" / "Open
+    // " artifact from the i18n template instead of just the plain status.
+    const term = data.current_term || '';
     if (isOpen) {
         const template = typeof t === 'function' ? t('semester_open') : 'Open {term}';
-        badge.textContent = template.replace('{term}', data.current_term || '');
+        badge.textContent = term ? template.replace('{term}', term) : 'Open';
     } else {
-        badge.textContent = typeof t === 'function' ? t('semester_closed') : 'Closed';
+        const template = typeof t === 'function' ? t('semester_closed') : '{term} — Closed';
+        badge.textContent = term ? template.replace('{term}', term) : 'Closed';
     }
 }
 
@@ -639,7 +666,13 @@ async function renderSubjectEntryRequestList() {
     if (!list) return;
     try {
         const res = await apiFetch(`${API_BASE}/api/teacher/subject-entry-requests`);
-        const requests = res.ok ? await res.json() : [];
+        const allRequests = res.ok ? await res.json() : [];
+        // GET /api/teacher/subject-entry-requests now returns BOTH
+        // ordinary subject-access requests AND last_semester requests
+        // (they share a table — see server-side notes). The late-marks
+        // widget below has its own list for the latter, so exclude them
+        // here to avoid a "Subject: undefined" row.
+        const requests = allRequests.filter(r => r.request_type !== 'last_semester');
         if (requests.length === 0) {
             list.innerHTML = '';
             return;
@@ -647,18 +680,20 @@ async function renderSubjectEntryRequestList() {
         const statusLabel = { pending: 'Pending', approved: 'Approved', rejected: 'Rejected' };
         const statusClass = { pending: 'status-pending', approved: 'status-approved', rejected: 'status-rejected' };
         list.innerHTML = `
-            <table class="student-table">
-                <thead><tr><th>Subject</th><th>Status</th><th>Requested</th></tr></thead>
-                <tbody>
-                    ${requests.map(r => `
-                        <tr>
-                            <td>${escapeHtml(r.subject_name)}</td>
-                            <td><span class="request-status-badge ${statusClass[r.status] || ''}">${statusLabel[r.status] || r.status}</span></td>
-                            <td>${escapeHtml(new Date(r.requested_at).toLocaleDateString())}</td>
-                        </tr>
-                    `).join('')}
-                </tbody>
-            </table>`;
+            <div class="list-table-scroll">
+                <table class="student-table">
+                    <thead><tr><th>Subject</th><th>Status</th><th>Requested</th></tr></thead>
+                    <tbody>
+                        ${requests.map(r => `
+                            <tr>
+                                <td>${escapeHtml(r.subject_name)}</td>
+                                <td><span class="request-status-badge ${statusClass[r.status] || ''}">${statusLabel[r.status] || r.status}</span></td>
+                                <td>${escapeHtml(new Date(r.requested_at).toLocaleDateString())}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>`;
     } catch (err) {
         console.error("Error loading subject-entry request status:", err);
     }
@@ -729,18 +764,20 @@ async function renderLateMarksRequestList() {
             const statusLabel = { pending: 'Pending', approved: 'Approved', rejected: 'Rejected' };
             const statusClass = { pending: 'status-pending', approved: 'status-approved', rejected: 'status-rejected' };
             list.innerHTML = `
-                <table class="student-table">
-                    <thead><tr><th>Reason</th><th>Status</th><th>Requested</th></tr></thead>
-                    <tbody>
-                        ${requests.map(r => `
-                            <tr>
-                                <td>${escapeHtml(r.reason || '—')}</td>
-                                <td><span class="request-status-badge ${statusClass[r.status] || ''}">${statusLabel[r.status] || r.status}</span></td>
-                                <td>${escapeHtml(new Date(r.requested_at).toLocaleDateString())}</td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                </table>`;
+                <div class="list-table-scroll">
+                    <table class="student-table">
+                        <thead><tr><th>Reason</th><th>Status</th><th>Requested</th></tr></thead>
+                        <tbody>
+                            ${requests.map(r => `
+                                <tr>
+                                    <td>${escapeHtml(r.reason || '—')}</td>
+                                    <td><span class="request-status-badge ${statusClass[r.status] || ''}">${statusLabel[r.status] || r.status}</span></td>
+                                    <td>${escapeHtml(new Date(r.requested_at).toLocaleDateString())}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>`;
         }
 
         // Most recent request drives whether the entry panel shows —
@@ -836,11 +873,11 @@ window.loadLateMarksIncompleteStudents = async () => {
             return `
             <div class="search-group" style="flex-wrap: wrap; align-items: center; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #e2e8f0;">
                 <span style="min-width: 180px; font-size: 0.85rem;"><strong>${escapeHtml(s.student_id)}</strong> — ${escapeHtml(fullName)}</span>
-                <select class="form-input late-marks-type-select" data-student-id="${escapeHtml(s.student_id)}" style="max-width: 170px" onchange="updateLateMarksScoreLimits(this)">
+                <select class="form-input late-marks-type-select" data-student-id="${escapeHtml(s.student_id)}" data-action="update-late-marks-score-limits" style="max-width: 170px">
                     ${typeOptions}
                 </select>
                 <input type="number" class="form-input late-marks-score-input" data-student-id="${escapeHtml(s.student_id)}" style="max-width: 110px" step="0.5" placeholder="Score" />
-                <button class="btn-primary" onclick="submitLateMark('${escapeHtml(s.student_id)}', ${subject_id}, this)">Save</button>
+                <button class="btn-primary" data-action="submit-late-mark" data-student-id="${escapeHtml(s.student_id)}" data-subject-id="${subject_id}">Save</button>
                 <span class="late-marks-row-status" data-status-for="${escapeHtml(s.student_id)}" style="font-size: 0.8rem;"></span>
             </div>`;
         }).join('');
@@ -971,8 +1008,8 @@ function renderMyClassRoster(data) {
             <span class="myclass-roster-name">${[s.first_name, s.middle_name, s.last_name].filter(Boolean).map(escapeHtml).join(' ')}</span>
             <span class="myclass-roster-status ${s.present ? 'status-present' : 'status-absent'}">${s.present ? presentLabel : notMarkedLabel}</span>
             ${s.present
-                ? `<button class="textbook-action-btn textbook-action-undo" onclick="undoMyClassPresent('${s.student_id}')">${undoBtnLabel}</button>`
-                : `<button class="textbook-action-btn" onclick="markMyClassPresent('${s.student_id}')">${markBtnLabel}</button>`
+                ? `<button class="textbook-action-btn textbook-action-undo" data-action="undo-my-class-present" data-student-id="${s.student_id}">${undoBtnLabel}</button>`
+                : `<button class="textbook-action-btn" data-action="mark-my-class-present" data-student-id="${s.student_id}">${markBtnLabel}</button>`
             }
         </div>`).join('')}</div>`;
 }
@@ -1021,24 +1058,26 @@ function renderLeaderboard(data) {
     const avgLabel = typeof t === 'function' ? t('leaderboard_avg_col') : 'Average';
 
     container.innerHTML = `
-        <table class="student-table leaderboard-table">
-            <thead>
-                <tr>
-                    <th>${rankLabel}</th>
-                    <th>${typeof t === 'function' ? t('leaderboard_name_col') : 'Student'}</th>
-                    <th>${avgLabel}</th>
-                </tr>
-            </thead>
-            <tbody>
-                ${data.students.map(s => `
-                    <tr class="${s.rank === 1 ? 'leaderboard-row-top' : ''}">
-                        <td class="leaderboard-rank-cell">${s.rank === 1 ? '🏆 ' : ''}${escapeHtml(String(s.rank))}</td>
-                        <td>${escapeHtml(s.full_name || '—')}</td>
-                        <td>${escapeHtml(String(s.average))}</td>
+        <div class="list-table-scroll">
+            <table class="student-table leaderboard-table">
+                <thead>
+                    <tr>
+                        <th>${rankLabel}</th>
+                        <th>${typeof t === 'function' ? t('leaderboard_name_col') : 'Student'}</th>
+                        <th>${avgLabel}</th>
                     </tr>
-                `).join('')}
-            </tbody>
-        </table>
+                </thead>
+                <tbody>
+                    ${data.students.map(s => `
+                        <tr class="${s.rank === 1 ? 'leaderboard-row-top' : ''}">
+                            <td class="leaderboard-rank-cell">${s.rank === 1 ? '🏆 ' : ''}${escapeHtml(String(s.rank))}</td>
+                            <td>${escapeHtml(s.full_name || '—')}</td>
+                            <td>${escapeHtml(String(s.average))}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        </div>
         <p style="font-size:0.8rem; color:#64748b; margin-top:10px;">${(typeof t === 'function' ? t('leaderboard_class_size') : 'Out of {n} ranked students').replace('{n}', data.class_size)}</p>
     `;
 }
@@ -1253,6 +1292,73 @@ function renderDashboardStudentPerformance(data) {
         </div>`).join('')}</div>`;
 }
 
+// "History" dashboard widget — every subject/homeroom/Recorder role this
+// teacher has held, grouped by academic year. Backed by
+// GET /api/teacher/role-history, which only has rows for years that have
+// actually been closed out (see rolloverAcademicYear server-side) — so a
+// teacher mid-way through their first year will correctly see an empty
+// state here, not an error.
+async function loadDashboardHistory() {
+    const container = document.getElementById('dashboard-history-list');
+    if (!container) return;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/teacher/role-history`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Could not load history");
+        renderDashboardHistory(data);
+    } catch (err) {
+        console.error("History load error:", err);
+        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('history_could_not_load') : 'Could not load your history.'}</p>`;
+    }
+}
+
+function describeHistoryRole(row) {
+    if (row.role_type === 'recorder') {
+        return typeof t === 'function' ? t('history_role_recorder') : 'Recorder';
+    }
+    const sectionLabel = [row.class_level, row.section].filter(Boolean).join('');
+    const withStream = row.stream ? `${sectionLabel} (${row.stream})` : sectionLabel;
+    if (row.role_type === 'homeroom') {
+        const prefix = typeof t === 'function' ? t('history_role_homeroom') : 'Homeroom';
+        return withStream ? `${prefix} – ${withStream}` : prefix;
+    }
+    // 'subject'
+    const subject = escapeHtml(row.subject_name || '');
+    return withStream ? `${subject} – ${withStream}` : subject;
+}
+
+function renderDashboardHistory(rows) {
+    const container = document.getElementById('dashboard-history-list');
+    if (!container) return;
+
+    if (!rows || rows.length === 0) {
+        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('history_no_records') : 'Nothing on file yet — this fills in once a school year closes.'}</p>`;
+        return;
+    }
+
+    // Rows arrive ordered newest-first, with every row from the same
+    // rollover sharing one academic_year_label — so a straight
+    // "did the label change" walk groups them correctly without
+    // needing to re-sort.
+    const groups = [];
+    rows.forEach(row => {
+        const last = groups[groups.length - 1];
+        if (last && last.academic_year_label === row.academic_year_label) {
+            last.rows.push(row);
+        } else {
+            groups.push({ academic_year_label: row.academic_year_label, rows: [row] });
+        }
+    });
+
+    container.innerHTML = `<div class="history-year-list">${groups.map(g => `
+        <div class="history-year-group">
+            <div class="history-year-label">${escapeHtml(g.academic_year_label)}</div>
+            <ul class="history-role-list">
+                ${g.rows.map(row => `<li class="history-role-item history-role-${row.role_type}">${describeHistoryRole(row)}</li>`).join('')}
+            </ul>
+        </div>`).join('')}</div>`;
+}
+
 function renderDashboardTextbookSummary(data) {
     const container = document.getElementById('dashboard-textbook-summary');
     if (!container) return;
@@ -1462,7 +1568,7 @@ function renderConductList(data) {
         return `
             <div class="conduct-card">
                 <div class="conduct-card-header">
-                    <strong>${entry.subject_name}</strong>
+                    <strong>${escapeHtml(entry.subject_name)}</strong>
                     <span class="conduct-card-section">${formatGradeSectionStream(entry.class_level, entry.section, entry.stream)}</span>
                 </div>
                 ${termRows}
@@ -1497,12 +1603,12 @@ function renderPushList(data) {
         const actionLabel = entry.via_request ? 'Pull' : 'Push';
         const statusHtml = entry.pushed
             ? `<span class="push-status push-status-locked">&#128274; Pushed &amp; locked (${new Date(entry.pushed_at).toLocaleDateString()})</span>`
-            : `<button class="btn-primary push-btn" onclick='pushReport(${JSON.stringify({
-                subject_id: entry.subject_id,
-                class_level: entry.class_level,
-                section: entry.section,
-                stream: entry.stream
-              })}, ${entry.via_request})'>${actionLabel} ${entry.term} Report</button>`;
+            : `<button class="btn-primary push-btn" data-action="push-report"
+                data-subject-id="${entry.subject_id}"
+                data-class-level="${escapeHtml(String(entry.class_level))}"
+                data-section="${escapeHtml(String(entry.section))}"
+                data-stream="${escapeHtml(String(entry.stream))}"
+                data-via-request="${entry.via_request ? 'true' : 'false'}">${actionLabel} ${entry.term} Report</button>`;
 
         const grantedBadge = entry.via_request
             ? `<span class="push-status" style="background:#fef3c7; color:#92400e; margin-left:6px;">Granted access — not your subject</span>`
@@ -1511,7 +1617,7 @@ function renderPushList(data) {
         return `
             <div class="conduct-card">
                 <div class="conduct-card-header">
-                    <strong>${entry.subject_name}</strong>${grantedBadge}
+                    <strong>${escapeHtml(entry.subject_name)}</strong>${grantedBadge}
                     <span class="conduct-card-section">${formatGradeSectionStream(entry.class_level, entry.section, entry.stream)} — ${entry.term}</span>
                 </div>
                 <div style="margin-top:8px;">${statusHtml}</div>
@@ -1632,7 +1738,7 @@ window.loadHomeroomStudentReport = async () => {
             </tr>`;
             const subjectRows = grade.subjects.map(s => `
             <tr>
-                <td>${s.subject_name}</td>
+                <td>${escapeHtml(s.subject_name)}</td>
                 <td>${s.semester_1 != null ? s.semester_1 : '<span class="shaded-blank">N/A</span>'}</td>
                 <td>${s.semester_2 != null ? s.semester_2 : '<span class="shaded-blank">N/A</span>'}</td>
                 <td>${s.year_average != null ? s.year_average : '<span class="shaded-blank">N/A</span>'}</td>
@@ -1687,30 +1793,30 @@ window.loadHomeroomSectionReport = async () => {
             const statusBadge = studentStatusBadge(student.status);
             const statusControls = locked
                 ? ''
-                : `<select class="form-input" style="padding:4px 6px; font-size:0.8rem; width:auto;" onchange="setStudentStatus('${student.student_id}', this.value)">
+                : `<select class="form-input" style="padding:4px 6px; font-size:0.8rem; width:auto;" data-action="set-student-status" data-student-id="${student.student_id}">
                         <option value="Active" ${student.status === 'Active' ? 'selected' : ''}>Active</option>
                         <option value="Incomplete" ${student.status === 'Incomplete' ? 'selected' : ''}>Incomplete</option>
                         <option value="Dropout" ${student.status === 'Dropout' ? 'selected' : ''}>Dropout</option>
                    </select>`;
-            return `<tr><td>${student.student_id}</td><td>${student.full_name}</td>${cells}<td>${statusBadge}</td><td>${statusControls}</td></tr>`;
+            return `<tr><td>${escapeHtml(student.student_id)}</td><td>${escapeHtml(student.full_name)}</td>${cells}<td>${statusBadge}</td><td>${statusControls}</td></tr>`;
         }).join('');
 
         const notifyBtn = locked
             ? ''
-            : `<button class="btn-primary" onclick="notifyIncompleteStudents()" style="margin-bottom:12px; margin-left:8px; width:auto; padding:8px 16px; background:#b45309;">Notify Incomplete Students${incompleteCount ? ` (${incompleteCount})` : ''}</button>`;
+            : `<button class="btn-primary" data-action="notify-incomplete-students" style="margin-bottom:12px; margin-left:8px; width:auto; padding:8px 16px; background:#b45309;">Notify Incomplete Students${incompleteCount ? ` (${incompleteCount})` : ''}</button>`;
 
         output.innerHTML = `
             <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
                 <div style="display:flex; flex-wrap:wrap; gap:8px;">
-                    <button class="btn-primary" onclick="exportSectionReportCSV()" style="width:auto; padding:8px 16px;">Export CSV</button>
+                    <button class="btn-primary" data-action="export-section-report-csv" style="width:auto; padding:8px 16px;">Export CSV</button>
                     ${notifyBtn.replace('margin-bottom:12px; margin-left:8px;', '')}
                 </div>
-                <button type="button" onclick="closeHomeroomSectionReport()" style="width:auto; padding:8px 16px; background:#f1f5f9; color:#334155; border:1px solid #cbd5e1; border-radius:6px; cursor:pointer; font-size:0.85rem;">
+                <button type="button" data-action="close-homeroom-section-report" style="width:auto; padding:8px 16px; background:#f1f5f9; color:#334155; border:1px solid #cbd5e1; border-radius:6px; cursor:pointer; font-size:0.85rem;">
                     &times; Close
                 </button>
             </div>
             ${locked ? '<p style="font-size:0.8rem; color:#64748b; margin-bottom:12px;">This term\'s report has already been pushed to the Academic VP — status is locked.</p>' : ''}
-            <div style="overflow-x:auto;">
+            <div class="section-report-table-scroll">
                 <table id="progress-table">
                     <thead>
                         <tr><th rowspan="2">ID</th><th rowspan="2">Full Name</th>${headerCells}<th rowspan="2">Status</th><th rowspan="2">Set Status</th></tr>
@@ -1837,10 +1943,10 @@ window.resetHomeroomStudentPassword = async () => {
     }
 };
 
-// ACTION CENTER (homeroom teachers only): photo/certificate approvals,
-// direct photo upload, badge count. Requests are fetched lazily when the
-// tab is opened (see setupNavigation's `target === 'actioncenter'` hook)
-// and again after any approve/reject so the list and badge stay in sync.
+// ACTION CENTER (homeroom teachers only): photo approvals, direct photo
+// upload, badge count. Requests are fetched lazily when the tab is opened
+// (see setupNavigation's `target === 'actioncenter'` hook) and again after
+// any approve/reject so the list and badge stay in sync.
 function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, ch => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -1886,68 +1992,43 @@ function renderPhotoRequests(requests) {
                 <span>${escapeHtml(r.student_id)} — requested ${new Date(r.requested_at).toLocaleDateString()}</span>
             </div>
             <div class="request-actions">
-                <button type="button" class="request-approve-btn" onclick="approvePhotoRequest(${r.request_id})">Approve</button>
-                <button type="button" class="request-reject-btn" onclick="rejectPhotoRequest(${r.request_id})">Reject</button>
+                <button type="button" class="request-approve-btn" data-action="approve-photo-request" data-request-id="${r.request_id}">Approve</button>
+                <button type="button" class="request-reject-btn" data-action="reject-photo-request" data-request-id="${r.request_id}">Reject</button>
             </div>
         </div>`).join('');
 }
 
-function renderCertificateRequests(requests) {
-    const list = document.getElementById('certificate-requests-list');
-    if (!list) return;
-
-    if (!Array.isArray(requests) || requests.length === 0) {
-        list.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">No pending certificate requests.</p>';
-        return;
-    }
-
-    list.innerHTML = requests.map(r => `
-        <div class="request-card">
-            <div class="request-info">
-                <strong>${escapeHtml(r.first_name)} ${escapeHtml(r.last_name)}</strong>
-                <span>${escapeHtml(r.student_id)} — requested ${new Date(r.requested_at).toLocaleDateString()}</span>
-            </div>
-            <div class="request-actions">
-                <button type="button" class="request-approve-btn" onclick="approveCertificateRequest(${r.request_id})">Approve</button>
-                <button type="button" class="request-reject-btn" onclick="rejectCertificateRequest(${r.request_id})">Reject</button>
-            </div>
-        </div>`).join('');
-}
-
-// Loads all three request lists in parallel, renders them, and refreshes
+// Loads both request lists in parallel, renders them, and refreshes
 // the sidebar badge from their combined pending count.
+// Certificate-request approval used to live here too, but that now
+// belongs to the Principal instead of the homeroom teacher — see the
+// (now removed) certificate-requests card that used to sit in this grid.
 async function loadActionCenterRequests() {
     const photoList = document.getElementById('photo-requests-list');
-    const certList = document.getElementById('certificate-requests-list');
     const absenceList = document.getElementById('absence-requests-list');
     if (photoList) photoList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Loading…</p>';
-    if (certList) certList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Loading…</p>';
     if (absenceList) absenceList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Loading…</p>';
 
     try {
-        const [photoRes, certRes, absenceRes] = await Promise.all([
+        const [photoRes, absenceRes] = await Promise.all([
             apiFetch(`${API_BASE}/api/homeroom/id-photo-requests`),
-            apiFetch(`${API_BASE}/api/homeroom/certificate-requests`),
             apiFetch(`${API_BASE}/api/homeroom/absence-requests`)
         ]);
         const photoRequests = photoRes.ok ? await photoRes.json() : [];
-        const certRequests = certRes.ok ? await certRes.json() : [];
         const absenceRequests = absenceRes.ok ? await absenceRes.json() : [];
 
         renderPhotoRequests(photoRequests);
-        renderCertificateRequests(certRequests);
         renderAbsenceRequests(absenceRequests);
-        updateActionCenterBadge(photoRequests.length + certRequests.length + absenceRequests.length);
+        updateActionCenterBadge(photoRequests.length + absenceRequests.length);
     } catch (err) {
         console.error("loadActionCenterRequests error:", err);
         if (photoList) photoList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not load requests.</p>';
-        if (certList) certList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not load requests.</p>';
         if (absenceList) absenceList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not load requests.</p>';
     }
 }
 
-// Absence requests carry two extra pieces the photo/certificate cards
-// don't: a date range + day count, and a within_homeroom_authority flag
+// Absence requests carry two extra pieces the photo request card
+// doesn't: a date range + day count, and a within_homeroom_authority flag
 // (computed server-side) that decides whether this teacher can Approve
 // directly or must Escalate instead — the server enforces the same cap
 // on the actual approve call, so this only ever affects which buttons
@@ -1971,10 +2052,10 @@ function renderAbsenceRequests(requests) {
             ? ''
             : `<span class="absence-span-warning">${(typeof t === 'function' ? t('absence_beyond_authority_note') : 'Covers {days} days — beyond what you can approve directly.').replace('{days}', r.span_days)}</span>`;
         const actionButtons = r.within_homeroom_authority
-            ? `<button type="button" class="request-approve-btn" onclick="approveAbsenceRequest(${r.request_id})">${typeof t === 'function' ? t('absence_approve') : 'Approve'}</button>
-               <button type="button" class="request-reject-btn" onclick="rejectAbsenceRequest(${r.request_id})">${typeof t === 'function' ? t('absence_reject') : 'Reject'}</button>`
-            : `<button type="button" class="request-escalate-btn" onclick="escalateAbsenceRequest(${r.request_id})">${typeof t === 'function' ? t('absence_escalate') : 'Escalate to Admin'}</button>
-               <button type="button" class="request-reject-btn" onclick="rejectAbsenceRequest(${r.request_id})">${typeof t === 'function' ? t('absence_reject') : 'Reject'}</button>`;
+            ? `<button type="button" class="request-approve-btn" data-action="approve-absence-request" data-request-id="${r.request_id}">${typeof t === 'function' ? t('absence_approve') : 'Approve'}</button>
+               <button type="button" class="request-reject-btn" data-action="reject-absence-request" data-request-id="${r.request_id}">${typeof t === 'function' ? t('absence_reject') : 'Reject'}</button>`
+            : `<button type="button" class="request-escalate-btn" data-action="escalate-absence-request" data-request-id="${r.request_id}">${typeof t === 'function' ? t('absence_escalate') : 'Escalate to Admin'}</button>
+               <button type="button" class="request-reject-btn" data-action="reject-absence-request" data-request-id="${r.request_id}">${typeof t === 'function' ? t('absence_reject') : 'Reject'}</button>`;
 
         return `
         <div class="request-card">
@@ -2091,43 +2172,9 @@ window.rejectPhotoRequest = async (requestId) => {
     }
 };
 
-window.approveCertificateRequest = async (requestId) => {
-    const confirmed = await showConfirmModal("Approve this certificate request? The student will be able to download their certificate.", "Approve certificate?");
-    if (!confirmed) return;
-    try {
-        const res = await apiFetch(`${API_BASE}/api/homeroom/certificate-requests/${requestId}/approve`, { method: 'POST' });
-        const data = await res.json();
-        if (!res.ok) { showAlertModal(data.error || "Could not approve this request."); return; }
-        showSuccessModal(data.message);
-        await loadActionCenterRequests();
-    } catch (err) {
-        console.error("approveCertificateRequest error:", err);
-        showAlertModal("Could not connect to server.");
-    }
-};
-
-window.rejectCertificateRequest = async (requestId) => {
-    const reason = await showPromptModal(
-        "Reject this certificate request? You can add an optional reason below — it'll be shown to the student.",
-        "Reject certificate?",
-        "Reason (optional)"
-    );
-    if (reason === null) return; // cancelled
-    try {
-        const res = await apiFetch(`${API_BASE}/api/homeroom/certificate-requests/${requestId}/reject`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ reason: reason || undefined })
-        });
-        const data = await res.json();
-        if (!res.ok) { showAlertModal(data.error || "Could not reject this request."); return; }
-        showSuccessModal(data.message);
-        await loadActionCenterRequests();
-    } catch (err) {
-        console.error("rejectCertificateRequest error:", err);
-        showAlertModal("Could not connect to server.");
-    }
-};
+// Certificate-request approve/reject used to live here (homeroom teacher),
+// but that responsibility now belongs to the Principal — see server.js,
+// where the /api/homeroom/certificate-requests* routes were removed.
 
 // Direct photo upload — no approval step needed, becomes official
 // immediately (see /api/homeroom/upload-student-photo on the server).
@@ -2256,7 +2303,7 @@ function renderTextbooksGrid(data) {
     const previousScrollTop = existingScroller ? existingScroller.scrollTop : 0;
     const previousScrollLeft = existingScroller ? existingScroller.scrollLeft : 0;
 
-    const headerCells = data.subjects.map(s => `<th>${s.subject_name}</th>`).join('');
+    const headerCells = data.subjects.map(s => `<th>${escapeHtml(s.subject_name)}</th>`).join('');
 
     const rows = data.students.map(student => {
         const cells = student.books.map(book => {
@@ -2266,21 +2313,21 @@ function renderTextbooksGrid(data) {
             if (book.lost) {
                 return `<td>
                     <span class="textbook-badge textbook-lost">Lost</span>
-                    <button class="textbook-action-btn textbook-action-undo" onclick="undoTextbookLost('${student.student_id}', ${book.subject_id})">Undo Lost</button>
+                    <button class="textbook-action-btn textbook-action-undo" data-action="undo-textbook-lost" data-student-id="${student.student_id}" data-subject-id="${book.subject_id}">Undo Lost</button>
                 </td>`;
             }
             if (book.issued) {
                 return `<td>
                     <span class="textbook-badge textbook-issued">Issued</span>
-                    <button class="textbook-action-btn" onclick="returnTextbook('${student.student_id}', ${book.subject_id})">Mark Returned</button>
-                    <button class="textbook-action-btn textbook-action-lost" onclick="markTextbookLost('${student.student_id}', ${book.subject_id})">Mark Lost</button>
+                    <button class="textbook-action-btn" data-action="return-textbook" data-student-id="${student.student_id}" data-subject-id="${book.subject_id}">Mark Returned</button>
+                    <button class="textbook-action-btn textbook-action-lost" data-action="mark-textbook-lost" data-student-id="${student.student_id}" data-subject-id="${book.subject_id}">Mark Lost</button>
                 </td>`;
             }
             return `<td>
-                <button class="textbook-action-btn" onclick="issueTextbook('${student.student_id}', ${book.subject_id})">Issue</button>
+                <button class="textbook-action-btn" data-action="issue-textbook" data-student-id="${student.student_id}" data-subject-id="${book.subject_id}">Issue</button>
             </td>`;
         }).join('');
-        return `<tr><td>${student.full_name}</td>${cells}</tr>`;
+        return `<tr><td>${escapeHtml(student.full_name)}</td>${cells}</tr>`;
     }).join('');
 
     // .textbook-table-scroll is this grid's own bounded scroll container —
@@ -2448,7 +2495,7 @@ function renderTextbookPushStatus(data) {
             <div style="background:#e2e8f0; border-radius:6px; height:8px; overflow:hidden; margin-bottom:12px;">
                 <div style="background:${barColor}; height:100%; width:${Math.min(data.percent_resolved, 100)}%;"></div>
             </div>
-            <button class="btn-primary push-btn" onclick="pushTextbookReport()">
+            <button class="btn-primary push-btn" data-action="push-textbook-report">
                 Push Textbook Report to Admin VP
             </button>
             ${!meetsThreshold ? `<p style="font-size:0.8rem; color:#dc2626; margin-top:8px;">
@@ -2567,7 +2614,7 @@ function renderMarksPushStatus(data) {
             <div style="background:#e2e8f0; border-radius:6px; height:8px; overflow:hidden; margin-bottom:12px;">
                 <div style="background:${barColor}; height:100%; width:${Math.min(data.percent_pushed, 100)}%;"></div>
             </div>
-            <button class="btn-primary push-btn" onclick="pushMarksReport()" ${!meetsThreshold ? 'disabled' : ''}>
+            <button class="btn-primary push-btn" data-action="push-marks-report" ${!meetsThreshold ? 'disabled' : ''}>
                 Push ${data.term} Marks to Academic VP
             </button>
             ${!meetsThreshold ? `<p style="font-size:0.8rem; color:#dc2626; margin-top:8px;">
@@ -2776,12 +2823,12 @@ async function loadContactThreads() {
         }
 
         list.innerHTML = threads.map(t => `
-            <div class="contact-thread-row" onclick="openContactThread(${t.thread_id})">
+            <div class="contact-thread-row" data-action="open-contact-thread" data-thread-id="${t.thread_id}">
                 <div>
-                    <strong>${t.subject}</strong>
-                    <span class="contact-thread-meta">${t.category} → ${t.recipient_role}${t.cc_roles && t.cc_roles.length ? ` (cc: ${t.cc_roles.join(', ')})` : ''}</span>
+                    <strong>${escapeHtml(t.subject)}</strong>
+                    <span class="contact-thread-meta">${escapeHtml(t.category)} → ${escapeHtml(t.recipient_role)}${t.cc_roles && t.cc_roles.length ? ` (cc: ${t.cc_roles.map(escapeHtml).join(', ')})` : ''}</span>
                 </div>
-                <span class="contact-status contact-status-${t.status.toLowerCase()}">${t.status}</span>
+                <span class="contact-status contact-status-${t.status.toLowerCase()}">${escapeHtml(t.status)}</span>
             </div>`).join('');
     } catch (err) {
         console.error("Load contact threads error:", err);
@@ -2807,18 +2854,18 @@ window.openContactThread = async (thread_id) => {
 
         const messagesHtml = messages.map(m => `
             <div class="contact-message ${m.sender_role === 'teacher' ? 'contact-message-mine' : 'contact-message-theirs'}">
-                <div class="contact-message-meta">${m.sender_role === 'teacher' ? 'You' : thread.recipient_role} — ${new Date(m.sent_at).toLocaleString()}</div>
-                <div>${m.body}</div>
+                <div class="contact-message-meta">${m.sender_role === 'teacher' ? 'You' : escapeHtml(thread.recipient_role)} — ${new Date(m.sent_at).toLocaleString()}</div>
+                <div>${escapeHtml(m.body).replace(/\n/g, '<br>')}</div>
             </div>`).join('');
 
         content.innerHTML = `
-            <h3>${thread.subject}</h3>
-            <p style="font-size:0.85rem; color:#64748b;">${thread.category} → ${thread.recipient_role}${thread.cc_roles && thread.cc_roles.length ? ` <span style="color:#94a3b8;">(cc: ${thread.cc_roles.join(', ')})</span>` : ''}</p>
+            <h3>${escapeHtml(thread.subject)}</h3>
+            <p style="font-size:0.85rem; color:#64748b;">${escapeHtml(thread.category)} → ${escapeHtml(thread.recipient_role)}${thread.cc_roles && thread.cc_roles.length ? ` <span style="color:#94a3b8;">(cc: ${thread.cc_roles.map(escapeHtml).join(', ')})</span>` : ''}</p>
             <div class="contact-thread-messages">${messagesHtml}</div>
             <textarea id="contact-reply-body" class="form-input" rows="3" placeholder="Write a reply..."></textarea>
             <div style="display:flex; gap:10px;">
-                <button class="btn-primary" onclick="sendContactReply()" style="width:auto; padding:10px 20px;">Reply</button>
-                <button class="btn-primary" onclick="toggleContactStatus('${thread.status === 'Open' ? 'Resolved' : 'Open'}')" style="width:auto; padding:10px 20px; background:#64748b;">
+                <button class="btn-primary" data-action="send-contact-reply" style="width:auto; padding:10px 20px;">Reply</button>
+                <button class="btn-primary" data-action="toggle-contact-status" data-status="${thread.status === 'Open' ? 'Resolved' : 'Open'}" style="width:auto; padding:10px 20px; background:#64748b;">
                     Mark as ${thread.status === 'Open' ? 'Resolved' : 'Open'}
                 </button>
             </div>`;
@@ -2898,20 +2945,31 @@ function setupNavigation() {
             navLinks.forEach(l => l.classList.remove('active'));
             clicked.classList.add('active');
 
+            // Mirror the top-bar title to whichever nav item was just
+            // clicked, using that link's own label span so it reuses the
+            // exact same i18n key (and current language) as the sidebar.
+            const labelEl = clicked.querySelector('span[data-i18n]');
+            updatePageTitle(
+                labelEl ? labelEl.getAttribute('data-i18n') : null,
+                labelEl ? labelEl.textContent : null
+            );
+
             pages.forEach(p => p.style.display = 'none');
             if (typeof closeQrScanner === 'function') closeQrScanner();
 
             const target = clicked.getAttribute('data-page');
             const targetPage = document.getElementById(`page-${target}`);
             if (targetPage) {
-                // Class Attendance ("myclass") uses a flex layout in CSS —
-                // frozen header on top, scrollable roster below — so it
-                // needs display:flex specifically. Forcing 'block' here
-                // (as every other page uses) breaks that flex chain: the
-                // roster then just grows to its full, un-clipped height
-                // and the page's own overflow:hidden clips it with no way
-                // to scroll at all.
-                targetPage.style.display = (target === 'myclass') ? 'flex' : 'block';
+                // Class Attendance ("myclass") uses a flex layout on desktop
+                // only — frozen header on top, scrollable roster below —
+                // so it needs display:flex there specifically. On mobile
+                // (see the max-width:900px rules in style.css) that frozen
+                // header eats too much of the screen, so the mobile layout
+                // drops the flex/frozen-header split and just uses 'block'
+                // like every other page, letting the whole page scroll
+                // normally instead.
+                const isMobileLayout = window.matchMedia('(max-width: 900px)').matches;
+                targetPage.style.display = (target === 'myclass' && !isMobileLayout) ? 'flex' : 'block';
                 // View Students was only ever loaded once at page load
                 // (see the DOMContentLoaded init), so a student added,
                 // transferred, or reassigned elsewhere never showed up
@@ -3063,20 +3121,33 @@ function populateStudentFilterOptions(students) {
 function renderStudentTableAndStats(students) {
     const tbody = document.getElementById('student-table-body');
     if (tbody) {
-        tbody.innerHTML = students.map(s => `
+        tbody.innerHTML = students.map(s => {
+            const fullName = [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' ');
+            // id_photo_url only gets set once a student's ID-photo request
+            // is approved (see /api/student/upload-id-photo) — students
+            // without one yet show a plain placeholder instead of a
+            // clickable thumbnail.
+            const photoCell = s.id_photo_url
+                ? `<img src="${escapeHtml(s.id_photo_url)}" alt="Photo of ${escapeHtml(fullName)}"
+                       class="student-photo-thumb" data-action="preview-student-photo"
+                       data-photo-url="${escapeHtml(s.id_photo_url)}" data-student-name="${escapeHtml(fullName)}" />`
+                : `<div class="student-photo-thumb-placeholder" aria-hidden="true">—</div>`;
+            return `
             <tr>
-                <td>${s.student_id}</td>
-                <td>${[s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' ')}</td>
-                <td>${s.sex}</td>
+                <td>${escapeHtml(s.student_id)}</td>
+                <td>${photoCell}</td>
+                <td>${escapeHtml(fullName)}</td>
+                <td>${escapeHtml(s.sex)}</td>
                 <td>${s.class_level}</td>
                 <td>${s.stream}</td>
                 <td>${s.section}</td>
                 <td>
-                    <button onclick="viewStudentProgress('${s.student_id}', '${s.stream}')">
+                    <button data-action="view-student-progress" data-student-id="${s.student_id}" data-stream="${s.stream}">
                         View
                     </button>
                 </td>
-            </tr>`).join('');
+            </tr>`;
+        }).join('');
     }
 
     const totalEl = document.getElementById('total-count');
@@ -3163,10 +3234,17 @@ async function loadProfileData() {
         const displayEl = document.getElementById('profile-contact-display');
         if (displayEl) displayEl.textContent = data.contact_number || '—';
 
-        // Greet the teacher by first name in the header
+        // Greet the teacher by their full name in the header (desktop).
         const greeting = document.getElementById('nav-greeting');
-        if (greeting && data.full_name) {
-            greeting.textContent = `Hi, ${data.full_name.split(' ')[0]}!`;
+        const greetingName = document.getElementById('nav-greeting-name');
+        if (data.full_name) {
+            const firstName = data.full_name.split(' ')[0];
+            if (greeting) greeting.textContent = `Hi, ${data.full_name}!`;
+            // Compact, prefix-free version shown next to the avatar on
+            // mobile, where there isn't room for the "Hi, ...!" greeting —
+            // kept to first name only since that space is intentionally
+            // tight (see #nav-greeting-name in style.css).
+            if (greetingName) greetingName.textContent = firstName;
         }
 
         const navAvatar = document.getElementById('nav-avatar');
@@ -3601,6 +3679,238 @@ function setupPreferenceListeners() {
     });
 }
 
+// Wires up every control that used to carry an inline on* HTML attribute
+// (onclick / onchange / oninput / onkeydown / onerror). Centralizing them
+// here — instead of injecting handlers as strings in markup — keeps
+// executable JS out of index.html and out of any HTML that ever gets
+// rendered from user- or server-supplied data (CSP-friendly, XSS-safer).
+function setupStaticEventListeners() {
+    // click handlers: id -> function to call (no args)
+    const clickHandlers = {
+        'notification-btn': window.toggleNotificationPanel,
+        'notif-clear-btn': window.markAllNotificationsRead,
+        'settings-btn': window.navigateToProfile,
+        'help-btn': window.openHelpModal,
+        'user-profile-trigger': window.toggleDropdown,
+        'modal-close-btn': window.closeModal,
+        'search-student-btn': window.searchStudent,
+        'submit-individual-mark-btn': window.submitIndividualMark,
+        'submit-subject-entry-request-btn': window.submitSubjectEntryRequest,
+        'submit-late-marks-request-btn': window.submitLateMarksRequest,
+        'open-qr-scanner-btn': window.openQrScanner,
+        'close-qr-scanner-btn': window.closeQrScanner,
+        'flip-idcard-btn': window.flipIdCard,
+        'print-idcard-btn': window.printIdCard,
+        'upload-student-photo-btn': window.uploadStudentPhoto,
+        'reset-homeroom-password-btn': window.resetHomeroomStudentPassword,
+        'edit-contact-btn': window.toggleContactEdit,
+        'cancel-contact-edit-btn': window.toggleContactEdit,
+        'save-profile-btn': window.saveProfileChanges,
+        'update-password-btn': window.updatePassword,
+        'send-absence-request-btn': window.sendAbsenceRequest,
+        'send-contact-message-btn': window.sendContactMessage,
+        'close-contact-thread-btn': window.closeContactThread,
+        'send-student-notification-btn': window.sendStudentNotification,
+        'load-homeroom-student-report-btn': window.loadHomeroomStudentReport,
+        'load-homeroom-section-report-btn': window.loadHomeroomSectionReport,
+        'success-modal-close-btn': window.closeSuccessModal,
+        'close-help-modal-btn': window.closeHelpModal,
+        'submit-help-request-btn': window.submitHelpRequest,
+        'photo-preview-close-btn': window.closePhotoPreviewModal,
+    };
+    for (const [id, handler] of Object.entries(clickHandlers)) {
+        const el = document.getElementById(id);
+        if (el && typeof handler === 'function') {
+            el.addEventListener('click', handler);
+        } else if (!el) {
+            console.warn(`setupStaticEventListeners: #${id} not found in DOM`);
+        }
+    }
+
+    // "Choose file" buttons that just forward a click to a hidden <input type="file">
+    const fileTriggers = {
+        'choose-photo-btn': 'upload-photo-file',
+        'change-photo-btn': 'avatar-upload',
+        'upload-signature-trigger-btn': 'signature-upload',
+        'upload-idphoto-trigger-btn': 'teacher-idphoto-upload',
+    };
+    for (const [btnId, fileInputId] of Object.entries(fileTriggers)) {
+        const btn = document.getElementById(btnId);
+        const input = document.getElementById(fileInputId);
+        if (btn && input) {
+            btn.addEventListener('click', () => input.click());
+        }
+    }
+
+    // change handlers: id -> function receiving the native change event
+    const changeHandlers = {
+        'type-select': () => window.updateScoreInputLimits(),
+        'gradesheet-section': () => window.onGradeSheetSectionChange(),
+        'gradesheet-subject': () => window.onGradeSheetSubjectChange(),
+        'late-marks-subject-select': () => window.loadLateMarksIncompleteStudents(),
+        'upload-photo-file': (e) => window.updateFileName(e.target, 'upload-photo-file-name'),
+        'avatar-upload': () => window.uploadAvatar(),
+        'signature-upload': () => window.uploadTeacherSignature(),
+        'teacher-idphoto-upload': () => window.uploadTeacherIdPhoto(),
+    };
+    for (const [id, handler] of Object.entries(changeHandlers)) {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('change', handler);
+    }
+
+    // input handlers: id -> function receiving the native input event
+    const inputHandlers = {
+        'gradesheet-search': () => window.applyGradeSheetSearch(),
+        'myclass-search': () => window.applyMyClassSearch(),
+        'score-input': (e) => window.clampScoreInput(e.target),
+    };
+    for (const [id, handler] of Object.entries(inputHandlers)) {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', handler);
+    }
+
+    // Segmented "Semester 1 / Semester 2" toggle buttons for Late Marks
+    const semesterToggleMap = {
+        'late-marks-term-s1-btn': 'Semester 1',
+        'late-marks-term-s2-btn': 'Semester 2',
+    };
+    for (const [id, term] of Object.entries(semesterToggleMap)) {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('click', () => window.setLateMarksTerm(term));
+    }
+
+    // EN / AM language switch buttons
+    const langMap = {
+        'lang-btn-en': 'en',
+        'lang-btn-am': 'am',
+    };
+    for (const [id, lang] of Object.entries(langMap)) {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener('click', () => {
+                if (typeof window.setLang === 'function') window.setLang(lang);
+            });
+        }
+    }
+
+    // Enter/Space activates the profile dropdown trigger (it's a <div role="button">,
+    // so unlike a real <button> it needs an explicit keydown handler for a11y)
+    const profileTrigger = document.getElementById('user-profile-trigger');
+    if (profileTrigger) {
+        profileTrigger.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                window.toggleDropdown();
+            }
+        });
+    }
+
+    // Avatar / photo <img> elements: hide broken image and reveal the
+    // adjacent initials/placeholder element instead of showing a broken-image icon
+    const imageFallbacks = [
+        { imgId: 'nav-school-logo', fallbackId: null }, // just hides itself, no sibling to reveal
+        { imgId: 'nav-avatar', fallbackId: 'nav-avatar-initials' },
+        { imgId: 'idcard-photo', fallbackId: 'idcard-photo-placeholder' },
+        { imgId: 'profile-img', fallbackId: 'profile-avatar-initials' },
+    ];
+    for (const { imgId, fallbackId } of imageFallbacks) {
+        const img = document.getElementById(imgId);
+        if (!img) continue;
+        img.addEventListener('error', () => {
+            img.style.display = 'none';
+            if (fallbackId) {
+                const fallback = document.getElementById(fallbackId);
+                if (fallback) fallback.style.display = 'flex';
+            }
+        });
+    }
+}
+
+// DYNAMIC ACTION DELEGATION — buttons/rows/selects that get (re)rendered
+// into innerHTML (request lists, gradesheet rows, textbook cells, push
+// buttons, notifications, etc.) can't use setupStaticEventListeners'
+// getElementById-and-attach approach, since the elements don't exist yet
+// at setup time and get replaced on every re-render. These used to carry
+// inline onclick="..."/onchange="..."/oninput="..." attributes instead,
+// but the CSP's script-src-attr directive blocks all inline event-handler
+// attributes outright (helmet's default, and intentionally so — it closes
+// off a whole class of XSS). So instead: one delegated listener per event
+// type on document, keyed off a data-action attribute (or, for
+// notification items, the data-type they already carry), reading whatever
+// arguments the handler needs from data-* attributes on the same element.
+function setupDynamicActionDelegation() {
+    const clickActions = {
+        'submit-late-mark': (el) => window.submitLateMark(el.dataset.studentId, Number(el.dataset.subjectId), el),
+        'mark-my-class-present': (el) => window.markMyClassPresent(el.dataset.studentId),
+        'undo-my-class-present': (el) => window.undoMyClassPresent(el.dataset.studentId),
+        'push-report': (el) => window.pushReport({
+            subject_id: Number(el.dataset.subjectId),
+            class_level: el.dataset.classLevel,
+            section: el.dataset.section,
+            stream: el.dataset.stream,
+        }, el.dataset.viaRequest === 'true'),
+        'notify-incomplete-students': () => window.notifyIncompleteStudents(),
+        'export-section-report-csv': () => window.exportSectionReportCSV(),
+        'close-homeroom-section-report': () => window.closeHomeroomSectionReport(),
+        'approve-photo-request': (el) => window.approvePhotoRequest(Number(el.dataset.requestId)),
+        'reject-photo-request': (el) => window.rejectPhotoRequest(Number(el.dataset.requestId)),
+        'approve-absence-request': (el) => window.approveAbsenceRequest(Number(el.dataset.requestId)),
+        'reject-absence-request': (el) => window.rejectAbsenceRequest(Number(el.dataset.requestId)),
+        'escalate-absence-request': (el) => window.escalateAbsenceRequest(Number(el.dataset.requestId)),
+        'undo-textbook-lost': (el) => window.undoTextbookLost(el.dataset.studentId, Number(el.dataset.subjectId)),
+        'return-textbook': (el) => window.returnTextbook(el.dataset.studentId, Number(el.dataset.subjectId)),
+        'mark-textbook-lost': (el) => window.markTextbookLost(el.dataset.studentId, Number(el.dataset.subjectId)),
+        'issue-textbook': (el) => window.issueTextbook(el.dataset.studentId, Number(el.dataset.subjectId)),
+        'push-textbook-report': () => window.pushTextbookReport(),
+        'push-marks-report': (el) => { if (!el.disabled) window.pushMarksReport(); },
+        'open-contact-thread': (el) => window.openContactThread(Number(el.dataset.threadId)),
+        'send-contact-reply': () => window.sendContactReply(),
+        'toggle-contact-status': (el) => window.toggleContactStatus(el.dataset.status),
+        'view-student-progress': (el) => window.viewStudentProgress(el.dataset.studentId, el.dataset.stream),
+        'save-gradesheet-row': (el) => window.saveGradeSheetRow(el.dataset.studentId, el),
+        'preview-student-photo': (el) => window.previewStudentPhoto(el.dataset.photoUrl, el.dataset.studentName),
+    };
+    document.addEventListener('click', (e) => {
+        const actionEl = e.target.closest('[data-action]');
+        if (actionEl && clickActions[actionEl.dataset.action]) {
+            clickActions[actionEl.dataset.action](actionEl);
+            return;
+        }
+        // Notification items key off the data-type they already carry
+        // (used elsewhere to style/group them) rather than a separate
+        // data-action, since it already uniquely identifies the handler.
+        const notifEl = e.target.closest('.notif-item[data-type]');
+        if (notifEl) {
+            const id = Number(notifEl.dataset.id);
+            if (notifEl.dataset.type === 'subject_request') window.openSubjectRequestNotification(id);
+            else if (notifEl.dataset.type === 'late_marks_request') window.openLateMarksRequestNotification(id);
+            else if (notifEl.dataset.type === 'thread') window.openNotificationThread(id);
+        }
+    });
+
+    const changeActions = {
+        'update-late-marks-score-limits': (el) => window.updateLateMarksScoreLimits(el),
+        'set-student-status': (el) => window.setStudentStatus(el.dataset.studentId, el.value),
+    };
+    document.addEventListener('change', (e) => {
+        const actionEl = e.target.closest('[data-action]');
+        if (actionEl && changeActions[actionEl.dataset.action]) {
+            changeActions[actionEl.dataset.action](actionEl);
+        }
+    });
+
+    // Gradesheet score inputs: mark the cell dirty and clear any
+    // saved/error state as soon as the teacher edits it. Scoped to the
+    // .gradesheet-input class rather than a data-action, since every
+    // instance does exactly this and nothing else.
+    document.addEventListener('input', (e) => {
+        if (e.target.classList && e.target.classList.contains('gradesheet-input')) {
+            e.target.classList.add('gradesheet-input-dirty');
+            e.target.classList.remove('gradesheet-input-saved', 'gradesheet-input-error');
+        }
+    });
+}
+
 // STUDENT PROGRESS MODAL
 window.viewStudentProgress = async (studentId, studentStream) => {
     try {
@@ -3682,7 +3992,7 @@ function renderProgressTable(subjects, marks) {
         });
 
         tbody.innerHTML += `<tr>
-            <td>${subj.subject_name}</td>
+            <td>${escapeHtml(subj.subject_name)}</td>
             ${cellsHtml}
         </tr>`;
     });
@@ -3702,6 +4012,28 @@ function renderProgressTable(subjects, marks) {
 
 window.closeModal = () => {
     const modal = document.getElementById('student-modal');
+    if (modal) trapFocusClose(modal);
+};
+
+// STUDENT ID-PHOTO PREVIEW MODAL
+// Opened by clicking a thumbnail in the View Students table (see
+// renderStudentTableAndStats). Reuses the same .modal/.modal-content shell
+// and focus-trap helpers as student-modal above.
+window.previewStudentPhoto = (photoUrl, studentName) => {
+    if (!photoUrl) return;
+    const modal = document.getElementById('student-photo-modal');
+    const img = document.getElementById('photo-preview-img');
+    if (!modal || !img) return;
+    img.src = photoUrl;
+    img.alt = studentName ? `Photo of ${studentName}` : 'Student photo';
+    setText('photo-preview-name', studentName || '');
+    const closeBtn = document.getElementById('photo-preview-close-btn');
+    trapFocusOpen(modal, closeBtn);
+    modal.addEventListener('modal-escape', () => trapFocusClose(modal), { once: true });
+};
+
+window.closePhotoPreviewModal = () => {
+    const modal = document.getElementById('student-photo-modal');
     if (modal) trapFocusClose(modal);
 };
 
@@ -3950,7 +4282,7 @@ window.searchStudent = async () => {
         window.currentStudentStream = student.stream;
         display.innerHTML = `
             <div class="student-info-card" style="padding:10px; background:#e2e8f0; border-radius:8px; margin:10px 0;">
-                <strong>Name:</strong> ${[student.first_name, student.middle_name, student.last_name].filter(Boolean).join(' ')}<br>
+                <strong>Name:</strong> ${escapeHtml([student.first_name, student.middle_name, student.last_name].filter(Boolean).join(' '))}<br>
                 <strong>Grade:</strong> ${student.class_level} | <strong>Section:</strong> ${student.section}
             </div>`;
         inputs.style.display = 'block';
@@ -4035,6 +4367,10 @@ window.navigateToProfile = () => {
     document.querySelectorAll('.page-content').forEach(p => p.style.display = 'none');
     const profilePage = document.getElementById('page-profile');
     if (profilePage) profilePage.style.display = 'block';
+    // This path bypasses the sidebar's own nav-link click handler (there's
+    // no data-i18n label to reuse here — the dropdown link is plain text),
+    // so the top-bar title needs updating explicitly too.
+    updatePageTitle(null, 'Profile Settings');
     loadTeacherDocumentStatus();
 };
 
@@ -4106,7 +4442,7 @@ function renderNotifications(data) {
         if (item.type === 'subject_request') {
             const verb = item.status === 'approved' ? 'approved' : 'rejected';
             return `
-            <div class="notif-item" data-type="subject_request" data-id="${item.request_id}" onclick="openSubjectRequestNotification(${item.request_id})">
+            <div class="notif-item" data-type="subject_request" data-id="${item.request_id}">
                 <strong>Subject access ${verb}</strong>
                 Your request for ${escapeHtml(item.subject_name)} was ${verb} by the Academic VP.
             </div>`;
@@ -4114,13 +4450,13 @@ function renderNotifications(data) {
         if (item.type === 'late_marks_request') {
             const verb = item.status === 'approved' ? 'approved' : 'rejected';
             return `
-            <div class="notif-item" data-type="late_marks_request" data-id="${item.request_id}" onclick="openLateMarksRequestNotification(${item.request_id})">
+            <div class="notif-item" data-type="late_marks_request" data-id="${item.request_id}">
                 <strong>Last semester mark entry ${verb}</strong>
                 Your request to enter last semester's marks was ${verb} by the Academic VP.
             </div>`;
         }
         return `
-            <div class="notif-item" data-type="thread" data-id="${item.thread_id}" onclick="openNotificationThread(${item.thread_id})">
+            <div class="notif-item" data-type="thread" data-id="${item.thread_id}">
                 <strong>Reply from ${item.from}</strong>
                 ${item.subject} &mdash; ${item.reply_count} new message${item.reply_count !== 1 ? 's' : ''}
             </div>`;
@@ -4184,7 +4520,7 @@ window.openLateMarksRequestNotification = (request_id) => {
         loadGradeSheetSections();
         loadLateMarksRequestUI();
     }
-    apiFetch(`${API_BASE}/api/homeroom/late-marks-requests/mark-seen`, { method: 'POST' }).catch(() => {});
+    apiFetch(`${API_BASE}/api/teacher/subject-entry-requests/mark-seen`, { method: 'POST' }).catch(() => {});
     loadNotifications();
 };
 
@@ -4193,24 +4529,22 @@ window.markAllNotificationsRead = async () => {
     if (!list) return;
     const items = list.querySelectorAll('.notif-item');
     const promises = [];
-    let hasSubjectRequest = false;
-    let hasLateMarksRequest = false;
+    // Both 'subject_request' and 'late_marks_request' notifications now
+    // live in the same subject_entry_requests table, so a single
+    // mark-seen call clears either kind — no need to track them
+    // separately.
+    let hasEntryRequest = false;
     items.forEach(item => {
         const type = item.getAttribute('data-type');
         const id = item.getAttribute('data-id');
         if (type === 'thread' && id) {
             promises.push(apiFetch(`${API_BASE}/api/contact/thread/${id}/mark-read`, { method: 'POST' }));
-        } else if (type === 'subject_request') {
-            hasSubjectRequest = true;
-        } else if (type === 'late_marks_request') {
-            hasLateMarksRequest = true;
+        } else if (type === 'subject_request' || type === 'late_marks_request') {
+            hasEntryRequest = true;
         }
     });
-    if (hasSubjectRequest) {
+    if (hasEntryRequest) {
         promises.push(apiFetch(`${API_BASE}/api/teacher/subject-entry-requests/mark-seen`, { method: 'POST' }));
-    }
-    if (hasLateMarksRequest) {
-        promises.push(apiFetch(`${API_BASE}/api/homeroom/late-marks-requests/mark-seen`, { method: 'POST' }));
     }
     await Promise.all(promises);
     loadNotifications();
@@ -4247,6 +4581,19 @@ const logoutBtns = document.querySelectorAll('.logout-btn');
 logoutBtns.forEach(logoutBtn => {
     logoutBtn.addEventListener('click', async (e) => {
         e.preventDefault();
+
+        // A stray tap on this link (easy to do from the sidebar/dropdown)
+        // used to log the teacher out immediately with no way back — this
+        // reuses the app's existing confirm modal so they have to
+        // deliberately confirm before the session actually ends.
+        const confirmed = await showConfirmModal(
+            typeof t === 'function'
+                ? t('logout_confirm_message')
+                : "Are you sure you want to sign out?",
+            typeof t === 'function' ? t('logout_confirm_title') : "Sign out?"
+        );
+        if (!confirmed) return;
+
         try {
             await apiFetch(`${API_BASE}/api/logout`, { method: 'POST' });
         } catch (err) {
@@ -4390,8 +4737,7 @@ function renderGradeSheetTable(students) {
                 <input type="number" min="${limits.min}" max="${limits.max}" step="0.5" class="gradesheet-input"
                        id="gs-${s.student_id}-${type}"
                        data-student-id="${s.student_id}"
-                       data-type="${type}"
-                       oninput="this.classList.add('gradesheet-input-dirty'); this.classList.remove('gradesheet-input-saved','gradesheet-input-error');">
+                       data-type="${type}">
             </td>`;
         }).join('');
         return `
@@ -4399,7 +4745,7 @@ function renderGradeSheetTable(students) {
                 <td><strong>${escapeHtml(s.student_id)}</strong><br><span style="color:#64748b;">${escapeHtml(fullName)}</span></td>
                 ${cells}
                 <td>
-                    <button type="button" class="btn-primary gradesheet-row-save-btn" onclick="saveGradeSheetRow('${escapeHtml(s.student_id)}', this)">Save</button>
+                    <button type="button" class="btn-primary gradesheet-row-save-btn" data-action="save-gradesheet-row" data-student-id="${escapeHtml(s.student_id)}">Save</button>
                     <div class="gradesheet-row-status" data-row-status="${escapeHtml(s.student_id)}"></div>
                 </td>
             </tr>`;

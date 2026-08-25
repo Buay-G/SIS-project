@@ -45,19 +45,33 @@ async function checkAuthAndInit() {
         CURRENT_ADMIN = data;
         CURRENT_TITLE = data.title || 'Admin VP';
         const displayName = data.admin_full_name || data.user_id || 'Admin';
+        // e.g. school_name "Newland" + school_level "SECONDARY SCHOOL" ->
+        // "NEWLAND SECONDARY SCHOOL". Uppercased unconditionally rather
+        // than trusting the stored casing of either field, so this is
+        // consistent even if a school's name wasn't entered in all caps.
+        const schoolDisplayName = [data.school_name, data.school_level].filter(Boolean).join(' ').toUpperCase();
 
-        document.getElementById('sa-school-name').textContent = data.school_name || '—';
+        document.getElementById('sa-school-name').textContent = schoolDisplayName || '—';
         document.getElementById('sa-title-badge').textContent = CURRENT_TITLE;
         document.getElementById('sa-nav-admin-id').textContent = data.user_id || '—';
         document.getElementById('profile-admin-id').textContent = data.user_id || '—';
         document.getElementById('profile-admin-id-2').textContent = data.user_id || '—';
         document.getElementById('profile-title').textContent = CURRENT_TITLE;
-        document.getElementById('profile-school-name').textContent = data.school_name || '—';
+        document.getElementById('profile-school-name').textContent = schoolDisplayName || '—';
         document.getElementById('profile-header-name').textContent = displayName;
         document.getElementById('profile-header-title').textContent = CURRENT_TITLE;
 
-        document.getElementById('topbar-school-name').textContent = data.school_name || '—';
-        document.getElementById('topbar-moe-code').textContent = data.moe_school_code ? `MOE ${data.moe_school_code}` : 'MOE —';
+        document.getElementById('topbar-school-name').textContent = schoolDisplayName || '—';
+        document.getElementById('topbar-moe-code').textContent = data.moe_school_code ? t('sa_topbar_moe', { code: data.moe_school_code }) : t('sa_topbar_moe_unknown');
+
+        // The sidebar badge starts as plain "SA" text (see index.html) —
+        // once the zone this school belongs to has a logo on file
+        // (uploaded by a super admin via /api/super/zones/:zone_id/logo),
+        // that image replaces it here instead.
+        const logoBadge = document.getElementById('sa-logo-badge');
+        if (logoBadge && data.zone_logo_url) {
+            logoBadge.innerHTML = `<img src="${API_BASE}${data.zone_logo_url}" alt="" />`;
+        }
 
         // Name-based initials (e.g. "Abebe Kebede" -> "AK") when we have a
         // real name; otherwise fall back to the title ("Admin VP" -> "AV").
@@ -183,9 +197,9 @@ async function loadAlertsDropdown() {
                 title: `${lucideIcon('user', 15)} ${escapeHtml(r.first_name)} ${escapeHtml(r.last_name)} (${r.teacher_id})`,
                 meta: `${t('sa_nav_absence')}: ${formatEthDateRange(r.date_from, r.date_to)}${r.reason ? ' · ' + escapeHtml(r.reason) : ''}`,
                 actionsHtml: `
-                    <button class="btn btn-success" onclick="decideTeacherAbsence(${r.request_id}, 'approve', 'admin')">${t('sa_approve')}</button>
-                    <button class="btn btn-danger" onclick="decideTeacherAbsence(${r.request_id}, 'reject', 'admin')">${t('sa_reject')}</button>
-                    <button class="btn btn-ghost" onclick="navigateToPage('absence')">${t('sa_view')}</button>`
+                    <button class="btn btn-success" ${actionAttrs('decideTeacherAbsence', [r.request_id, 'approve', 'admin'])}>${t('sa_approve')}</button>
+                    <button class="btn btn-danger" ${actionAttrs('decideTeacherAbsence', [r.request_id, 'reject', 'admin'])}>${t('sa_reject')}</button>
+                    <button class="btn btn-ghost" ${actionAttrs('navigateToPage', ['absence'])}>${t('sa_view')}</button>`
             }));
         } else if (CURRENT_TITLE === 'Academic VP') {
             const [absRes, dropoutRes] = await Promise.all([
@@ -199,14 +213,14 @@ async function loadAlertsDropdown() {
                 title: `${lucideIcon('user', 15)} ${escapeHtml(r.first_name)} ${escapeHtml(r.last_name)} (${r.student_id})`,
                 meta: `${r.class_level}-${r.section} · ${formatEthDateRange(r.date_from, r.date_to)}`,
                 actionsHtml: `
-                    <button class="btn btn-success" onclick="decideStudentAbsence(${r.request_id}, 'approve')">${t('sa_approve')}</button>
-                    <button class="btn btn-danger" onclick="decideStudentAbsence(${r.request_id}, 'reject')">${t('sa_reject')}</button>
-                    <button class="btn btn-ghost" onclick="navigateToPage('student-absence-escalations')">${t('sa_view')}</button>`
+                    <button class="btn btn-success" ${actionAttrs('decideStudentAbsence', [r.request_id, 'approve'])}>${t('sa_approve')}</button>
+                    <button class="btn btn-danger" ${actionAttrs('decideStudentAbsence', [r.request_id, 'reject'])}>${t('sa_reject')}</button>
+                    <button class="btn btn-ghost" ${actionAttrs('navigateToPage', ['student-absence-escalations'])}>${t('sa_view')}</button>`
             }));
             items = items.concat(dropouts.map(r => alertItemHtml({
                 title: `${lucideIcon('user-x', 15)} ${escapeHtml(r.full_name)} (${r.student_id})`,
                 meta: `${r.class_level}-${r.section} · ${escapeHtml(r.reason_category || r.reason || '')}`,
-                actionsHtml: `<button class="btn btn-ghost" onclick="navigateToPage('dropout-requests')">${t('sa_view')}</button>`
+                actionsHtml: `<button class="btn btn-ghost" ${actionAttrs('navigateToPage', ['dropout-requests'])}>${t('sa_view')}</button>`
             })));
         } else if (CURRENT_TITLE === 'Principal') {
             const [escRes, casesRes, docsRes, transferRes] = await Promise.all([
@@ -224,27 +238,27 @@ async function loadAlertsDropdown() {
                 title: `${lucideIcon('triangle-alert', 15)} ${escapeHtml(r.first_name)} ${escapeHtml(r.last_name)} (${r.teacher_id})`,
                 meta: `${t('sa_nav_escalated_absence')}: ${formatEthDateRange(r.date_from, r.date_to)}${r.reason ? ' · ' + escapeHtml(r.reason) : ''}`,
                 actionsHtml: `
-                    <button class="btn btn-success" onclick="decideTeacherAbsence(${r.request_id}, 'approve', 'principal')">${t('sa_approve')}</button>
-                    <button class="btn btn-danger" onclick="decideTeacherAbsence(${r.request_id}, 'reject', 'principal')">${t('sa_reject')}</button>
-                    <button class="btn btn-ghost" onclick="navigateToPage('escalated-absence')">${t('sa_view')}</button>`
+                    <button class="btn btn-success" ${actionAttrs('decideTeacherAbsence', [r.request_id, 'approve', 'principal'])}>${t('sa_approve')}</button>
+                    <button class="btn btn-danger" ${actionAttrs('decideTeacherAbsence', [r.request_id, 'reject', 'principal'])}>${t('sa_reject')}</button>
+                    <button class="btn btn-ghost" ${actionAttrs('navigateToPage', ['escalated-absence'])}>${t('sa_view')}</button>`
             }));
             items = items.concat(cases.map(r => alertItemHtml({
                 title: `${lucideIcon('shield-alert', 15)} ${escapeHtml(r.full_name || r.student_id)}`,
                 meta: escapeHtml(r.description || ''),
-                actionsHtml: `<button class="btn btn-ghost" onclick="navigateToPage('disciplinary')">${t('sa_view')}</button>`
+                actionsHtml: `<button class="btn btn-ghost" ${actionAttrs('navigateToPage', ['disciplinary'])}>${t('sa_view')}</button>`
             })));
             items = items.concat(docs.map(r => alertItemHtml({
                 title: `${lucideIcon('signature', 15)} ${escapeHtml(r.teacher_name)} (${r.teacher_id})`,
                 meta: r.doc_type === 'signature' ? t('sa_doc_type_signature') : t('sa_doc_type_id_photo'),
-                actionsHtml: `<button class="btn btn-ghost" onclick="navigateToPage('document-approvals')">${t('sa_view')}</button>`
+                actionsHtml: `<button class="btn btn-ghost" ${actionAttrs('navigateToPage', ['document-approvals'])}>${t('sa_view')}</button>`
             })));
             items = items.concat(transfers.map(r => alertItemHtml({
                 title: `${lucideIcon('arrow-right-left', 15)} ${escapeHtml(r.full_name)} (${r.student_id})`,
                 meta: `${r.class_level}-${r.section}${r.reason ? ' · ' + escapeHtml(r.reason) : ''}`,
                 actionsHtml: `
-                    <button class="btn btn-success" onclick="approveTransferRequest(${r.request_id})">${t('sa_approve')}</button>
-                    <button class="btn btn-danger" onclick="rejectTransferRequest(${r.request_id})">${t('sa_reject')}</button>
-                    <button class="btn btn-ghost" onclick="navigateToPage('transfer-requests')">${t('sa_view')}</button>`
+                    <button class="btn btn-success" ${actionAttrs('approveTransferRequest', [r.request_id])}>${t('sa_approve')}</button>
+                    <button class="btn btn-danger" ${actionAttrs('rejectTransferRequest', [r.request_id])}>${t('sa_reject')}</button>
+                    <button class="btn btn-ghost" ${actionAttrs('navigateToPage', ['transfer-requests'])}>${t('sa_view')}</button>`
             })));
         }
     } catch (err) {
@@ -289,6 +303,15 @@ function filterNavByTitle(title) {
 document.addEventListener('DOMContentLoaded', () => {
     checkAuthAndInit();
 
+    // Wired here rather than an inline onclick="..." attribute — this
+    // portal's CSP (see helmet() in server.js) locks down
+    // script-src-attr by default, which silently blocks every inline
+    // event handler in the page (this bell included) unless that
+    // directive is explicitly relaxed. addEventListener isn't subject
+    // to that directive at all, so the bell works regardless of how
+    // strict script-src-attr is set.
+    document.getElementById('sa-alerts-btn')?.addEventListener('click', toggleAlertsDropdown);
+
     document.querySelectorAll('.nav-link[data-page]').forEach(link => {
         link.addEventListener('click', (e) => {
             e.preventDefault();
@@ -299,11 +322,21 @@ document.addEventListener('DOMContentLoaded', () => {
             const target = document.getElementById(`page-${page}`);
             if (target) target.classList.add('active');
             document.getElementById('sa-page-title').textContent = link.querySelector('span:not(.nav-icon)').textContent;
+            // New page = a different (or absent) .page-sticky-header /
+            // .sticky-filter-bar stack above the table, so re-measure —
+            // see updateStickyOffsets() for why this can't just be a
+            // one-time-at-load calculation.
+            updateStickyOffsets();
+
+            // Leaving the Teachers page (or any page) while the QR
+            // camera is running would otherwise leave the device's
+            // camera light on in the background.
+            if (page !== 'teachers') stopTeacherQrScanner();
 
             const loaders = {
                 dashboard: loadDashboard,
                 'teacher-setup': loadTeacherSetup,
-                teachers: loadTeacherLeaderboard,
+                teachers: () => { loadTeacherLeaderboard(); loadTeacherAttendanceToday(); },
                 textbooks: loadTextbooks,
                 absence: loadAbsenceTabs,
                 'student-absence-escalations': loadStudentAbsenceEscalations,
@@ -348,12 +381,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('sa-logout-btn').addEventListener('click', async (e) => {
         e.preventDefault();
+        const confirmed = await showConfirmModal(t('sa_logout_confirm_msg'), {
+            danger: true,
+            confirmLabel: t('sa_logout'),
+            cancelLabel: t('sa_cancel')
+        });
+        if (!confirmed) return;
         try { await apiFetch(`${API_BASE}/api/logout`, { method: 'POST' }); } catch {}
         window.location.href = '/login.html';
     });
 
     // Wire up all the action buttons once, up front
     document.getElementById('mark-attendance-btn')?.addEventListener('click', markTeacherAttendance);
+    initTeacherQrScanner();
     document.getElementById('punctuality-lookup-btn')?.addEventListener('click', lookupPunctuality);
     document.getElementById('grant-leave-btn')?.addEventListener('click', grantTeacherLeave);
     document.getElementById('tt-class-level')?.addEventListener('change', (e) => {
@@ -371,10 +411,11 @@ document.addEventListener('DOMContentLoaded', () => {
         renderTtBreakAfterOptions();
         renderTtPeriodPreview();
     });
+    document.getElementById('tt-period-minutes')?.addEventListener('input', renderTtPeriodPreview);
     document.getElementById('tt-break-after')?.addEventListener('change', renderTtPeriodPreview);
     document.getElementById('tt-break-minutes')?.addEventListener('input', renderTtPeriodPreview);
     document.getElementById('tt-start-time')?.addEventListener('input', (e) => {
-        showEthiopianTimeHint('tt-start-time-eth', e.target.value);
+        showStandardTimeHint('tt-start-time-eth', e.target.value);
         renderTtPeriodPreview();
     });
     document.getElementById('tt-generate-grid-btn')?.addEventListener('click', generateTtGrid);
@@ -387,8 +428,11 @@ document.addEventListener('DOMContentLoaded', () => {
         renderTaSectionCheckboxes();
         refreshAssignmentSubjectOptions();
     });
-    document.getElementById('hr-class-level')?.addEventListener('change', (e) =>
-        updateStreamOptionsForLevel(document.getElementById('hr-stream'), e.target.value));
+    document.getElementById('hr-class-level')?.addEventListener('change', (e) => {
+        updateStreamOptionsForLevel(document.getElementById('hr-stream'), e.target.value);
+        renderHrSectionOptions();
+    });
+    document.getElementById('hr-stream')?.addEventListener('change', renderHrSectionOptions);
     wireTeacherSearch('ta-teacher-search', 'ta-teacher-search-btn', 'ta-teacher-search-results', 'ta-teacher-select');
     wireTeacherSearch('hr-teacher-search', 'hr-teacher-search-btn', 'hr-teacher-search-results', 'hr-teacher-select');
     document.getElementById('subj-edit-btn')?.addEventListener('click', requestSubjectConfigEdit);
@@ -399,9 +443,13 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('send-warning-btn')?.addEventListener('click', sendConductWarning);
     document.getElementById('open-case-btn')?.addEventListener('click', openDisciplinaryCase);
     document.getElementById('students-filter')?.addEventListener('input', filterStudentsTable);
-    document.getElementById('students-class-filter')?.addEventListener('change', filterStudentsTable);
+    document.getElementById('students-class-filter')?.addEventListener('change', () => { refreshStudentSectionStreamFilters(); filterStudentsTable(); });
     document.getElementById('students-section-filter')?.addEventListener('change', filterStudentsTable);
-    document.getElementById('students-stream-filter')?.addEventListener('change', filterStudentsTable);
+    document.getElementById('students-stream-filter')?.addEventListener('change', () => { refreshStudentSectionStreamFilters(); filterStudentsTable(); });
+    document.getElementById('students-status-filter')?.addEventListener('change', filterStudentsTable);
+    document.getElementById('students-year-filter')?.addEventListener('change', () => loadStudents());
+    document.getElementById('transferred-year-filter')?.addEventListener('change', filterTransferredByYear);
+    document.getElementById('batches-year-filter')?.addEventListener('change', filterGraduationByYear);
     document.getElementById('lb-class-filter')?.addEventListener('change', () => {
         updateLeaderboardStreamFilterForClass();
         renderClassLeaderboard();
@@ -432,6 +480,10 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.classList.add('active');
             document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
             document.getElementById(`tab-${btn.dataset.tab}`).style.display = 'block';
+            // Switching tabs can swap in a different (or absent)
+            // .sticky-filter-bar — re-measure, same reasoning as the
+            // page-switch handler above.
+            updateStickyOffsets();
         });
     });
 });
@@ -445,7 +497,7 @@ window.onSisLangChange = () => {
         const page = active.id.replace('page-', '');
         const loaders = {
             dashboard: loadDashboard, textbooks: loadTextbooks, absence: loadAbsenceTabs,
-            teachers: loadTeacherLeaderboard,
+            teachers: () => { loadTeacherLeaderboard(); loadTeacherAttendanceToday(); },
             'teacher-setup': loadTeacherSetup, 'teacher-assignments': loadTeacherAssignments,
             'marks-review': loadMarksReview, 'mark-cutoff': loadMarkCutoffPage, semester: loadSemesterStatus,
             'escalated-absence': loadEscalatedAbsence, disciplinary: loadDisciplinaryCases,
@@ -534,7 +586,7 @@ async function loadDashboard() {
             stats.push(statCard(lucideIcon('triangle-alert'), t('sa_stat_escalated_absence'), escalated.length, escalated.length > 0 ? 'danger' : ''));
             stats.push(statCard(lucideIcon('shield-alert'), t('sa_stat_pending_cases'), cases.length, cases.length > 0 ? 'danger' : ''));
             stats.push(statCard(lucideIcon('signature'), t('sa_stat_pending_documents'), docs.length, docs.length > 0 ? 'warning' : ''));
-            stats.push(statCard(lucideIcon('plane-takeoff'), t('sa_stat_students_on_leave'), currentlyOnLeave, '', 'openStudentsOnLeaveModal()'));
+            stats.push(statCard(lucideIcon('plane-takeoff'), t('sa_stat_students_on_leave'), currentlyOnLeave, '', 'openStudentsOnLeaveModal'));
 
             // Bell badge + dropdown contents — shared logic in
             // loadAlertsDropdown() so the count here always matches what
@@ -607,7 +659,7 @@ async function loadDashboard() {
                             <span class="badge badge-none">${escapeHtml(lastSemester.term || '')}</span>
                         </h3>
                         <p class="form-hint" style="margin-top:-8px;">${t('sa_last_semester_hint')} ${archivedDate ? `(${archivedDate})` : ''}</p>
-                        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:12px;">
+                        <div class="last-semester-grid">
                             ${lsChartBlock(t('sa_widget_school_performance'), [
                                 { label: t('sa_perf_good'), value: la.good, color: 'var(--success)' },
                                 { label: t('sa_perf_average'), value: la.average, color: 'var(--warning)' },
@@ -645,7 +697,7 @@ async function loadDashboard() {
                         ${flagged.length === 0
                             ? `<div class="widget-empty">${t('sa_no_flags')}</div>`
                             : flagged.slice(0, 6).map(f => `
-                                <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 4px; border-bottom:1px solid var(--border); cursor:pointer;" onclick="openTeacherAuditModal('${f.teacher_id}')">
+                                <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 4px; border-bottom:1px solid var(--border); cursor:pointer;" ${actionAttrs('openTeacherAuditModal', [f.teacher_id])}>
                                     <span>${escapeHtml(f.full_name)}</span>
                                     <span>${f.flags.map(fl => `<span class="badge badge-rejected" style="margin-left:4px;">${fl.replace(/_/g, ' ')}</span>`).join('')}</span>
                                 </div>`).join('')
@@ -785,8 +837,8 @@ function lucideIcon(name, size = 22) {
     return `<svg class="lucide-icon" xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
 }
 
-function statCard(icon, label, value, tone, onclick, sub) {
-    return `<div class="stat-card ${tone ? 'stat-' + tone : ''}" ${onclick ? `style="cursor:pointer" onclick="${onclick}"` : ''}>
+function statCard(icon, label, value, tone, action, sub) {
+    return `<div class="stat-card ${tone ? 'stat-' + tone : ''}" ${action ? `style="cursor:pointer" ${actionAttrs(action)}` : ''}>
         <div class="stat-icon">${icon}</div>
         <div>
             <div class="stat-label">${label}</div>
@@ -880,7 +932,7 @@ function openStudentsOnLeaveModal() {
         <h3>${t('sa_students_on_leave_heading')}</h3>
         <p class="form-hint">${t('sa_students_on_leave_hint')}</p>
         ${rowsHtml}
-        <div class="form-actions"><button class="btn btn-ghost" onclick="closeModal()">${t('sa_close')}</button></div>
+        <div class="form-actions"><button class="btn btn-ghost" ${actionAttrs('closeModal', [])}>${t('sa_close')}</button></div>
     `);
 }
 
@@ -895,7 +947,110 @@ async function markTeacherAttendance() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ teacher_id, status })
     });
-    await handleJsonResponse(res, t('sa_attendance_recorded'));
+    const data = await handleJsonResponse(res, t('sa_attendance_recorded'));
+    if (data) loadTeacherAttendanceToday();
+}
+
+// ---------- QR scan check-in ----------
+// A single Html5Qrcode instance, started/stopped as the Admin VP
+// enters/leaves the Teachers & Attendance page (or hits Start/Stop),
+// same pattern as any camera-based scanner: only one can own the
+// device at a time, and it MUST be explicitly stopped or the browser
+// keeps the camera light on after the admin navigates away.
+let teacherQrScanner = null;
+let teacherQrScanning = false;
+
+function initTeacherQrScanner() {
+    document.getElementById('teacher-qr-start-btn')?.addEventListener('click', startTeacherQrScanner);
+    document.getElementById('teacher-qr-stop-btn')?.addEventListener('click', stopTeacherQrScanner);
+    document.getElementById('teacher-attendance-refresh-btn')?.addEventListener('click', loadTeacherAttendanceToday);
+}
+
+async function startTeacherQrScanner() {
+    if (teacherQrScanning) return;
+    if (typeof Html5Qrcode !== 'function') {
+        showToast(t('sa_qr_lib_unavailable'), 'error');
+        return;
+    }
+    document.getElementById('teacher-qr-start-btn').style.display = 'none';
+    document.getElementById('teacher-qr-stop-btn').style.display = '';
+    teacherQrScanner = new Html5Qrcode('teacher-qr-reader');
+    try {
+        await teacherQrScanner.start(
+            { facingMode: 'environment' },
+            { fps: 10, qrbox: 220 },
+            onTeacherQrDecoded,
+            () => {} // per-frame "no QR found yet" — expected on almost every frame, not an error
+        );
+        teacherQrScanning = true;
+    } catch (err) {
+        console.error('startTeacherQrScanner error:', err);
+        showToast(t('sa_qr_camera_error'), 'error');
+        document.getElementById('teacher-qr-start-btn').style.display = '';
+        document.getElementById('teacher-qr-stop-btn').style.display = 'none';
+    }
+}
+
+async function stopTeacherQrScanner() {
+    if (teacherQrScanner && teacherQrScanning) {
+        try { await teacherQrScanner.stop(); } catch (err) { console.error('stopTeacherQrScanner error:', err); }
+        try { teacherQrScanner.clear(); } catch {}
+    }
+    teacherQrScanning = false;
+    document.getElementById('teacher-qr-start-btn').style.display = '';
+    document.getElementById('teacher-qr-stop-btn').style.display = 'none';
+}
+
+// Debounce so the same badge held in front of the camera for a couple
+// of seconds doesn't fire a dozen duplicate scans while the video
+// keeps decoding the same frame content.
+let lastTeacherQrScan = { text: null, at: 0 };
+async function onTeacherQrDecoded(decodedText) {
+    const now = Date.now();
+    if (decodedText === lastTeacherQrScan.text && now - lastTeacherQrScan.at < 4000) return;
+    lastTeacherQrScan = { text: decodedText, at: now };
+
+    const resultEl = document.getElementById('teacher-qr-scan-result');
+    const res = await apiFetch(`${API_BASE}/api/admin/teacher-attendance/scan`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ qr_data: decodedText })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        resultEl.innerHTML = `<div class="qr-scan-feedback error">${lucideIcon('circle-x', 16)} ${escapeHtml(data.error || t('sa_load_error'))}</div>`;
+        return;
+    }
+    resultEl.innerHTML = `<div class="qr-scan-feedback ${data.already_checked_in ? 'info' : 'success'}">${lucideIcon('circle-check', 16)} ${escapeHtml(data.message)}</div>`;
+    loadTeacherAttendanceToday();
+}
+
+// "Who's here / who isn't yet" — the list an Admin VP checks after a
+// scanning session. not_marked stays populated right up until the
+// 11:00 Ethiopian-time (17:00 EAT) auto-absent sweep runs server-side,
+// at which point those teachers move into the absent group on the
+// next refresh.
+async function loadTeacherAttendanceToday() {
+    const body = document.getElementById('teacher-attendance-today-body');
+    if (!body) return;
+    const res = await apiFetch(`${API_BASE}/api/admin/teacher-attendance/today`);
+    if (!res.ok) { body.innerHTML = `<div class="widget-empty">${t('sa_load_error')}</div>`; return; }
+    const data = await res.json();
+
+    const group = (list, statusClass, labelKey, icon) => `
+        <div>
+            <div class="teacher-attendance-group-heading">${lucideIcon(icon, 14)} ${t(labelKey)} (${list.length})</div>
+            ${list.length === 0
+                ? `<div class="widget-empty">${t('sa_no_data')}</div>`
+                : `<div class="teacher-attendance-chip-list">${list.map(tch => `
+                    <span class="teacher-attendance-chip status-${statusClass}">${escapeHtml(tch.full_name)}</span>`).join('')}</div>`}
+        </div>`;
+
+    body.innerHTML = `
+        <div class="teacher-attendance-groups">
+            ${group(data.not_marked, 'not_marked', 'sa_status_not_marked', 'clock')}
+            ${group(data.present, 'present', 'sa_present', 'circle-check')}
+            ${group(data.absent, 'absent', 'sa_absent', 'circle-x')}
+        </div>`;
 }
 
 async function lookupPunctuality() {
@@ -958,7 +1113,7 @@ async function loadTextbooks() {
             <td><span class="badge badge-${r.status}">${r.status}</span></td>
             <td>${r.status === 'lost' ? `<span class="badge badge-${r.penalty_status || 'pending'}">${r.penalty_status || 'pending'}</span>` : '—'}</td>
             <td>${r.status === 'lost' && (r.penalty_status === 'pending' || !r.penalty_status)
-                ? `<button class="btn btn-sm btn-accent" onclick="decidePenalty('${r.student_id}', ${r.subject_id})">${t('sa_decide')}</button>`
+                ? `<button class="btn btn-sm btn-accent" ${actionAttrs('decidePenalty', [r.student_id, r.subject_id])}>${t('sa_decide')}</button>`
                 : '—'}</td>
         </tr>`).join('');
 }
@@ -1005,8 +1160,8 @@ async function loadTeacherAbsenceRequests() {
             <td>${formatEthDateRange(r.date_from, r.date_to)}</td>
             <td>${escapeHtml(r.reason || '—')}</td>
             <td>
-                <button class="btn btn-sm btn-success" onclick="decideTeacherAbsence(${r.request_id}, 'approve', 'admin')">${t('sa_approve')}</button>
-                <button class="btn btn-sm btn-danger" onclick="decideTeacherAbsence(${r.request_id}, 'reject', 'admin')">${t('sa_reject')}</button>
+                <button class="btn btn-sm btn-success" ${actionAttrs('decideTeacherAbsence', [r.request_id, 'approve', 'admin'])}>${t('sa_approve')}</button>
+                <button class="btn btn-sm btn-danger" ${actionAttrs('decideTeacherAbsence', [r.request_id, 'reject', 'admin'])}>${t('sa_reject')}</button>
             </td>
         </tr>`).join('');
 }
@@ -1029,8 +1184,8 @@ async function loadStudentAbsenceEscalations() {
             <td>${formatEthDateRange(r.date_from, r.date_to)}</td>
             <td>${escapeHtml(r.reason || '—')}</td>
             <td>
-                <button class="btn btn-sm btn-success" onclick="decideStudentAbsence(${r.request_id}, 'approve')">${t('sa_approve')}</button>
-                <button class="btn btn-sm btn-danger" onclick="decideStudentAbsence(${r.request_id}, 'reject')">${t('sa_reject')}</button>
+                <button class="btn btn-sm btn-success" ${actionAttrs('decideStudentAbsence', [r.request_id, 'approve'])}>${t('sa_approve')}</button>
+                <button class="btn btn-sm btn-danger" ${actionAttrs('decideStudentAbsence', [r.request_id, 'reject'])}>${t('sa_reject')}</button>
             </td>
         </tr>`).join('');
 }
@@ -1169,12 +1324,32 @@ function showEthiopianTimeHint(hintElId, hhmm) {
     el.textContent = label ? `${t('sa_eth_time_label')}: ${label}` : '';
 }
 
+// The Start Time field (and everything chained from it) is filled in as
+// ETHIOPIAN time, not standard/GC time — an Academic VP typing "2:00"
+// here means Ethiopian 2:00 (which is 08:00 standard), not literal
+// standard 2:00 AM. Converting is a flat +6 hours (the same fixed
+// offset toEthiopianTimeLabel subtracts to go the other way), wrapping
+// past midnight if needed.
+function ethiopianInputToStandard(hhmm) {
+    if (!hhmm) return '';
+    const mins = (hhmmToMinutes(hhmm) + 360) % 1440;
+    return minutesToHhmm(mins);
+}
+
+function showStandardTimeHint(hintElId, hhmm) {
+    const el = document.getElementById(hintElId);
+    if (!el) return;
+    if (!hhmm) { el.textContent = ''; return; }
+    el.textContent = `${t('sa_standard_time_label')}: ${ethiopianInputToStandard(hhmm)}`;
+}
+
 // ---------- Period time math ----------
-// Every period is a fixed 40 minutes, chained one after another from
-// whatever start time was picked. A break — a fixed extra gap after one
-// specific period — just shifts every period after it forward by the
-// break's own length; periods stay 40 minutes each on both sides of it.
-const TT_PERIOD_MINUTES = 40;
+// Periods chain back-to-back from the start time using whatever period
+// length is set (not fixed — 30, 40, 45 minutes, whatever the school
+// actually runs). A break — a fixed extra gap after one specific period
+// — just shifts every period after it forward by the break's own
+// length; periods stay the same length on both sides of it.
+const TT_PERIOD_MINUTES_DEFAULT = 40;
 
 function hhmmToMinutes(hhmm) {
     const [h, m] = hhmm.split(':').map(Number);
@@ -1186,24 +1361,33 @@ function minutesToHhmm(mins) {
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+// Chaining happens on the raw Ethiopian-labeled clock the admin typed
+// (it's just linear addition, so the fixed +6h offset to real/standard
+// time can be applied once per boundary rather than changing how the
+// chaining itself works). Every item's start_time/end_time below is the
+// STANDARD equivalent — that's what's actually stored and compared
+// against the database — with the Ethiopian value only computed at
+// display time via toEthiopianTimeLabel(start_time).
 function computeTtPeriods() {
     const startVal = document.getElementById('tt-start-time')?.value;
     const periodCount = Number(document.getElementById('tt-period-count')?.value || 0);
+    const periodMinutes = Number(document.getElementById('tt-period-minutes')?.value || TT_PERIOD_MINUTES_DEFAULT);
     const breakAfter = Number(document.getElementById('tt-break-after')?.value || 0);
     const breakMinutes = Number(document.getElementById('tt-break-minutes')?.value || 0);
-    if (!startVal || !periodCount || periodCount < 1) return [];
+    if (!startVal || !periodCount || periodCount < 1 || !periodMinutes || periodMinutes < 1) return [];
 
     const items = [];
-    let cursor = hhmmToMinutes(startVal);
+    let cursor = hhmmToMinutes(startVal); // Ethiopian-labeled minutes-of-day
+    const toStandard = (ethMins) => minutesToHhmm((ethMins + 360) % 1440);
     for (let i = 1; i <= periodCount; i++) {
         const start = cursor;
-        const end = start + TT_PERIOD_MINUTES;
-        items.push({ type: 'period', index: i, start_time: minutesToHhmm(start), end_time: minutesToHhmm(end) });
+        const end = start + periodMinutes;
+        items.push({ type: 'period', index: i, start_time: toStandard(start), end_time: toStandard(end) });
         cursor = end;
         if (breakAfter && i === breakAfter && breakMinutes > 0) {
             const breakStart = cursor;
             const breakEnd = cursor + breakMinutes;
-            items.push({ type: 'break', start_time: minutesToHhmm(breakStart), end_time: minutesToHhmm(breakEnd) });
+            items.push({ type: 'break', start_time: toStandard(breakStart), end_time: toStandard(breakEnd) });
             cursor = breakEnd;
         }
     }
@@ -1211,16 +1395,18 @@ function computeTtPeriods() {
 }
 
 // Live preview of the computed period times as the Academic VP tweaks
-// start time / period count / break settings, before they've even
-// generated the subject grid.
+// start time / period count / period length / break settings, before
+// they've even generated the subject grid. Ethiopian time (what was
+// actually typed in, chained forward) leads; standard time is the
+// secondary reference next to it.
 function renderTtPeriodPreview() {
     const el = document.getElementById('tt-period-preview');
     if (!el) return;
     const items = computeTtPeriods();
     if (items.length === 0) { el.textContent = ''; return; }
     el.innerHTML = items.map(p => p.type === 'break'
-        ? `<span class="tt-period-chip tt-period-chip-break">${t('sa_tt_break_label')} ${p.start_time}\u2013${p.end_time}</span>`
-        : `<span class="tt-period-chip">${p.index}. ${p.start_time}\u2013${p.end_time}</span>`
+        ? `<span class="tt-period-chip tt-period-chip-break">${t('sa_tt_break_label')} ${toEthiopianTimeLabel(p.start_time)}\u2013${toEthiopianTimeLabel(p.end_time)} <span class="tt-period-chip-eth">(${p.start_time}\u2013${p.end_time})</span></span>`
+        : `<span class="tt-period-chip">${p.index}. ${toEthiopianTimeLabel(p.start_time)}\u2013${toEthiopianTimeLabel(p.end_time)} <span class="tt-period-chip-eth">(${p.start_time}\u2013${p.end_time})</span></span>`
     ).join(' ');
 }
 
@@ -1267,13 +1453,13 @@ async function generateTtGrid() {
             html += `<tr class="tt-grid-break-row"><td colspan="${sections.length + 1}">${t('sa_tt_break_label')} (${p.start_time}\u2013${p.end_time})</td></tr>`;
             return;
         }
-        html += `<tr><td class="tt-grid-period-cell">${p.index}<br><span class="form-hint">${p.start_time}\u2013${p.end_time}</span></td>`;
+        html += `<tr><td class="tt-grid-period-cell">${p.index}<br><span class="form-hint">${toEthiopianTimeLabel(p.start_time)}\u2013${toEthiopianTimeLabel(p.end_time)}<br>${p.start_time}\u2013${p.end_time}</span></td>`;
         sections.forEach(sec => {
             const key = `${sec}|${p.start_time}`;
             const selected = existingByKey[key] || '';
             const cellId = `tt-cell-${sec}-${p.index}`;
             html += `<td>
-                <select class="tt-grid-cell form-control" id="${cellId}" data-section="${escapeHtml(sec)}" data-start="${p.start_time}" data-end="${p.end_time}" onchange="updateTtCellTeacherHint('${cellId}')">
+                <select class="tt-grid-cell form-control" id="${cellId}" data-section="${escapeHtml(sec)}" data-period="${p.index}" data-start="${p.start_time}" data-end="${p.end_time}">
                     <option value="">${t('sa_tt_blank_cell')}</option>
                     ${subjectOptions.map(s => `<option value="${s.subject_id}" ${String(s.subject_id) === String(selected) ? 'selected' : ''}>${escapeHtml(s.subject_name)}</option>`).join('')}
                 </select>
@@ -1284,7 +1470,7 @@ async function generateTtGrid() {
     });
     html += `</tbody></table>
         <div class="form-actions">
-            <button class="btn btn-accent" onclick="saveTtGrid()">${t('sa_tt_save_day_btn')}</button>
+            <button class="btn btn-accent" ${actionAttrs('saveTtGrid', [])}>${t('sa_tt_save_day_btn')}</button>
         </div>`;
     wrap.innerHTML = html;
 
@@ -1292,6 +1478,63 @@ async function generateTtGrid() {
         periods.filter(p => p.type === 'period').forEach(p => {
             const cellId = `tt-cell-${sec}-${p.index}`;
             if (document.getElementById(cellId)?.value) updateTtCellTeacherHint(cellId);
+        });
+    });
+    // Prefilled cells (from a previous save) should already be
+    // conflict-free, but run the same check on load too so a stale
+    // save from before these rules existed doesn't silently stay
+    // broken.
+    applyTtConflicts();
+}
+
+function onTtCellChange(cellId) {
+    updateTtCellTeacherHint(cellId);
+    applyTtConflicts();
+}
+
+// Two rules govern which subjects are pickable in any given cell, and
+// both are checked together in one pass over the whole grid (rather
+// than as two separate functions each resetting disabled/label state)
+// so neither rule can stomp on the other's result for the same
+// <option> — e.g. an option that's disabled for the Section Conflict
+// reason shouldn't get silently re-enabled by a Period Conflict pass
+// that only knows about its own rule.
+//   - Section Conflict: a subject already picked for one section in a
+//     given period can't be picked for any OTHER section in that same
+//     period — its teacher is already booked at that time.
+//   - Period Conflict: a subject already picked for one period in a
+//     given section can't be picked again for any OTHER period in
+//     that same section on this same day — a section only gets a
+//     subject once per day.
+function applyTtConflicts() {
+    const cells = [...document.querySelectorAll('.tt-grid-cell')];
+    const usedByPeriod = {};   // period -> { subject_id: section }
+    const usedBySection = {};  // section -> { subject_id: period }
+    cells.forEach(sel => {
+        if (!sel.value) return;
+        const { period, section } = sel.dataset;
+        (usedByPeriod[period] ||= {})[sel.value] = section;
+        (usedBySection[section] ||= {})[sel.value] = period;
+    });
+    cells.forEach(sel => {
+        const mySection = sel.dataset.section;
+        const myPeriod = sel.dataset.period;
+        [...sel.options].forEach(opt => {
+            if (!opt.value) return;
+            const subject = TT_SUBJECTS_CACHE.find(s => String(s.subject_id) === opt.value);
+            const baseLabel = subject ? subject.subject_name : opt.textContent.split(' \u2014 ')[0];
+            const sectionUsingThisPeriod = usedByPeriod[myPeriod]?.[opt.value];
+            const periodUsingThisSection = usedBySection[mySection]?.[opt.value];
+            if (sectionUsingThisPeriod && sectionUsingThisPeriod !== mySection) {
+                opt.disabled = true;
+                opt.textContent = `${baseLabel} \u2014 ${t('sa_tt_taken_by_section', { section: sectionUsingThisPeriod })}`;
+            } else if (periodUsingThisSection && periodUsingThisSection !== myPeriod) {
+                opt.disabled = true;
+                opt.textContent = `${baseLabel} \u2014 ${t('sa_tt_already_period', { period: periodUsingThisSection })}`;
+            } else {
+                opt.disabled = false;
+                opt.textContent = baseLabel;
+            }
         });
     });
 }
@@ -1324,14 +1567,54 @@ async function saveTtGrid() {
     if (cells.length === 0) return;
     const slots = cells.map(sel => ({
         section: sel.dataset.section,
+        period: sel.dataset.period,
         subject_id: sel.value || null,
         start_time: sel.dataset.start,
         end_time: sel.dataset.end
     }));
+
+    // Belt-and-braces: the dropdowns already stop a NEW conflicting pick
+    // from being made, but a conflict saved before these rules existed
+    // could still be sitting in a prefilled cell untouched. Catch both
+    // here rather than letting a real double-booking or same-day repeat
+    // slip through save.
+    //   1) Section Conflict — same subject picked for the same period
+    //      in more than one section (one teacher, two sections at once).
+    const byPeriodSubject = {};
+    for (const s of slots) {
+        if (!s.subject_id) continue;
+        const key = `${s.period}|${s.subject_id}`;
+        (byPeriodSubject[key] ||= []).push(s.section);
+    }
+    const conflict = Object.entries(byPeriodSubject).find(([, secs]) => secs.length > 1);
+    if (conflict) {
+        const [key, secs] = conflict;
+        const [period] = key.split('|');
+        return showToast(t('sa_tt_conflict_error', { period, sections: secs.join(', ') }), 'error');
+    }
+
+    //   2) Period Conflict — same subject picked more than once for the
+    //      same section across different periods (a section only gets
+    //      a subject once per day).
+    const bySectionSubject = {};
+    for (const s of slots) {
+        if (!s.subject_id) continue;
+        const key = `${s.section}|${s.subject_id}`;
+        (bySectionSubject[key] ||= []).push(s.period);
+    }
+    const dupConflict = Object.entries(bySectionSubject).find(([, periods]) => periods.length > 1);
+    if (dupConflict) {
+        const [key, periods] = dupConflict;
+        const [section, subjectId] = key.split('|');
+        const subject = TT_SUBJECTS_CACHE.find(sub => String(sub.subject_id) === subjectId);
+        const subjectName = subject ? subject.subject_name : subjectId;
+        return showToast(t('sa_tt_dup_subject_error', { subject: subjectName, section, periods: periods.join(', ') }), 'error');
+    }
+
     if (!(await verifyAdminPassword())) return;
     const res = await apiFetch(`${API_BASE}/api/admin/timetable/bulk`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ class_level: level, stream, day_of_week: Number(day), slots })
+        body: JSON.stringify({ class_level: level, stream, day_of_week: Number(day), slots: slots.map(({ section, subject_id, start_time, end_time }) => ({ section, subject_id, start_time, end_time })) })
     });
     const data = await handleJsonResponse(res, t('sa_tt_grid_saved'));
     if (!data) return;
@@ -1386,7 +1669,7 @@ async function loadMarksReview() {
                     : '—')
                 : '—'}</td>
             <td>${r.pushed && r.incomplete_count > 0
-                ? `<button class="btn btn-sm btn-danger" onclick="reopenMarksReport('${r.teacher_id}', ${r.incomplete_count})">${t('sa_send_reentry_approval')}</button>`
+                ? `<button class="btn btn-sm btn-danger" ${actionAttrs('reopenMarksReport', [r.teacher_id, r.incomplete_count])}>${t('sa_send_reentry_approval')}</button>`
                 : '—'}</td>
         </tr>`).join('');
 }
@@ -1515,8 +1798,8 @@ async function loadEscalatedAbsence() {
             <td>${formatEthDateRange(r.date_from, r.date_to)}</td>
             <td>${escapeHtml(r.reason || '—')}</td>
             <td>
-                <button class="btn btn-sm btn-success" onclick="decideTeacherAbsence(${r.request_id}, 'approve', 'principal')">${t('sa_approve')}</button>
-                <button class="btn btn-sm btn-danger" onclick="decideTeacherAbsence(${r.request_id}, 'reject', 'principal')">${t('sa_reject')}</button>
+                <button class="btn btn-sm btn-success" ${actionAttrs('decideTeacherAbsence', [r.request_id, 'approve', 'principal'])}>${t('sa_approve')}</button>
+                <button class="btn btn-sm btn-danger" ${actionAttrs('decideTeacherAbsence', [r.request_id, 'reject', 'principal'])}>${t('sa_reject')}</button>
             </td>
         </tr>`).join('');
 }
@@ -1537,8 +1820,8 @@ async function loadDisciplinaryCases() {
             <td>${r.class_level}-${r.section}</td>
             <td>${escapeHtml(r.description)}</td>
             <td>
-                <button class="btn btn-sm btn-ghost" onclick="decideCase(${r.case_id}, 'dismissed')">${t('sa_dismiss')}</button>
-                <button class="btn btn-sm btn-danger" onclick="decideCase(${r.case_id}, 'terminated')">${t('sa_terminate')}</button>
+                <button class="btn btn-sm btn-ghost" ${actionAttrs('decideCase', [r.case_id, 'dismissed'])}>${t('sa_dismiss')}</button>
+                <button class="btn btn-sm btn-danger" ${actionAttrs('decideCase', [r.case_id, 'terminated'])}>${t('sa_terminate')}</button>
             </td>
         </tr>`).join('');
 }
@@ -1572,8 +1855,8 @@ async function loadDocumentApprovals() {
             <td>${r.doc_type === 'signature' ? t('sa_doc_type_signature') : t('sa_doc_type_id_photo')}</td>
             <td><img src="${r.requested_file_url}" alt="" style="height:40px;border-radius:6px;"></td>
             <td>
-                <button class="btn btn-sm btn-success" onclick="decideDocumentRequest(${r.request_id}, 'approve')">${t('sa_approve')}</button>
-                <button class="btn btn-sm btn-danger" onclick="decideDocumentRequest(${r.request_id}, 'reject')">${t('sa_reject')}</button>
+                <button class="btn btn-sm btn-success" ${actionAttrs('decideDocumentRequest', [r.request_id, 'approve'])}>${t('sa_approve')}</button>
+                <button class="btn btn-sm btn-danger" ${actionAttrs('decideDocumentRequest', [r.request_id, 'reject'])}>${t('sa_reject')}</button>
             </td>
         </tr>`).join('');
 }
@@ -1626,7 +1909,7 @@ async function loadRecognition() {
             <td>${r.rank === 1
                 ? (r.already_awarded
                     ? `<span class="badge badge-approved">${t('sa_awarded')}</span>`
-                    : `<button class="btn btn-sm btn-accent" onclick="issueAward('${r.student_id}')">${t('sa_award')}</button>`)
+                    : `<button class="btn btn-sm btn-accent" ${actionAttrs('issueAward', [r.student_id])}>${t('sa_award')}</button>`)
                 : '—'}</td>
         </tr>`).join('');
 }
@@ -1666,14 +1949,14 @@ async function loadSubjectEntryRequests() {
     if (!rows || rows.length === 0) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_no_data')}</td></tr>`; return; }
     tbody.innerHTML = rows.map(r => `
         <tr>
-            <td><a href="#" onclick="openTeacherAuditModal('${r.teacher_id}'); return false;">${escapeHtml([r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' '))}</a></td>
+            <td><a href="#" ${actionAttrs('openTeacherAuditModal', [r.teacher_id])}>${escapeHtml([r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' '))}</a></td>
             <td>${escapeHtml(r.subject_name)}</td>
             <td>${escapeHtml(r.class_level)}-${escapeHtml(r.section)}${r.stream ? ` (${escapeHtml(r.stream)})` : ''}</td>
             <td>${escapeHtml(r.reason || '—')}</td>
             <td>${formatEthDate(r.requested_at)}</td>
             <td>
-                <button class="btn btn-sm btn-accent" onclick="decideSubjectEntryRequest(${r.id}, 'approve')">${t('sa_approve')}</button>
-                <button class="btn btn-sm btn-ghost" onclick="decideSubjectEntryRequest(${r.id}, 'reject')">${t('sa_reject')}</button>
+                <button class="btn btn-sm btn-accent" ${actionAttrs('decideSubjectEntryRequest', [r.id, 'approve'])}>${t('sa_approve')}</button>
+                <button class="btn btn-sm btn-ghost" ${actionAttrs('decideSubjectEntryRequest', [r.id, 'reject'])}>${t('sa_reject')}</button>
             </td>
         </tr>`).join('');
 }
@@ -1710,8 +1993,8 @@ async function loadDropoutRequests() {
             <td>${escapeHtml(r.reason || '—')}</td>
             <td>${formatEthDate(r.flagged_at)}</td>
             <td>
-                <button class="btn btn-sm btn-accent" onclick="decideDropoutRequest('${r.student_id}', 'approve')">${t('sa_approve')}</button>
-                <button class="btn btn-sm btn-ghost" onclick="decideDropoutRequest('${r.student_id}', 'reject')">${t('sa_reject')}</button>
+                <button class="btn btn-sm btn-accent" ${actionAttrs('decideDropoutRequest', [r.student_id, 'approve'])}>${t('sa_approve')}</button>
+                <button class="btn btn-sm btn-ghost" ${actionAttrs('decideDropoutRequest', [r.student_id, 'reject'])}>${t('sa_reject')}</button>
             </td>
         </tr>`).join('');
 }
@@ -1776,19 +2059,112 @@ async function issueAward(student_id) {
 // STUDENTS
 // ==========================================================
 let ALL_STUDENTS = [];
+// Infinite-scroll state for the (potentially large) student roster: the
+// table only ever renders STUDENTS_RENDER_LIMIT rows at a time out of
+// the full filtered set, growing by STUDENTS_PAGE_SIZE as the user
+// scrolls near the bottom (see maybeLoadMoreStudentRows below) rather
+// than rendering hundreds of rows up front.
+const STUDENTS_PAGE_SIZE = 20;
+let STUDENTS_RENDER_LIMIT = STUDENTS_PAGE_SIZE;
+let STUDENTS_FILTERED_LIST = [];
 let SCHOOL_LEADERBOARD_DATA = null;
-const GRADUATED_OR_TRANSFERRED = s => s.status === 'Graduated' || String(s.status || '').startsWith('Transferred');
+// Hidden from the roster by default (no Status filter picked) — Graduated
+// and Transferred already have their own tabs, and Unregistered means a
+// returning student hasn't had this year's promote/retain decision
+// recorded yet (see rolloverAcademicYear), so the default view is "who's
+// actually registered/promoted this year". Picking a specific status in
+// the Status filter overrides this and shows exactly that status instead.
+const STUDENT_HIDDEN_BY_DEFAULT = s => s.status === 'Graduated' || String(s.status || '').startsWith('Transferred') || s.status === 'Unregistered';
+let ALL_ACADEMIC_YEARS = [];
+
+// The five statuses students.status ever actually holds in this app —
+// same ones the Registrar's Student Status & Academic Year Management
+// screens work with (see the "'Pending Promotion' — one of the four
+// Student Status..." comment in server.js; 'Transferred - Completed'
+// is the one literal Transferred value ever written, shown here under
+// the shorter label an admin actually thinks in). Used for the Status
+// filter instead of deriving options from whichever statuses happen to
+// appear in currently-loaded students, so e.g. "Pending Promotion" is
+// always selectable even on a day nobody happens to be in that state.
+const STUDENT_STATUS_OPTIONS = [
+    { value: 'Active', labelKey: 'sa_status_active' },
+    { value: 'Inactive', labelKey: 'sa_status_inactive' },
+    { value: 'Unregistered', labelKey: 'sa_status_unregistered' },
+    { value: 'Pending Promotion', labelKey: 'sa_status_pending_promotion' },
+    { value: 'Transferred - Completed', labelKey: 'sa_status_transferred' }
+];
+
+// Registrar-configured classes/sections/streams (class_sections table,
+// via /api/class-sections) — cached for the life of the page load since
+// Section Setup changes are rare enough that a refresh is an acceptable
+// way to pick up edits made mid-session.
+let ALL_CLASS_SECTIONS = [];
+async function loadClassSectionsConfig() {
+    if (ALL_CLASS_SECTIONS.length > 0) return;
+    const res = await apiFetch(`${API_BASE}/api/class-sections`);
+    if (res.ok) ALL_CLASS_SECTIONS = await res.json();
+}
+
+// Section options only ever list what the Registrar has configured for
+// the currently-selected class level (+ stream, once narrowed) under
+// Section Setup — not whatever section names happen to appear on
+// currently-loaded students. Stream options auto-narrow off the class
+// level the same way the Timetable/Assignment forms already do via
+// updateStreamOptionsForLevel(): Grade 9 & 10 only ever run "General"
+// (no science split yet), Grade 11 & 12 split into Natural or Social
+// Science.
+function refreshStudentSectionStreamFilters() {
+    const classSel = document.getElementById('students-class-filter');
+    const sectionSel = document.getElementById('students-section-filter');
+    const streamSel = document.getElementById('students-stream-filter');
+    if (!classSel || !sectionSel || !streamSel) return;
+
+    const level = classSel.value;
+    const prevStream = streamSel.value;
+
+    if (level === '9' || level === '10') {
+        streamSel.innerHTML = `<option value="">${t('sa_all_streams')}</option><option value="General">${t('sa_stream_general')}</option>`;
+    } else if (level === '11' || level === '12') {
+        streamSel.innerHTML = `
+            <option value="">${t('sa_all_streams')}</option>
+            <option value="Natural">${t('sa_stream_natural')}</option>
+            <option value="Social">${t('sa_stream_social')}</option>`;
+    } else {
+        // No class picked yet — offer every stream this school actually
+        // has configured, rather than guessing.
+        const streamLabel = { General: t('sa_stream_general'), Natural: t('sa_stream_natural'), Social: t('sa_stream_social') };
+        const streams = [...new Set(ALL_CLASS_SECTIONS.map(cs => cs.stream).filter(Boolean))];
+        streamSel.innerHTML = `<option value="">${t('sa_all_streams')}</option>` +
+            streams.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(streamLabel[s] || s)}</option>`).join('');
+    }
+    if ([...streamSel.options].some(o => o.value === prevStream)) streamSel.value = prevStream;
+
+    const streamVal = streamSel.value;
+    const prevSection = sectionSel.value;
+    const matches = ALL_CLASS_SECTIONS.filter(cs =>
+        (!level || String(cs.class_level) === String(level)) &&
+        (!streamVal || cs.stream === streamVal)
+    );
+    const sectionNames = [...new Set(matches.map(cs => cs.section_name))].sort((a, b) => a.localeCompare(b));
+    sectionSel.innerHTML = `<option value="">${t('sa_all_sections')}</option>` +
+        sectionNames.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+    if (sectionNames.includes(prevSection)) sectionSel.value = prevSection;
+}
 
 async function loadStudents() {
     const tbody = document.getElementById('sa-students-tbody');
-    tbody.innerHTML = `<tr><td colspan="6">${t('sa_loading')}</td></tr>`;
-    const res = await apiFetch(`${API_BASE}/api/students`);
+    tbody.innerHTML = `<tr><td colspan="7">${t('sa_loading')}</td></tr>`;
+    if (ALL_ACADEMIC_YEARS.length === 0) await loadStudentYearFilterOptions();
+    await loadClassSectionsConfig();
+    const yearId = document.getElementById('students-year-filter')?.value || '';
+    const url = yearId ? `${API_BASE}/api/students?academic_year_id=${encodeURIComponent(yearId)}` : `${API_BASE}/api/students`;
+    const res = await apiFetch(url);
     if (res.ok) {
         ALL_STUDENTS = await res.json();
         populateStudentFilterOptions();
         filterStudentsTable();
     } else {
-        tbody.innerHTML = `<tr><td colspan="6">${t('sa_load_error')}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7">${t('sa_load_error')}</td></tr>`;
     }
 
     // The extra tabs (approve/reject, batches, this-year transfers) are
@@ -1806,10 +2182,26 @@ async function loadStudents() {
     }
 }
 
+// Populates the Academic Year filter — "Current Year" plus every past
+// year a Semester-2 closure has rolled over into (most recent first).
+// Only (re)fetched once per page load; switching years just re-triggers
+// loadStudents() with the picked id, it doesn't need the list refetched.
+async function loadStudentYearFilterOptions() {
+    const sel = document.getElementById('students-year-filter');
+    if (!sel) return;
+    const res = await apiFetch(`${API_BASE}/api/academic-years`);
+    if (!res.ok) return;
+    ALL_ACADEMIC_YEARS = await res.json();
+    const current = sel.value;
+    const pastYears = ALL_ACADEMIC_YEARS.filter(y => !y.is_current);
+    sel.innerHTML = `<option value="">${t('sa_current_year')}</option>` +
+        pastYears.map(y => `<option value="${y.id}">${escapeHtml(y.label)}</option>`).join('');
+    sel.value = current;
+}
+
 function populateStudentFilterOptions() {
     const classSel = document.getElementById('students-class-filter');
-    const sectionSel = document.getElementById('students-section-filter');
-    const streamSel = document.getElementById('students-stream-filter');
+    const statusSel = document.getElementById('students-status-filter');
     if (!classSel) return;
     const uniq = key => [...new Set(ALL_STUDENTS.map(s => s[key]).filter(Boolean))]
         .sort((a, b) => (isNaN(a) || isNaN(b)) ? String(a).localeCompare(String(b)) : a - b);
@@ -1819,8 +2211,16 @@ function populateStudentFilterOptions() {
         sel.value = current;
     };
     buildOptions(classSel, uniq('class_level'), 'sa_all_classes');
-    buildOptions(sectionSel, uniq('section'), 'sa_all_sections');
-    buildOptions(streamSel, uniq('stream'), 'sa_all_streams');
+    // Section/Stream now come from the Registrar's Section Setup config
+    // (see refreshStudentSectionStreamFilters), not from whichever values
+    // happen to appear on currently-loaded students.
+    refreshStudentSectionStreamFilters();
+    if (statusSel) {
+        const current = statusSel.value;
+        statusSel.innerHTML = `<option value="">${t('sa_all_statuses')}</option>` +
+            STUDENT_STATUS_OPTIONS.map(o => `<option value="${escapeHtml(o.value)}">${escapeHtml(t(o.labelKey))}</option>`).join('');
+        statusSel.value = current;
+    }
 }
 
 function renderStudentsTable(list) {
@@ -1836,27 +2236,99 @@ function renderStudentsTable(list) {
             statCard(lucideIcon('venus'), t('sa_stat_female_students'), female, '')
         ].join('');
     }
-    if (list.length === 0) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_no_data')}</td></tr>`; return; }
-    tbody.innerHTML = list.map(s => `
+    if (list.length === 0) { tbody.innerHTML = `<tr><td colspan="7">${t('sa_no_data')}</td></tr>`; return; }
+    // Only the rows within the current infinite-scroll window are
+    // actually rendered — the stat cards above still reflect every
+    // matching student, not just the ones currently on screen.
+    const visible = list.slice(0, STUDENTS_RENDER_LIMIT);
+    tbody.innerHTML = visible.map(s => `
         <tr>
-            <td>${s.student_id}</td>
+            <td class="table-id-cell">${tableAvatarHtml([s.first_name, s.last_name].filter(Boolean).join(' '), s.id_photo_url, { previewable: true })}<span>${escapeHtml(s.student_id)}</span></td>
             <td>${escapeHtml([s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' '))}</td>
             <td>${escapeHtml(s.class_level ?? '—')}</td>
             <td>${escapeHtml(s.section ?? '—')}</td>
             <td>${escapeHtml(s.stream ?? '—')}</td>
+            <td>${escapeHtml(s.fayda_number || '—')}</td>
             <td>${escapeHtml(s.status || '—')}</td>
         </tr>`).join('');
 }
 
-function filterStudentsTable() {
+// ---------- Roster downloads (CSV / PDF) ----------
+// Any field that could contain a comma, quote, or newline gets wrapped
+// in quotes (with internal quotes doubled), per RFC 4180 — free-text
+// fields like names/statuses can't skip this.
+function csvField(v) {
+    const s = String(v ?? '');
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+// Digit-only values (Fayda numbers, phone numbers) need MORE than the
+// quoting above, or a spreadsheet app opening the CSV will still treat
+// them as a literal number — which either drops a leading zero (phone
+// numbers) or, once there are enough digits to lose precision, switches
+// to lossy scientific notation (Fayda's 16-digit numbers rendering as
+// "2.45749E+15", which is what prompted this fix). Wrapping the value
+// as an Excel "text formula" (="...") forces it to display exactly as
+// typed instead of being auto-converted.
+function csvExcelSafeField(v) {
+    const s = String(v ?? '');
+    if (/^\d+$/.test(s)) return `="${s}"`;
+    return csvField(s);
+}
+function downloadCsv(filename, headers, rows) {
+    // Leading BOM so Excel (incl. on Windows) opens the file as UTF-8
+    // instead of misreading non-ASCII names.
+    const csv = '\uFEFF' + [headers.map(csvField).join(','), ...rows.map(r => r.join(','))].join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+}
+
+// Both roster downloads support two output formats — CSV (for
+// importing into Excel/Sheets or another system) and PDF (for
+// printing/sharing as a document) — offered as a small choice instead
+// of picking one on the admin's behalf. One lookup table covers every
+// roster this modal is used for, rather than a growing if/else per kind.
+const DOWNLOAD_FORMAT_HANDLERS = {
+    student: ['downloadStudentRosterCsv', 'downloadStudentRosterPdf'],
+    teacher: ['downloadTeacherRosterCsv', 'downloadTeacherRosterPdf'],
+    transferred: ['downloadTransferredCsv', 'downloadTransferredPdf'],
+    graduation: ['downloadGraduationCsv', 'downloadGraduationPdf']
+};
+function openDownloadFormatModal(kind) {
+    const [csvFn, pdfFn] = DOWNLOAD_FORMAT_HANDLERS[kind] || [];
+    if (!csvFn) return;
+    openModal(`
+        <h3>${t('sa_download_format_heading')}</h3>
+        <div class="form-actions" style="margin-top: 14px;">
+            <button class="btn btn-primary" ${actionAttrs(csvFn)}>${t('sa_download_csv_btn')}</button>
+            <button class="btn btn-ghost" ${actionAttrs(pdfFn)}>${t('sa_download_pdf_btn')}</button>
+        </div>`);
+}
+// Thin wrappers so the static buttons in index.html (which don't carry
+// data-args) can each open the modal pre-scoped to their own roster.
+function openStudentDownloadFormatModal() { openDownloadFormatModal('student'); }
+function openTeacherDownloadFormatModal() { openDownloadFormatModal('teacher'); }
+
+// Builds a CSV of the currently-filtered student roster and downloads it
+// client-side (no server round-trip needed — ALL_STUDENTS is already
+// loaded for the table/filters). Respects whatever the name/ID, class,
+// section, and stream filters are currently set to, same as what's
+// visible in the table, rather than always exporting the full roster.
+function downloadStudentRosterCsv() {
+    closeModal();
     const q = (document.getElementById('students-filter')?.value || '').trim().toLowerCase();
     const classVal = document.getElementById('students-class-filter')?.value || '';
     const sectionVal = document.getElementById('students-section-filter')?.value || '';
     const streamVal = document.getElementById('students-stream-filter')?.value || '';
+    const statusVal = document.getElementById('students-status-filter')?.value || '';
 
-    // Graduated/transferred students live in their own tabs below, so the
-    // main roster only shows currently-enrolled students.
-    let list = ALL_STUDENTS.filter(s => !GRADUATED_OR_TRANSFERRED(s));
+    let list = statusVal ? ALL_STUDENTS.filter(s => s.status === statusVal) : ALL_STUDENTS.filter(s => !STUDENT_HIDDEN_BY_DEFAULT(s));
     if (q) {
         list = list.filter(s =>
             s.student_id.toLowerCase().includes(q) ||
@@ -1865,7 +2337,76 @@ function filterStudentsTable() {
     if (classVal) list = list.filter(s => String(s.class_level) === String(classVal));
     if (sectionVal) list = list.filter(s => String(s.section) === String(sectionVal));
     if (streamVal) list = list.filter(s => String(s.stream) === String(streamVal));
+
+    const headers = [t('sa_col_student_id'), t('sa_col_name'), t('sa_col_class'), t('sa_col_section'), t('sa_col_stream'), t('sa_col_fayda_number'), t('sa_col_status')];
+    const rows = list.map(s => [
+        csvField(s.student_id),
+        csvField([s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' ')),
+        csvField(s.class_level ?? ''),
+        csvField(s.section ?? ''),
+        csvField(s.stream ?? ''),
+        csvExcelSafeField(s.fayda_number || ''),
+        csvField(s.status || '')
+    ]);
+    downloadCsv('student-roster.csv', headers, rows);
+}
+
+// PDF counterpart — server-rendered via puppeteer (see
+// GET /api/admin/students/pdf), same window.open + cookie-auth pattern
+// as the teacher roster PDF below.
+function downloadStudentRosterPdf() {
+    closeModal();
+    window.open(`${API_BASE}/api/admin/students/pdf`, '_blank');
+}
+
+function filterStudentsTable() {
+    const q = (document.getElementById('students-filter')?.value || '').trim().toLowerCase();
+    const classVal = document.getElementById('students-class-filter')?.value || '';
+    const sectionVal = document.getElementById('students-section-filter')?.value || '';
+    const streamVal = document.getElementById('students-stream-filter')?.value || '';
+    const statusVal = document.getElementById('students-status-filter')?.value || '';
+
+    // Graduated/Transferred/Unregistered students live in their own tabs
+    // (or aren't done registering for the year yet), so the main roster
+    // hides them by default. Picking a specific status in the Status
+    // filter overrides that and shows exactly that status instead.
+    let list = statusVal ? ALL_STUDENTS.filter(s => s.status === statusVal) : ALL_STUDENTS.filter(s => !STUDENT_HIDDEN_BY_DEFAULT(s));
+    if (q) {
+        list = list.filter(s =>
+            s.student_id.toLowerCase().includes(q) ||
+            [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' ').toLowerCase().includes(q));
+    }
+    if (classVal) list = list.filter(s => String(s.class_level) === String(classVal));
+    if (sectionVal) list = list.filter(s => String(s.section) === String(sectionVal));
+    if (streamVal) list = list.filter(s => String(s.stream) === String(streamVal));
+    STUDENTS_FILTERED_LIST = list;
+    STUDENTS_RENDER_LIMIT = STUDENTS_PAGE_SIZE;
     renderStudentsTable(list);
+}
+
+// Infinite scroll for the student roster: .main-content is the page's
+// only real scroller (see its CSS comments), so this listens there
+// rather than on the table itself, and only acts while the roster tab
+// is actually the one showing — checked fresh on every scroll event
+// since the same listener stays attached across tab/page switches.
+function isStudentsRosterTabVisible() {
+    const page = document.getElementById('page-students');
+    const tab = document.getElementById('tab-students-roster');
+    return !!page?.classList.contains('active') && tab?.style.display !== 'none';
+}
+function maybeLoadMoreStudentRows() {
+    if (!isStudentsRosterTabVisible()) return;
+    if (STUDENTS_RENDER_LIMIT >= STUDENTS_FILTERED_LIST.length) return;
+    const main = document.querySelector('.main-content');
+    const wrap = document.querySelector('#tab-students-roster .data-table-wrap');
+    if (!main || !wrap) return;
+    // Within ~300px of the bottom of the table's own wrapper (not the
+    // whole document) is "near the bottom" — grow the window and
+    // re-render once that's true.
+    if (wrap.getBoundingClientRect().bottom - main.getBoundingClientRect().bottom < 300) {
+        STUDENTS_RENDER_LIMIT += STUDENTS_PAGE_SIZE;
+        renderStudentsTable(STUDENTS_FILTERED_LIST);
+    }
 }
 
 // ---------- Class Leaderboard (General, visible to Principal/Admin VP/Academic VP) ----------
@@ -1981,8 +2522,8 @@ async function loadTransferRequests() {
             <td>${escapeHtml(r.reason || '—')}</td>
             <td>${transferRequestStatusBadge(r)}</td>
             <td>${r.status === 'pending'
-                ? `<button class="btn btn-sm btn-success" onclick="approveTransferRequest(${r.request_id})">${t('sa_approve')}</button>
-                   <button class="btn btn-sm btn-danger" onclick="rejectTransferRequest(${r.request_id})">${t('sa_reject')}</button>`
+                ? `<button class="btn btn-sm btn-success" ${actionAttrs('approveTransferRequest', [r.request_id])}>${t('sa_approve')}</button>
+                   <button class="btn btn-sm btn-danger" ${actionAttrs('rejectTransferRequest', [r.request_id])}>${t('sa_reject')}</button>`
                 : (r.status === 'cleared'
                     ? `<span class="badge badge-approved">${t('sa_transfer_done')}</span>`
                     : '—')}</td>
@@ -2043,14 +2584,38 @@ function transferStatusBadge(status) {
     return `<span class="badge badge-escalated">${t('sa_awaiting_registrar')}</span>`;
 }
 
-// ---------- Transferred Students (this year, read-only) ----------
+// ---------- Transferred Students (filterable by academic year) ----------
+// Cache of the last-loaded rows, so the CSV export doesn't need its own
+// round-trip — it just reuses whatever's already on screen for the
+// selected year.
+let TRANSFERRED_CACHE = [];
+let TRANSFERRED_SELECTED_YEAR = null;
+
 async function loadTransferredStudents() {
     const tbody = document.getElementById('sa-transferred-tbody');
     if (!tbody) return;
     tbody.innerHTML = `<tr><td colspan="5">${t('sa_loading')}</td></tr>`;
-    const res = await apiFetch(`${API_BASE}/api/principal/transferred-students`);
+    const url = TRANSFERRED_SELECTED_YEAR
+        ? `${API_BASE}/api/principal/transferred-students?year=${encodeURIComponent(TRANSFERRED_SELECTED_YEAR)}`
+        : `${API_BASE}/api/principal/transferred-students`;
+    const res = await apiFetch(url);
     if (!res.ok) { tbody.innerHTML = `<tr><td colspan="5">${t('sa_load_error')}</td></tr>`; return; }
-    const rows = await res.json();
+    const { rows, years } = await res.json();
+    TRANSFERRED_CACHE = rows;
+
+    const yearSel = document.getElementById('transferred-year-filter');
+    if (yearSel) {
+        const currentYear = new Date().getFullYear();
+        // The API defaults to the current year when no ?year= is passed,
+        // so the filter should reflect that same default the first time
+        // it's populated rather than showing blank/"All".
+        if (TRANSFERRED_SELECTED_YEAR === null) TRANSFERRED_SELECTED_YEAR = String(currentYear);
+        const selected = yearSel.value || TRANSFERRED_SELECTED_YEAR;
+        yearSel.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join('')
+            || `<option value="${currentYear}">${currentYear}</option>`;
+        yearSel.value = selected;
+    }
+
     if (rows.length === 0) { tbody.innerHTML = `<tr><td colspan="5">${t('sa_no_data')}</td></tr>`; return; }
     tbody.innerHTML = rows.map(r => `
         <tr>
@@ -2062,41 +2627,95 @@ async function loadTransferredStudents() {
         </tr>`).join('');
 }
 
-// ---------- Graduation Batches (Registrar publishes; Principal reads) ----------
+function filterTransferredByYear() {
+    TRANSFERRED_SELECTED_YEAR = document.getElementById('transferred-year-filter')?.value || null;
+    loadTransferredStudents();
+}
+
+function openTransferredDownloadFormatModal() { openDownloadFormatModal('transferred'); }
+
+function downloadTransferredCsv() {
+    closeModal();
+    const headers = [t('sa_col_name'), t('sa_col_class'), t('sa_col_transfer_code'), t('sa_col_status'), t('sa_col_date')];
+    const rows = TRANSFERRED_CACHE.map(r => [
+        csvField(r.full_name),
+        csvField(`${r.class_level}-${r.section}`),
+        csvField(r.transfer_code || ''),
+        csvField(r.transfer_status || ''),
+        csvField(formatEthDate(r.completed_at || r.initiated_at))
+    ]);
+    downloadCsv('transferred-students.csv', headers, rows);
+}
+
+function downloadTransferredPdf() {
+    closeModal();
+    const year = TRANSFERRED_SELECTED_YEAR || new Date().getFullYear();
+    window.open(`${API_BASE}/api/principal/transferred-students/pdf?year=${encodeURIComponent(year)}`, '_blank');
+}
+
+// ---------- Graduation Batches (Registrar publishes; Principal reads,
+// filterable by graduation year) ----------
+let GRADUATION_CACHE = [];
+let GRADUATION_SELECTED_BATCH = '';
+
 async function loadGraduationBatches() {
     const tbody = document.getElementById('sa-batches-tbody');
     if (!tbody) return;
-    tbody.innerHTML = `<tr><td colspan="4">${t('sa_loading')}</td></tr>`;
-    const res = await apiFetch(`${API_BASE}/api/principal/graduation-batches`);
-    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="4">${t('sa_load_error')}</td></tr>`; return; }
-    const rows = await res.json();
-    if (rows.length === 0) { tbody.innerHTML = `<tr><td colspan="4">${t('sa_no_data')}</td></tr>`; return; }
-    tbody.innerHTML = rows.map(r => `
-        <tr style="cursor:pointer;" onclick="openBatchModal('${escapeHtml(r.graduation_batch)}')">
-            <td>${escapeHtml(r.graduation_batch)}</td>
-            <td>${r.total}</td>
-            <td>${r.male}</td>
-            <td>${r.female}</td>
+    tbody.innerHTML = `<tr><td colspan="6">${t('sa_loading')}</td></tr>`;
+    const url = GRADUATION_SELECTED_BATCH
+        ? `${API_BASE}/api/principal/graduation-students?batch=${encodeURIComponent(GRADUATION_SELECTED_BATCH)}`
+        : `${API_BASE}/api/principal/graduation-students`;
+    const res = await apiFetch(url);
+    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_load_error')}</td></tr>`; return; }
+    const { rows, years } = await res.json();
+    GRADUATION_CACHE = rows;
+
+    const yearSel = document.getElementById('batches-year-filter');
+    if (yearSel) {
+        const selected = yearSel.value || GRADUATION_SELECTED_BATCH;
+        yearSel.innerHTML = `<option value="">${t('sa_all_years')}</option>` + years.map(y => `<option value="${escapeHtml(y)}">${escapeHtml(y)}</option>`).join('');
+        yearSel.value = selected;
+    }
+
+    if (rows.length === 0) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_no_data')}</td></tr>`; return; }
+    tbody.innerHTML = rows.map(s => `
+        <tr>
+            <td>${escapeHtml(s.student_id)}</td>
+            <td>${escapeHtml(s.full_name)}</td>
+            <td>${escapeHtml(s.fayda_number || '—')}</td>
+            <td>${escapeHtml(s.enrollment_year ?? '—')}</td>
+            <td>${escapeHtml(s.graduation_year ?? '—')}</td>
+            <td>${escapeHtml(s.status || '—')}</td>
         </tr>`).join('');
 }
 
-async function openBatchModal(batch) {
-    openModal(`<h3>${escapeHtml(batch)}</h3><div id="batch-modal-body">${t('sa_loading')}</div>
-        <div class="form-actions"><button class="btn btn-ghost" onclick="closeModal()">${t('sa_close')}</button></div>`, 'modal-box-wide');
-    const res = await apiFetch(`${API_BASE}/api/principal/graduation-batches/${encodeURIComponent(batch)}`);
-    const body = document.getElementById('batch-modal-body');
-    if (!body) return;
-    if (!res.ok) { body.innerHTML = t('sa_load_error'); return; }
-    const students = await res.json();
-    body.innerHTML = `
-        <div class="data-table-wrap">
-            <table class="data-table">
-                <thead><tr><th>${t('sa_col_student_id')}</th><th>${t('sa_col_name')}</th><th>${t('sa_col_class')}</th><th>${t('sa_col_stream')}</th></tr></thead>
-                <tbody>${students.map(s => `
-                    <tr><td>${s.student_id}</td><td>${escapeHtml(s.full_name)}</td><td>${s.class_level}-${s.section}</td><td>${escapeHtml(s.stream ?? '—')}</td></tr>
-                `).join('')}</tbody>
-            </table>
-        </div>`;
+function filterGraduationByYear() {
+    GRADUATION_SELECTED_BATCH = document.getElementById('batches-year-filter')?.value || '';
+    loadGraduationBatches();
+}
+
+function openGraduationDownloadFormatModal() { openDownloadFormatModal('graduation'); }
+
+function downloadGraduationCsv() {
+    closeModal();
+    const headers = [t('sa_col_student_id'), t('sa_col_name'), t('sa_col_fayda_number'), t('sa_col_enrollment_year'), t('sa_col_graduation_year'), t('sa_col_status')];
+    const rows = GRADUATION_CACHE.map(s => [
+        csvField(s.student_id),
+        csvField(s.full_name),
+        csvExcelSafeField(s.fayda_number || ''),
+        csvField(s.enrollment_year ?? ''),
+        csvField(s.graduation_year ?? ''),
+        csvField(s.status || '')
+    ]);
+    downloadCsv('graduate-roster.csv', headers, rows);
+}
+
+function downloadGraduationPdf() {
+    closeModal();
+    const url = GRADUATION_SELECTED_BATCH
+        ? `${API_BASE}/api/principal/graduation-students/pdf?batch=${encodeURIComponent(GRADUATION_SELECTED_BATCH)}`
+        : `${API_BASE}/api/principal/graduation-students/pdf`;
+    window.open(url, '_blank');
 }
 
 // ---------- Shared: class level -> stream dependency ----------
@@ -2175,13 +2794,71 @@ function selectTeacherFromSearch(inputId, resultsId, hiddenId, teacher_id, full_
     document.getElementById(inputId).value = '';
     document.getElementById(resultsId).innerHTML = `
         <div class="form-hint">${t('sa_teacher_selected_prefix')} ${escapeHtml(full_name)} (${teacher_id})
-            <button type="button" class="btn btn-sm btn-ghost" onclick="document.getElementById('${hiddenId}').value=''; document.getElementById('${resultsId}').innerHTML='';">${t('sa_teacher_change')}</button>
+            <button type="button" class="btn btn-sm btn-ghost" ${actionAttrs('clearTeacherSelection', [hiddenId, resultsId])}>${t('sa_teacher_change')}</button>
         </div>`;
+}
+
+// "Change" button for a picked teacher: clears the hidden id field and
+// the results panel so the search box is ready for a new pick.
+function clearTeacherSelection(hiddenId, resultsId) {
+    document.getElementById(hiddenId).value = '';
+    document.getElementById(resultsId).innerHTML = '';
 }
 
 // ---------- Utility ----------
 function escapeHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Small circular avatar for table rows (student roster / teacher roster
+// ID cells) — a real photo when one's on file, otherwise initials on a
+// solid background so every row still has *something* to visually
+// anchor on rather than blank space next to the ID. Pass
+// { previewable: true } (used for the student roster's ID photo) to make
+// an on-file photo clickable, opening a larger preview via previewIdPhoto.
+function tableAvatarHtml(name, photoUrl, { previewable = false } = {}) {
+    const initials = String(name || '').trim().split(/\s+/).filter(Boolean).map(w => w[0]).join('').slice(0, 2).toUpperCase() || '?';
+    if (!photoUrl) return `<span class="table-avatar">${escapeHtml(initials)}</span>`;
+    const fullUrl = API_BASE + photoUrl;
+    const img = `<img src="${escapeHtml(fullUrl)}" alt="" loading="lazy" />`;
+    if (previewable) {
+        return `<span class="table-avatar table-avatar-clickable" ${actionAttrs('previewIdPhoto', [fullUrl, name])}>${img}</span>`;
+    }
+    return `<span class="table-avatar">${img}</span>`;
+}
+
+// Full-size preview of a roster ID photo, opened by clicking the small
+// avatar in the table (see tableAvatarHtml's previewable option) — the
+// photo shown is specifically the one uploaded/approved for the ID card
+// (id_photo_url), not any other profile picture.
+function previewIdPhoto(fullUrl, name) {
+    openModal(`
+        <h3>${escapeHtml(name || '')}</h3>
+        <div class="id-photo-preview-wrap">
+            <img src="${escapeHtml(fullUrl)}" alt="" class="id-photo-preview-img" />
+        </div>
+        <div class="form-actions" style="margin-top: 14px;">
+            <button class="btn btn-ghost" ${actionAttrs('closeModal', [])}>${t('sa_close')}</button>
+        </div>
+    `);
+}
+
+// ---------- Action dispatch (replaces inline onclick="...") ----------
+// Rows rendered from server data used to build ${actionAttrs('fn', [value])} by
+// hand-concatenating server data straight into an HTML attribute string.
+// Any value containing a stray quote (a name, a subject, free-text a
+// teacher typed) could break out of the attribute early and inject
+// arbitrary markup/script — a real DOM XSS hole, not just a style
+// nitpick. actionAttrs() replaces that pattern: it JSON-encodes the
+// arguments and HTML-escapes the result before it ever lands in a
+// template string, so no value can end the attribute early no matter
+// what characters it contains. Splice the result straight into a
+// template literal in place of an onclick="...": `${actionAttrs('foo',
+// [a, b])}`. The matching delegated 'click' listener near the bottom of
+// this file reads data-action/data-args back off the clicked element and
+// calls the real function with the decoded arguments.
+function actionAttrs(action, args = []) {
+    return `data-action="${escapeHtml(action)}" data-args="${escapeHtml(JSON.stringify(args))}"`;
 }
 // ==========================================================
 // TEACHER SETUP, Stage 1 (Principal) — incoming from Zonal + direct local hire
@@ -2190,20 +2867,115 @@ async function loadTeacherSetup() {
     loadIncomingTeachers();
 
     const tbody = document.getElementById('sa-teacher-setup-tbody');
-    tbody.innerHTML = `<tr><td colspan="4">${t('sa_loading')}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7">${t('sa_loading')}</td></tr>`;
     const res = await apiFetch(`${API_BASE}/api/admin/teachers`);
-    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="4">${t('sa_load_error')}</td></tr>`; return; }
+    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="7">${t('sa_load_error')}</td></tr>`; return; }
     const teachers = await res.json();
-    if (teachers.length === 0) { tbody.innerHTML = `<tr><td colspan="4">${t('sa_no_data')}</td></tr>`; return; }
+    TEACHER_ROSTER_CACHE = teachers;
+    if (teachers.length === 0) { tbody.innerHTML = `<tr><td colspan="7">${t('sa_no_data')}</td></tr>`; return; }
     tbody.innerHTML = teachers.map(tr => `
         <tr>
-            <td>${tr.teacher_id}</td>
+            <td class="table-id-cell">${tableAvatarHtml(tr.full_name, tr.avatar_url, { previewable: true })}<span>${escapeHtml(tr.teacher_id)}</span></td>
             <td>${escapeHtml(tr.full_name)}</td>
             <td>${escapeHtml(tr.contact_number || '—')}</td>
+            <td>${escapeHtml(tr.education_level || '—')}</td>
+            <td>${escapeHtml(tr.fayda_number || '—')}</td>
             <td>${tr.awaiting_assignment
                 ? `<span class="badge badge-pending">${t('sa_awaiting_assignment')}</span>`
                 : `<span class="badge badge-approved">${tr.assignment_count} ${t('sa_assignments_lower')}</span>`}</td>
+            <td><button class="btn btn-sm btn-ghost" ${actionAttrs('openEditTeacherRosterModal', [tr.teacher_id])}>${t('sa_edit')}</button></td>
         </tr>`).join('');
+}
+
+// Cache of the last-loaded roster rows, so the edit modal can prefill
+// from what's already on screen instead of a fresh round-trip.
+let TEACHER_ROSTER_CACHE = [];
+
+// Deliberately narrow edit surface — just the three fields the roster
+// table shows that aren't set elsewhere (contact, education level,
+// Fayda/national-ID number). Name/school/login live in Teacher Audit /
+// Teacher Transfer, not here.
+function openEditTeacherRosterModal(teacher_id) {
+    const tr = TEACHER_ROSTER_CACHE.find(x => x.teacher_id === teacher_id);
+    if (!tr) return;
+    const levels = ['TVET / College Diploma', "Bachelor's Degree", "Master's Degree", 'PhD / Doctoral Degree'];
+    openModal(`
+        <h3>${t('sa_edit_teacher_heading')} \u2014 ${escapeHtml(tr.full_name)} (${teacher_id})</h3>
+        <div class="form-group">
+            <label>${t('sa_col_contact')}</label>
+            <input type="text" id="et-contact" value="${escapeHtml(tr.contact_number || '')}" />
+        </div>
+        <div class="form-group">
+            <label>${t('sa_col_education_level')}</label>
+            <select id="et-education-level">
+                <option value="">\u2014</option>
+                ${levels.map(l => `<option value="${escapeHtml(l)}" ${tr.education_level === l ? 'selected' : ''}>${escapeHtml(l)}</option>`).join('')}
+            </select>
+        </div>
+        <div class="form-group">
+            <label>${t('sa_col_fayda_number')}</label>
+            <input type="text" id="et-fayda" inputmode="numeric" maxlength="16" pattern="\\d{16}"
+                   value="${escapeHtml(tr.fayda_number || '')}" placeholder="${t('sa_fayda_placeholder')}" />
+            <span class="form-hint">${t('sa_fayda_hint')}</span>
+        </div>
+        <div class="form-actions">
+            <button class="btn btn-accent" ${actionAttrs('saveTeacherRosterEdit', [teacher_id])}>${t('sa_save')}</button>
+            <button class="btn btn-ghost" ${actionAttrs('closeModal', [])}>${t('sa_close')}</button>
+        </div>
+    `);
+    // Digits only, capped at 16 as the person types — matches the
+    // "16 digit limited" requirement directly in the input, on top of
+    // the server-side format check.
+    document.getElementById('et-fayda').addEventListener('input', e => {
+        e.target.value = e.target.value.replace(/\D/g, '').slice(0, 16);
+    });
+}
+
+async function saveTeacherRosterEdit(teacher_id) {
+    const contact_number = document.getElementById('et-contact').value.trim();
+    const education_level = document.getElementById('et-education-level').value;
+    const fayda_number = document.getElementById('et-fayda').value.trim();
+    if (fayda_number && fayda_number.length !== 16) {
+        return showToast(t('sa_fayda_hint'), 'error');
+    }
+    if (!(await verifyAdminPassword())) return;
+    const res = await apiFetch(`${API_BASE}/api/admin/teachers/${teacher_id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contact_number: contact_number || null, education_level: education_level || null, fayda_number: fayda_number || null })
+    });
+    const data = await handleJsonResponse(res, t('sa_teacher_updated'));
+    if (!data) return;
+    closeModal();
+    loadTeacherSetup();
+}
+
+// CSV counterpart to the PDF below — built client-side from
+// TEACHER_ROSTER_CACHE (already loaded for the table), same columns as
+// the PDF (Teacher ID, Name, Contact, Level of Education, Fayda Number,
+// Teaching Load). Contact Number and Fayda Number both go through
+// csvExcelSafeField since either can be a long/leading-zero digit
+// string that a spreadsheet app would otherwise mangle.
+function downloadTeacherRosterCsv() {
+    closeModal();
+    const headers = [t('sa_col_teacher_id'), t('sa_col_name'), t('sa_col_contact'), t('sa_col_education_level'), t('sa_col_fayda_number'), t('sa_col_status')];
+    const rows = TEACHER_ROSTER_CACHE.map(tr => [
+        csvField(tr.teacher_id),
+        csvField(tr.full_name),
+        csvExcelSafeField(tr.contact_number || ''),
+        csvField(tr.education_level || ''),
+        csvExcelSafeField(tr.fayda_number || ''),
+        csvField(tr.awaiting_assignment ? t('sa_awaiting_assignment') : `${tr.assignment_count} ${t('sa_assignments_lower')}`)
+    ]);
+    downloadCsv('teacher-roster.csv', headers, rows);
+}
+
+// Opens a printable roster PDF (Teacher ID, Name, Contact, Level of
+// Education, Fayda Number, Teaching Load) — same window.open +
+// cookie-auth pattern as the other PDF downloads in this app (see
+// printAnalysisReport / downloadTtWeek above).
+function downloadTeacherRosterPdf() {
+    closeModal();
+    window.open(`${API_BASE}/api/admin/teachers/pdf`, '_blank');
 }
 
 async function loadIncomingTeachers() {
@@ -2219,8 +2991,8 @@ async function loadIncomingTeachers() {
             <td>${escapeHtml(r.contact_number || '—')}</td>
             <td>${incomingStatusBadge(r)}</td>
             <td>${r.status === 'pending'
-                ? `<button class="btn btn-sm btn-success" onclick="openAcceptIncomingModal(${r.incoming_id})">${t('sa_accept')}</button>
-                   <button class="btn btn-sm btn-danger" onclick="declineIncomingTeacher(${r.incoming_id})">${t('sa_decline')}</button>`
+                ? `<button class="btn btn-sm btn-success" ${actionAttrs('openAcceptIncomingModal', [r.incoming_id])}>${t('sa_accept')}</button>
+                   <button class="btn btn-sm btn-danger" ${actionAttrs('declineIncomingTeacher', [r.incoming_id])}>${t('sa_decline')}</button>`
                 : '—'}</td>
         </tr>`).join('');
 }
@@ -2243,8 +3015,8 @@ function openAcceptIncomingModal(incoming_id) {
             </div>
         </div>
         <div class="form-actions">
-            <button class="btn btn-accent" onclick="acceptIncomingTeacher(${incoming_id})">${t('sa_accept')}</button>
-            <button class="btn btn-ghost" onclick="closeModal()">${t('sa_close')}</button>
+            <button class="btn btn-accent" ${actionAttrs('acceptIncomingTeacher', [incoming_id])}>${t('sa_accept')}</button>
+            <button class="btn btn-ghost" ${actionAttrs('closeModal', [])}>${t('sa_close')}</button>
         </div>
     `);
 }
@@ -2357,7 +3129,7 @@ async function loadTeacherAssignments(filterTeacherId) {
             const disabledAttr = (canAssign && assigned) ? '' : 'disabled';
             const interactive = canAssign && assigned;
             const clickHandler = interactive
-                ? `onclick="event.preventDefault(); unassignTeacherSection('${g.teacher_id}','${g.class_level}','${name}','${g.subject_id}')"`
+                ? `${actionAttrs('unassignTeacherSection', [g.teacher_id, g.class_level, name, g.subject_id])}`
                 : '';
             return `<label class="ta-section-tick${assigned ? ' is-assigned' : ''}" title="${escapeHtml(name)}" ${clickHandler}>
                 <input type="checkbox" ${assigned ? 'checked' : ''} ${disabledAttr} tabindex="-1">
@@ -2403,10 +3175,10 @@ function renderTeacherRoles(teachers, canAssign) {
                 ? `<span class="badge badge-approved">${t('sa_registrar_active')}</span>`
                 : `<span class="badge badge-none">${t('sa_none')}</span>`}</td>
             <td>${canAssign ? `
-                ${tr.homeroom ? `<button class="btn btn-sm btn-danger" onclick="removeTeacherHomeroom('${tr.teacher_id}')">${t('sa_remove')}</button>` : ''}
+                ${tr.homeroom ? `<button class="btn btn-sm btn-danger" ${actionAttrs('removeTeacherHomeroom', [tr.teacher_id])}>${t('sa_remove')}</button>` : ''}
                 ${!tr.is_registrar
-                    ? `<button class="btn btn-sm btn-ghost" onclick="grantRegistrar('${tr.teacher_id}')">${t('sa_grant_registrar_btn')}</button>`
-                    : `<button class="btn btn-sm btn-danger" onclick="revokeRegistrar('${tr.teacher_id}')">${t('sa_revoke_registrar_btn')}</button>`}
+                    ? `<button class="btn btn-sm btn-ghost" ${actionAttrs('grantRegistrar', [tr.teacher_id])}>${t('sa_grant_registrar_btn')}</button>`
+                    : `<button class="btn btn-sm btn-danger" ${actionAttrs('revokeRegistrar', [tr.teacher_id])}>${t('sa_revoke_registrar_btn')}</button>`}
             ` : '—'}</td>
         </tr>`).join('');
 }
@@ -2480,16 +3252,18 @@ async function loadClassSectionsForAssignment() {
     const res = await apiFetch(`${API_BASE}/api/academic-vp/class-sections`);
     TA_CLASS_SECTIONS_CACHE = res.ok ? await res.json() : [];
 
-    const levelSelect = document.getElementById('ta-class-level');
-    if (levelSelect) {
-        const levels = [...new Set(TA_CLASS_SECTIONS_CACHE.map(s => String(s.class_level)))]
-            .sort((a, b) => Number(a) - Number(b));
+    const levels = [...new Set(TA_CLASS_SECTIONS_CACHE.map(s => String(s.class_level)))]
+        .sort((a, b) => Number(a) - Number(b));
+    ['ta-class-level', 'hr-class-level'].forEach(id => {
+        const levelSelect = document.getElementById(id);
+        if (!levelSelect) return;
         const current = levelSelect.value;
         levelSelect.innerHTML = `<option value="">${t('sa_select_class_level')}</option>`
             + levels.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('');
         if (levels.includes(current)) levelSelect.value = current;
-    }
+    });
     renderTaSectionCheckboxes();
+    renderHrSectionOptions();
 }
 
 // The Registrar's own Section Setup form stores stream as free text
@@ -2531,6 +3305,30 @@ function renderTaSectionCheckboxes() {
     box.innerHTML = names.map(name => `
         <label><input type="checkbox" class="ta-section-cb" value="${escapeHtml(name)}"> ${escapeHtml(name)}</label>
     `).join('');
+}
+
+// Same Registrar-configured sections as above, but for the Assign
+// Homeroom form's single Section dropdown — a homeroom is exactly one
+// section, so this is a <select>, not tick-boxes, but it's built from
+// the same TA_CLASS_SECTIONS_CACHE and the same normalizeStreamCode
+// bridge so it can never offer a section the Registrar didn't set up.
+function renderHrSectionOptions() {
+    const select = document.getElementById('hr-section');
+    if (!select) return;
+    const level = document.getElementById('hr-class-level')?.value || '';
+    const stream = document.getElementById('hr-stream')?.value || '';
+    if (!level) {
+        select.innerHTML = `<option value="">${t('sa_select_section')}</option>`;
+        return;
+    }
+    let sections = TA_CLASS_SECTIONS_CACHE.filter(s => String(s.class_level) === String(level));
+    if (stream) sections = sections.filter(s => !s.stream || normalizeStreamCode(s.stream) === normalizeStreamCode(stream));
+    const names = [...new Set(sections.map(s => s.section_name))].sort();
+    const current = select.value;
+    select.innerHTML = names.length
+        ? (`<option value="">${t('sa_select_section')}</option>` + names.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join(''))
+        : `<option value="">${t('sa_no_data')}</option>`;
+    if (names.includes(current)) select.value = current;
 }
 
 // Subjects narrow to whatever the currently-selected stream can teach:
@@ -2824,7 +3622,7 @@ async function loadTeacherAudit() {
     const data = await res.json();
     if (!data.teachers || data.teachers.length === 0) { tbody.innerHTML = `<tr><td colspan="5">${t('sa_no_data')}</td></tr>`; return; }
     tbody.innerHTML = data.teachers.map(tr => `
-        <tr style="cursor:pointer; ${tr.flagged ? 'background:var(--danger-bg);' : ''}" onclick="openTeacherAuditModal('${tr.teacher_id}')">
+        <tr style="cursor:pointer; ${tr.flagged ? 'background:var(--danger-bg);' : ''}" ${actionAttrs('openTeacherAuditModal', [tr.teacher_id])}>
             <td>${escapeHtml(tr.full_name)} (${escapeHtml(tr.teacher_id)})</td>
             <td>${tr.absent_days_30d}</td>
             <td>${tr.punctuality_rate != null ? tr.punctuality_rate + '%' : '—'}</td>
@@ -2864,7 +3662,7 @@ async function openTeacherAuditModal(teacher_id) {
             <tbody>${scoreRows}</tbody></table>
         </div>
         <div class="form-actions">
-            <button class="btn btn-ghost" onclick="closeModal()">${t('sa_close')}</button>
+            <button class="btn btn-ghost" ${actionAttrs('closeModal', [])}>${t('sa_close')}</button>
         </div>
     `);
 }
@@ -3084,7 +3882,7 @@ function openComposeModal(prefill = {}) {
             <textarea id="msg-body"></textarea>
         </div>
         <div class="form-actions">
-            <button class="btn btn-ghost" onclick="closeModal()" data-i18n="sa_close">${t('sa_close')}</button>
+            <button class="btn btn-ghost" ${actionAttrs('closeModal', [])} data-i18n="sa_close">${t('sa_close')}</button>
             <button class="btn btn-accent" id="msg-send-btn" data-i18n="sa_send_btn">${t('sa_send_btn')}</button>
         </div>
     `, 'modal-box-wide');
@@ -3140,7 +3938,7 @@ async function loadMessages(box) {
         const name = box === 'inbox' ? m.sender_id : m.recipient_id;
         const unread = !m.is_read && box === 'inbox';
         return `
-        <div class="msg-row${unread ? ' unread' : ''}" data-id="${m.message_id}" onclick="selectMessage(${m.message_id})">
+        <div class="msg-row${unread ? ' unread' : ''}" data-id="${m.message_id}" ${actionAttrs('selectMessage', [m.message_id])}>
             <div class="msg-row-top">
                 <span class="msg-row-name">${escapeHtml(name || '—')}</span>
                 <span class="msg-row-date">${formatEthDateTime(m.sent_at)}</span>
@@ -3170,8 +3968,8 @@ function selectMessage(message_id) {
         </div>
         <div class="msg-detail-body">${escapeHtml(m.body)}</div>
         <div class="msg-detail-actions">
-            ${!m.is_read && box === 'inbox' ? `<button class="btn btn-sm btn-ghost" onclick="markMessageRead(${m.message_id})">${t('sa_mark_read')}</button>` : ''}
-            ${box === 'inbox' ? `<button class="btn btn-sm btn-primary" onclick="replyToMessage('${m.sender_type}', '${m.sender_id}', ${JSON.stringify(m.subject || '').replace(/"/g, '&quot;')})">${t('sa_reply_btn')}</button>` : ''}
+            ${!m.is_read && box === 'inbox' ? `<button class="btn btn-sm btn-ghost" ${actionAttrs('markMessageRead', [m.message_id])}>${t('sa_mark_read')}</button>` : ''}
+            ${box === 'inbox' ? `<button class="btn btn-sm btn-primary" ${actionAttrs('replyToMessage', [m.sender_type, m.sender_id, m.subject || ''])}>${t('sa_reply_btn')}</button>` : ''}
         </div>`;
     if (!m.is_read && box === 'inbox') markMessageRead(message_id);
 }
@@ -3187,7 +3985,7 @@ async function loadContactThreads() {
     const rows = await res.json();
     if (rows.length === 0) { listEl.innerHTML = `<div class="widget-empty">${t('sa_no_data')}</div>`; return; }
     listEl.innerHTML = rows.map(th => `
-        <div class="msg-row${th.unread_count > 0 ? ' unread' : ''}" onclick="openContactThreadModal(${th.thread_id})">
+        <div class="msg-row${th.unread_count > 0 ? ' unread' : ''}" ${actionAttrs('openContactThreadModal', [th.thread_id])}>
             <div class="msg-row-top">
                 <span class="msg-row-name">${escapeHtml(th.teacher_name)}</span>
                 <span class="msg-row-date">${formatEthDateTime(th.updated_at)}</span>
@@ -3202,7 +4000,7 @@ async function loadContactThreads() {
 
 async function openContactThreadModal(thread_id) {
     openModal(`<h3>${t('sa_thread_heading')}</h3><div id="contact-thread-modal-body">${t('sa_loading')}</div>
-        <div class="form-actions"><button class="btn btn-ghost" onclick="closeModal()">${t('sa_close')}</button></div>`);
+        <div class="form-actions"><button class="btn btn-ghost" ${actionAttrs('closeModal', [])}>${t('sa_close')}</button></div>`);
     const res = await apiFetch(`${API_BASE}/api/admin/contact-threads/${thread_id}`);
     const body = document.getElementById('contact-thread-modal-body');
     if (!body) return;
@@ -3222,8 +4020,8 @@ async function openContactThreadModal(thread_id) {
             <textarea id="contact-thread-reply-body"></textarea>
         </div>
         <div class="form-actions" style="margin-top:0;">
-            <button class="btn btn-accent btn-sm" onclick="replyToContactThread(${thread_id})">${t('sa_reply_btn')}</button>
-            <button class="btn ${thread.status === 'Resolved' ? 'btn-ghost' : 'btn-success'} btn-sm" onclick="toggleContactThreadStatus(${thread_id}, '${thread.status === 'Resolved' ? 'Open' : 'Resolved'}')">
+            <button class="btn btn-accent btn-sm" ${actionAttrs('replyToContactThread', [thread_id])}>${t('sa_reply_btn')}</button>
+            <button class="btn ${thread.status === 'Resolved' ? 'btn-ghost' : 'btn-success'} btn-sm" ${actionAttrs('toggleContactThreadStatus', [thread_id, thread.status === 'Resolved' ? 'Open' : 'Resolved'])}>
                 ${thread.status === 'Resolved' ? t('sa_reopen_thread') : t('sa_resolve_thread')}
             </button>
         </div>`;
@@ -3300,6 +4098,15 @@ async function refreshUnreadMessagesBadge() {
 // DIGITAL SIGNATURE SUITE (school_admins' own signature/stamp)
 // ==========================================================
 async function loadDocumentStatus() {
+    // Principal Stamp — unlike Signature and ID Photo (which every admin
+    // title keeps for their own use), the stamp is only meaningful for
+    // whoever is authorized to actually stamp official documents: the
+    // Principal. Academic VP / Admin VP don't get the card at all (not
+    // just a locked/read-only version, like the School Seal below —
+    // this one shouldn't be visible to them in the first place).
+    const stampCard = document.getElementById('profile-stamp-card');
+    if (stampCard) stampCard.style.display = (CURRENT_TITLE === 'Principal') ? '' : 'none';
+
     const res = await apiFetch(`${API_BASE}/api/admin/document-status`);
     if (!res.ok) return;
     const data = await res.json();
@@ -3309,7 +4116,7 @@ async function loadDocumentStatus() {
         sigPreview.src = API_BASE + data.signature_url; sigPreview.style.display = '';
         document.getElementById('profile-signature-placeholder').style.display = 'none';
     }
-    if (data.stamp_url) {
+    if (data.stamp_url && CURRENT_TITLE === 'Principal') {
         stampPreview.src = API_BASE + data.stamp_url; stampPreview.style.display = '';
         document.getElementById('profile-stamp-placeholder').style.display = 'none';
     }
@@ -3488,6 +4295,16 @@ function renderAdminIdCard(data) {
 
     const photo = document.getElementById('idcard-photo');
     const placeholder = document.getElementById('idcard-photo-placeholder');
+    // Falls back to the placeholder avatar if the photo URL fails to load
+    // (404, network error, etc). Moved here from an inline onerror="..."
+    // attribute in index.html — this portal's CSP (script-src-attr 'none',
+    // see helmet() in server.js) blocks that from ever executing.
+    if (photo) {
+        photo.onerror = () => {
+            photo.style.display = 'none';
+            if (placeholder) placeholder.style.display = 'flex';
+        };
+    }
     if (data.avatar_url && photo) {
         photo.src = API_BASE + data.avatar_url;
         photo.alt = data.full_name ? `Photo of ${data.full_name}` : 'Admin photo';
@@ -3516,11 +4333,186 @@ function renderIdCardQrCode(payload) {
     container.innerHTML = qr.createSvgTag(4, 2);
 }
 
-window.flipIdCard = () => {
+function flipIdCard() {
     const flipper = document.getElementById('idcard-flipper');
     if (flipper) flipper.classList.toggle('idcard-flipped');
+}
+
+function printIdCard() {
+    window.print();
+}
+
+// ---------- Delegated click dispatch for data-action elements ----------
+// Central lookup from the string in data-action (set by actionAttrs, or
+// hand-written on static buttons in index.html) to the real function.
+// Function declarations are hoisted, so it doesn't matter that some of
+// these are defined earlier in the file and some later — by the time a
+// click actually happens, every one of them exists.
+const ACTION_HANDLERS = {
+    acceptIncomingTeacher, approveTransferRequest, clearTeacherSelection, closeModal,
+    decideCase, decideDocumentRequest, decideDropoutRequest, decidePenalty,
+    decideStudentAbsence, decideSubjectEntryRequest, decideTeacherAbsence, declineIncomingTeacher,
+    grantRegistrar, issueAward, markMessageRead, navigateToPage,
+    openAcceptIncomingModal, openContactThreadModal, openEditTeacherRosterModal,
+    openTeacherAuditModal, rejectTransferRequest, removeTeacherHomeroom, reopenMarksReport,
+    replyToContactThread, replyToMessage, revokeRegistrar, saveTeacherRosterEdit,
+    saveTtGrid, selectMessage, toggleContactThreadStatus, unassignTeacherSection,
+    openStudentsOnLeaveModal, flipIdCard, printIdCard,
+    openDownloadFormatModal, openStudentDownloadFormatModal, openTeacherDownloadFormatModal,
+    openTransferredDownloadFormatModal, openGraduationDownloadFormatModal,
+    downloadStudentRosterCsv, downloadStudentRosterPdf, downloadTeacherRosterCsv, downloadTeacherRosterPdf,
+    downloadTransferredCsv, downloadTransferredPdf, downloadGraduationCsv, downloadGraduationPdf,
+    previewIdPhoto
 };
 
-window.printIdCard = () => {
-    window.print();
-};
+document.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-action]');
+    if (!el) return;
+    const action = el.dataset.action;
+    const handler = ACTION_HANDLERS[action];
+    if (!handler) {
+        console.error('Unknown data-action:', action);
+        return;
+    }
+    // Every data-action element replaces what used to be either an
+    // onclick="...; return false;" on an <a href="#">, or an
+    // onclick="event.preventDefault(); ..." on a <label> wrapping a
+    // checkbox — both were suppressing the element's default click
+    // behavior. Doing it here once covers both cases identically.
+    e.preventDefault();
+    let args = [];
+    if (el.dataset.args) {
+        try { args = JSON.parse(el.dataset.args); } catch (err) { console.error('Bad data-args JSON:', err); }
+    }
+    handler(...args);
+});
+
+// ---------- Students table sticky header offset ----------
+// #page-students opts its table thead out of the shared
+// `table.data-table thead th { position: sticky; top: 70px }` rule
+// (see styles.css) because this page's own sticky header block
+// (title + stat cards + tabs, wrapped in .page-sticky-header) is taller
+// than the plain 70px topbar every other page sticks under — reusing
+// top:70px here would land the frozen column header underneath/behind
+// that block instead of right beneath it.
+// This measures the actual rendered height of that block (its stat
+// row loads in asynchronously, so the height isn't known up front) and
+// exposes it as a CSS custom property so the thead can stick flush
+// beneath it. A ResizeObserver keeps it in sync if that content
+// reflows (e.g. language switch changing text length/line count).
+// ---------- Global sticky header/filter-bar/thead offsets ----------
+// Generic, page-agnostic version of what used to be a #page-students-
+// only fix: ANY page can stack a .page-sticky-header (title/stat-cards/
+// tabs) and/or a .sticky-filter-bar (filter dropdowns/search/buttons)
+// above its table, and both need their own measured offset since their
+// heights aren't known up front (a stat row can load in asynchronously,
+// and filter-bar height can vary with wrapped filters on narrow
+// screens). This measures whichever of those blocks are actually
+// present and visible on the CURRENTLY ACTIVE page/tab and exposes two
+// CSS custom properties consumed by styles.css:
+//   --sticky-header-offset  — where .sticky-filter-bar sticks (topbar +
+//                              page header, if any)
+//   --sticky-content-offset — where table.data-table thead sticks
+//                              (the above + filter bar, if any)
+// A page with neither block simply gets both vars equal to the topbar's
+// own height, which is the plain "thead sticks right under the topbar"
+// behavior every ordinary page already had. Call this any time the
+// active page/tab changes, or when something inside the header/filter
+// bar might have resized (a ResizeObserver on those elements handles
+// the latter automatically — see the DOMContentLoaded wiring below).
+function updateStickyOffsets() {
+    // Use the top-bar's actual measured height rather than assuming its
+    // usual ~70px — on narrow/mobile widths it wraps onto 2-3 rows (see
+    // updateTopbarHeightVar below), and stacking sticky blocks under a
+    // stale 70px guess is what lets them drift out of sync with it.
+    const topbar = document.querySelector('.top-bar');
+    const topbarHeight = topbar?.offsetHeight || 70;
+
+    const activePage = document.querySelector('.page-content.active');
+    const header = activePage?.querySelector('.page-sticky-header');
+    const headerOffset = topbarHeight + (header?.offsetHeight || 0);
+    document.documentElement.style.setProperty('--sticky-header-offset', `${headerOffset}px`);
+
+    // Only the currently-visible filter bar counts — a page can have one
+    // per tab (e.g. #page-students' Roster/Transferred/Batches tabs),
+    // but only one tab-panel is ever shown at a time. offsetHeight is 0
+    // for a display:none ancestor, so an explicit visibility check isn't
+    // even required, but .closest('.tab-panel') keeps intent obvious.
+    const filterBar = activePage
+        ? [...activePage.querySelectorAll('.sticky-filter-bar, .sa-students-toolbar')]
+            .find(el => el.offsetParent !== null)
+        : null;
+    document.documentElement.style.setProperty('--sticky-content-offset', `${headerOffset + (filterBar?.offsetHeight || 0)}px`);
+}
+
+// The top-bar itself wraps onto extra rows below ~900px (title/meta on
+// one row, badges on another, language/icons/profile on a third — see
+// the .top-bar comment in styles.css), so its real height isn't the
+// fixed 70px every sticky block under it used to assume. This measures
+// it and exposes it as --topbar-height so .page-sticky-header (and, via
+// updateStickyOffsets above, any page's filter bar/thead) can stick at
+// the top-bar's actual bottom edge at any width instead of a stale
+// guess that would leave rows hidden behind (or a gap below) it.
+function updateTopbarHeightVar() {
+    const topbar = document.querySelector('.top-bar');
+    if (!topbar) return;
+    document.documentElement.style.setProperty('--topbar-height', `${topbar.offsetHeight}px`);
+}
+
+// ---------- Static nav/header buttons (moved out of index.html's
+// inline onclick="..." attributes and into listeners here) ----------
+document.addEventListener('DOMContentLoaded', () => {
+    const topbarEl = document.querySelector('.top-bar');
+    if (topbarEl) {
+        updateTopbarHeightVar();
+        if (window.ResizeObserver) {
+            new ResizeObserver(updateTopbarHeightVar).observe(topbarEl);
+        }
+        window.addEventListener('resize', updateTopbarHeightVar);
+    }
+    // Global sticky offsets (see updateStickyOffsets() above): observe
+    // EVERY .page-sticky-header / .sticky-filter-bar in the document —
+    // not just one page's — since any page can use either class now.
+    // Only the active page's own elements actually affect the computed
+    // vars, but it's cheap and simple to just watch them all rather than
+    // re-wiring observers every time the active page changes.
+    updateStickyOffsets();
+    if (window.ResizeObserver) {
+        const stickyRO = new ResizeObserver(updateStickyOffsets);
+        document.querySelectorAll('.page-sticky-header, .sticky-filter-bar, .sa-students-toolbar')
+            .forEach(el => stickyRO.observe(el));
+        // Also re-measure whenever the top-bar itself changes height
+        // (e.g. its badges wrap differently after a language switch
+        // changes their text length) — updateStickyOffsets reads the
+        // top-bar's live height each time, but it only runs when
+        // something triggers it.
+        if (topbarEl) stickyRO.observe(topbarEl);
+    }
+    window.addEventListener('resize', updateStickyOffsets);
+    // Infinite scroll for the (potentially long) student roster table —
+    // see maybeLoadMoreStudentRows above for the visibility/proximity
+    // checks that keep this a no-op outside the Roster tab.
+    document.querySelector('.main-content')?.addEventListener('scroll', maybeLoadMoreStudentRows);
+    document.querySelectorAll('.lang-switch-btn[data-lang]').forEach(btn => {
+        btn.addEventListener('click', () => setLang(btn.dataset.lang));
+    });
+    document.querySelectorAll('[data-file-input-target]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const input = document.getElementById(btn.dataset.fileInputTarget);
+            if (input) input.click();
+        });
+    });
+    const flipBtn = document.getElementById('idcard-flip-btn');
+    if (flipBtn) flipBtn.addEventListener('click', flipIdCard);
+    const printBtn = document.getElementById('idcard-print-btn');
+    if (printBtn) printBtn.addEventListener('click', printIdCard);
+
+    // Timetable grid's subject dropdowns are regenerated wholesale on
+    // every generateTtGrid() call, but this wrapping container isn't —
+    // delegating from here (rather than an onchange="..." baked into
+    // each <select> string) means the listener survives every
+    // regeneration without needing to be re-wired.
+    document.getElementById('tt-grid-wrap')?.addEventListener('change', (e) => {
+        if (e.target.matches('.tt-grid-cell')) onTtCellChange(e.target.id);
+    });
+});

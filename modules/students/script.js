@@ -16,6 +16,18 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
+// Combines a school's own name with its level, e.g. "Newland" +
+// "SECONDARY SCHOOL" -> "NEWLAND SECONDARY SCHOOL" — the level isn't
+// otherwise implied by the name, and schools of different levels can
+// share a name. Mirrors buildSchoolDisplayName() in server.js (used
+// server-side for the certificate/report-card templates) so the name
+// shown here always matches what gets printed there. school_level is
+// already stored upper-case; .toUpperCase() on the joined string is
+// just a safety net for the name half.
+function buildSchoolDisplayName(schoolName, schoolLevel) {
+    return [schoolName, schoolLevel].filter(Boolean).join(' ').toUpperCase() || 'SCHOOL';
+}
+
 async function checkAuth() {
     try {
         const res = await apiFetch('/api/me');
@@ -26,19 +38,47 @@ async function checkAuth() {
         const titleEl = document.getElementById('page-title-text');
         const logoEl  = document.getElementById('nav-school-name');
         const logoImgEl = document.getElementById('nav-school-logo');
-        const displayName = data.school_name
-            ? (data.moe_school_code ? `${data.school_name} · MOE ${data.moe_school_code}` : data.school_name)
+        const zoneLogoImgEl = document.getElementById('nav-zone-logo');
+        const schoolLabel = data.school_name ? buildSchoolDisplayName(data.school_name, data.school_level) : null;
+        const displayName = schoolLabel
+            ? (data.moe_school_code ? `${schoolLabel} · MOE ${data.moe_school_code}` : schoolLabel)
             : null;
-        if (displayName) {
-            if (titleEl) titleEl.textContent = displayName;
+        if (schoolLabel) {
+            if (titleEl) titleEl.textContent = schoolLabel;
             if (logoEl)  logoEl.textContent  = displayName;
         }
+        // MOE (Ministry of Education) school code — shown as its own pill in
+        // the top bar rather than folded into the page title, so it stays
+        // legible at a glance next to the semester status.
+        const moeBadgeEl = document.getElementById('moe-badge');
+        if (moeBadgeEl) {
+            if (data.moe_school_code) {
+                moeBadgeEl.textContent = t('topbar_moe_code', { code: data.moe_school_code });
+                moeBadgeEl.style.display = 'inline-flex';
+            } else {
+                moeBadgeEl.style.display = 'none';
+            }
+        }
         if (logoImgEl) {
+            logoImgEl.addEventListener('error', () => { logoImgEl.style.display = 'none'; });
             if (data.logo_url) {
                 logoImgEl.src = data.logo_url;
                 logoImgEl.style.display = 'block';
             } else {
                 logoImgEl.style.display = 'none';
+            }
+        }
+        // Zone logo — uploaded by a super admin (not this school), scoped
+        // to the school's zone. Optional: most zones won't have one set,
+        // so it stays hidden until zone_logo_url is actually present.
+        if (zoneLogoImgEl) {
+            zoneLogoImgEl.addEventListener('error', () => { zoneLogoImgEl.style.display = 'none'; });
+            if (data.zone_logo_url) {
+                zoneLogoImgEl.src = data.zone_logo_url;
+                zoneLogoImgEl.alt = data.zone_name || '';
+                zoneLogoImgEl.style.display = 'block';
+            } else {
+                zoneLogoImgEl.style.display = 'none';
             }
         }
         return true;
@@ -53,6 +93,7 @@ async function checkAuth() {
 // active term is open for e.g. absence requests, or closed between terms.
 async function loadSemesterBadge() {
     const el = document.getElementById('semester-badge');
+    const yearEl = document.getElementById('academic-year-badge');
     if (!el) return;
     el.textContent = t('semester_status_loading');
     el.className = 'semester-badge semester-badge-closed';
@@ -64,11 +105,109 @@ async function loadSemesterBadge() {
         const isOpen = data.semester_status === 'open';
         el.textContent = isOpen
             ? t('semester_open', { term: data.current_term })
-            : t('semester_closed');
+            : t('semester_closed', { term: data.current_term });
         el.className = 'semester-badge ' + (isOpen ? 'semester-badge-open' : 'semester-badge-closed');
+        if (yearEl && data.academic_year) {
+            yearEl.textContent = data.academic_year;
+            yearEl.className = 'semester-badge academic-year-badge';
+            yearEl.style.display = 'inline-flex';
+        }
     } catch {
         el.textContent = t('semester_status_error');
         el.className = 'semester-badge semester-badge-closed';
+    }
+}
+
+// ---- EVENT WIRING (replaces inline onclick/onchange/oninput/onerror) ----
+// Every handler that used to live as an inline attribute in index.html (or
+// in an HTML string built by this file) is attached here instead — plain
+// direct listeners for static elements, and delegated listeners (attached
+// once to a stable ancestor) for anything rendered dynamically, since a
+// fresh element from innerHTML has no listener of its own until the next
+// render calls back into these.
+function wireStaticEventListeners() {
+    const on = (id, event, handler) => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener(event, handler);
+    };
+
+    on('sidebar-signout-btn', 'click', () => openSignOutModal());
+    on('signout-modal-cancel-btn', 'click', () => closeSignOutModal());
+    on('signout-modal-confirm-btn', 'click', () => signOutNow());
+    on('topbar-more-btn', 'click', () => toggleTopbarActions());
+    on('notification-btn', 'click', () => toggleNotificationPanel());
+    on('notif-see-all-btn', 'click', () => navigateTo('notifications'));
+    on('help-btn-open', 'click', () => openHelpModal());
+    on('account-btn', 'click', () => toggleAccountMenu());
+    on('account-profile-settings-btn', 'click', () => { navigateTo('profile'); closeAccountMenu(); });
+    document.querySelectorAll('.lang-switch-btn').forEach(btn => {
+        btn.addEventListener('click', () => setLang(btn.dataset.lang));
+    });
+
+    on('appeal-submit-btn', 'click', () => submitMarkAppeal());
+    on('appeal-cancel-btn', 'click', () => closeMarkAppealForm());
+    on('monitor-scan-toggle-btn', 'click', () => toggleMonitorScanner());
+    on('monitor-manual-id', 'input', () => filterMonitorRoster());
+    on('monitor-checkin-btn', 'click', () => monitorManualCheckin());
+    on('absence-attachment-input', 'change', function () { onAbsenceAttachmentChange(this); });
+    on('absence-submit-btn', 'click', () => submitAbsenceRequest());
+    setupAbsenceDateConstraints();
+    on('profile-photo-input', 'change', function () { uploadProfilePhoto(this); });
+    on('id-photo-input', 'change', function () { uploadIDPhoto(this); });
+    on('update-password-btn', 'click', () => updatePassword());
+    on('doc-tab-btn-idcard', 'click', () => switchDocumentTab('idcard'));
+    on('doc-tab-btn-certificate', 'click', () => switchDocumentTab('certificate'));
+    on('flip-idcard-btn', 'click', () => flipIDCard());
+    on('print-idcard-btn', 'click', () => window.print());
+    on('certificate-download-btn', 'click', () => downloadCertificate());
+    on('help-modal-cancel-btn', 'click', () => closeHelpModal());
+    on('help-modal-send-btn', 'click', () => submitHelpRequest());
+
+    // ---- Delegated listeners for dynamically-rendered content ----
+    const marksOutput = document.getElementById('marks-output');
+    if (marksOutput) {
+        marksOutput.addEventListener('click', (e) => {
+            const btn = e.target.closest('.appeal-open-btn');
+            if (!btn) return;
+            openMarkAppealForm(Number(btn.dataset.subjectId), btn.dataset.term, btn.dataset.type, btn.dataset.subjectName, Number(btn.dataset.score));
+        });
+    }
+
+    const monitorPeriodsOutput = document.getElementById('monitor-periods-output');
+    if (monitorPeriodsOutput) {
+        monitorPeriodsOutput.addEventListener('click', (e) => {
+            const btn = e.target.closest('.monitor-mark-btn');
+            if (!btn) return;
+            markPeriodAttendance(Number(btn.dataset.timetableId), btn.dataset.present === 'true');
+        });
+    }
+
+    const notifsOutput = document.getElementById('notifications-output');
+    if (notifsOutput) {
+        notifsOutput.addEventListener('click', (e) => {
+            const card = e.target.closest('.notif-mark-read');
+            if (!card) return;
+            markRead(Number(card.dataset.notifId), card);
+        });
+    }
+
+    const notifPanelList = document.getElementById('notification-panel-list');
+    if (notifPanelList) {
+        notifPanelList.addEventListener('click', (e) => {
+            const item = e.target.closest('.notif-mark-read-and-navigate');
+            if (!item) return;
+            markRead(Number(item.dataset.notifId), item);
+            navigateTo('notifications');
+        });
+    }
+
+    const dashAttendance = document.getElementById('dashboard-attendance');
+    if (dashAttendance) {
+        dashAttendance.addEventListener('click', (e) => {
+            const btn = e.target.closest('.calendar-page-btn');
+            if (!btn) return;
+            loadAttendanceCalendar(Number(btn.dataset.weeksBack));
+        });
     }
 }
 
@@ -83,6 +222,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!ok) return;
     setupNavigation();
     setupSidebarToggle();
+    wireStaticEventListeners();
     await Promise.all([loadProfile(), loadNotifications()]);
     loadDashboard();
     loadSemesterBadge();
@@ -90,13 +230,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.querySelector('a[data-page="marks"]').addEventListener('click', loadMarks);
     document.querySelector('a[data-page="textbooks"]').addEventListener('click', loadTextbooks);
     document.querySelector('a[data-page="documents"]').addEventListener('click', () => { loadIDCard(); loadCertificate(); });
-    document.querySelector('a[data-page="absence"]').addEventListener('click', loadAbsenceHistory);
+    document.querySelector('a[data-page="absence"]').addEventListener('click', () => { loadAbsenceHistory(); setupAbsenceDateConstraints(); });
     const monitorNavLink = document.querySelector('a[data-page="class-monitor"]');
     if (monitorNavLink) monitorNavLink.addEventListener('click', () => { loadMonitorRoster(); loadMonitorPeriods(); });
     // School Hub is now a standalone external page (hub.html) — no in-app
     // click handler needed; the nav link is a plain target="_blank" href.
 });
 
+window.openSignOutModal = () => {
+    const modal = document.getElementById('signout-modal');
+    if (modal) modal.style.display = 'flex';
+};
+window.closeSignOutModal = () => {
+    const modal = document.getElementById('signout-modal');
+    if (modal) modal.style.display = 'none';
+};
 window.signOutNow = async () => {
     await apiFetch('/api/logout', { method: 'POST' });
     window.location.href = '/login.html';
@@ -280,7 +428,7 @@ async function loadProfile() {
         setText('p-grade',   t('profile_grade_value', { level: data.class_level }));
         setText('p-section', data.section);
         setText('p-stream',  data.stream);
-        setText('p-school',  data.school_name);
+        setText('p-school',  data.school_display_name || data.school_name);
         setText('p-lms',     data.lms_username);
         setText('p-email',   data.email_address);
         setText('p-pc',      data.assigned_computer);
@@ -424,75 +572,33 @@ async function loadCertificate() {
         if (!res.ok) throw new Error();
         const data = await res.json();
         renderCertificate(data, output);
-        await loadCertificateRequestStatus(data.ready);
+        updateCertificateDownloadButton(data);
     } catch (err) {
         console.error('Certificate load error:', err);
         output.innerHTML = `<p class="muted">${t('certificate_could_not_load')}</p>`;
     }
 }
 
-async function loadCertificateRequestStatus(ready) {
-    const box = document.getElementById('certificate-request-status');
-    const requestBtn = document.getElementById('certificate-request-btn');
+// The certificate unlocks automatically once every term is synced — no
+// student request or homeroom/principal approval step. "Synced" already
+// means homeroom pushed the term on to Academic VP, which is the real
+// human sign-off this was gated behind before.
+function updateCertificateDownloadButton(data) {
+    const box = document.getElementById('certificate-status-note');
     const downloadBtn = document.getElementById('certificate-download-btn');
-    if (!box || !requestBtn || !downloadBtn) return;
-
-    requestBtn.style.display = 'none';
-    downloadBtn.style.display = 'none';
-
-    try {
-        const res = await apiFetch('/api/student/certificate-request-status');
-        if (!res.ok) throw new Error();
-        const data = await res.json();
-
-        renderRequestStatusBox(box, data, {
-            pending: t('certificate_request_pending'),
-            approved: t('certificate_request_approved'),
-            rejected: t('certificate_request_rejected', { reason: data.rejection_reason || '—' })
-        });
-
-        if (data.status === 'approved') {
-            downloadBtn.style.display = 'inline-block';
-        } else if (data.status === 'pending') {
-            // nothing to click — waiting on homeroom teacher, box above
-            // already says so
-        } else if (ready) {
-            // no request yet (or a previous one was rejected) and the
-            // underlying term data is fully synced — student can request
-            requestBtn.style.display = 'inline-block';
-        } else if (data.status === 'none') {
-            // Neither button applies yet, and there's no status box to
-            // explain why (that only shows for pending/approved/rejected)
-            // — show a plain note instead of leaving an unexplained gap
-            // that looks like the buttons are just missing/broken.
+    if (!downloadBtn) return;
+    downloadBtn.style.display = data.ready ? 'inline-block' : 'none';
+    if (box) {
+        if (data.ready) {
+            box.style.display = 'none';
+        } else {
             box.style.display = 'block';
             box.className = 'request-status-box request-status-pending';
-            box.textContent = t('certificate_not_yet_requestable');
+            const pendingCount = (data.terms || []).filter(term => !term.synced).length;
+            box.textContent = t('certificate_not_ready', { count: pendingCount });
         }
-    } catch (err) {
-        console.error('Certificate request status error:', err);
-        box.style.display = 'none';
     }
 }
-
-window.requestCertificate = async () => {
-    const requestBtn = document.getElementById('certificate-request-btn');
-    if (requestBtn) requestBtn.disabled = true;
-    try {
-        const res = await apiFetch('/api/student/request-certificate', { method: 'POST' });
-        const data = await res.json();
-        if (!res.ok) {
-            showToast(data.error || t('certificate_request_failed'), 'error');
-            return;
-        }
-        showToast(t('certificate_request_pending'), 'success');
-        await loadCertificateRequestStatus(true);
-    } catch (err) {
-        showToast(t('certificate_request_failed'), 'error');
-    } finally {
-        if (requestBtn) requestBtn.disabled = false;
-    }
-};
 
 // Navigates to the actual generated PDF (server sets Content-Disposition:
 // attachment, so this triggers a real download) rather than printing
@@ -597,12 +703,12 @@ function renderIDCard(data, container) {
         <div class="id-card-flip-wrap">
             <div class="id-card id-card-front">
                 <div class="id-card-header">
-                    <img src="${data.logo_url || '/assets/images/Logo.png'}" alt="School logo" class="id-card-logo" onerror="this.onerror=null; this.src='/assets/images/Logo.png';">
+                    <img src="${data.logo_url || '/assets/images/Logo.png'}" alt="School logo" class="id-card-logo id-card-school-logo-img" data-fallback-src="/assets/images/Logo.png">
                     <div class="id-card-header-text">
-                        <div class="id-card-school-name">${data.school_name || 'School'}</div>
+                        <div class="id-card-school-name">${data.school_display_name || data.school_name || 'School'}</div>
                         <div class="id-card-subtitle">የተማሪ መታወቂያ ካርድ | Student Identity Card</div>
                     </div>
-                    <img src="/assets/images/gflag.jpg" alt="Gambella region flag" class="id-card-logo" onerror="this.style.display='none'">
+                    <img src="/assets/images/gflag.jpg" alt="Gambella region flag" class="id-card-logo id-card-hide-on-error">
                 </div>
                 <div class="id-card-body">
                     <div class="id-card-photo-col">
@@ -620,7 +726,7 @@ function renderIDCard(data, container) {
                 </div>
                 <div class="id-card-footer">
                     <div class="id-card-signature">
-                        ${data.principal_signature_url ? `<img src="${data.principal_signature_url}" alt="Principal's signature" onerror="this.style.display='none'">` : ''}
+                        ${data.principal_signature_url ? `<img src="${data.principal_signature_url}" alt="Principal's signature" class="id-card-hide-on-error">` : ''}
                         <div class="id-card-signature-line">ርዕሰ መምህር | Principal</div>
                     </div>
                     <div class="id-card-validity">
@@ -633,7 +739,7 @@ function renderIDCard(data, container) {
                 <div class="id-card-back-body">
                     <h4>${t('idcard_terms_heading')}</h4>
                     <ul class="id-card-terms">
-                        <li>${t('idcard_term_property', { school: data.school_name || 'the school' })}</li>
+                        <li>${t('idcard_term_property', { school: data.school_display_name || data.school_name || 'the school' })}</li>
                         <li>${t('idcard_term_nontransferable')}</li>
                         <li>${t('idcard_term_misuse')}</li>
                         <li>${t('idcard_term_validity')}</li>
@@ -643,9 +749,24 @@ function renderIDCard(data, container) {
                         <div id="idcard-qr" class="id-card-qr"></div>
                     </div>
                 </div>
-                <div class="id-card-address-bar">${data.school_name || 'School'} — ${address}</div>
+                <div class="id-card-address-bar">${data.school_display_name || data.school_name || 'School'} — ${address}</div>
             </div>
         </div>`;
+
+    // Fallback handling for the two ID card image types, done here instead
+    // of inline onerror attributes: a school-logo image swaps to the
+    // default logo once (guarded so a broken default doesn't loop), while
+    // the region flag and any principal signature just hide themselves.
+    const logoImg = container.querySelector('.id-card-school-logo-img');
+    if (logoImg) {
+        logoImg.addEventListener('error', function onLogoError() {
+            logoImg.removeEventListener('error', onLogoError);
+            logoImg.src = logoImg.dataset.fallbackSrc;
+        });
+    }
+    container.querySelectorAll('.id-card-hide-on-error').forEach(img => {
+        img.addEventListener('error', () => { img.style.display = 'none'; });
+    });
 
     // Rendered after the innerHTML above so #idcard-qr actually exists in
     // the DOM yet. Encodes the signed token, not the bare student ID.
@@ -755,8 +876,63 @@ async function loadMarks() {
         populateTermFilter(allMarks);
         renderMarks(allMarks);
         renderMarkAppealHistory();
+        loadIncompleteStatusBanner();
     } catch {
         output.innerHTML = `<p class="muted">${t('marks_could_not_load')}</p>`;
+    }
+}
+
+// Tells a student flagged Incomplete for the current term exactly which
+// subject(s) still need marks, and who to contact about each — rather
+// than just showing an "Incomplete" label with no next step. A subject
+// counts as incomplete here if any of its expected assessment types
+// (individual_assignment_1, quiz, midterm, etc.) has no score recorded
+// yet for the current term — including a subject with no marks at all,
+// which /api/student/my-subject-teachers still lists (it's built from
+// the class's subject/teacher assignments, not from the marks table).
+async function loadIncompleteStatusBanner() {
+    const banner = document.getElementById('incomplete-status-banner');
+    if (!banner) return;
+    banner.style.display = 'none';
+    try {
+        const [statusRes, teachersRes] = await Promise.all([
+            apiFetch('/api/student/my-status'),
+            apiFetch('/api/student/my-subject-teachers')
+        ]);
+        if (!statusRes.ok) return;
+        const status = await statusRes.json();
+        if (status.status !== 'Incomplete') return;
+
+        const teachers = teachersRes.ok ? await teachersRes.json() : [];
+        const rowsForTerm = allMarks.filter(m => m.term === status.term);
+        const typesBySubjectId = {};
+        rowsForTerm.forEach(r => {
+            if (!typesBySubjectId[r.subject_id]) typesBySubjectId[r.subject_id] = new Set();
+            typesBySubjectId[r.subject_id].add(r.type);
+        });
+        const incompleteSubjects = teachers
+            .map(s => ({ ...s, types: typesBySubjectId[s.subject_id] || new Set() }))
+            .filter(s => !ALL_ASSESSMENT_TYPES.every(type => s.types.has(type)));
+
+        if (!incompleteSubjects.length) return;
+
+        banner.style.display = 'block';
+        banner.innerHTML = `
+            <h3 style="margin-top:0;">${t('incomplete_banner_heading')}</h3>
+            <p class="muted" style="margin-bottom:10px;">${t('incomplete_banner_desc', { term: status.term })}</p>
+            <div class="marks-rows">
+                ${incompleteSubjects.map(s => `
+                    <div class="marks-row" style="align-items:flex-start;">
+                        <span class="marks-type">${escapeHtml(s.subject_name)}</span>
+                        <span class="muted" style="font-size:0.82rem; text-align:right;">
+                            ${s.teacher_name ? t('incomplete_contact_teacher', { name: escapeHtml(s.teacher_name) }) : t('incomplete_no_teacher_assigned')}
+                            ${s.contact_number ? `<br>📞 ${escapeHtml(s.contact_number)}` : ''}
+                            ${s.email ? `<br>✉️ ${escapeHtml(s.email)}` : ''}
+                        </span>
+                    </div>`).join('')}
+            </div>`;
+    } catch (err) {
+        console.error('Incomplete status banner error:', err);
     }
 }
 
@@ -843,7 +1019,7 @@ function renderMarks(marks) {
                             const existing = allMarkAppeals.find(a => a.subject_id === r.subject_id && a.term === r.term && a.type === r.type);
                             const appealControl = (existing && existing.status === 'pending')
                                 ? `<span class="badge badge-issued" style="margin-left:8px;">${t('badge_pending')}</span>`
-                                : `<button type="button" class="btn-cancel" style="width:auto; padding:2px 10px; font-size:0.78rem; margin-left:8px;" onclick="openMarkAppealForm(${r.subject_id}, '${r.term}', '${r.type}', '${escapeHtml(subject).replace(/'/g, "\\'")}', ${r.score})">${t('appeal_button')}</button>`;
+                                : `<button type="button" class="btn-cancel appeal-open-btn" style="width:auto; padding:2px 10px; font-size:0.78rem; margin-left:8px;" data-subject-id="${r.subject_id}" data-term="${escapeHtml(r.term)}" data-type="${escapeHtml(r.type)}" data-subject-name="${escapeHtml(subject)}" data-score="${r.score}">${t('appeal_button')}</button>`;
                             return `
                             <div class="marks-row">
                                 <span class="marks-type">${assessmentLabel(r.type)}</span>
@@ -1022,8 +1198,8 @@ function renderMonitorPeriods(periods) {
         } else if (p.teacher_present === null || p.teacher_present === undefined) {
             markedBlock = `
                 <div style="display:flex; gap:8px;">
-                    <button type="button" class="btn-primary" style="width:auto; padding:6px 14px;" onclick="markPeriodAttendance(${p.timetable_id}, true)" data-i18n="monitor_mark_present">Teacher came</button>
-                    <button type="button" class="btn-cancel" style="width:auto; padding:6px 14px;" onclick="markPeriodAttendance(${p.timetable_id}, false)" data-i18n="monitor_mark_absent">Teacher absent</button>
+                    <button type="button" class="btn-primary monitor-mark-btn" style="width:auto; padding:6px 14px;" data-timetable-id="${p.timetable_id}" data-present="true">${t('monitor_mark_present')}</button>
+                    <button type="button" class="btn-cancel monitor-mark-btn" style="width:auto; padding:6px 14px;" data-timetable-id="${p.timetable_id}" data-present="false">${t('monitor_mark_absent')}</button>
                 </div>`;
         } else {
             markedBlock = p.teacher_present
@@ -1259,6 +1435,42 @@ window.monitorManualCheckin = async () => {
 // ---- ABSENCE / PERMISSION REQUESTS ----
 let absenceAttachmentFile = null;
 
+// Local calendar date (not UTC) as YYYY-MM-DD, matching what a
+// <input type="date"> picker shows regardless of timezone offset.
+function toDateOnlyLocal(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
+
+function addDaysToDateStr(dateStr, days) {
+    const d = new Date(dateStr + 'T00:00:00');
+    d.setDate(d.getDate() + days);
+    return toDateOnlyLocal(d);
+}
+
+// Leave date defaults to today and can't go into the past. Return date
+// just can't be before the leave date — the student picks however many
+// days they need.
+function setupAbsenceDateConstraints() {
+    const fromEl = document.getElementById('absence-date-from');
+    const toEl = document.getElementById('absence-date-to');
+    if (!fromEl || !toEl) return;
+
+    const today = toDateOnlyLocal(new Date());
+    fromEl.min = today;
+    if (!fromEl.value) fromEl.value = today;
+
+    const syncToRange = () => {
+        const from = fromEl.value || today;
+        toEl.min = from;
+        if (toEl.value && toEl.value < from) toEl.value = '';
+    };
+    syncToRange();
+    fromEl.addEventListener('change', syncToRange);
+}
+
 window.onAbsenceAttachmentChange = (inputEl) => {
     absenceAttachmentFile = inputEl.files[0] || null;
     const nameEl = document.getElementById('absence-attachment-filename');
@@ -1279,6 +1491,11 @@ window.submitAbsenceRequest = async () => {
 
     if (!dateFrom || !dateTo || !reason) {
         showMsg(t('absence_fill_required'), true);
+        return;
+    }
+    const today = toDateOnlyLocal(new Date());
+    if (dateFrom < today) {
+        showMsg(t('absence_from_date_past_error'), true);
         return;
     }
     if (dateTo < dateFrom) {
@@ -1305,6 +1522,7 @@ window.submitAbsenceRequest = async () => {
             document.getElementById('absence-attachment-input').value = '';
             document.getElementById('absence-attachment-filename').textContent = '';
             absenceAttachmentFile = null;
+            setupAbsenceDateConstraints();
             await loadAbsenceHistory();
         } else {
             showMsg(data.error || t('absence_submit_failed'), true);
@@ -1390,7 +1608,7 @@ function updateNotifBadge(unreadCount) {
 function renderNotifications(notifs, container) {
     if (!notifs.length) { container.innerHTML = `<p class="muted">${t('notifications_none')}</p>`; return; }
     container.innerHTML = notifs.map(n => `
-        <div class="notif-card ${n.is_read ? '' : 'notif-unread'}" onclick="markRead(${n.notif_id}, this)">
+        <div class="notif-card ${n.is_read ? '' : 'notif-unread'} notif-mark-read" data-notif-id="${n.notif_id}">
             <div class="notif-card-header">
                 <strong>${assessmentLabel(n.assessment_type)}</strong>
                 ${n.is_read ? '' : '<span class="notif-dot" aria-label="Unread"></span>'}
@@ -1411,7 +1629,7 @@ function renderNotificationPanel() {
         return;
     }
     list.innerHTML = notifData.slice(0, 5).map(n => `
-        <div class="notif-item" onclick="markRead(${n.notif_id}, this); navigateTo('notifications')">
+        <div class="notif-item notif-mark-read-and-navigate" data-notif-id="${n.notif_id}">
             <strong>${assessmentLabel(n.assessment_type)}</strong><br>
             ${escapeHtml(n.message.substring(0, 60))}${n.message.length > 60 ? '…' : ''}
         </div>`).join('');
@@ -1491,6 +1709,7 @@ async function loadDashboard() {
     await Promise.all([loadMarks(), loadTextbooks(), loadAttendanceStreak(), loadDashboardTimetable(), loadRecognitionAward()]);
     updateDashboardSummary();
     updateDashboardTextbooks();
+    renderEthiopianCalendarWidget();
 }
 
 async function loadRecognitionAward() {
@@ -1577,6 +1796,104 @@ function formatEthiopianDate(dateInput) {
     return `${e.day} ${e.monthName} ${e.year} E.C.`;
 }
 
+// ---- ETHIOPIAN CALENDAR WIDGET (dashboard) ----
+// Mirrors server.js's ETH_FIXED_HOLIDAYS / ETH_MOVABLE_HOLIDAYS tables —
+// keep the two in sync if either changes. Kept client-side (rather than
+// fetched) since the whole widget works entirely off toEthiopianDate()
+// with no server round-trip needed.
+const ETH_CAL_FIXED_HOLIDAYS = [
+    { md: [1, 1], key: 'holiday_enkutatash' },
+    { md: [1, 17], key: 'holiday_meskel' },
+    { md: [12, 13], key: 'holiday_buhe' },
+    { md: [4, 29], key: 'holiday_genna' },
+    { md: [5, 11], key: 'holiday_timkat' },
+    { md: [6, 23], key: 'holiday_adwa' },
+    { md: [8, 23], key: 'holiday_labor_day' },
+    { md: [8, 27], key: 'holiday_patriots' },
+    { md: [9, 20], key: 'holiday_derg_downfall' }
+];
+// tentative: true for the Islamic holidays — their actual date depends on
+// moon sighting, so the listed Gregorian date is the widely-published
+// estimate, not yet confirmed. Good Friday/Fasika are computed from a
+// fixed Orthodox Easter algorithm, so those are exact, not tentative.
+const ETH_CAL_MOVABLE_HOLIDAYS = {
+    2026: [
+        { md: [3, 20], key: 'holiday_eid_fitr', tentative: true },
+        { md: [5, 27], key: 'holiday_eid_adha', tentative: true },
+        { md: [8, 26], key: 'holiday_mawlid', tentative: true },
+        { md: [4, 3], key: 'holiday_good_friday' },
+        { md: [4, 5], key: 'holiday_fasika' }
+    ],
+    2027: [
+        { md: [3, 9], key: 'holiday_eid_fitr', tentative: true },
+        { md: [5, 16], key: 'holiday_eid_adha', tentative: true },
+        { md: [8, 15], key: 'holiday_mawlid', tentative: true },
+        { md: [4, 30], key: 'holiday_good_friday' },
+        { md: [5, 2], key: 'holiday_fasika' }
+    ]
+};
+
+function getEthCalHolidayOccurrence(date) {
+    const d = new Date(date);
+    const ec = toEthiopianDate(d);
+    const fixed = ETH_CAL_FIXED_HOLIDAYS.find(h => h.md[0] === ec.month && h.md[1] === ec.day);
+    if (fixed) return { key: fixed.key, tentative: false };
+    const movable = (ETH_CAL_MOVABLE_HOLIDAYS[d.getFullYear()] || [])
+        .find(h => h.md[0] === d.getMonth() + 1 && h.md[1] === d.getDate());
+    return movable ? { key: movable.key, tentative: !!movable.tentative } : null;
+}
+
+// Scans forward day-by-day (capped at just over a year, so it always
+// crosses into the next Gregorian/EC year near the boundary) collecting
+// the next `count` holidays from today onward.
+function getUpcomingEthHolidays(fromDate, count) {
+    const results = [];
+    const startOfToday = new Date(fromDate.toDateString());
+    for (let i = 0; i < 400 && results.length < count; i++) {
+        const d = new Date(startOfToday);
+        d.setDate(d.getDate() + i);
+        const occ = getEthCalHolidayOccurrence(d);
+        if (occ) results.push({ date: d, ...occ });
+    }
+    return results;
+}
+
+function renderEthiopianCalendarWidget() {
+    const el = document.getElementById('eth-calendar-output');
+    if (!el) return;
+
+    const today = new Date();
+    const startOfToday = new Date(today.toDateString());
+    const ecToday = toEthiopianDate(today);
+    const lang = getCurrentLang() === 'am' ? 'am-ET' : 'en-US';
+    const weekday = today.toLocaleDateString(lang, { weekday: 'long' });
+    const gcDate = today.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+
+    const upcoming = getUpcomingEthHolidays(today, 6);
+    const holidayRows = upcoming.length
+        ? upcoming.map(h => {
+            const daysUntil = Math.round((new Date(h.date.toDateString()) - startOfToday) / 86400000);
+            const badgeDate = h.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            const daysLabel = daysUntil === 0 ? t('calendar_today') : t('calendar_in_days', { days: daysUntil });
+            return `
+                <div class="eth-cal-holiday-row">
+                    <span class="eth-cal-date-badge">${badgeDate}</span>
+                    <span class="eth-cal-holiday-name">${escapeHtml(t(h.key))}${h.tentative ? ` <em class="eth-cal-tentative">(${t('calendar_tentative')})</em>` : ''}</span>
+                    <span class="eth-cal-days-until">${daysLabel}</span>
+                </div>`;
+        }).join('')
+        : `<p class="muted" style="font-size:0.82rem;">${t('calendar_no_holidays_this_month')}</p>`;
+
+    el.innerHTML = `
+        <p class="eth-cal-subtitle">${t('calendar_subtitle')}</p>
+        <div class="eth-cal-today-box">
+            <div class="eth-cal-today-date">${ecToday.day} ${ecToday.monthName} ${ecToday.year}</div>
+            <div class="eth-cal-today-sub">${weekday} · GC: ${gcDate}</div>
+        </div>
+        <div class="eth-cal-section-label">${t('calendar_upcoming_holidays')}</div>
+        <div class="eth-cal-holiday-list">${holidayRows}</div>`;
+}
+
 // Portal-wide date display standard: Ethiopian calendar first, Gregorian
 // in brackets — e.g. "12 Meskerem 2018 E.C. (22 Sep 2025 GC)". Used
 // anywhere a plain date is shown to the student (ID card, library,
@@ -1634,8 +1951,8 @@ function renderAttendanceCalendar(data) {
     const el = document.getElementById('dashboard-attendance');
     if (!el || !data.days.length) return;
 
-    const statusColor = { present: '#16a34a', absent: '#dc2626', excused: '#3b82f6', weekend: '#d1d5db', future: '#f3f4f6', not_started: '#f3f4f6' };
-    const statusLabel = { present: t('calendar_present'), absent: t('calendar_absent'), excused: t('calendar_excused'), weekend: t('calendar_weekend') };
+    const statusColor = { present: '#16a34a', absent: '#dc2626', excused: '#3b82f6', weekend: '#d1d5db', holiday: '#eab308', future: '#f3f4f6', not_started: '#f3f4f6', semester_closed: '#e5e7eb' };
+    const statusLabel = { present: t('calendar_present'), absent: t('calendar_absent'), excused: t('calendar_excused'), weekend: t('calendar_weekend'), holiday: t('calendar_holiday'), semester_closed: t('calendar_semester_closed') };
 
     // GitHub-style grid: columns are weeks (Sunday-start), rows are the 7
     // weekdays. startOffset accounts for the range not necessarily
@@ -1663,7 +1980,8 @@ function renderAttendanceCalendar(data) {
         let title = '';
         if (d.status !== 'future' && d.status !== 'not_started') {
             const greg = dt.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-            title = `${greg}\n${formatEthiopianDate(dt)}\n${statusLabel[d.status]}`;
+            const label = d.status === 'holiday' && d.holiday_name ? `${statusLabel.holiday} — ${d.holiday_name}` : statusLabel[d.status];
+            title = `${greg}\n${formatEthiopianDate(dt)}\n${label}`;
         }
         return `<div title="${escapeHtml(title)}" style="grid-column:${col}; grid-row:${row}; width:15px; height:15px; border-radius:3px; background:${statusColor[d.status]};"></div>`;
     }).join('');
@@ -1678,14 +1996,15 @@ function renderAttendanceCalendar(data) {
             </div>
         </div>
         <div style="display:flex; align-items:center; gap:12px; margin-top:12px; flex-wrap:wrap;">
-            <button type="button" class="btn-cancel" style="width:auto; padding:4px 12px;" onclick="loadAttendanceCalendar(${attendanceCalendarWeeksBack + 1})">&lt;</button>
+            <button type="button" class="btn-cancel calendar-page-btn" style="width:auto; padding:4px 12px;" data-weeks-back="${attendanceCalendarWeeksBack + 1}">&lt;</button>
             <span class="muted" style="font-size:0.82rem;">${new Date(data.from + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', year: 'numeric' })} – ${new Date(data.to + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}</span>
-            ${attendanceCalendarWeeksBack > 0 ? `<button type="button" class="btn-cancel" style="width:auto; padding:4px 12px;" onclick="loadAttendanceCalendar(${attendanceCalendarWeeksBack - 1})">&gt;</button>` : ''}
+            ${attendanceCalendarWeeksBack > 0 ? `<button type="button" class="btn-cancel calendar-page-btn" style="width:auto; padding:4px 12px;" data-weeks-back="${attendanceCalendarWeeksBack - 1}">&gt;</button>` : ''}
         </div>
         <div style="display:flex; gap:14px; margin-top:10px; font-size:0.78rem; flex-wrap:wrap;">
             <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#16a34a;margin-right:4px;"></span>${t('calendar_present')}</span>
             <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#dc2626;margin-right:4px;"></span>${t('calendar_absent')}</span>
             <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#3b82f6;margin-right:4px;"></span>${t('calendar_excused')}</span>
+            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#eab308;margin-right:4px;"></span>${t('calendar_holiday')}</span>
             <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#d1d5db;margin-right:4px;"></span>${t('calendar_weekend')}</span>
         </div>`;
 }
