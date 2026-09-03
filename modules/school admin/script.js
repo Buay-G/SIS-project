@@ -472,6 +472,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('profile-id-photo-file')?.addEventListener('change', uploadAdminIdPhoto);
     document.getElementById('msg-box-teachers-btn')?.addEventListener('click', () => switchMessageBox('teachers'));
     document.getElementById('ar-load-btn')?.addEventListener('click', loadAnalysisReport);
+    document.getElementById('ar-year-select')?.addEventListener('change', onAnalysisReportYearChange);
     document.getElementById('ar-print-btn')?.addEventListener('click', printAnalysisReport);
 
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -2011,10 +2012,39 @@ async function decideDropoutRequest(student_id, action) {
 // SEMESTER / YEARLY ANALYSIS REPORT (Principal / Academic VP / Admin VP)
 // ==========================================================
 const AR_CATS = ['total_student', 'drop_out', 'tested', 'incomplete', 'band_0_49', 'band_50_74', 'band_75_100'];
+// Populated once from /api/academic-years, same source as the Students
+// tab's year filter — {id, label, is_current} per past year.
+let AR_ACADEMIC_YEARS_LOADED = false;
+
+async function loadAnalysisReportYearOptions() {
+    const sel = document.getElementById('ar-year-select');
+    if (!sel || AR_ACADEMIC_YEARS_LOADED) return;
+    const res = await apiFetch(`${API_BASE}/api/academic-years`);
+    if (!res.ok) return;
+    const years = await res.json();
+    const pastYears = years.filter(y => !y.is_current);
+    sel.innerHTML = `<option value="">${t('sa_current_year')}</option>` +
+        pastYears.map(y => `<option value="${y.id}">${escapeHtml(y.label)}</option>`).join('');
+    AR_ACADEMIC_YEARS_LOADED = true;
+}
+
+// A past year's snapshot has no Semester 1 / Semester 2 split (see
+// getPastYearAnalysisReport on the server) — only one figure exists per
+// year, taken at rollover. So the Term dropdown is meaningless once a
+// past year is picked; disable it rather than let it imply a distinction
+// that isn't there.
+function onAnalysisReportYearChange() {
+    const yearVal = document.getElementById('ar-year-select')?.value || '';
+    const termSel = document.getElementById('ar-term-select');
+    if (termSel) termSel.disabled = !!yearVal;
+    loadAnalysisReport();
+}
 
 async function loadAnalysisReport() {
     const tbody = document.getElementById('sa-analysis-report-tbody');
+    await loadAnalysisReportYearOptions();
     const term = document.getElementById('ar-term-select')?.value || 'Year';
+    const yearId = document.getElementById('ar-year-select')?.value || '';
 
     // Only the Principal's account has a signature/seal on file to sign
     // the PDF with (see /api/principal/analysis-report/pdf on the
@@ -2023,20 +2053,29 @@ async function loadAnalysisReport() {
     // of leaving a button that looks broken.
     const printBtn = document.getElementById('ar-print-btn');
     const printNote = document.getElementById('ar-print-note');
+    const pastYearNote = document.getElementById('ar-past-year-note');
     const isPrincipal = CURRENT_TITLE === 'Principal';
     if (printBtn) printBtn.style.display = isPrincipal ? '' : 'none';
     if (printNote) printNote.style.display = isPrincipal ? 'none' : '';
+    if (pastYearNote) pastYearNote.style.display = yearId ? '' : 'none';
 
     tbody.innerHTML = `<tr><td colspan="23">${t('sa_loading')}</td></tr>`;
-    const res = await apiFetch(`${API_BASE}/api/principal/analysis-report?term=${encodeURIComponent(term)}`);
+    const url = yearId
+        ? `${API_BASE}/api/principal/analysis-report?term=${encodeURIComponent(term)}&academic_year_id=${encodeURIComponent(yearId)}`
+        : `${API_BASE}/api/principal/analysis-report?term=${encodeURIComponent(term)}`;
+    const res = await apiFetch(url);
     if (!res.ok) { tbody.innerHTML = `<tr><td colspan="23">${t('sa_load_error')}</td></tr>`; return; }
     const data = await res.json();
+    // Past-year rows leave several fields as null (nothing left to show —
+    // see getPastYearAnalysisReport) — render those as "N/A" rather than
+    // the literal string "null" a template literal would otherwise produce.
+    const cell = (v) => (v === null || v === undefined) ? t('sa_not_applicable') : v;
     const rowHtml = (r, isTotal) => `
         <tr ${isTotal ? 'style="font-weight:bold;background:var(--bg-subtle,#f7f7f7);"' : ''}>
             <td>${escapeHtml(String(r.class_level))}</td>
-            ${AR_CATS.map(k => `<td>${r[k].male}</td><td>${r[k].female}</td><td>${r[k].total}</td>`).join('')}
-            <td>${r.highest_rank_male}</td>
-            <td>${r.highest_rank_female}</td>
+            ${AR_CATS.map(k => `<td>${cell(r[k].male)}</td><td>${cell(r[k].female)}</td><td>${cell(r[k].total)}</td>`).join('')}
+            <td>${cell(r.highest_rank_male)}</td>
+            <td>${cell(r.highest_rank_female)}</td>
         </tr>`;
     if (!data.rows || data.rows.length === 0) { tbody.innerHTML = `<tr><td colspan="23">${t('sa_no_data')}</td></tr>`; return; }
     tbody.innerHTML = data.rows.map(r => rowHtml(r, false)).join('') + rowHtml(data.totals, true);
@@ -2044,7 +2083,11 @@ async function loadAnalysisReport() {
 
 function printAnalysisReport() {
     const term = document.getElementById('ar-term-select')?.value || 'Year';
-    window.open(`${API_BASE}/api/principal/analysis-report/pdf?term=${encodeURIComponent(term)}`, '_blank');
+    const yearId = document.getElementById('ar-year-select')?.value || '';
+    const url = yearId
+        ? `${API_BASE}/api/principal/analysis-report/pdf?term=${encodeURIComponent(term)}&academic_year_id=${encodeURIComponent(yearId)}`
+        : `${API_BASE}/api/principal/analysis-report/pdf?term=${encodeURIComponent(term)}`;
+    window.open(url, '_blank');
 }
 
 async function issueAward(student_id) {
@@ -2075,6 +2118,15 @@ let SCHOOL_LEADERBOARD_DATA = null;
 // actually registered/promoted this year". Picking a specific status in
 // the Status filter overrides this and shows exactly that status instead.
 const STUDENT_HIDDEN_BY_DEFAULT = s => s.status === 'Graduated' || String(s.status || '').startsWith('Transferred') || s.status === 'Unregistered';
+// The Status filter still defaults to "" (All Statuses) as far as its own
+// meaning goes, but the page itself should land on Active students, not
+// everyone "All Statuses" would otherwise include (Inactive, Pending
+// Promotion, Dropped, and any stray legacy status values that don't match
+// the app's known list at all). So the very first time the filter options
+// are populated for this page load, the selection is forced to 'Active'
+// instead of whatever it defaults to; after that, the person's own choice
+// (including switching back to "All Statuses") is respected as normal.
+let STUDENTS_STATUS_FILTER_DEFAULTED = false;
 let ALL_ACADEMIC_YEARS = [];
 
 // The five statuses students.status ever actually holds in this app —
@@ -2091,7 +2143,8 @@ const STUDENT_STATUS_OPTIONS = [
     { value: 'Inactive', labelKey: 'sa_status_inactive' },
     { value: 'Unregistered', labelKey: 'sa_status_unregistered' },
     { value: 'Pending Promotion', labelKey: 'sa_status_pending_promotion' },
-    { value: 'Transferred - Completed', labelKey: 'sa_status_transferred' }
+    { value: 'Transferred - Completed', labelKey: 'sa_status_transferred' },
+    { value: 'Graduated', labelKey: 'sa_status_graduated' }
 ];
 
 // Registrar-configured classes/sections/streams (class_sections table,
@@ -2123,21 +2176,36 @@ function refreshStudentSectionStreamFilters() {
     const prevStream = streamSel.value;
 
     if (level === '9' || level === '10') {
-        streamSel.innerHTML = `<option value="">${t('sa_all_streams')}</option><option value="General">${t('sa_stream_general')}</option>`;
+        // Only one stream is possible at this level, so offering "All
+        // Streams" next to "General" is a redundant, confusing choice —
+        // same convention as updateStreamOptionsForLevel() elsewhere:
+        // just lock the field to the one real value.
+        streamSel.innerHTML = `<option value="General">${t('sa_stream_general')}</option>`;
+        streamSel.value = 'General';
+        streamSel.disabled = true;
     } else if (level === '11' || level === '12') {
+        // Long-form values ('Natural Science'/'Social Science') to match
+        // students.stream/class_sections.stream directly — same
+        // convention updateStreamOptionsForLevel() now uses everywhere
+        // else a stream gets picked.
+        streamSel.disabled = false;
         streamSel.innerHTML = `
             <option value="">${t('sa_all_streams')}</option>
-            <option value="Natural">${t('sa_stream_natural')}</option>
-            <option value="Social">${t('sa_stream_social')}</option>`;
+            <option value="Natural Science">${t('sa_stream_natural')}</option>
+            <option value="Social Science">${t('sa_stream_social')}</option>`;
+        if ([...streamSel.options].some(o => o.value === prevStream)) streamSel.value = prevStream;
     } else {
         // No class picked yet — offer every stream this school actually
-        // has configured, rather than guessing.
-        const streamLabel = { General: t('sa_stream_general'), Natural: t('sa_stream_natural'), Social: t('sa_stream_social') };
+        // has configured, rather than guessing. class_sections.stream is
+        // already stored in the long form ('Natural Science'), so this
+        // maps that directly to its translated label.
+        streamSel.disabled = false;
+        const streamLabel = { General: t('sa_stream_general'), 'Natural Science': t('sa_stream_natural'), 'Social Science': t('sa_stream_social') };
         const streams = [...new Set(ALL_CLASS_SECTIONS.map(cs => cs.stream).filter(Boolean))];
         streamSel.innerHTML = `<option value="">${t('sa_all_streams')}</option>` +
             streams.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(streamLabel[s] || s)}</option>`).join('');
+        if ([...streamSel.options].some(o => o.value === prevStream)) streamSel.value = prevStream;
     }
-    if ([...streamSel.options].some(o => o.value === prevStream)) streamSel.value = prevStream;
 
     const streamVal = streamSel.value;
     const prevSection = sectionSel.value;
@@ -2216,7 +2284,8 @@ function populateStudentFilterOptions() {
     // happen to appear on currently-loaded students.
     refreshStudentSectionStreamFilters();
     if (statusSel) {
-        const current = statusSel.value;
+        const current = STUDENTS_STATUS_FILTER_DEFAULTED ? statusSel.value : 'Active';
+        STUDENTS_STATUS_FILTER_DEFAULTED = true;
         statusSel.innerHTML = `<option value="">${t('sa_all_statuses')}</option>` +
             STUDENT_STATUS_OPTIONS.map(o => `<option value="${escapeHtml(o.value)}">${escapeHtml(t(o.labelKey))}</option>`).join('');
         statusSel.value = current;
@@ -2336,6 +2405,9 @@ function downloadStudentRosterCsv() {
     }
     if (classVal) list = list.filter(s => String(s.class_level) === String(classVal));
     if (sectionVal) list = list.filter(s => String(s.section) === String(sectionVal));
+    // students.stream stores the long descriptive label directly
+    // ('Natural Science'/'Social Science'), matching the filter's own
+    // option values now — exact equality is correct here.
     if (streamVal) list = list.filter(s => String(s.stream) === String(streamVal));
 
     const headers = [t('sa_col_student_id'), t('sa_col_name'), t('sa_col_class'), t('sa_col_section'), t('sa_col_stream'), t('sa_col_fayda_number'), t('sa_col_status')];
@@ -2378,6 +2450,9 @@ function filterStudentsTable() {
     }
     if (classVal) list = list.filter(s => String(s.class_level) === String(classVal));
     if (sectionVal) list = list.filter(s => String(s.section) === String(sectionVal));
+    // students.stream stores the long descriptive label directly
+    // ('Natural Science'/'Social Science'), matching the filter's own
+    // option values now — exact equality is correct here.
     if (streamVal) list = list.filter(s => String(s.stream) === String(streamVal));
     STUDENTS_FILTERED_LIST = list;
     STUDENTS_RENDER_LIMIT = STUDENTS_PAGE_SIZE;
@@ -2446,10 +2521,13 @@ function updateLeaderboardStreamFilterForClass() {
         streamSel.value = 'General';
         streamSel.disabled = true;
     } else if (level === '11' || level === '12') {
+        // Long-form to match students.stream / pushed_reports.stream
+        // (which now carries teacher_assignments.stream through, once
+        // migrated) — same convention as updateStreamOptionsForLevel().
         streamSel.innerHTML = `
             <option value="">${t('sa_all_streams')}</option>
-            <option value="Natural">${t('sa_stream_natural')}</option>
-            <option value="Social">${t('sa_stream_social')}</option>`;
+            <option value="Natural Science">${t('sa_stream_natural')}</option>
+            <option value="Social Science">${t('sa_stream_social')}</option>`;
         streamSel.value = '';
         streamSel.disabled = false;
     } else {
@@ -2510,17 +2588,18 @@ function renderClassLeaderboard() {
 async function loadTransferRequests() {
     const tbody = document.getElementById('sa-transfer-requests-tbody');
     if (!tbody) return;
-    tbody.innerHTML = `<tr><td colspan="5">${t('sa_loading')}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6">${t('sa_loading')}</td></tr>`;
     const res = await apiFetch(`${API_BASE}/api/principal/transfer-requests`);
-    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="5">${t('sa_load_error')}</td></tr>`; return; }
+    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_load_error')}</td></tr>`; return; }
     const rows = await res.json();
-    if (rows.length === 0) { tbody.innerHTML = `<tr><td colspan="5">${t('sa_no_data')}</td></tr>`; return; }
+    if (rows.length === 0) { tbody.innerHTML = `<tr><td colspan="6">${t('sa_no_data')}</td></tr>`; return; }
     tbody.innerHTML = rows.map(r => `
         <tr>
             <td>${escapeHtml(r.full_name)}</td>
             <td>${r.class_level}-${r.section}</td>
             <td>${escapeHtml(r.reason || '—')}</td>
             <td>${transferRequestStatusBadge(r)}</td>
+            <td>${formatEthDate(r.requested_at)}</td>
             <td>${r.status === 'pending'
                 ? `<button class="btn btn-sm btn-success" ${actionAttrs('approveTransferRequest', [r.request_id])}>${t('sa_approve')}</button>
                    <button class="btn btn-sm btn-danger" ${actionAttrs('rejectTransferRequest', [r.request_id])}>${t('sa_reject')}</button>`
@@ -2589,6 +2668,12 @@ function transferStatusBadge(status) {
 // round-trip — it just reuses whatever's already on screen for the
 // selected year.
 let TRANSFERRED_CACHE = [];
+// null/'' = "Current Year" (the default option) — the server decides what
+// that means (see GET /api/principal/transferred-students): normally just
+// the current E.C. year, but while the semester is closed it also folds
+// in the previous E.C. year, so nothing from the tail end of the year
+// that just closed silently disappears from "this year"'s view. Anything
+// else is a specific E.C. year picked from the dropdown.
 let TRANSFERRED_SELECTED_YEAR = null;
 
 async function loadTransferredStudents() {
@@ -2605,14 +2690,15 @@ async function loadTransferredStudents() {
 
     const yearSel = document.getElementById('transferred-year-filter');
     if (yearSel) {
-        const currentYear = new Date().getFullYear();
-        // The API defaults to the current year when no ?year= is passed,
-        // so the filter should reflect that same default the first time
-        // it's populated rather than showing blank/"All".
-        if (TRANSFERRED_SELECTED_YEAR === null) TRANSFERRED_SELECTED_YEAR = String(currentYear);
-        const selected = yearSel.value || TRANSFERRED_SELECTED_YEAR;
-        yearSel.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join('')
-            || `<option value="${currentYear}">${currentYear}</option>`;
+        const selected = yearSel.value || TRANSFERRED_SELECTED_YEAR || '';
+        // Options are E.C. years now (e.g. "2018", "2017"), not Gregorian
+        // ones — "years" comes straight from the server's E.C.-bucketed
+        // list. "Current Year" (value "") stays selectable on its own so
+        // switching back to it re-applies the server's current+previous
+        // default rather than pinning to whatever single year happened
+        // to be selected before.
+        yearSel.innerHTML = `<option value="">${t('sa_current_year')}</option>` +
+            years.map(y => `<option value="${y}">${y}</option>`).join('');
         yearSel.value = selected;
     }
 
@@ -2649,8 +2735,14 @@ function downloadTransferredCsv() {
 
 function downloadTransferredPdf() {
     closeModal();
-    const year = TRANSFERRED_SELECTED_YEAR || new Date().getFullYear();
-    window.open(`${API_BASE}/api/principal/transferred-students/pdf?year=${encodeURIComponent(year)}`, '_blank');
+    // No TRANSFERRED_SELECTED_YEAR ("Current Year") -> no ?year= at all,
+    // so the server applies its own current+previous-E.C.-year default
+    // instead of this guessing at a Gregorian year that may not even
+    // match what's on screen.
+    const url = TRANSFERRED_SELECTED_YEAR
+        ? `${API_BASE}/api/principal/transferred-students/pdf?year=${encodeURIComponent(TRANSFERRED_SELECTED_YEAR)}`
+        : `${API_BASE}/api/principal/transferred-students/pdf`;
+    window.open(url, '_blank');
 }
 
 // ---------- Graduation Batches (Registrar publishes; Principal reads,
@@ -2733,10 +2825,16 @@ function updateStreamOptionsForLevel(streamSelect, level) {
         streamSelect.value = 'General';
         streamSelect.disabled = true;
     } else if (level === '11' || level === '12') {
+        // Long-form values ('Natural Science'/'Social Science') to match
+        // students.stream/class_sections.stream, which the Registrar
+        // portal already writes this way — subjects.stream and
+        // teacher_assignments.stream (set from this form) are being
+        // migrated to the same convention so every stream column in the
+        // system stores one consistent value instead of two.
         streamSelect.innerHTML = `
-            <option value="Natural">${t('sa_stream_natural')}</option>
-            <option value="Social">${t('sa_stream_social')}</option>`;
-        streamSelect.value = 'Natural';
+            <option value="Natural Science">${t('sa_stream_natural')}</option>
+            <option value="Social Science">${t('sa_stream_social')}</option>`;
+        streamSelect.value = 'Natural Science';
         streamSelect.disabled = false;
     } else {
         streamSelect.innerHTML = `<option value="">${t('sa_select_class_level')}</option>`;

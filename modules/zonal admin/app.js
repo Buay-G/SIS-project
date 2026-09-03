@@ -277,13 +277,19 @@ function initialsOf(name){
   return ((parts[0]?.[0]||'') + (parts[1]?.[0]||'')).toUpperCase() || parts[0].slice(0,2).toUpperCase();
 }
 
-// Setup New School and Teacher Recruitment are field/operational work —
-// only the Teacher Development Coordinator's nav shows them day-to-day.
-// Head of Education's role here is oversight/approval (Approvals,
-// Delegation) rather than doing the setup themselves; a non-delegated
-// TDC who submits something still routes through Approvals for Head of
+// Teacher Recruitment is field/operational work — only the Teacher
+// Development Coordinator's nav shows it day-to-day. Head of
+// Education's role here is oversight/approval (Approvals, Delegation)
+// rather than doing the recruiting themselves; a non-delegated TDC who
+// submits something still routes through Approvals for Head of
 // Education to sign off on, same as before — this only changes which
 // nav items each title sees, not what the backend permits.
+//
+// School setup (Setup New School) and the Subject Dictionary have moved
+// to Super Admin — neither title in this portal sees them anymore.
+// Schools is still here for HoE/TDC/Supervisor, but it's now a
+// read-only list (see loadAndRenderSchools) fed by the schools Super
+// Admin has already registered for this zone.
 const NAV = {
   hoe:[
     {sec:"za_sec_admin", items:[
@@ -295,10 +301,10 @@ const NAV = {
   ],
   tdc:[
     {sec:"za_sec_admin", items:[
-      ["za_nav_dashboard","home"],["za_nav_schools","building-2"],["za_nav_setup_school","plus-circle"],
+      ["za_nav_dashboard","home"],["za_nav_schools","building-2"],
       ["za_nav_recruitment","user-plus"],["za_nav_proposals","clipboard-list"]
     ]},
-    {sec:"za_sec_academic", items:[["za_nav_subjects","book-open"],["za_nav_students","users"],["za_nav_teachers","graduation-cap"]]},
+    {sec:"za_sec_academic", items:[["za_nav_students","users"],["za_nav_teachers","graduation-cap"]]},
     {sec:"za_sec_oversight", items:[["za_nav_team","users-round"],["za_nav_school_performance","bar-chart-3"],["za_nav_messages","mail"],["za_nav_myid","credit-card"],["za_nav_profile","file-signature"]]}
   ],
   supervisor:[
@@ -1007,169 +1013,6 @@ async function openPerformanceDetail(schoolId){
   }
 }
 
-/* ---- Setup New School: real cascading region -> zone -> woreda -> kebele,
-   backed by /api/zonal/lookup/* ---- */
-function setupSchoolSkeletonHTML(){
-  return `<div class="panel"><h3><i data-lucide="plus-circle"></i> ${t('za_setup_title')}</h3><p class="hint">Loading…</p></div>`;
-}
-
-async function loadAndRenderSetupSchool(){
-  const content = document.getElementById('content');
-  try {
-    const regions = await apiGet('/api/zonal/lookup/regions');
-    renderSetupSchoolPanel(regions);
-  } catch (err) {
-    content.innerHTML = errorPanel(err);
-  }
-}
-
-function renderSetupSchoolPanel(regions){
-  const regionOpts = regions.map(r=>`<option value="${r.region_id}">${r.region_name}</option>`).join('');
-  document.getElementById('content').innerHTML = `
-  <div class="panel">
-    <h3><i data-lucide="plus-circle"></i> ${t('za_setup_title')}</h3>
-    <div class="form-grid">
-      <div class="form-field">
-        <label for="f_name">${t('za_f_school_name')}</label>
-        <input type="text" id="f_name" placeholder="e.g. Newland">
-      </div>
-      <div class="form-field">
-        <label for="f_level">${t('za_f_school_level')}</label>
-        <select id="f_level">
-          <option value="">${t('za_pick_school_level')}</option>
-          <option value="SECONDARY SCHOOL">${t('za_school_level_secondary')}</option>
-          <option value="PRIMARY SCHOOL">${t('za_school_level_primary')}</option>
-        </select>
-      </div>
-      <div class="form-field">
-        <label for="f_prefix_preview">${t('za_f_school_prefix')}</label>
-        <input type="text" id="f_prefix_preview" placeholder="—" readonly disabled>
-      </div>
-      <div class="form-field">
-        <label for="f_moe">${t('za_f_moe_code')}</label>
-        <input type="text" id="f_moe" placeholder="e.g. 1203010102">
-      </div>
-      <div class="form-field">
-        <label for="f_region">${t('za_f_region')}</label>
-        <select id="f_region"><option value="">${t('za_pick_region')}</option>${regionOpts}</select>
-      </div>
-      <div class="form-field">
-        <label for="f_zone">${t('za_f_zone')}</label>
-        <select id="f_zone" disabled><option value="">${t('za_pick_zone')}</option></select>
-      </div>
-      <div class="form-field">
-        <label for="f_woreda">${t('za_f_woreda')}</label>
-        <select id="f_woreda" disabled><option value="">${t('za_pick_woreda')}</option></select>
-      </div>
-      <div class="form-field">
-        <label for="f_kebele">${t('za_f_kebele')}</label>
-        <select id="f_kebele" disabled><option value="">${t('za_pick_kebele')}</option></select>
-      </div>
-    </div>
-    <div class="form-actions">
-      <button class="btn primary" id="btnSaveSchool">${t('za_save_school')}</button>
-      <button class="btn ghost" id="btnCancelSchool">${t('za_cancel')}</button>
-    </div>
-    <p class="hint" id="setupFormMsg"></p>
-  </div>`;
-  wireCascadingSelects();
-  wireSchoolPrefixPreview();
-
-  document.getElementById('btnCancelSchool').onclick = ()=>{ activePage='za_nav_dashboard'; render(); };
-  document.getElementById('btnSaveSchool').onclick = submitNewSchool;
-}
-
-// Mirrors buildSchoolPrefixBase() in server.js — this is a live preview
-// only, so the person sees what they'll get before saving. The server
-// computes the real, final prefix itself and may add a 2/3/4... suffix
-// if this exact prefix is already taken by another school; it never
-// trusts a prefix sent from the browser.
-function computeSchoolPrefixPreview(name, level){
-  const initials = name.trim().split(/\s+/).filter(Boolean).map(w=>w[0].toUpperCase()).join('');
-  if(!initials || !level) return '';
-  const levelCode = level === 'PRIMARY SCHOOL' ? 'PS' : 'SS';
-  return initials + levelCode;
-}
-
-function wireSchoolPrefixPreview(){
-  const nameEl = document.getElementById('f_name');
-  const levelEl = document.getElementById('f_level');
-  const previewEl = document.getElementById('f_prefix_preview');
-  if(!nameEl || !levelEl || !previewEl) return;
-  const update = ()=>{ previewEl.value = computeSchoolPrefixPreview(nameEl.value, levelEl.value); };
-  nameEl.addEventListener('input', update);
-  levelEl.addEventListener('change', update);
-}
-
-function fillSelect(el, rows, idKey, nameKey, placeholder){
-  el.innerHTML = `<option value="">${placeholder}</option>` +
-    rows.map(r=>`<option value="${r[idKey]}">${r[nameKey]}</option>`).join('');
-}
-
-function wireCascadingSelects(){
-  const regionEl = document.getElementById('f_region');
-  const zoneEl = document.getElementById('f_zone');
-  const woredaEl = document.getElementById('f_woreda');
-  const kebeleEl = document.getElementById('f_kebele');
-  if(!regionEl) return;
-
-  regionEl.addEventListener('change', async ()=>{
-    fillSelect(zoneEl, [], 'zone_id', 'zone_name', t('za_pick_zone')); zoneEl.disabled = true;
-    fillSelect(woredaEl, [], 'woreda_id', 'woreda_name', t('za_pick_woreda')); woredaEl.disabled = true;
-    fillSelect(kebeleEl, [], 'kebele_id', 'kebele_name', t('za_pick_kebele')); kebeleEl.disabled = true;
-    if(!regionEl.value) return;
-    try {
-      const zones = await apiGet('/api/zonal/lookup/zones', { region_id: regionEl.value });
-      fillSelect(zoneEl, zones, 'zone_id', 'zone_name', t('za_pick_zone'));
-      zoneEl.disabled = zones.length===0;
-    } catch (err) { setErrorMsg(document.getElementById('setupFormMsg'), err.message); }
-  });
-
-  zoneEl.addEventListener('change', async ()=>{
-    fillSelect(woredaEl, [], 'woreda_id', 'woreda_name', t('za_pick_woreda')); woredaEl.disabled = true;
-    fillSelect(kebeleEl, [], 'kebele_id', 'kebele_name', t('za_pick_kebele')); kebeleEl.disabled = true;
-    if(!zoneEl.value) return;
-    try {
-      const woredas = await apiGet('/api/zonal/lookup/woredas', { zone_id: zoneEl.value });
-      fillSelect(woredaEl, woredas, 'woreda_id', 'woreda_name', t('za_pick_woreda'));
-      woredaEl.disabled = woredas.length===0;
-    } catch (err) { setErrorMsg(document.getElementById('setupFormMsg'), err.message); }
-  });
-
-  woredaEl.addEventListener('change', async ()=>{
-    fillSelect(kebeleEl, [], 'kebele_id', 'kebele_name', t('za_pick_kebele')); kebeleEl.disabled = true;
-    if(!woredaEl.value) return;
-    try {
-      const kebeles = await apiGet('/api/zonal/lookup/kebeles', { woreda_id: woredaEl.value });
-      fillSelect(kebeleEl, kebeles, 'kebele_id', 'kebele_name', t('za_pick_kebele'));
-      kebeleEl.disabled = kebeles.length===0;
-    } catch (err) { setErrorMsg(document.getElementById('setupFormMsg'), err.message); }
-  });
-}
-
-async function submitNewSchool(){
-  const msg = document.getElementById('setupFormMsg');
-  const body = {
-    school_name: document.getElementById('f_name').value.trim(),
-    school_level: document.getElementById('f_level').value,
-    moe_school_code: document.getElementById('f_moe').value.trim() || null,
-    region_id: document.getElementById('f_region').value || null,
-    woreda_id: document.getElementById('f_woreda').value || null,
-    kebele_id: document.getElementById('f_kebele').value || null
-  };
-  if(!body.school_name || !body.school_level){
-    setErrorMsg(msg, t('za_setup_required'));
-    return;
-  }
-  if(!(await showPasswordConfirm(t('za_pwconfirm_setup_school')))) return;
-  try {
-    const result = await apiPost('/api/zonal/schools', body);
-    setSuccessMsg(msg, result.message);
-  } catch (err) {
-    setErrorMsg(msg, err.message);
-  }
-}
-
 function genericPanel(titleKey, icon){
   return `<div class="panel"><h3><i data-lucide="${icon}"></i> ${t(titleKey)}</h3>
     <p class="hint">${t('za_generic_hint')}</p></div>`;
@@ -1427,127 +1270,6 @@ function renderTeamPanel(team){
   </div>
   ${sectionsHTML}`;
   if (window.lucide) lucide.createIcons();
-}
-
-/* ==================================================================
-   Subject Dictionary — adding/editing/removing subjects is the
-   Development Coordinator's job (delegated or not — requireTdcOrHoe on
-   the server, not requireCanActInZone). A Development Coordinator's
-   add/edit lands as 'pending' and stays invisible to schools until the
-   Head of Education approves it; the Head of Education's own add/edit
-   is auto-approved. — live from:
-     GET    /api/zonal/subject-dictionary   -> [{subject_dict_id, subject_name, status, ...}]
-     POST   /api/zonal/subject-dictionary    body:{subject_name}
-     PUT    /api/zonal/subject-dictionary/:id  body:{subject_name}
-     POST   /api/zonal/subject-dictionary/:id/approve  (Head of Education only)
-     POST   /api/zonal/subject-dictionary/:id/reject   (Head of Education only)
-     DELETE /api/zonal/subject-dictionary/:subject_dict_id
-   ================================================================== */
-function subjectsSkeletonHTML(){
-  return `<div class="panel"><h3><i data-lucide="book-open"></i> ${t('za_subjects_title')}</h3><p class="hint">${t('za_loading')}</p></div>`;
-}
-
-async function loadAndRenderSubjects(){
-  const content = document.getElementById('content');
-  try {
-    const subjects = await apiGet('/api/zonal/subject-dictionary');
-    renderSubjectsPanel(subjects);
-  } catch (err) {
-    content.innerHTML = errorPanel(err);
-  }
-}
-
-function canActInZone(){
-  return CURRENT_USER && (CURRENT_USER.title==='Head of Education' || (CURRENT_USER.title==='Teacher Development Coordinator' && CURRENT_USER.can_act_independently));
-}
-
-// Subject Dictionary uses its own, wider permission than the rest of
-// this page's "direct authority" pages: any Development Coordinator
-// (delegated or not) can add/edit/remove — only *approving* a pending
-// entry is Head-of-Education-only.
-function canManageSubjects(){
-  return CURRENT_USER && (CURRENT_USER.title==='Head of Education' || CURRENT_USER.title==='Teacher Development Coordinator');
-}
-function isHoe(){
-  return CURRENT_USER && CURRENT_USER.title==='Head of Education';
-}
-
-function renderSubjectsPanel(subjects){
-  const manage = canManageSubjects();
-  const rows = subjects.length ? subjects.map(s=>`
-    <tr data-id="${s.subject_dict_id}">
-      <td class="subjectNameCell">${s.subject_name}</td>
-      <td>
-        ${manage ? `<button class="btn sm" data-act="edit" data-id="${s.subject_dict_id}" data-name="${s.subject_name}">${t('za_edit')}</button>` : ''}
-        ${manage ? `<button class="btn danger sm" data-act="delete" data-id="${s.subject_dict_id}">${t('za_delete')}</button>` : ''}
-      </td>
-    </tr>`).join('') : `<tr><td colspan="2" class="hint">${t('za_subjects_empty')}</td></tr>`;
-
-  const formHTML = manage ? `
-    <div class="form-grid">
-      <div class="form-field">
-        <label for="f_subj_name">${t('za_f_subject_name')}</label>
-        <input type="text" id="f_subj_name" placeholder="e.g. Mathematics">
-      </div>
-    </div>
-    <div class="form-actions">
-      <button class="btn primary" id="btnSaveSubject">${t('za_save')}</button>
-    </div>
-    <p class="hint" id="subjectFormMsg"></p>` : `<p class="hint">${t('za_subjects_readonly_note')}</p>`;
-
-  document.getElementById('content').innerHTML = `
-  <div class="panel">
-    <h3><i data-lucide="book-open"></i> ${t('za_subjects_title')}</h3>
-    ${formHTML}
-  </div>
-  <div class="panel">
-    <h3><i data-lucide="book-open"></i> ${t('za_subjects_list')}</h3>
-    <div class="table-wrap"><table>
-      <tr><th>${t('za_f_subject_name')}</th><th>${t('za_th_action')}</th></tr>
-      ${rows}
-    </table></div>
-  </div>`;
-  if (window.lucide) lucide.createIcons();
-
-  let editingId = null;
-
-  if(manage){
-    document.getElementById('btnSaveSubject').addEventListener('click', async ()=>{
-      const msg = document.getElementById('subjectFormMsg');
-      const subject_name = document.getElementById('f_subj_name').value.trim();
-      if(!subject_name){ setErrorMsg(msg, t('za_subjects_required')); return; }
-      if(!(await showPasswordConfirm(t('za_pwconfirm_subject')))) return;
-      try {
-        const result = editingId
-          ? await apiPut(`/api/zonal/subject-dictionary/${editingId}`, { subject_name })
-          : await apiPost('/api/zonal/subject-dictionary', { subject_name });
-        await loadAndRenderSubjects();
-        const newMsg = document.getElementById('subjectFormMsg');
-        if(newMsg) setSuccessMsg(newMsg, result.message);
-      } catch (err) {
-        setErrorMsg(msg, err.message);
-      }
-    });
-    document.querySelectorAll('button[data-act="edit"]').forEach(btn=>{
-      btn.addEventListener('click', ()=>{
-        editingId = btn.dataset.id;
-        document.getElementById('f_subj_name').value = btn.dataset.name;
-        document.getElementById('btnSaveSubject').textContent = t('za_save_changes');
-        document.getElementById('f_subj_name').focus();
-      });
-    });
-    document.querySelectorAll('button[data-act="delete"]').forEach(btn=>{
-      btn.addEventListener('click', async ()=>{
-        if(!(await showConfirm(t('za_subjects_delete_confirm')))) return;
-        try {
-          await apiDelete(`/api/zonal/subject-dictionary/${btn.dataset.id}`);
-          loadAndRenderSubjects();
-        } catch (err) {
-          setErrorMsg(document.getElementById('subjectFormMsg'), err.message);
-        }
-      });
-    });
-  }
 }
 
 /* ==================================================================
@@ -2972,11 +2694,9 @@ function render(){
   else if(activePage==='za_nav_students') { c.innerHTML = studentsSkeletonHTML(); loadAndRenderStudents(); }
   else if(activePage==='za_nav_school_performance') { c.innerHTML = performanceSkeletonHTML(); loadAndRenderPerformance(); }
   else if(activePage==='za_nav_teachers') { c.innerHTML = teachersSkeletonHTML(); loadAndRenderTeachers(); }
-  else if(activePage==='za_nav_setup_school') { c.innerHTML = setupSchoolSkeletonHTML(); loadAndRenderSetupSchool(); }
   else if(activePage==='za_nav_approvals') { c.innerHTML = approvalsSkeletonHTML(); loadAndRenderApprovals(); }
   else if(activePage==='za_nav_delegation') { c.innerHTML = delegationSkeletonHTML(); loadAndRenderDelegation(); }
   else if(activePage==='za_nav_team') { c.innerHTML = teamSkeletonHTML(); loadAndRenderTeam(); }
-  else if(activePage==='za_nav_subjects') { c.innerHTML = subjectsSkeletonHTML(); loadAndRenderSubjects(); }
   else if(activePage==='za_nav_recruitment') { c.innerHTML = recruitmentSkeletonHTML(); loadAndRenderRecruitment(); }
   else if(activePage==='za_nav_proposals') { c.innerHTML = myProposalsSkeletonHTML(); loadAndRenderMyProposals(); }
   else if(activePage==='za_nav_profile') { c.innerHTML = profileSkeletonHTML(); loadAndRenderProfile(); }

@@ -23,6 +23,12 @@
     --success-bg: #dcfce7;
     --info-bg: #e0f2ee;
     --info: #0f6e5c;
+    /* Comfortable reading width for content rows. Bars that should span
+       edge-to-edge (topbar, section nav) use --gutter below instead of a
+       max-width, so the colored background still fills wide/laptop
+       screens instead of floating as a narrow centered box. */
+    --content-max: 1400px;
+    --gutter: max(24px, calc((100% - var(--content-max)) / 2));
 }
 
 * { box-sizing: border-box; }
@@ -33,14 +39,19 @@ body {
     color: var(--text);
 }
 
-.hub-shell { max-width: 1180px; margin: 0 auto; padding: 0 0 60px; }
+/* No max-width/centering here anymore — the topbar and section nav need
+   their backgrounds to run the full width of the viewport. Each of those
+   (and every content row below) centers its own inner content via
+   --gutter instead, so a wide laptop/desktop screen doesn't leave the
+   header floating in a narrow boxed column with big empty margins. */
+.hub-shell { padding: 0 0 60px; }
 
 /* ---------- Top bar ---------- */
 .hub-topbar {
     display: flex;
     align-items: center;
     gap: 18px;
-    padding: 16px 24px;
+    padding: 16px var(--gutter);
     background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
     color: #fff;
     flex-wrap: wrap;
@@ -71,19 +82,54 @@ body {
 .hub-school-name { font-weight: 800; font-size: 1.05rem; line-height: 1.2; }
 .hub-tagline { font-size: 0.76rem; color: rgba(255,255,255,0.65); }
 
-.hub-topbar-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+.hub-topbar-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; flex-wrap: wrap; }
 .lang-switch-group { display: flex; background: rgba(255,255,255,0.14); border-radius: 8px; overflow: hidden; }
 .lang-switch-btn { border: none; background: transparent; color: rgba(255,255,255,0.8); font-weight: 700; font-size: 0.72rem; padding: 7px 11px; cursor: pointer; }
 .lang-switch-btn.lang-switch-active { background: var(--accent); color: #22321f; }
 
+/* ---------- Lucide icons ---------- */
+.hub-icon { width: 17px; height: 17px; stroke-width: 2.1; vertical-align: -3px; flex-shrink: 0; }
+.hub-icon-sm { width: 15px; height: 15px; }
+.hub-back-link { display: inline-flex; align-items: center; gap: 6px; }
+#hub-manage-btn { display: inline-flex !important; align-items: center; gap: 6px; }
+.hub-logo-badge .hub-icon { width: 22px; height: 22px; color: #fff; }
+
+/* ---------- Section nav (News / Gallery tabs) ---------- */
+.hub-view-nav {
+    display: flex;
+    gap: 6px;
+    padding: 10px var(--gutter);
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+}
+.hub-view-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    border: 1px solid var(--border);
+    background: #fff;
+    color: var(--muted);
+    font-weight: 700;
+    font-size: 0.84rem;
+    padding: 9px 16px;
+    border-radius: 999px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.hub-view-tab:hover { border-color: var(--primary-light); color: var(--primary); }
+.hub-view-tab.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+.hub-view-tab.active .hub-icon { color: #fff; }
+
 /* ---------- Stats strip ---------- */
-.hub-stats { display: flex; gap: 24px; padding: 14px 24px; background: var(--card); border-bottom: 1px solid var(--border); }
+.hub-stats { display: flex; gap: 24px; padding: 14px var(--gutter); background: var(--card); border-bottom: 1px solid var(--border); }
 .hub-stat { display: flex; align-items: baseline; gap: 6px; }
 .hub-stat-value { font-size: 1.15rem; font-weight: 800; color: var(--primary); }
 .hub-stat-label { font-size: 0.76rem; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
 
 /* ---------- Filter row ---------- */
-.hub-filter-row { display: flex; align-items: center; gap: 10px; padding: 16px 24px 0; }
+.hub-filter-row { display: flex; align-items: center; gap: 10px; padding: 16px var(--gutter) 0; }
 .hub-filter-row label { font-size: 0.78rem; font-weight: 700; color: var(--muted); }
 .hub-filter-row select {
     padding: 6px 10px;
@@ -95,21 +141,78 @@ body {
 }
 
 /* ---------- Main content ---------- */
-.hub-main { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 20px; padding: 16px 24px 0; align-items: start; }
+.hub-main { display: block; gap: 20px; padding: 16px var(--gutter) 0; }
 .hub-section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; }
 .hub-section h2 { margin: 0 0 14px; font-size: 1.05rem; }
+
+/* Only one panel (News or Gallery) is shown at a time, switched by the
+   .hub-view-tab buttons in the nav above. */
+.hub-view-panel { display: none; }
+.hub-view-panel.active { display: block; }
 
 .hub-empty, .hub-loading { color: var(--muted); font-size: 0.85rem; padding: 20px 4px; text-align: center; }
 .hub-error { color: var(--danger); font-size: 0.85rem; padding: 20px 4px; text-align: center; }
 
-/* News cards */
-.hub-news-list { display: flex; flex-direction: column; gap: 12px; max-height: 620px; overflow-y: auto; }
-.hub-news-card { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+/* News — master/detail layout: a narrow preview list on the left, the
+   full announcement on the right, instead of every announcement being a
+   long card you scroll past. On narrow screens (see media query below)
+   this collapses to a single column: list on top, detail underneath. */
+.hub-news-layout { display: grid; grid-template-columns: minmax(240px, 320px) 1fr; gap: 16px; align-items: start; }
+
+.hub-news-list { display: flex; flex-direction: column; gap: 8px; max-height: 74vh; overflow-y: auto; padding-right: 4px; }
+.hub-news-list-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    background: #fff;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    transition: border-color .15s ease, background .15s ease;
+}
+.hub-news-list-item:hover { border-color: var(--primary-light); }
+.hub-news-list-item.active { border-color: var(--primary); background: var(--info-bg); }
+.hub-news-list-item-title { font-weight: 800; font-size: 0.86rem; margin: 0 0 3px; }
+.hub-news-list-item-snippet {
+    font-size: 0.76rem;
+    color: var(--muted);
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.hub-news-list-item-meta { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; gap: 6px; }
+.hub-news-list-item-date { font-size: 0.68rem; color: var(--muted); white-space: nowrap; }
+
+.hub-news-detail {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    background: #fff;
+    position: sticky;
+    top: 16px;
+    min-height: 160px;
+}
+.hub-news-detail .hub-empty { padding: 40px 4px; }
 .hub-news-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
-.hub-news-title { font-weight: 800; font-size: 0.95rem; margin: 0; }
+.hub-news-title { font-weight: 800; font-size: 1.05rem; margin: 0; }
 .hub-news-date { font-size: 0.7rem; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
-.hub-news-body { font-size: 0.86rem; line-height: 1.55; margin-top: 8px; white-space: pre-wrap; }
-.hub-news-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
+.hub-news-body { font-size: 0.9rem; line-height: 1.6; margin-top: 10px; white-space: pre-wrap; }
+.hub-news-photo-wrap { margin-top: 10px; }
+.hub-news-photo {
+    width: 100%;
+    max-height: 420px;
+    object-fit: cover;
+    border-radius: 8px;
+    display: block;
+    background: #eef2ef;
+}
+.hub-news-photo-caption { font-size: 0.78rem; color: var(--muted); font-style: italic; margin-top: 6px; }
+.hub-news-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; flex-wrap: wrap; gap: 6px; }
 .hub-lang-tag {
     display: inline-block;
     font-size: 0.66rem;
@@ -123,24 +226,59 @@ body {
 }
 .hub-posted-by { font-size: 0.72rem; color: var(--muted); font-style: italic; }
 
-/* Gallery grid */
-.hub-gallery-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; max-height: 620px; overflow-y: auto; }
+/* Gallery grid — auto-fill instead of a fixed column count so extra
+   width on a wide laptop/desktop screen adds more columns instead of
+   sitting empty. */
+.hub-gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }
 .hub-gallery-card { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: #fff; display: flex; flex-direction: column; }
+.hub-gallery-photo-wrap { position: relative; }
 .hub-gallery-photo { width: 100%; aspect-ratio: 1.1 / 1; object-fit: cover; background: #eef2ef; display: block; }
+.hub-gallery-download-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(15, 25, 18, 0.55);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background .15s ease;
+}
+.hub-gallery-download-btn:hover { background: rgba(15, 25, 18, 0.8); }
+.hub-gallery-download-btn .hub-icon { width: 16px; height: 16px; color: #fff; margin: 0; }
 .hub-gallery-body { padding: 10px 12px; font-size: 0.8rem; line-height: 1.4; }
-.hub-gallery-meta { display: flex; justify-content: space-between; align-items: center; padding: 0 12px 10px; }
+.hub-gallery-meta { display: flex; justify-content: space-between; align-items: center; padding: 0 12px 10px; gap: 8px; flex-wrap: wrap; }
 
-.hub-footer { text-align: center; font-size: 0.75rem; color: var(--muted); padding: 26px 24px 0; line-height: 1.5; }
+.hub-footer { text-align: center; font-size: 0.75rem; color: var(--muted); padding: 26px var(--gutter) 0; line-height: 1.5; }
 
 @media (max-width: 860px) {
-    .hub-main { grid-template-columns: 1fr; }
-    .hub-gallery-grid { grid-template-columns: repeat(2, 1fr); max-height: none; }
-    .hub-news-list { max-height: none; }
+    .hub-gallery-grid { max-height: none; }
+}
+/* Narrow screens: stack the news list above the detail pane instead of
+   side-by-side, and drop the sticky positioning since there's no side
+   column to keep it aligned with anymore. */
+@media (max-width: 760px) {
+    .hub-news-layout { grid-template-columns: 1fr; }
+    .hub-news-list { max-height: 280px; }
+    .hub-news-detail { position: static; }
 }
 @media (max-width: 520px) {
     .hub-topbar { padding: 14px 16px; }
+    .hub-topbar-right { width: 100%; justify-content: space-between; }
+    .hub-view-nav { padding: 10px 16px; }
+    .hub-view-tab { flex: 1; justify-content: center; padding: 9px 10px; }
     .hub-filter-row, .hub-main, .hub-stats { padding-left: 16px; padding-right: 16px; }
-    .hub-gallery-grid { grid-template-columns: 1fr 1fr; }
+    .hub-gallery-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+    .hub-news-photo { max-height: 220px; }
+}
+@media (max-width: 380px) {
+    .hub-gallery-grid { grid-template-columns: 1fr; }
+    .hub-back-link span { display: none; }
 }
 
 /* ---------- Buttons / forms (shared with modal) ---------- */

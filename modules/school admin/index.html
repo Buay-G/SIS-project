@@ -1151,8 +1151,8 @@
               >
             </h3>
             <p class="page-subtitle" data-i18n="sa_qr_scan_sub">
-              Scan each teacher's ID card as they arrive. Anyone not scanned
-              by the cutoff is marked absent automatically.
+              Scan each teacher's ID card as they arrive. Anyone not scanned by
+              the cutoff is marked absent automatically.
             </p>
             <div id="teacher-qr-reader" class="qr-reader-box"></div>
             <div class="form-actions" style="margin-top: 10px">
@@ -2073,6 +2073,16 @@
           </p>
           <div class="toolbar-row sticky-filter-bar">
             <div class="form-group">
+              <label for="ar-year-select" data-i18n="sa_ar_year_label"
+                >Year</label
+              >
+              <select id="ar-year-select">
+                <option value="" data-i18n="sa_current_year">
+                  Current Year
+                </option>
+              </select>
+            </div>
+            <div class="form-group">
               <label for="ar-term-select" data-i18n="sa_ar_term_label"
                 >Term</label
               >
@@ -2108,6 +2118,14 @@
               style="display: none; margin: 0; flex-basis: 100%"
               data-i18n="sa_ar_print_principal_only"
               >Only the Principal can print/download the signed PDF.</span
+            >
+            <span
+              id="ar-past-year-note"
+              class="page-subtitle"
+              style="display: none; margin: 0; flex-basis: 100%"
+              data-i18n="sa_ar_past_year_note"
+              >Tested/Incomplete/score-band/rank figures aren't retained for
+              past years, so they show as N/A below.</span
             >
           </div>
           <div class="data-table-wrap">
@@ -2414,6 +2432,7 @@
                     <th data-i18n="sa_col_class">Class</th>
                     <th data-i18n="sa_col_reason">Reason</th>
                     <th data-i18n="sa_col_status">Status</th>
+                    <th data-i18n="sa_col_date">Date</th>
                     <th data-i18n="sa_col_action">Action</th>
                   </tr>
                 </thead>

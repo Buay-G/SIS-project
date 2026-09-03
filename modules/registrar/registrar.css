@@ -196,10 +196,15 @@ img, video, iframe, svg { max-width: 100%; height: auto; }
     position: sticky; top: 0; z-index: 1000;
     display: flex; justify-content: space-between; align-items: center;
     background: linear-gradient(135deg, #142c66 0%, #1e3a8a 100%);
-    padding: 0 24px;
+    /* #content has left/right padding (see rule below) so the bar can sit
+       flush against the page edges even though it lives inside a padded
+       scroll container: cancel that padding out with a matching negative
+       margin, then add it back as the bar's own padding. */
+    margin: 0 -32px;
+    padding: 0 32px;
     height: 60px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.18);
-    border-radius: 0 0 10px 10px;
+    border-radius: 0;
     /* Without its own compositor layer, a sticky element combined with
        border-radius repaints a frame late in Chrome/Edge, letting a sliver
        of the row that just scrolled underneath flash above the rounded
@@ -300,11 +305,39 @@ img, video, iframe, svg { max-width: 100%; height: auto; }
 .tab-content { display: none; background: white; padding: 25px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-top: 20px; }
 .tab-content.active { display: block; }
 
-.search-box { background: #f8f9fa; padding: 20px; border: 1px solid #e9ecef; border-radius: 8px; display: flex; gap: 10px; margin-bottom: 25px; }
+.search-box { background: #f8f9fa; padding: 20px; border: 1px solid #e9ecef; border-radius: 8px; display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 25px; }
+/* Default sizing for search-box fields: flexible but with a sane floor so
+   they don't get crushed to unusable widths when several sit in one row
+   (e.g. Section Setup's grade + stream + section + capacity + button). */
+.search-box > input, .search-box > select { flex: 1 1 170px; min-width: 0; }
+.search-box-input-sm { flex: 0 1 140px; }
+.search-box-input-md { flex: 1 1 200px; }
 
 .form-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 15px; }
 
 input[type="text"], select { padding: 10px 15px; border: 1px solid #ced4da; border-radius: 5px; width: 100%; }
+
+/* Dropdown/filter selects: replace the bare OS-default control with a
+   consistent look across the portal — custom chevron, breathing room for
+   it on the right, and a visible hover/focus state so filters read as
+   clickable instead of blending into plain text inputs. */
+select {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background-color: #ffffff;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%23475569'%3e%3cpath fill-rule='evenodd' d='M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z' clip-rule='evenodd'/%3e%3c/svg%3e");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    background-size: 16px;
+    padding-right: 36px;
+    color: #1e293b;
+    cursor: pointer;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+select:hover { border-color: #94a3b8; }
+select:focus { outline: none; border-color: #1e3a8a; box-shadow: 0 0 0 3px rgba(30, 58, 138, 0.12); }
+select:disabled { background-color: #f1f5f9; color: #94a3b8; cursor: not-allowed; }
 
 button { padding: 10px 20px; background-color: #1e3a8a; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; }
 button:hover { background-color: #142c66; }
@@ -355,6 +388,16 @@ button:hover { background-color: #142c66; }
 
 /* --- Recorder Management --- */
 .muted { color: #7f8c8d; }
+
+/* Shown in place of a section's controls while a precondition isn't met
+   yet (e.g. Graduation Wizard before Semester 2 is closed). */
+.locked-banner {
+    display: flex; align-items: flex-start; gap: 12px;
+    background: #fff8e6; border: 1px solid #f2d98a; color: #7a5b00;
+    border-radius: 8px; padding: 16px 18px; margin-bottom: 20px;
+    line-height: 1.5;
+}
+.locked-banner i { flex-shrink: 0; width: 20px; height: 20px; margin-top: 2px; }
 #current-recorders-list .search-box { margin-bottom: 10px; }
 /* --- Dashboard tab: stat cards --- */
 .dashboard-stats-grid {
@@ -723,10 +766,22 @@ textarea:focus-visible,
     .sidebar-hamburger { display: flex; }
 
     #content { padding: 0 16px 16px; width: 100%; }
-    .top-bar { flex-wrap: wrap; height: auto; padding: 12px 16px; gap: 10px; }
+    .top-bar { flex-wrap: wrap; height: auto; margin: 0 -16px; padding: 12px 16px; gap: 10px; }
     .topbar-school-name { max-width: 100%; white-space: normal; }
     .form-grid { grid-template-columns: 1fr; }
     .lang-switch-group { order: -1; }
+
+    /* Section Setup and every other .search-box toolbar (filters + add
+       forms) go from a cramped inline row to a full-width block stack, so
+       each field/select gets its full natural size to tap and type into. */
+    .search-box { flex-direction: column; align-items: stretch; }
+    .search-box > input,
+    .search-box > select,
+    .search-box-input-sm,
+    .search-box-input-md {
+        width: 100%;
+        flex: 1 1 auto;
+    }
 }
 
 

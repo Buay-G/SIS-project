@@ -202,7 +202,23 @@ function switchTab(tabId) {
         tab.classList.remove('active');
     });
     document.getElementById(tabId).classList.add('active');
+    updateTopbarSectionName(tabId);
     closeSidebar();
+}
+
+// The top bar used to repeat the school name (already shown in the
+// sidebar header), which didn't tell staff which section of the app
+// they were currently in. It now mirrors whichever sidebar nav item is
+// active, so it reads e.g. "New Entrant Registration" or "Promotion/Stream"
+// instead. Pulls the label straight from the matching sidebar button's
+// <span> rather than duplicating i18n keys, so it stays correct
+// automatically whether the label is in English or Amharic.
+function updateTopbarSectionName(tabId) {
+    const topbarLabel = document.getElementById('topbar-school-name');
+    if (!topbarLabel) return;
+    const navBtn = document.querySelector(`.sidebar-nav [data-tab="${tabId}"]`);
+    const label = navBtn ? navBtn.querySelector('span')?.textContent?.trim() : null;
+    topbarLabel.textContent = label || '—';
 }
 
 // --- Mobile sidebar drawer: hamburger opens it, tapping the dimmed
@@ -748,7 +764,13 @@ async function fetchForPromotion() {
         } else {
             newGradeSelect.innerHTML = `<option value="${currentGrade + 1}">Grade ${currentGrade + 1}</option>`;
 
-            if (currentGrade === 10 || currentGrade === 11) {
+            // Stream (Natural/Social Science) is only chosen once, at the
+            // Grade 10 to 11 transition — that's the actual streaming
+            // point in this system. An 11 to 12 promotion keeps whatever
+            // stream the student already has; asking again here (and the
+            // server defaulting to 'General' if left blank) used to
+            // silently overwrite it.
+            if (currentGrade === 10) {
                 streamContainer.style.display = 'block';
                 streamSelect.innerHTML = `
                     <option value="Natural Science">Natural Science</option>
@@ -811,6 +833,92 @@ function updateOverrideVisibility() {
     box.style.display = (expected && action && action !== expected) ? 'block' : 'none';
 }
 
+// --- Re-admission (Promote & Stream → Re-admitted) ---
+// A student who graduated or transferred out is blocked from logging in
+// (see the login route) — this is the only way back in. Two-step, same
+// shape as fetchForPromotion/submitPromotion above: look the ID up first
+// (read-only, shows who they are and why they're eligible) before the
+// separate confirm step actually reactivates the account.
+async function lookupReadmit() {
+    const id = document.getElementById('readmit-id').value.trim();
+    const result = document.getElementById('readmit-result');
+    if (!id) return showAlert("Please enter a Student ID");
+    result.innerHTML = '<p class="muted">Searching...</p>';
+
+    try {
+        const res = await fetch(`http://localhost:3001/api/registrar/readmit/${id}`, { credentials: 'include' });
+        const data = await res.json();
+        if (!res.ok) {
+            result.innerHTML = `<p class="muted">${data.error || "Could not find this student."}</p>`;
+            return;
+        }
+        result.innerHTML = `
+            <div class="search-box" style="flex-direction: column; align-items: flex-start;">
+                <p style="margin: 0 0 6px;"><strong>${data.full_name}</strong> (${data.student_id})</p>
+                <p class="muted" style="margin: 0 0 12px;">
+                    Last grade: ${data.class_level} &nbsp;•&nbsp; Status: ${data.status}
+                </p>
+                <button type="button" data-action="confirmReadmit" data-arg="${data.student_id}">
+                    <span data-i18n="reg_readmit_confirm_btn">Re-admit This Student</span>
+                </button>
+            </div>
+        `;
+        if (window.lucide) lucide.createIcons({ root: result });
+    } catch (err) {
+        console.error(err);
+        result.innerHTML = `<p class="muted">${t("reg_server_error")}</p>`;
+    }
+}
+
+async function confirmReadmit(studentId) {
+    const id = studentId || document.getElementById('readmit-id').value.trim();
+    if (!id) return;
+    if (!(await showConfirm(
+        `Re-admit ${id}? Their account unlocks again with the default password, and they'll need to be placed into a current section from the Placement Wizard.`
+    ))) return;
+
+    try {
+        const res = await fetch(`http://localhost:3001/api/registrar/readmit/${id}`, {
+            method: 'POST',
+            credentials: 'include'
+        });
+        const result = await res.json();
+        if (!res.ok) return showAlert(result.error || "Could not re-admit this student.");
+        showAlert(result.message);
+        document.getElementById('readmit-id').value = '';
+        document.getElementById('readmit-result').innerHTML = '';
+    } catch (err) {
+        console.error(err);
+        showAlert(t("reg_server_error"));
+    }
+}
+
+async function autoProcessPromotion() {
+    if (!(await showConfirm(
+        "Auto-promote every eligible Grade 9 and Grade 11 student now? " +
+        "Students below the cutoff are automatically retained instead — " +
+        "this can't be undone from here."
+    ))) return;
+
+    try {
+        const res = await fetch('http://localhost:3001/api/registrar/promotion/auto-process', {
+            method: 'POST',
+            credentials: 'include'
+        });
+        const result = await res.json();
+        if (!res.ok) return showAlert(result.error || "Automatic promotion failed.");
+
+        let summary = result.message;
+        if (result.skipped && result.skipped.length > 0) {
+            summary += `\n\nStill need marks entered:\n` + result.skipped.map(s => s.student_id).join(', ');
+        }
+        showAlert(summary);
+    } catch (err) {
+        console.error(err);
+        showAlert(t("reg_server_error"));
+    }
+}
+
 async function submitPromotion() {
     const id = document.getElementById('promo-id').value;
 
@@ -832,10 +940,11 @@ async function submitPromotion() {
         if (!action) return showAlert("Choose Promote or Retain.");
     }
 
+    const streamPickerShown = document.getElementById('stream-select-container').style.display !== 'none';
     const data = {
         action,
         class_level: action === 'promote' ? document.getElementById('new-grade').value : undefined,
-        stream: action === 'promote' ? (document.getElementById('stream-select').value || 'General') : undefined,
+        stream: (action === 'promote' && streamPickerShown) ? document.getElementById('stream-select').value : undefined,
         // No override is possible for grades 9-11 (see fetchForPromotion) —
         // the server ignores it for those anyway, but don't even send it.
         override_reason: window.isLockedToCutoff ? undefined : (document.getElementById('override-reason').value.trim() || undefined)
@@ -2193,12 +2302,20 @@ async function processGraduation() {
     if (checked.length === 0) return showAlert("Select at least one student.");
     if (!batch_tag) return showAlert('Enter a batch name (e.g. "Class of 2026").');
 
+    // Graduating a batch locks every student in it out of their account
+    // immediately, so — same as starting/cancelling a transfer — it
+    // requires re-entering the registrar's own password right before it
+    // happens, not just the earlier login session.
+    const password = await showPasswordPrompt(t('reg_graduation_password_prompt'));
+    if (password === null) return;
+    if (!password) return showAlert("Enter your password to continue.", "error");
+
     try {
         const res = await fetch('http://localhost:3001/api/registrar/graduation/process', {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ student_ids: checked, batch_tag, override_reason })
+            body: JSON.stringify({ student_ids: checked, batch_tag, override_reason, password })
         });
         const result = await res.json();
         if (!res.ok) return showAlert(result.error || "Graduation processing failed.");
@@ -2366,10 +2483,13 @@ function applyProfileChrome() {
     const schoolName = document.getElementById('sidebar-school-name');
     if (schoolName) schoolName.textContent = displayName;
 
-    const topbarSchoolName = document.getElementById('topbar-school-name');
-    if (topbarSchoolName) {
-        topbarSchoolName.textContent = displayName;
-    }
+    // Note: #topbar-school-name no longer shows the school name (that's
+    // covered by #sidebar-school-name in the sidebar header already). It
+    // now shows whichever sidebar section is active — see
+    // updateTopbarSectionName, called from switchTab and again below for
+    // whichever tab is active at load time.
+    const activeTab = document.querySelector('.tab-content.active');
+    updateTopbarSectionName(activeTab ? activeTab.id : 'dashboard');
 
     const moeChip = document.getElementById('topbar-moe-code');
     if (moeChip) {
@@ -2446,11 +2566,29 @@ async function loadCurrentSemesterChip() {
                 yearChip.hidden = true;
             }
         }
+
+        updateGraduationWizardLock(data.current_term, data.semester_status);
     } catch (err) {
         console.error(err);
         if (chip) chip.hidden = true;
         if (yearChip) yearChip.hidden = true;
     }
+}
+
+// The Graduation Wizard only makes sense once Semester 2 is over — while
+// hides the actionable part (the batch-tag/override/graduate button row
+// plus the eligible-students list) behind a locked-banner explaining why,
+// while leaving Graduation History visible underneath (read-only, so
+// there's no harm in showing it early). Re-run every time
+// loadCurrentSemesterChip() refreshes, so it un-hides itself the moment
+// Academic VP closes Semester 2 without needing a page reload.
+let semester2Closed = false;
+function updateGraduationWizardLock(current_term, semester_status) {
+    semester2Closed = current_term === 'Semester 2' && semester_status === 'closed';
+    const banner = document.getElementById('graduation-locked-banner');
+    const body = document.getElementById('graduation-wizard-body');
+    if (banner) banner.style.display = semester2Closed ? 'none' : 'flex';
+    if (body) body.style.display = semester2Closed ? '' : 'none';
 }
 
 // --- 12. Dashboard tab ---

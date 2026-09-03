@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en" data-role="super_admins">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Super Admin — Ministry of Education</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script
+      src="https://cdn.jsdelivr.net/npm/lucide@1.32.0/dist/umd/lucide.js"
+      integrity="sha384-3Qyee4XMy2g+a0PvD9+WWB5qfTkKRQ61ag4BM6FpB9QhzBHJ6na9CfI3g2HsDxv6"
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    ></script>
+  </head>
+  <body>
+    <a href="#content" class="skip-link">Skip to content</a>
+    <div class="nav-overlay" id="navOverlay"></div>
+    <div class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-badge">
+          <img
+            src="/assets/images/moe_logo.png"
+            alt=""
+            class="brand-badge-img"
+            id="brandBadgeImg"
+            data-fallback-target="brandBadgeFallback"
+          />
+          <span
+            class="brand-badge-fallback"
+            id="brandBadgeFallback"
+            style="display: none"
+            >SA</span
+          >
+        </div>
+        <div>
+          <div class="brand-name" data-i18n="sa_portal_title">
+            Ministry of Education
+          </div>
+          <div class="brand-sub" data-i18n="sa_brand_sub">
+            System Administration
+          </div>
+        </div>
+        <button class="nav-close-btn" id="navCloseBtn" aria-label="Close menu">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+
+      <div
+        class="nav-scroll"
+        id="navScroll"
+        role="navigation"
+        aria-label="Main navigation"
+      ></div>
+
+      <div class="side-footer">
+        <div class="role-card">
+          <div class="role-title">
+            <span id="roleTitleTxt">Super Admin</span>
+          </div>
+          <div class="role-id">ID <b id="roleIdTxt">…</b></div>
+        </div>
+        <button class="logout-btn" id="logoutBtn">
+          <i data-lucide="log-out"></i>
+          <span data-i18n="za_logout">Logout</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="main">
+      <div class="topbar">
+        <div class="topbar-left">
+          <div class="topbar-title-row">
+            <button class="nav-open-btn" id="navOpenBtn" aria-label="Open menu">
+              <i data-lucide="menu"></i>
+            </button>
+            <h1 id="pageTitle" data-i18n="sa_page_title_dashboard">
+              Dashboard
+            </h1>
+          </div>
+          <div class="badges">
+            <span class="badge gold" data-i18n="sa_scope_badge"
+              >EVERY REGION · EVERY ZONE</span
+            >
+          </div>
+        </div>
+        <div class="topbar-right">
+          <div class="lang-toggle">
+            <button class="lang-switch-btn" data-lang="en" type="button">
+              EN
+            </button>
+            <button class="lang-switch-btn" data-lang="am" type="button">
+              አማርኛ
+            </button>
+          </div>
+          <div class="who">
+            <button
+              class="avatar profile-pic-btn"
+              id="avatarInit"
+              type="button"
+              aria-label="Super Admin"
+              title="Super Admin"
+            >
+              SA
+            </button>
+            <div>
+              <div class="who-name" id="whoName">…</div>
+              <div class="who-role" id="whoRole">…</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="content" id="content" role="main" tabindex="-1"></div>
+    </div>
+
+    <script src="/assets/js/guard.js"></script>
+    <script src="/assets/js/i18n.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

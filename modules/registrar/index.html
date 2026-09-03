@@ -69,7 +69,7 @@
           </div>
           <button data-tab="new-entry">
             <i data-lucide="user-plus" aria-hidden="true"></i>
-            <span data-i18n="reg_nav_new_entry">New Entry Registration</span>
+            <span data-i18n="reg_nav_new_entry">New Entrant Registration</span>
           </button>
           <button data-tab="update-info">
             <i data-lucide="user-cog" aria-hidden="true"></i>
@@ -367,6 +367,26 @@
             <div class="form-grid">
               <input
                 type="text"
+                id="reg_first"
+                placeholder="First Name"
+                required
+              />
+              <input
+                type="text"
+                id="reg_middle"
+                placeholder="Middle Name"
+                required
+              />
+              <input
+                type="text"
+                id="reg_last"
+                placeholder="Last Name"
+                required
+              />
+            </div>
+            <div class="form-grid">
+              <input
+                type="text"
                 id="reg_fayda"
                 placeholder="Fayda Number"
                 required
@@ -380,26 +400,6 @@
                 required
                 minlength="10"
                 maxlength="10"
-              />
-              <input
-                type="text"
-                id="reg_first"
-                placeholder="First Name"
-                required
-              />
-            </div>
-            <div class="form-grid">
-              <input
-                type="text"
-                id="reg_middle"
-                placeholder="Middle Name"
-                required
-              />
-              <input
-                type="text"
-                id="reg_last"
-                placeholder="Last Name"
-                required
               />
               <select
                 id="reg_grade"
@@ -524,17 +524,35 @@
             <h1 data-i18n="reg_promotion_heading" style="margin: 0">
               Student Promotion
             </h1>
-            <button
-              type="button"
-              class="confirm-btn confirm-btn-secondary"
-              data-action="viewPromotedQueue"
-            >
-              <i data-lucide="eye" aria-hidden="true"></i>
-              <span data-i18n="reg_view_promoted_btn"
-                >View Promoted So Far</span
+            <div style="display: flex; gap: 10px; flex-wrap: wrap">
+              <button
+                type="button"
+                class="confirm-btn"
+                data-action="autoProcessPromotion"
               >
-            </button>
+                <i data-lucide="zap" aria-hidden="true"></i>
+                <span data-i18n="reg_auto_promote_btn"
+                  >Auto-Promote Grade 9 &amp; 11</span
+                >
+              </button>
+              <button
+                type="button"
+                class="confirm-btn confirm-btn-secondary"
+                data-action="viewPromotedQueue"
+              >
+                <i data-lucide="eye" aria-hidden="true"></i>
+                <span data-i18n="reg_view_promoted_btn"
+                  >View Promoted So Far</span
+                >
+              </button>
+            </div>
           </div>
+          <p class="muted" data-i18n="reg_auto_promote_sub">
+            Grade 9 and Grade 11 students above the cutoff are promoted straight
+            through — no stream choice needed there. Grade 10 students still
+            come through one at a time below, since moving to Grade 11 is where
+            they choose Natural Science or Social Science.
+          </p>
           <div class="search-box">
             <input
               type="text"
@@ -654,6 +672,29 @@
               Submit Decision
             </button>
           </div>
+
+          <hr
+            style="margin: 35px 0; border: none; border-top: 1px solid #e9ecef"
+          />
+
+          <h3 data-i18n="reg_readmit_heading">Re-admitted Student</h3>
+          <p class="muted" data-i18n="reg_readmit_sub">
+            For a student who previously graduated or transferred out and now
+            wants back in. This unlocks their existing ID — it doesn't create a
+            new one.
+          </p>
+          <div class="search-box">
+            <input
+              type="text"
+              id="readmit-id"
+              data-i18n-placeholder="reg_readmit_id_placeholder"
+              placeholder="Enter their previous Student ID..."
+            />
+            <button data-action="lookupReadmit">
+              <span data-i18n="reg_readmit_search_btn">Search</span>
+            </button>
+          </div>
+          <div id="readmit-result"></div>
         </div>
 
         <div id="students" class="tab-content">
@@ -1004,32 +1045,47 @@
             below the cut-off need an override reason.
           </p>
 
-          <div class="search-box" style="flex-wrap: wrap">
-            <input
-              type="text"
-              id="grad_batch_tag"
-              data-i18n-placeholder="reg_batch_tag_placeholder"
-              placeholder='Batch name (e.g. "Class of 2026")...'
-              style="flex-basis: 260px"
-            />
-            <input
-              type="text"
-              id="grad_override_reason"
-              data-i18n-placeholder="reg_override_reason_placeholder"
-              placeholder="Override reason (required for any student below the cut-off)..."
-              style="flex-grow: 1"
-            />
-            <button
-              type="button"
-              data-action="processGraduation"
-              data-i18n="reg_process_graduation"
-            >
-              Graduate Selected Students
-            </button>
+          <div
+            id="graduation-locked-banner"
+            class="locked-banner"
+            style="display: none"
+          >
+            <i data-lucide="lock" aria-hidden="true"></i>
+            <span data-i18n="reg_graduation_locked">
+              The Graduation Wizard unlocks once Semester 2 has been closed for
+              this academic year. Ask your Academic VP to close Semester 2 when
+              the year is complete.
+            </span>
           </div>
 
-          <div id="graduation-eligible-list">
-            <p class="muted">Loading...</p>
+          <div id="graduation-wizard-body">
+            <div class="search-box" style="flex-wrap: wrap">
+              <input
+                type="text"
+                id="grad_batch_tag"
+                data-i18n-placeholder="reg_batch_tag_placeholder"
+                placeholder='Batch name (e.g. "Class of 2026")...'
+                style="flex-basis: 260px"
+              />
+              <input
+                type="text"
+                id="grad_override_reason"
+                data-i18n-placeholder="reg_override_reason_placeholder"
+                placeholder="Override reason (required for any student below the cut-off)..."
+                style="flex-grow: 1"
+              />
+              <button
+                type="button"
+                data-action="processGraduation"
+                data-i18n="reg_process_graduation"
+              >
+                Graduate Selected Students
+              </button>
+            </div>
+
+            <div id="graduation-eligible-list">
+              <p class="muted">Loading...</p>
+            </div>
           </div>
 
           <h3
@@ -1071,16 +1127,16 @@
             <input
               type="text"
               id="sec_name"
+              class="search-box-input-sm"
               placeholder="Section (e.g. A)"
               maxlength="5"
-              style="max-width: 140px"
             />
             <input
               type="number"
               id="sec_capacity"
+              class="search-box-input-md"
               placeholder="Max capacity (optional)"
               min="1"
-              style="max-width: 200px"
             />
             <button
               type="button"

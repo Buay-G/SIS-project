@@ -5,20 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>School Hub</title>
     <link rel="stylesheet" href="/assets/css/hub.css" />
+    <script src="https://cdn.jsdelivr.net/npm/lucide@latest/dist/umd/lucide.js"></script>
   </head>
   <body>
     <div class="hub-shell">
       <!-- ============ TOP BAR ============ -->
       <header class="hub-topbar">
-        <a
-          href="/login.html"
-          id="hub-back-link"
-          class="hub-back-link"
-          data-i18n="hub_back_to_portal"
-          >← Back to Portal</a
-        >
+        <a href="/login.html" id="hub-back-link" class="hub-back-link">
+          <i data-lucide="arrow-left" class="hub-icon"></i>
+          <span data-i18n="hub_back_to_portal">Back to Portal</span>
+        </a>
         <div class="hub-topbar-brand">
-          <div class="hub-logo-badge" id="hub-logo-badge">🏫</div>
+          <div class="hub-logo-badge" id="hub-logo-badge">
+            <i data-lucide="school" class="hub-icon"></i>
+          </div>
           <div>
             <div class="hub-school-name" id="hub-school-name">—</div>
             <div class="hub-tagline" data-i18n="hub_tagline">
@@ -55,12 +55,43 @@
             class="btn btn-accent btn-sm"
             id="hub-manage-btn"
             style="display: none"
-            data-i18n="hub_admin_existing_posts"
           >
-            Manage Posts
+            <i data-lucide="settings" class="hub-icon hub-icon-sm"></i>
+            <span data-i18n="hub_admin_existing_posts">Manage Posts</span>
           </button>
         </div>
       </header>
+
+      <!-- ============ SECTION NAV ============ -->
+      <nav
+        class="hub-view-nav"
+        id="hub-view-nav"
+        role="tablist"
+        aria-label="Hub sections"
+      >
+        <button
+          type="button"
+          class="hub-view-tab active"
+          id="hub-tab-news"
+          data-view="news"
+          role="tab"
+          aria-selected="true"
+        >
+          <i data-lucide="newspaper" class="hub-icon hub-icon-sm"></i>
+          <span data-i18n="hub_nav_news">News</span>
+        </button>
+        <button
+          type="button"
+          class="hub-view-tab"
+          id="hub-tab-gallery"
+          data-view="gallery"
+          role="tab"
+          aria-selected="false"
+        >
+          <i data-lucide="image" class="hub-icon hub-icon-sm"></i>
+          <span data-i18n="hub_nav_gallery">Gallery</span>
+        </button>
+      </nav>
 
       <!-- ============ STATS STRIP ============ -->
       <div class="hub-stats" id="hub-stats" style="display: none">
@@ -94,14 +125,21 @@
 
       <!-- ============ MAIN CONTENT ============ -->
       <main class="hub-main">
-        <section class="hub-section">
+        <section class="hub-section hub-view-panel active" id="hub-view-news">
           <h2 data-i18n="hub_news_heading">News &amp; Announcements</h2>
-          <div id="hub-announcements-list" class="hub-news-list">
-            <div class="hub-loading" data-i18n="sa_loading">Loading…</div>
+          <div class="hub-news-layout">
+            <div id="hub-announcements-list" class="hub-news-list">
+              <div class="hub-loading" data-i18n="sa_loading">Loading…</div>
+            </div>
+            <div id="hub-announcement-detail" class="hub-news-detail">
+              <div class="hub-empty" data-i18n="hub_news_select_prompt">
+                Select an announcement to read it.
+              </div>
+            </div>
           </div>
         </section>
 
-        <section class="hub-section">
+        <section class="hub-section hub-view-panel" id="hub-view-gallery">
           <h2 data-i18n="hub_gallery_heading">School Gallery</h2>
           <div id="hub-gallery-grid" class="hub-gallery-grid">
             <div class="hub-loading" data-i18n="sa_loading">Loading…</div>
@@ -109,10 +147,9 @@
         </section>
       </main>
 
-      <footer class="hub-footer" data-i18n="hub_footer">
-        Posted by school administration. Visible only to signed-in students,
-        teachers, and staff of this school — no one from another school can see
-        this.
+      <footer class="hub-footer" id="hub-footer">
+        The creative heartbeat of this school, showcasing student storytelling,
+        multimedia art, and cultural commentary.
       </footer>
     </div>
 
