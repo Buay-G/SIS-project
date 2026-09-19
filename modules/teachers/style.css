@@ -60,7 +60,24 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background-color: var(--b
     max-height: 56px;
     width: auto;
     height: auto;
-    margin: 0 auto 10px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.9);
+    padding: 4px;
+    object-fit: contain;
+}
+.logo-images {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+.nav-zone-logo {
+    display: block;
+    max-width: 56px;
+    max-height: 56px;
+    width: auto;
+    height: auto;
     border-radius: 6px;
     background: rgba(255,255,255,0.9);
     padding: 4px;

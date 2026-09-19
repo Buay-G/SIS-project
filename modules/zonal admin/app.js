@@ -315,14 +315,16 @@ const NAV = {
 
 let activePage = 'za_nav_dashboard';
 
-// Unread count from /api/notifications, kept in sync by loadNotifications()
-// (see below). Currently every notification is a Messages-thread reply, so
-// the badge lands on the za_nav_messages nav item — the one nav entry the
-// notification actually concerns. If other notification kinds get added
-// later with their own destination page, extend NOTIF_NAV_TARGET rather
-// than hardcoding a second nav key here.
+// Unread counts from /api/notifications, kept in sync by loadNotifications()
+// (see below). Two notification kinds now exist — unread messages (badge
+// on za_nav_messages) and, for the Head of Education only, proposals still
+// awaiting approval (badge on za_nav_approvals) — each tracked separately
+// so a message unread count never lights up the Approvals nav item or
+// vice versa. notifUnreadCount is the sum of both, used for the bell dot.
 let notifUnreadCount = 0;
-const NOTIF_NAV_TARGET = 'za_nav_messages';
+let notifMessageCount = 0;
+let notifProposalCount = 0;
+const NOTIF_NAV_BADGES = { za_nav_messages: () => notifMessageCount, za_nav_approvals: () => notifProposalCount };
 
 function renderNav(){
   const wrap = document.getElementById('navScroll');
@@ -337,9 +339,10 @@ function renderNav(){
       el.setAttribute('role', 'button');
       el.setAttribute('tabindex', '0');
       if(key === activePage) el.setAttribute('aria-current', 'page');
-      const showBadge = key === NOTIF_NAV_TARGET && notifUnreadCount > 0;
+      const badgeCount = NOTIF_NAV_BADGES[key] ? NOTIF_NAV_BADGES[key]() : 0;
+      const showBadge = badgeCount > 0;
       const badgeHTML = showBadge
-        ? `<span class="nav-badge" aria-label="${notifUnreadCount > 9 ? '9+' : notifUnreadCount} ${t('za_notifications')}">${notifUnreadCount > 9 ? '9+' : notifUnreadCount}</span>`
+        ? `<span class="nav-badge" aria-label="${badgeCount > 9 ? '9+' : badgeCount} ${t('za_notifications')}">${badgeCount > 9 ? '9+' : badgeCount}</span>`
         : '';
       el.innerHTML = `<span class="ic"><i data-lucide="${icon}"></i></span><span class="nav-item-label">${t(key)}</span>${badgeHTML}`;
       const go = ()=>{ activePage = key; render(); closeMobileNav(); };
@@ -1141,10 +1144,12 @@ function renderApprovalsPanel(schools, proposals){
     try {
       let successText;
       if(btn.dataset.act==='approve'){
+        if(!(await showPasswordConfirm(t('za_pwconfirm_approve')))) return;
         const result = await apiPost(`/api/zonal/proposals/${id}/approve`);
         successText = result.message;
       } else {
         const reason = prompt(t('sa_prompt_rejection_reason')) || '';
+        if(!(await showPasswordConfirm(t('za_pwconfirm_reject')))) return;
         await apiPost(`/api/zonal/proposals/${id}/reject`, { reason });
         successText = t('za_proposal_rejected');
       }
@@ -2735,7 +2740,11 @@ function renderNotifications(data){
   }
 
   list.innerHTML = (data.items && data.items.length)
-    ? data.items.map(i=>`
+    ? data.items.map(i=> i.type === 'proposal' ? `
+        <div class="notif-item" data-proposal-id="${i.proposal_id}" tabindex="0" role="button">
+          <div class="n-subject">${proposalTypeLabel(i)}</div>
+          <div class="n-meta">${t('za_pending_proposals')} — ${i.school_name}</div>
+        </div>` : `
         <div class="notif-item" data-thread-id="${i.thread_id}" tabindex="0" role="button">
           <div class="n-subject">${i.subject}</div>
           <div class="n-meta">${i.reply_count} new — ${i.from}</div>
@@ -2747,15 +2756,22 @@ function renderNotifications(data){
   // stuck until the next 60s poll. Zonal admins (HoE/TDC/Supervisor) use
   // a different mark-read endpoint than teachers — see /api/notifications,
   // which sources zonal items from admin_messages rather than
-  // contact_threads.
+  // contact_threads. Proposal items have no separate "read" state — they
+  // just navigate straight to Approvals, where the count naturally drops
+  // once the Head of Education actually decides on them.
   list.querySelectorAll('.notif-item').forEach(el=>{
     const go = async ()=>{
+      document.getElementById('notifPanel')?.classList.remove('open');
+      if(el.dataset.proposalId){
+        activePage = 'za_nav_approvals';
+        render();
+        return;
+      }
       const threadId = el.dataset.threadId;
       const markReadUrl = CURRENT_USER && CURRENT_USER.role === 'zonal_admins'
         ? `/api/zonal/messages/${threadId}/read`
         : `/api/contact/thread/${threadId}/mark-read`;
       try { await apiPost(markReadUrl); } catch (err) { /* non-critical */ }
-      document.getElementById('notifPanel')?.classList.remove('open');
       activePage = 'za_nav_messages';
       render();
       loadNotifications();
@@ -2764,10 +2780,12 @@ function renderNotifications(data){
     el.addEventListener('keydown', e=>{ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); go(); } });
   });
 
-  // Update the unread count and re-draw the sidebar so the specific nav
-  // item this notification concerns (Messages) carries the red badge —
-  // not just the bell — without disturbing whatever page is open.
+  // Update the unread counts and re-draw the sidebar so the specific nav
+  // item each notification concerns (Messages, Approvals) carries the red
+  // badge — not just the bell — without disturbing whatever page is open.
   notifUnreadCount = count;
+  notifMessageCount = data.message_count != null ? data.message_count : count;
+  notifProposalCount = data.proposal_count || 0;
   if(CURRENT_USER) renderNav();
 }
 

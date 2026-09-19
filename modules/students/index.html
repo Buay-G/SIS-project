@@ -207,6 +207,25 @@
               <span data-i18n="nav_documents">My Documents</span>
             </a>
           </li>
+          <li>
+            <a href="#" class="nav-link" data-page="guardian">
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+              </svg>
+              <span data-i18n="nav_guardian">My Guardian/Parent</span>
+            </a>
+          </li>
 
           <li class="nav-group-label" data-i18n="nav_group_external_student">
             External
@@ -1085,7 +1104,91 @@
             </div>
           </div>
         </section>
+
+        <!-- MY GUARDIAN/PARENT: the guardian(s) linked to this student,
+             their parent_code (Guardian Portal login ID), and — until
+             they've logged in and changed it — the shared default
+             first-login password, so the student can hand both to their
+             guardian. Rendered by loadGuardian() in script.js. -->
+        <section id="page-guardian" class="page-content" style="display: none">
+          <h2 data-i18n="student_guardian_heading">My Guardian/Parent</h2>
+          <p class="muted" style="margin-bottom: 20px" data-i18n="student_guardian_desc">
+            Share the login ID and first-login password below with your
+            guardian so they can sign in to the Guardian Portal.
+          </p>
+          <div id="guardian-output" class="profile-grid">
+            <p class="muted" data-i18n="loading">Loading…</p>
+          </div>
+        </section>
       </main>
+    </div>
+
+    <!-- FORCED PIN CHANGE — shown instead of the dashboard when
+         /api/me reports must_change_password: true (still on the
+         default PIN issued at registration/reset). Every other
+         /api/student/* route 403s until this is done (see
+         blockIfMustChangePassword in server.js), so the dashboard
+         can't actually load anything while this is showing — no
+         "Cancel"/close, since there's nothing to go back to yet. Uses
+         its own field IDs (mcp-*) rather than reusing the Profile
+         page's curr-pass/new-pass/confirm-pass fields, since both can
+         exist in the DOM at once and getElementById would only ever
+         find one of them. -->
+    <div
+      id="must-change-password-overlay"
+      class="confirm-modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="mcp-title"
+      style="display: none"
+    >
+      <div class="confirm-modal-box" style="max-width: 420px">
+        <h3 id="mcp-title" data-i18n="mcp_heading">Set a New PIN</h3>
+        <p class="muted" style="margin-bottom: 16px" data-i18n="mcp_desc">
+          You're still on the default PIN issued when your account was
+          created. Set your own 6-digit PIN to continue.
+        </p>
+        <label for="mcp-curr-pass" class="sr-only">Current PIN</label>
+        <input
+          type="password"
+          id="mcp-curr-pass"
+          class="form-input"
+          placeholder="Current PIN"
+          data-i18n-placeholder="mcp_current_pin"
+          style="margin-bottom: 10px"
+        />
+        <label for="mcp-new-pass" class="sr-only">New 6-digit PIN</label>
+        <input
+          type="password"
+          id="mcp-new-pass"
+          class="form-input"
+          placeholder="New 6-digit PIN"
+          data-i18n-placeholder="mcp_new_pin"
+          style="margin-bottom: 10px"
+        />
+        <label for="mcp-confirm-pass" class="sr-only"
+          >Confirm new PIN</label
+        >
+        <input
+          type="password"
+          id="mcp-confirm-pass"
+          class="form-input"
+          placeholder="Confirm New PIN"
+          data-i18n-placeholder="mcp_confirm_pin"
+          style="margin-bottom: 14px"
+        />
+        <div class="confirm-modal-actions">
+          <button
+            id="mcp-submit-btn"
+            class="btn-primary"
+            style="width: 100%"
+            data-i18n="mcp_submit"
+          >
+            Set PIN &amp; Continue
+          </button>
+        </div>
+        <div id="mcp-message" class="password-message"></div>
+      </div>
     </div>
 
     <!-- HELP MODAL -->

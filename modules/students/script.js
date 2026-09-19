@@ -16,16 +16,16 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
-// Combines a school's own name with its level, e.g. "Newland" +
-// "SECONDARY SCHOOL" -> "NEWLAND SECONDARY SCHOOL" — the level isn't
-// otherwise implied by the name, and schools of different levels can
-// share a name. Mirrors buildSchoolDisplayName() in server.js (used
-// server-side for the certificate/report-card templates) so the name
-// shown here always matches what gets printed there. school_level is
-// already stored upper-case; .toUpperCase() on the joined string is
-// just a safety net for the name half.
+// Just the name Super Admin gave the school, nothing appended. Used to
+// combine schoolName with schoolLevel (e.g. "Newland" + "SECONDARY
+// SCHOOL" -> "NEWLAND SECONDARY SCHOOL"), but that made the topbar
+// longer than the school's actual name for no real reason. Mirrors
+// buildSchoolDisplayName() in server.js (used server-side for the
+// certificate/report-card templates), so the name shown here always
+// matches what gets printed there. schoolLevel is kept as a parameter
+// only so checkAuth() below doesn't need touching.
 function buildSchoolDisplayName(schoolName, schoolLevel) {
-    return [schoolName, schoolLevel].filter(Boolean).join(' ').toUpperCase() || 'SCHOOL';
+    return (schoolName || '').toUpperCase().trim() || 'SCHOOL';
 }
 
 async function checkAuth() {
@@ -81,7 +81,7 @@ async function checkAuth() {
                 zoneLogoImgEl.style.display = 'none';
             }
         }
-        return true;
+        return data.must_change_password ? 'must_change_password' : true;
     } catch {
         window.location.href = '/login.html';
         return false;
@@ -218,11 +218,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     // language button again.
     if (typeof applyTranslations === 'function') applyTranslations();
 
-    const ok = await checkAuth();
-    if (!ok) return;
-    setupNavigation();
+    const authResult = await checkAuth();
+    if (!authResult) return; // not logged in — checkAuth already redirected
+
+    // Wired either way: Sign Out needs to work even while stuck on the
+    // forced-PIN-change screen below (e.g. the student doesn't actually
+    // remember the default PIN and needs the registrar to reset it),
+    // and mcp-submit-btn only exists to be wired at all when
+    // must_change_password is true.
     setupSidebarToggle();
     wireStaticEventListeners();
+    const mcpBtn = document.getElementById('mcp-submit-btn');
+    if (mcpBtn) mcpBtn.addEventListener('click', submitForcedPinChange);
+
+    if (authResult === 'must_change_password') {
+        // Every other /api/student/* route 403s until this is resolved
+        // (see blockIfMustChangePassword in server.js) — showing the
+        // dashboard here would just be a wall of failed fetches and
+        // "undefined" fields, so block on this instead of trying to
+        // load anything else.
+        const overlay = document.getElementById('must-change-password-overlay');
+        if (overlay) overlay.style.display = 'flex';
+        return;
+    }
+
+    setupNavigation();
     await Promise.all([loadProfile(), loadNotifications()]);
     loadDashboard();
     loadSemesterBadge();
@@ -230,6 +250,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.querySelector('a[data-page="marks"]').addEventListener('click', loadMarks);
     document.querySelector('a[data-page="textbooks"]').addEventListener('click', loadTextbooks);
     document.querySelector('a[data-page="documents"]').addEventListener('click', () => { loadIDCard(); loadCertificate(); });
+    document.querySelector('a[data-page="guardian"]').addEventListener('click', loadGuardian);
     document.querySelector('a[data-page="absence"]').addEventListener('click', () => { loadAbsenceHistory(); setupAbsenceDateConstraints(); });
     const monitorNavLink = document.querySelector('a[data-page="class-monitor"]');
     if (monitorNavLink) monitorNavLink.addEventListener('click', () => { loadMonitorRoster(); loadMonitorPeriods(); });
@@ -264,6 +285,7 @@ window.onSisLangChange = () => {
     loadTextbooks();
     loadIDCard();
     loadCertificate();
+    loadGuardian();
     loadAbsenceHistory();
     loadRecognitionAward();
     const monitorNav = document.getElementById('nav-class-monitor');
@@ -454,6 +476,56 @@ async function loadProfile() {
     } catch (err) {
         console.error('Profile load error:', err);
     }
+}
+
+// ---- MY GUARDIAN/PARENT ----
+// Shows the guardian(s) linked to this student: their Guardian Portal
+// login ID (parent_code) and, only while it's still the untouched
+// default, the shared first-login password — so the student can pass
+// both along to their guardian for that first sign-in. Once a guardian
+// has logged in and set their own password, must_change_password flips
+// to false and the password line stops showing for them (it's no
+// longer valid/meaningful to hand out at that point).
+const GUARDIAN_DEFAULT_PASSWORD = '1234';
+
+async function loadGuardian() {
+    const output = document.getElementById('guardian-output');
+    if (!output) return;
+    try {
+        // profileDataCache already carries `guardians` from /api/student/me
+        // (loaded on page init) — only re-fetch if that hasn't happened yet.
+        const data = profileDataCache || await (await apiFetch('/api/student/me')).json();
+        renderGuardian(data.guardians || [], output);
+    } catch (err) {
+        console.error('Guardian load error:', err);
+        output.innerHTML = `<p class="muted">${t('student_guardian_could_not_load')}</p>`;
+    }
+}
+
+function renderGuardian(guardians, container) {
+    if (!guardians.length) {
+        container.innerHTML = `<div class="widget"><p class="muted">${t('student_guardian_none_linked')}</p></div>`;
+        return;
+    }
+    container.innerHTML = guardians.map(g => `
+        <div class="widget">
+            <h3>${escapeHtml(g.full_name || '—')}</h3>
+            <p>
+                <strong>${t('student_guardian_phone')}</strong>
+                <span>${escapeHtml(g.phone_number || '—')}</span>
+            </p>
+            <p>
+                <strong>${t('student_guardian_login_id')}</strong>
+                <span>${escapeHtml(g.parent_code || '—')}</span>
+            </p>
+            ${g.must_change_password ? `
+            <div class="guardian-credential-box">
+                <p class="muted" style="margin-bottom: 6px">${t('student_guardian_first_login_note')}</p>
+                <p><strong>${t('student_guardian_login_id')}</strong> <span>${escapeHtml(g.parent_code || '—')}</span></p>
+                <p><strong>${t('student_guardian_first_password')}</strong> <span>${GUARDIAN_DEFAULT_PASSWORD}</span></p>
+            </div>` : ''}
+        </div>
+    `).join('');
 }
 
 // ---- ID PHOTO CHANGE REQUEST STATUS ----
@@ -703,7 +775,7 @@ function renderIDCard(data, container) {
         <div class="id-card-flip-wrap">
             <div class="id-card id-card-front">
                 <div class="id-card-header">
-                    <img src="${data.logo_url || '/assets/images/Logo.png'}" alt="School logo" class="id-card-logo id-card-school-logo-img" data-fallback-src="/assets/images/Logo.png">
+                    <img src="${data.zone_logo_url || data.logo_url || '/assets/images/Logo.png'}" alt="${data.zone_logo_url ? 'Zone logo' : 'School logo'}" class="id-card-logo id-card-school-logo-img" data-fallback-src="/assets/images/Logo.png">
                     <div class="id-card-header-text">
                         <div class="id-card-school-name">${data.school_display_name || data.school_name || 'School'}</div>
                         <div class="id-card-subtitle">የተማሪ መታወቂያ ካርድ | Student Identity Card</div>
@@ -849,6 +921,61 @@ window.updatePassword = async () => {
             document.getElementById('curr-pass').value = '';
             document.getElementById('new-pass').value = '';
             document.getElementById('confirm-pass').value = '';
+        } else {
+            showMsg(data.error || t('profile_could_not_update_password'), true);
+        }
+    } catch (err) {
+        showMsg(t('could_not_connect'), true);
+    }
+};
+
+// Same submission as updatePassword() above, targeting the forced
+// PIN-change overlay's own fields (mcp-*) instead of the Profile
+// page's (curr-pass/new-pass/confirm-pass) — kept as a separate
+// function rather than parameterizing updatePassword() since the two
+// screens can both exist in the DOM and have very different outcomes
+// on success: the Profile page just shows a success message in place,
+// while this one needs to unblock the rest of the app. A full reload
+// is deliberate here (rather than hiding the overlay and calling
+// checkAuth() again in place): /api/student/update-password re-issues
+// the session cookie with must_change_password cleared, so reloading
+// re-runs the entire normal init path — nav, dashboard, everything —
+// against that fresh, unblocked session, instead of trying to
+// hand-patch a half-initialized page.
+window.submitForcedPinChange = async () => {
+    const currentPass = document.getElementById('mcp-curr-pass').value;
+    const newPass = document.getElementById('mcp-new-pass').value;
+    const confirmPass = document.getElementById('mcp-confirm-pass').value;
+    const msg = document.getElementById('mcp-message');
+
+    const showMsg = (text, isError) => {
+        if (!msg) return;
+        msg.textContent = text;
+        msg.style.color = isError ? '#dc2626' : '#16a34a';
+    };
+
+    if (!currentPass || !newPass || !confirmPass) {
+        showMsg(t('profile_fill_all_fields'), true);
+        return;
+    }
+    if (newPass !== confirmPass) {
+        showMsg(t('profile_passwords_no_match'), true);
+        return;
+    }
+    if (newPass.length < 4) {
+        showMsg(t('profile_password_too_short'), true);
+        return;
+    }
+
+    try {
+        const res = await apiFetch('/api/student/update-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ currentPass, newPass })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            window.location.reload();
         } else {
             showMsg(data.error || t('profile_could_not_update_password'), true);
         }

@@ -79,6 +79,10 @@
             <i data-lucide="users" aria-hidden="true"></i>
             <span data-i18n="reg_nav_students">Students</span>
           </button>
+          <button id="nav-guardians" data-tab="guardians" style="display: none">
+            <i data-lucide="users-round" aria-hidden="true"></i>
+            <span data-i18n="reg_nav_guardians">Guardian/Parent</span>
+          </button>
 
           <div class="nav-group-label" data-i18n="reg_nav_group_progression">
             Progression &amp; Placement
@@ -110,6 +114,10 @@
           >
             <i data-lucide="graduation-cap" aria-hidden="true"></i>
             <span data-i18n="reg_nav_graduation">Graduation Wizard</span>
+          </button>
+          <button data-tab="ease-candidates">
+            <i data-lucide="clipboard-check" aria-hidden="true"></i>
+            <span data-i18n="reg_nav_ease_candidates">EASE Candidates</span>
           </button>
 
           <div class="nav-group-label" data-i18n="reg_nav_group_transfers">
@@ -145,6 +153,19 @@
           <div class="nav-group-label" data-i18n="reg_nav_group_admin">
             Administration &amp; Staff
           </div>
+          <button
+            id="nav-emis-requests"
+            data-tab="emis-requests"
+            style="display: none"
+          >
+            <i data-lucide="link-2" aria-hidden="true"></i>
+            <span data-i18n="reg_nav_emis_requests">EMIS Roster</span>
+            <span
+              id="nav-emis-requests-badge"
+              class="notif-badge"
+              style="display: none"
+            ></span>
+          </button>
           <button
             id="nav-recorder-mgmt"
             data-tab="recorder-mgmt"
@@ -352,16 +373,28 @@
             <h1 data-i18n="reg_new_entry_heading" style="margin: 0">
               New Student Registration
             </h1>
-            <button
-              type="button"
-              class="confirm-btn confirm-btn-secondary"
-              data-action="viewRegisteredQueue"
-            >
-              <i data-lucide="eye" aria-hidden="true"></i>
-              <span data-i18n="reg_view_registered_btn"
-                >View Registered So Far</span
+            <div style="display: flex; gap: 10px; flex-wrap: wrap">
+              <button
+                type="button"
+                class="confirm-btn confirm-btn-secondary"
+                data-action="viewRegisteredQueue"
               >
-            </button>
+                <i data-lucide="eye" aria-hidden="true"></i>
+                <span data-i18n="reg_view_registered_btn"
+                  >View Registered So Far</span
+                >
+              </button>
+              <button
+                type="button"
+                class="confirm-btn confirm-btn-secondary"
+                data-action="openPendingRosterModal"
+              >
+                <i data-lucide="upload-cloud" aria-hidden="true"></i>
+                <span data-i18n="reg_retrieve_uploaded_btn"
+                  >Retrieve Uploaded List</span
+                >
+              </button>
+            </div>
           </div>
           <form id="registration-form">
             <div class="form-grid">
@@ -407,11 +440,30 @@
                 required
               >
                 <option value="">Select Grade</option>
-                <option value="9">Grade 9</option>
-                <option value="10">Grade 10</option>
-                <option value="11">Grade 11</option>
-                <option value="12">Grade 12</option>
               </select>
+            </div>
+            <!--
+              Grade 7 and 9 sit right after an EASE (national exam) grade
+              at the PREVIOUS school (6->7, 8->9) — a new entrant arriving
+              into either one has to show they actually passed that exam
+              there, via the admission number the Ministry results sheet
+              identifies them by (see POST /api/register). Hidden/not
+              required for every other grade; toggled by
+              updateStreamOptions below since it already runs on every
+              reg_grade change.
+            -->
+            <div
+              id="reg_ease_admission_wrap"
+              class="form-grid"
+              style="display: none"
+            >
+              <input
+                type="text"
+                id="reg_ease_admission"
+                data-i18n-placeholder="reg_ease_f_admission"
+                placeholder="Admission Number (from previous school's exam result)"
+                autocomplete="off"
+              />
             </div>
             <div class="form-grid">
               <select id="reg_sex" required>
@@ -422,7 +474,49 @@
               <select id="reg_stream" required>
                 <option value="">Select Stream</option>
               </select>
+              <div>
+                <input
+                  type="text"
+                  id="reg_emis"
+                  placeholder="EMIS ID (optional)"
+                  minlength="10"
+                  maxlength="13"
+                  autocomplete="off"
+                  data-onblur="lookupEmisId"
+                  data-onblur-arg="reg"
+                />
+                <div id="reg_emis_status" class="emis-status"></div>
+              </div>
             </div>
+            <h3 style="margin-top: 20px">Guardian / Parent</h3>
+            <div class="form-grid">
+              <input
+                type="text"
+                id="reg_guardian_fayda"
+                placeholder="Guardian's Fayda Number"
+                required
+                minlength="16"
+                maxlength="16"
+                autocomplete="off"
+                data-onblur="lookupGuardianFayda"
+                data-onblur-arg="reg"
+              />
+              <input
+                type="text"
+                id="reg_guardian_name"
+                placeholder="Guardian's Full Name"
+                required
+              />
+              <input
+                type="text"
+                id="reg_guardian_phone"
+                placeholder="Guardian's Phone Number"
+                required
+                minlength="10"
+                maxlength="10"
+              />
+            </div>
+            <div id="reg_guardian_status" class="emis-status"></div>
             <button type="button" data-action="submitRegistration">
               <span data-i18n="reg_register_button">Register Student</span>
             </button>
@@ -440,6 +534,11 @@
             />
             <button data-action="fetchStudent">Search</button>
           </div>
+          <div
+            id="upd-locked-banner"
+            class="emis-status emis-status-error"
+            style="display: none; margin-bottom: 15px"
+          ></div>
           <form id="update-form">
             <input type="hidden" id="upd_id" />
             <div class="form-grid">
@@ -509,6 +608,60 @@
               Save Changes
             </button>
           </form>
+
+          <div
+            id="upd-guardian-section"
+            style="display: none; margin-top: 25px"
+          >
+            <h3 data-i18n="reg_upd_guardian_heading">Guardian / Parent</h3>
+
+            <!-- Shown when the loaded student already has a guardian on file. -->
+            <div id="upd-guardian-existing" style="display: none"></div>
+
+            <!-- Shown when the loaded student has no guardian yet — same
+                 lookup-then-confirm flow New Entrant Registration uses,
+                 just scoped to this one existing student. -->
+            <div id="upd-guardian-add-form" style="display: none">
+              <p class="muted" data-i18n="reg_upd_guardian_none_note">
+                No guardian on file for this student yet.
+              </p>
+              <div class="form-grid">
+                <input
+                  type="text"
+                  id="upd_guardian_fayda"
+                  data-i18n-placeholder="reg_guardian_fayda_placeholder"
+                  placeholder="Guardian's Fayda Number"
+                  minlength="16"
+                  maxlength="16"
+                  autocomplete="off"
+                  data-onblur="lookupGuardianFayda"
+                  data-onblur-arg="upd"
+                />
+                <input
+                  type="text"
+                  id="upd_guardian_name"
+                  data-i18n-placeholder="reg_guardian_name_placeholder"
+                  placeholder="Guardian's Full Name"
+                />
+                <input
+                  type="text"
+                  id="upd_guardian_phone"
+                  data-i18n-placeholder="reg_guardian_phone_placeholder"
+                  placeholder="Guardian's Phone Number"
+                  minlength="10"
+                  maxlength="10"
+                />
+              </div>
+              <div id="upd_guardian_status" class="emis-status"></div>
+              <button
+                type="button"
+                data-action="submitAddGuardian"
+                data-i18n="reg_upd_add_guardian_button"
+              >
+                Link Guardian
+              </button>
+            </div>
+          </div>
         </div>
 
         <div id="promotion" class="tab-content">
@@ -740,10 +893,6 @@
               <option value="" data-i18n="reg_students_filter_all_grades">
                 All Grades
               </option>
-              <option value="9">Grade 9</option>
-              <option value="10">Grade 10</option>
-              <option value="11">Grade 11</option>
-              <option value="12">Grade 12</option>
             </select>
             <button type="button" data-action="loadStudentRegistry">
               <span data-i18n="reg_search_button">Search</span>
@@ -759,6 +908,31 @@
           </div>
 
           <div id="student-registry-list">
+            <p class="muted">Loading...</p>
+          </div>
+        </div>
+
+        <div id="guardians" class="tab-content">
+          <h1 data-i18n="reg_guardians_heading">Guardian / Parent</h1>
+          <p class="muted" data-i18n="reg_guardians_sub">
+            Every guardian on file, and the children they're linked to at this
+            school.
+          </p>
+
+          <div class="search-box" style="flex-wrap: wrap">
+            <input
+              type="text"
+              id="guardian_registry_search"
+              data-i18n-placeholder="reg_guardians_search_placeholder"
+              placeholder="Search by name, phone, or Fayda number..."
+              style="flex-grow: 1; min-width: 200px"
+            />
+            <button type="button" data-action="loadGuardianRegistry">
+              <span data-i18n="reg_search_button">Search</span>
+            </button>
+          </div>
+
+          <div id="guardian-registry-list">
             <p class="muted">Loading...</p>
           </div>
         </div>
@@ -869,10 +1043,6 @@
                   required
                 >
                   <option value="">Select Grade</option>
-                  <option value="9">Grade 9</option>
-                  <option value="10">Grade 10</option>
-                  <option value="11">Grade 11</option>
-                  <option value="12">Grade 12</option>
                 </select>
               </div>
               <div class="form-grid">
@@ -900,6 +1070,19 @@
                 maxlength="16"
                 style="max-width: 300px; margin-bottom: 15px"
               />
+              <div style="max-width: 300px; margin-bottom: 15px">
+                <input
+                  type="text"
+                  id="ext_emis"
+                  placeholder="EMIS ID (optional)"
+                  minlength="10"
+                  maxlength="13"
+                  autocomplete="off"
+                  data-onblur="lookupEmisId"
+                  data-onblur-arg="ext"
+                />
+                <div id="ext_emis_status" class="emis-status"></div>
+              </div>
               <button
                 type="button"
                 data-action="submitExternalTransfer"
@@ -965,6 +1148,7 @@
             </button>
           </div>
           <div id="doc-report-card-preview"></div>
+          <div id="doc-transcript-preview"></div>
 
           <h3 style="margin-top: 30px">Bulk Documents (by Section)</h3>
           <p class="muted">
@@ -1099,6 +1283,49 @@
           </div>
         </div>
 
+        <div id="ease-candidates" class="tab-content">
+          <h1 data-i18n="reg_nav_ease_candidates">EASE Candidates</h1>
+          <p class="muted" data-i18n="reg_ease_sub">
+            Grade 6, 8, and 12 students at this school. Type each student's
+            admission number and mark them as a candidate — their status
+            updates automatically once the Ministry's result is uploaded.
+          </p>
+
+          <div class="search-box" style="flex-wrap: wrap">
+            <select id="ease_filter_grade" data-onchange="loadEaseCandidates">
+              <option value="" data-i18n="reg_ease_all_grades">All Grades (6/8/12)</option>
+              <option value="6" data-i18n="reg_ease_grade_6">Grade 6</option>
+              <option value="8" data-i18n="reg_ease_grade_8">Grade 8</option>
+              <option value="12" data-i18n="reg_ease_grade_12">Grade 12</option>
+            </select>
+            <input
+              type="text"
+              id="ease_filter_section"
+              data-i18n-placeholder="reg_ease_section"
+              placeholder="Section"
+              data-onchange="loadEaseCandidates"
+            />
+            <input
+              type="text"
+              id="ease_filter_stream"
+              data-i18n-placeholder="reg_ease_stream"
+              placeholder="Stream"
+              data-onchange="loadEaseCandidates"
+            />
+            <select id="ease_filter_status" data-onchange="loadEaseCandidates">
+              <option value="" data-i18n="reg_ease_all_statuses">All Statuses</option>
+              <option value="Not Marked" data-i18n="reg_ease_status_not_marked">Not Marked</option>
+              <option value="Pending Result" data-i18n="reg_ease_status_pending">Pending Result</option>
+              <option value="Pass" data-i18n="reg_ease_status_pass">Pass</option>
+              <option value="Fail" data-i18n="reg_ease_status_fail">Fail</option>
+            </select>
+          </div>
+
+          <div id="ease-candidates-list">
+            <p class="muted" data-i18n="reg_loading">Loading...</p>
+          </div>
+        </div>
+
         <div id="section-setup" class="tab-content">
           <h1 data-i18n="reg_section_setup_heading">Section Setup</h1>
           <p>
@@ -1116,10 +1343,6 @@
               data-onchange="updateSectionSetupStreamOptions"
             >
               <option value="">Select Grade</option>
-              <option value="9">Grade 9</option>
-              <option value="10">Grade 10</option>
-              <option value="11">Grade 11</option>
-              <option value="12">Grade 12</option>
             </select>
             <select id="sec_stream">
               <option value="">Select Stream</option>
@@ -1196,6 +1419,32 @@
 
           <div id="placement-queue">
             <p class="muted">Loading...</p>
+          </div>
+        </div>
+
+        <div id="emis-requests" class="tab-content">
+          <h1 data-i18n="reg_emis_requests_heading">EMIS Roster</h1>
+          <p class="muted" data-i18n="reg_emis_roster_desc">
+            Every active student at this school and whether their EMIS ID is
+            verified against the Ministry registry, unverified, or still
+            missing.
+          </p>
+          <div id="emis-roster-summary">
+            <p class="muted" data-i18n="reg_loading">Loading...</p>
+          </div>
+          <div id="emis-roster-list"></div>
+
+          <h2 data-i18n="reg_emis_requests_subheading" style="margin-top: 32px">
+            EMIS Retrieval Requests
+          </h2>
+          <p class="muted" data-i18n="reg_emis_requests_desc">
+            The Super Admin sends a request when they need the list of active
+            students at this school who don't have an EMIS ID yet. Approving
+            lets them download and map that list — nothing leaves this school's
+            records until you approve.
+          </p>
+          <div id="emis-requests-list">
+            <p class="muted" data-i18n="reg_loading">Loading...</p>
           </div>
         </div>
 
@@ -1311,7 +1560,7 @@
 
     <div id="student-history-modal" class="modal-overlay" style="display: none">
       <div
-        class="modal-box"
+        class="modal-box modal-box-wide"
         role="dialog"
         aria-modal="true"
         aria-labelledby="student-history-heading"
@@ -1336,6 +1585,88 @@
             class="confirm-btn confirm-btn-secondary"
             data-i18n="reg_return_btn"
             data-action="closeStudentHistory"
+          >
+            Return
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      id="guardian-children-modal"
+      class="modal-overlay"
+      style="display: none"
+    >
+      <div
+        class="modal-box modal-box-wide"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="guardian-children-heading"
+      >
+        <button
+          class="modal-close-btn"
+          data-i18n-aria="reg_close_aria"
+          aria-label="Close"
+          data-action="closeGuardianChildren"
+        >
+          <i data-lucide="x" aria-hidden="true"></i>
+        </button>
+        <h2
+          id="guardian-children-heading"
+          data-i18n="reg_guardian_children_heading"
+        >
+          Linked Children
+        </h2>
+        <div id="guardian-children-body">
+          <p class="muted">Loading...</p>
+        </div>
+        <div style="text-align: right; margin-top: 20px">
+          <button
+            type="button"
+            class="confirm-btn confirm-btn-secondary"
+            data-i18n="reg_return_btn"
+            data-action="closeGuardianChildren"
+          >
+            Return
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      id="student-guardian-modal"
+      class="modal-overlay"
+      style="display: none"
+    >
+      <div
+        class="modal-box"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="student-guardian-heading"
+      >
+        <button
+          class="modal-close-btn"
+          data-i18n-aria="reg_close_aria"
+          aria-label="Close"
+          data-action="closeStudentGuardian"
+        >
+          <i data-lucide="x" aria-hidden="true"></i>
+        </button>
+        <h2
+          id="student-guardian-heading"
+          data-i18n="reg_student_guardian_heading"
+        >
+          Guardian
+        </h2>
+        <div id="student-guardian-body">
+          <p class="muted">Loading...</p>
+        </div>
+        <div style="text-align: right; margin-top: 20px">
+          <button
+            type="button"
+            class="confirm-btn confirm-btn-secondary"
+            data-i18n="reg_return_btn"
+            data-action="closeStudentGuardian"
           >
             Return
           </button>
@@ -1393,6 +1724,84 @@
             <span data-i18n="reg_go_to_placement_btn"
               >Go to Placement Wizard</span
             >
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="pending-roster-modal" class="modal-overlay" style="display: none">
+      <div
+        class="modal-box"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="pending-roster-heading"
+        style="max-width: 900px"
+      >
+        <button
+          class="modal-close-btn"
+          data-i18n-aria="reg_close_aria"
+          aria-label="Close"
+          data-action="closePendingRosterModal"
+        >
+          <i data-lucide="x" aria-hidden="true"></i>
+        </button>
+        <h2 id="pending-roster-heading" data-i18n="reg_pending_roster_heading">
+          Students Uploaded by Super Admin
+        </h2>
+        <p class="muted" data-i18n="reg_pending_roster_hint">
+          These students were already given a class, section, and stream by
+          Super Admin, so they don't go through the Placement Wizard — just
+          assign each one their student ID directly.
+        </p>
+        <div
+          style="display: flex; justify-content: flex-end; margin-bottom: 10px"
+        >
+          <button
+            type="button"
+            id="pending-roster-assign-all-btn"
+            class="confirm-btn"
+            data-action="assignAllPendingRoster"
+            style="display: none"
+          >
+            <span data-i18n="reg_pending_roster_assign_all_btn"
+              >Assign All Ready</span
+            >
+          </button>
+        </div>
+        <div class="data-table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th data-i18n="reg_pending_roster_col_name">Name</th>
+                <th data-i18n="reg_pending_roster_col_sex">Sex</th>
+                <th data-i18n="reg_pending_roster_col_class">Class</th>
+                <th data-i18n="reg_pending_roster_col_status">Status</th>
+                <th data-i18n="reg_pending_roster_col_action">Action</th>
+              </tr>
+            </thead>
+            <tbody id="pending-roster-list">
+              <tr>
+                <td colspan="5" class="muted">Loading...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div
+          style="
+            text-align: right;
+            margin-top: 20px;
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+          "
+        >
+          <button
+            type="button"
+            class="confirm-btn confirm-btn-secondary"
+            data-i18n="reg_return_btn"
+            data-action="closePendingRosterModal"
+          >
+            Return
           </button>
         </div>
       </div>

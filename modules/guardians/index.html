@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="en" data-role="guardians">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Guardian Portal</title>
+    <link rel="icon" href="/assets/images/Logo.png" type="image/png" />
+    <link rel="stylesheet" href="style.css" />
+    <script src="/assets/js/guard.js"></script>
+    <script src="/assets/js/i18n.js"></script>
+  </head>
+  <body>
+    <div class="dashboard-container">
+      <nav class="sidebar" id="sidebar" aria-label="Main navigation">
+        <h2 class="logo">
+          <div class="sidebar-logos-row">
+            <img
+              id="nav-zone-logo"
+              class="sidebar-logo-img"
+              alt=""
+              style="display: none"
+            />
+            <img
+              id="nav-school-logo"
+              class="sidebar-logo-img"
+              alt=""
+              style="display: none"
+            />
+          </div>
+          <span data-i18n="guardian_portal_title">Guardian Portal</span>
+        </h2>
+        <ul class="nav-menu">
+          <li class="nav-group-label" data-i18n="nav_group_guardian_overview">
+            Overview
+          </li>
+          <li>
+            <a href="#" class="nav-link active" data-page="dashboard">
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+              </svg>
+              <span data-i18n="nav_guardian_dashboard">My Children</span>
+            </a>
+          </li>
+
+          <li class="nav-group-label" data-i18n="nav_group_guardian_account">
+            Account
+          </li>
+          <li>
+            <a href="#" class="nav-link" data-page="profile">
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+              </svg>
+              <span data-i18n="nav_guardian_profile">My Profile</span>
+            </a>
+          </li>
+        </ul>
+
+        <div class="sidebar-footer">
+          <button
+            type="button"
+            id="sidebar-signout-btn"
+            class="sidebar-signout-btn"
+          >
+            <svg
+              width="16"
+              height="16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+            <span data-i18n="topbar_sign_out">Sign Out</span>
+          </button>
+        </div>
+      </nav>
+
+      <div id="sidebar-overlay" class="sidebar-overlay"></div>
+
+      <div id="toast-container" aria-live="polite"></div>
+
+      <main class="main-content" aria-live="polite">
+        <header class="top-bar">
+          <div class="topbar-row topbar-row-main">
+            <div class="topbar-left">
+              <button
+                id="sidebar-toggle"
+                class="sidebar-toggle-btn"
+                data-i18n-aria="sidebar_open"
+                aria-label="Open navigation menu"
+                aria-expanded="false"
+                aria-controls="sidebar"
+              >
+                <span class="sidebar-toggle-bar"></span>
+                <span class="sidebar-toggle-bar"></span>
+                <span class="sidebar-toggle-bar"></span>
+              </button>
+              <h1
+                class="page-title"
+                id="page-title-text"
+                data-i18n="guardian_portal_title"
+              >
+                Guardian Portal
+              </h1>
+            </div>
+
+            <div class="topbar-right user-actions" id="topbar-user-actions">
+              <div class="lang-switch" role="group" aria-label="Language / ቋንቋ">
+                <button type="button" class="lang-switch-btn" data-lang="en">
+                  EN
+                </button>
+                <button type="button" class="lang-switch-btn" data-lang="am">
+                  አማ
+                </button>
+              </div>
+              <button
+                id="help-btn-open"
+                class="help-btn"
+                data-i18n-aria="topbar_help"
+                aria-label="Help and support"
+              >
+                ❓
+              </button>
+              <div class="account-wrapper">
+                <button
+                  id="account-btn"
+                  class="account-btn"
+                  aria-haspopup="true"
+                  aria-expanded="false"
+                  aria-controls="account-menu"
+                >
+                  <span id="nav-avatar" class="nav-avatar">?</span>
+                  <span class="nav-account-text">
+                    <span
+                      id="nav-greeting"
+                      class="nav-greeting"
+                      data-i18n="greeting_guardian_default"
+                      >Hi, Guardian!</span
+                    >
+                    <span
+                      id="nav-role"
+                      class="nav-role"
+                      data-i18n="topbar_role_guardian"
+                      >Guardian</span
+                    >
+                  </span>
+                </button>
+                <div
+                  id="account-menu"
+                  class="account-menu"
+                  role="menu"
+                  style="display: none"
+                >
+                  <button
+                    id="account-profile-settings-btn"
+                    class="account-menu-item"
+                    data-i18n="topbar_profile_settings"
+                  >
+                    ⚙️ Profile Settings
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <!-- DASHBOARD: Multi-School Overview -->
+        <section id="page-dashboard" class="page-content">
+          <h2 data-i18n="guardian_dashboard_heading">My Children</h2>
+          <p
+            class="muted"
+            style="margin-bottom: 20px"
+            data-i18n="guardian_dashboard_subheading"
+          >
+            A quick view of every child linked to your account, across every
+            school they attend.
+          </p>
+          <div class="dashboard-grid" id="children-list">
+            <p class="muted" data-i18n="loading">Loading…</p>
+          </div>
+        </section>
+
+        <!-- CHILD DETAIL: Overview / Marks / Attendance / Conduct, tabbed -->
+        <section id="page-child" class="page-content" style="display: none">
+          <button
+            type="button"
+            id="child-back-btn"
+            class="btn-cancel"
+            style="width: auto; margin-bottom: 16px"
+            data-i18n="guardian_back_to_children"
+          >
+            ← Back to My Children
+          </button>
+          <h2 id="child-detail-name">—</h2>
+          <p
+            class="muted"
+            id="child-detail-subtitle"
+            style="margin-bottom: 20px"
+          ></p>
+
+          <div class="filter-row" style="gap: 10px; margin-bottom: 20px">
+            <button
+              type="button"
+              id="child-tab-btn-overview"
+              class="btn-primary"
+              style="width: auto"
+              data-i18n="guardian_tab_overview"
+            >
+              Overview
+            </button>
+            <button
+              type="button"
+              id="child-tab-btn-marks"
+              class="btn-cancel"
+              style="width: auto"
+              data-i18n="guardian_tab_marks"
+            >
+              Marks
+            </button>
+            <button
+              type="button"
+              id="child-tab-btn-attendance"
+              class="btn-cancel"
+              style="width: auto"
+              data-i18n="guardian_tab_attendance"
+            >
+              Attendance
+            </button>
+            <button
+              type="button"
+              id="child-tab-btn-conduct"
+              class="btn-cancel"
+              style="width: auto"
+              data-i18n="guardian_tab_conduct"
+            >
+              Conduct
+            </button>
+          </div>
+
+          <div id="child-tab-overview">
+            <div class="dashboard-grid" id="child-overview-output">
+              <p class="muted" data-i18n="loading">Loading…</p>
+            </div>
+          </div>
+
+          <div id="child-tab-marks" style="display: none">
+            <div class="widget">
+              <div id="child-marks-output">
+                <p class="muted" data-i18n="loading">Loading…</p>
+              </div>
+            </div>
+          </div>
+
+          <div id="child-tab-attendance" style="display: none">
+            <div class="widget">
+              <div id="child-attendance-output">
+                <p class="muted" data-i18n="loading">Loading…</p>
+              </div>
+            </div>
+          </div>
+
+          <div id="child-tab-conduct" style="display: none">
+            <div class="widget">
+              <div id="child-conduct-output">
+                <p class="muted" data-i18n="loading">Loading…</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- PROFILE -->
+        <section id="page-profile" class="page-content" style="display: none">
+          <h2 data-i18n="guardian_profile_heading">My Profile</h2>
+          <div class="profile-grid">
+            <div class="widget">
+              <div
+                class="avatar-initials"
+                id="profile-initials"
+                aria-hidden="true"
+              >
+                ?
+              </div>
+              <input
+                type="file"
+                id="avatar-upload-input"
+                accept="image/*"
+                style="display: none"
+              />
+              <button
+                type="button"
+                id="avatar-upload-btn"
+                class="btn-cancel"
+                style="width: auto; margin: 0 auto 16px; display: block"
+                data-i18n="guardian_upload_photo"
+              >
+                Upload Photo
+              </button>
+              <p>
+                <strong data-i18n="guardian_profile_login_id">Login ID:</strong>
+                <span id="p-login-id">—</span>
+              </p>
+              <p>
+                <strong data-i18n="guardian_profile_full_name"
+                  >Full Name:</strong
+                >
+                <span id="p-name">—</span>
+              </p>
+              <p>
+                <strong data-i18n="guardian_profile_phone"
+                  >Phone Number:</strong
+                >
+                <span id="p-phone">—</span>
+              </p>
+              <p>
+                <strong data-i18n="guardian_profile_fayda"
+                  >Fayda Number:</strong
+                >
+                <span id="p-fayda">—</span>
+              </p>
+            </div>
+            <div class="widget">
+              <h3 data-i18n="guardian_change_password_heading">
+                Change Password
+              </h3>
+              <div class="password-field-group">
+                <label for="curr-pass" class="sr-only">Current password</label>
+                <input
+                  type="password"
+                  id="curr-pass"
+                  class="form-input"
+                  placeholder="Current Password"
+                  data-i18n-placeholder="guardian_current_password"
+                />
+                <label for="new-pass" class="sr-only">New password</label>
+                <input
+                  type="password"
+                  id="new-pass"
+                  class="form-input"
+                  placeholder="New Password"
+                  data-i18n-placeholder="guardian_new_password"
+                />
+                <label for="confirm-pass" class="sr-only"
+                  >Confirm new password</label
+                >
+                <input
+                  type="password"
+                  id="confirm-pass"
+                  class="form-input"
+                  placeholder="Confirm New Password"
+                  data-i18n-placeholder="guardian_confirm_password"
+                />
+              </div>
+              <button
+                type="button"
+                id="update-password-btn"
+                class="btn-primary"
+                data-i18n="guardian_update_password_btn"
+              >
+                Update Password
+              </button>
+              <div id="password-message" class="password-message"></div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- FORCED PASSWORD CHANGE OVERLAY (first login on the default "1234") -->
+    <div
+      id="must-change-password-overlay"
+      class="confirm-modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="mcp-title"
+      style="display: none"
+    >
+      <div class="confirm-modal-box" style="max-width: 420px">
+        <h3 id="mcp-title" data-i18n="guardian_mcp_heading">
+          Set a New Password
+        </h3>
+        <p
+          class="muted"
+          style="margin-bottom: 16px"
+          data-i18n="guardian_mcp_desc"
+        >
+          You're still on the default password issued when your account was
+          created. Set your own password to continue.
+        </p>
+        <label for="mcp-curr-pass" class="sr-only">Current Password</label>
+        <input
+          type="password"
+          id="mcp-curr-pass"
+          class="form-input"
+          placeholder="Current Password"
+          data-i18n-placeholder="guardian_mcp_current_password"
+          style="margin-bottom: 10px"
+        />
+        <label for="mcp-new-pass" class="sr-only">New Password</label>
+        <input
+          type="password"
+          id="mcp-new-pass"
+          class="form-input"
+          placeholder="New Password"
+          data-i18n-placeholder="guardian_mcp_new_password"
+          style="margin-bottom: 10px"
+        />
+        <label for="mcp-confirm-pass" class="sr-only"
+          >Confirm New Password</label
+        >
+        <input
+          type="password"
+          id="mcp-confirm-pass"
+          class="form-input"
+          placeholder="Confirm New Password"
+          data-i18n-placeholder="guardian_mcp_confirm_password"
+          style="margin-bottom: 14px"
+        />
+        <div class="confirm-modal-actions">
+          <button
+            id="mcp-submit-btn"
+            class="btn-primary"
+            style="width: 100%"
+            data-i18n="guardian_mcp_submit"
+          >
+            Set Password &amp; Continue
+          </button>
+        </div>
+        <div id="mcp-message" class="password-message"></div>
+      </div>
+    </div>
+
+    <!-- HELP MODAL -->
+    <div
+      id="help-modal"
+      class="confirm-modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="help-modal-title"
+      style="display: none"
+    >
+      <div class="confirm-modal-box" style="max-width: 480px">
+        <h3 id="help-modal-title" data-i18n="help_heading">
+          Help &amp; Support
+        </h3>
+        <p class="muted" style="margin-bottom: 16px" data-i18n="help_desc">
+          Send a message to the school's support team. This opens your email app
+          with the message pre-filled.
+        </p>
+        <label for="help-subject" class="sr-only">Subject</label>
+        <input
+          type="text"
+          id="help-subject"
+          placeholder="Subject"
+          class="form-input"
+          style="margin-bottom: 10px"
+          data-i18n-placeholder="help_subject_placeholder"
+        />
+        <label for="help-body" class="sr-only">Describe your issue</label>
+        <textarea
+          id="help-body"
+          placeholder="Describe your issue..."
+          class="form-input"
+          style="margin-bottom: 14px; height: 120px"
+          data-i18n-placeholder="help_body_placeholder"
+        ></textarea>
+        <div class="confirm-modal-actions">
+          <button
+            id="help-modal-cancel-btn"
+            class="btn-cancel"
+            data-i18n="help_cancel"
+          >
+            Cancel
+          </button>
+          <button
+            id="help-modal-send-btn"
+            class="btn-primary"
+            style="width: auto"
+            data-i18n="help_send"
+          >
+            Send
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- SIGN OUT CONFIRMATION MODAL -->
+    <div
+      id="signout-modal"
+      class="confirm-modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="signout-modal-title"
+      style="display: none"
+    >
+      <div class="confirm-modal-box" style="max-width: 420px">
+        <h3 id="signout-modal-title" data-i18n="signout_modal_title">
+          Sign Out
+        </h3>
+        <p
+          class="muted"
+          style="margin-bottom: 16px"
+          data-i18n="signout_modal_desc"
+        >
+          Are you sure you want to sign out?
+        </p>
+        <div class="confirm-modal-actions">
+          <button
+            id="signout-modal-cancel-btn"
+            class="btn-cancel"
+            data-i18n="signout_modal_cancel"
+          >
+            Cancel
+          </button>
+          <button
+            id="signout-modal-confirm-btn"
+            class="btn-danger"
+            data-i18n="signout_modal_confirm"
+          >
+            Sign Out
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script src="guardian-script.js"></script>
+  </body>
+</html>

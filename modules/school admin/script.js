@@ -45,11 +45,16 @@ async function checkAuthAndInit() {
         CURRENT_ADMIN = data;
         CURRENT_TITLE = data.title || 'Admin VP';
         const displayName = data.admin_full_name || data.user_id || 'Admin';
-        // e.g. school_name "Newland" + school_level "SECONDARY SCHOOL" ->
-        // "NEWLAND SECONDARY SCHOOL". Uppercased unconditionally rather
-        // than trusting the stored casing of either field, so this is
-        // consistent even if a school's name wasn't entered in all caps.
-        const schoolDisplayName = [data.school_name, data.school_level].filter(Boolean).join(' ').toUpperCase();
+        // e.g. school_name "Newland Secondary School" -> "NEWLAND
+        // SECONDARY SCHOOL". Uppercased unconditionally rather than
+        // trusting the stored casing, so this is consistent even if a
+        // school's name wasn't entered in all caps. school_level used
+        // to be appended here too (e.g. "... GENERAL"), but that just
+        // duplicated/confused the name schools already type in full
+        // (like "Newland Secondary School"), so it's dropped — the
+        // bare school_name is shown everywhere this variable is used
+        // (sidebar, topbar, profile page).
+        const schoolDisplayName = (data.school_name || '').toUpperCase();
 
         document.getElementById('sa-school-name').textContent = schoolDisplayName || '—';
         document.getElementById('sa-title-badge').textContent = CURRENT_TITLE;
@@ -3190,6 +3195,15 @@ async function loadTeacherAssignments(filterTeacherId) {
     const url = teacherIdFilter
         ? `${API_BASE}/api/academic-vp/teacher-assignments?teacher_id=${encodeURIComponent(teacherIdFilter)}`
         : `${API_BASE}/api/academic-vp/teacher-assignments`;
+
+    // Homeroom & Additional Roles (below) lists every teacher in the
+    // school and is completely independent of whether anyone has a
+    // subject/teaching-load assignment yet — a brand-new school with zero
+    // teaching-load assignments should still show its teachers here with
+    // a working Grant Registrar button. So this renders unconditionally,
+    // rather than only after the assignments-table branch below succeeds.
+    renderTeacherRoles(teachers, canAssign);
+
     const res = await apiFetch(url);
     if (!res.ok) { tbody.innerHTML = `<tr><td colspan="5">${t('sa_load_error')}</td></tr>`; return; }
     const rows = await res.json();
@@ -3244,8 +3258,6 @@ async function loadTeacherAssignments(filterTeacherId) {
             <td><div class="ta-section-ticks">${boxes}</div></td>
         </tr>`;
     }).join('');
-
-    renderTeacherRoles(teachers, canAssign);
 }
 
 // Clicking a ticked (assigned) section box removes the teacher from just
@@ -3352,6 +3364,15 @@ async function loadClassSectionsForAssignment() {
 
     const levels = [...new Set(TA_CLASS_SECTIONS_CACHE.map(s => String(s.class_level)))]
         .sort((a, b) => Number(a) - Number(b));
+
+    // Brand-new schools start with zero class_sections rows (nobody has
+    // opened Section Setup yet), so this dropdown would otherwise just sit
+    // silently empty with no way to tell why. Point Academic VP at the
+    // actual unblock: Grant Registrar works on ANY teacher regardless of
+    // homeroom status, so that doesn't need to happen first.
+    const noSectionsBanner = document.getElementById('ta-no-sections-banner');
+    if (noSectionsBanner) noSectionsBanner.style.display = levels.length === 0 ? '' : 'none';
+
     ['ta-class-level', 'hr-class-level'].forEach(id => {
         const levelSelect = document.getElementById(id);
         if (!levelSelect) return;

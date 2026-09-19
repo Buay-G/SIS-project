@@ -159,6 +159,10 @@ app.use(
   "/super-admin",
   express.static(path.join(__dirname, "modules/super admin")),
 );
+app.use(
+  "/guardians",
+  express.static(path.join(__dirname, "modules/guardians")),
+);
 app.use("/library", express.static(path.join(__dirname, "modules/library")));
 app.use("/uploads", express.static("uploads"));
 
@@ -286,6 +290,20 @@ async function markUnattendedTeachersAbsent() {
     const today = toDateOnly(now);
     const [schools] = await pool.query("SELECT id FROM schools");
     for (const { id: school_id } of schools) {
+      // Once a school's semester is administratively closed, there's no
+      // class in session — nobody is expected to scan in, so nobody
+      // should be auto-marked absent, the same "no class in session"
+      // rule already applied to student attendance (see
+      // getSemesterStatus/getSemesterClosedDate and countAbsentDays).
+      // Without this check, every teacher at a closed-semester school
+      // kept accumulating a fresh 'absent' row every school day
+      // indefinitely, which then fed straight into their performance
+      // flags (see the excessive-absences check further down this
+      // file) — punishing teachers for not showing up to a school that
+      // had no classes running.
+      const semesterStatus = await getSemesterStatus(school_id);
+      if (semesterStatus === "closed") continue;
+
       const [teachers] = await pool.query(
         "SELECT teacher_id FROM teachers WHERE school_id = ?",
         [school_id],
@@ -352,6 +370,179 @@ function normalizeName(name) {
   if (!str) return str;
   return str.toUpperCase();
 }
+
+// EMIS ID = Ministry of Education's national student ID — alphanumeric,
+// letter-prefixed (e.g. "STU113168894"), distinct from our own school_id-
+// prefixed student_id. We only normalize/shape-check it here; we do NOT
+// generate it and do NOT treat it as required (many new entrants, esp.
+// Grade 9 first-timers, may not have one yet — see /api/emis/lookup).
+function normalizeEmisId(emisId) {
+  if (emisId == null) return emisId;
+  const str = String(emisId).trim().replace(/\s+/g, "").toUpperCase();
+  return str;
+}
+// Loose on purpose: 10-13 alphanumeric characters is what we've confirmed
+// from real MoE-issued IDs so far. Tighten this once the Super Admin's
+// EMIS registry upload gives us a larger confirmed sample.
+function isValidEmisIdFormat(emisId) {
+  return /^[A-Z0-9]{10,13}$/.test(emisId);
+}
+
+// Guardian Fayda number — same 16-digit convention already used for the
+// student's own reg_fayda field, just applied to the guardian record.
+function normalizeFaydaNumber(fayda) {
+  if (fayda == null) return fayda;
+  return String(fayda).trim().replace(/\s+/g, "");
+}
+function isValidFaydaFormat(fayda) {
+  return /^[0-9]{16}$/.test(fayda);
+}
+
+// Every newly-created (or newly-linked-for-the-first-time) guardian
+// account starts on this same default password, exactly like
+// DEFAULT_STUDENT_PASSWORD below — paired with must_change_password so
+// the Guardian Portal forces a real password to be set on first login,
+// same flow as a student's first PIN. A guardian who already exists
+// (matched by Fayda number and linked to another child) keeps whatever
+// password they already set — this only applies the moment a guardians
+// row is first inserted.
+const DEFAULT_GUARDIAN_PASSWORD = "1234";
+
+// A guardian's login identity is now this platform-wide PAR##### code —
+// NOT the Fayda number (too sensitive/long to type as a username) and
+// NOT guardians.id (an internal auto-increment int). Assigned exactly
+// once, at the moment a guardian row is first ever inserted (brand-new
+// guardian, either via New Entrant Registration or the Information
+// Update "link a guardian" flow) — a guardian matched-and-linked to an
+// additional child keeps their existing code, same as they keep their
+// existing password. Deliberately global across every school, not
+// per-school, since one guardian can have children at several schools
+// and must log in with one single ID regardless of which one they're
+// looking at.
+const GUARDIAN_CODE_PREFIX = "PAR";
+let guardianParentCodeSupportReady = false;
+
+// Self-healing setup, same lazy CREATE/ALTER pattern as
+// ensureSubjectsGradeRangeColumns/ensureSuperAdminCoreTables elsewhere in
+// this file: adds guardians.parent_code (unique, nullable so existing
+// rows aren't broken by the ALTER itself) and a tiny single-row counter
+// table used to atomically hand out the next PAR##### value. Also
+// backfills any pre-existing guardian rows that predate this feature,
+// in id order, so every guardian ends up with a code exactly once.
+async function ensureGuardianParentCodeSupport() {
+  if (guardianParentCodeSupportReady) return;
+  const [cols] = await pool.query(
+    `SELECT COLUMN_NAME FROM information_schema.columns
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'guardians'
+       AND COLUMN_NAME = 'parent_code'`,
+  );
+  if (cols.length === 0) {
+    await pool.query(
+      `ALTER TABLE guardians ADD COLUMN parent_code VARCHAR(10) NULL UNIQUE AFTER id`,
+    );
+  }
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS guardian_code_counter (
+       id TINYINT NOT NULL PRIMARY KEY DEFAULT 1,
+       next_number INT NOT NULL DEFAULT 1
+     )`,
+  );
+  await pool.query(
+    `INSERT IGNORE INTO guardian_code_counter (id, next_number) VALUES (1, 1)`,
+  );
+
+  // Backfill: any guardian rows already in the table (created before
+  // this feature existed) get a code now, oldest first, and the shared
+  // counter is advanced past them so newly-created guardians never
+  // collide with a backfilled one.
+  const [uncoded] = await pool.query(
+    `SELECT id FROM guardians WHERE parent_code IS NULL ORDER BY id ASC`,
+  );
+  if (uncoded.length > 0) {
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [[counterRow]] = await conn.query(
+        `SELECT next_number FROM guardian_code_counter WHERE id = 1 FOR UPDATE`,
+      );
+      let next = counterRow.next_number;
+      for (const row of uncoded) {
+        const code = `${GUARDIAN_CODE_PREFIX}${String(next).padStart(5, "0")}`;
+        await conn.query(`UPDATE guardians SET parent_code = ? WHERE id = ?`, [
+          code,
+          row.id,
+        ]);
+        next += 1;
+      }
+      await conn.query(
+        `UPDATE guardian_code_counter SET next_number = ? WHERE id = 1`,
+        [next],
+      );
+      await conn.commit();
+    } catch (err) {
+      await conn.rollback();
+      console.error("Guardian parent_code backfill failed:", err);
+    } finally {
+      conn.release();
+    }
+  }
+
+  guardianParentCodeSupportReady = true;
+}
+
+// Self-healing, same lazy ALTER pattern as ensureGuardianParentCodeSupport
+// above — adds guardians.avatar_url so a guardian can set their own
+// profile picture, shown in the Guardian Portal sidebar/topbar and
+// profile page. Same self-serve pattern as teachers/school_admins/
+// zonal_admins avatar_url elsewhere in this file.
+let guardianAvatarSupportReady = false;
+async function ensureGuardianAvatarSupport() {
+  if (guardianAvatarSupportReady) return;
+  const [cols] = await pool.query(
+    `SELECT COLUMN_NAME FROM information_schema.columns
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'guardians'
+       AND COLUMN_NAME = 'avatar_url'`,
+  );
+  if (cols.length === 0) {
+    await pool.query(
+      `ALTER TABLE guardians ADD COLUMN avatar_url VARCHAR(255) NULL`,
+    );
+  }
+  guardianAvatarSupportReady = true;
+}
+
+// Hands out the next PAR##### code for a brand-new guardian. Must be
+// called with the SAME transaction connection (`conn`) the guardian
+// INSERT itself runs on — the FOR UPDATE row lock on the single counter
+// row is what makes this safe across two registrars at different
+// schools creating a new guardian at the same moment (this is exactly
+// the "PAR00001 already taken by another school -> PAR00002" case:
+// the counter is shared platform-wide, so the second request simply
+// waits for the lock and gets the next number, never the same one).
+async function generateNextGuardianParentCode(conn) {
+  const [[counterRow]] = await conn.query(
+    `SELECT next_number FROM guardian_code_counter WHERE id = 1 FOR UPDATE`,
+  );
+  const next = counterRow.next_number;
+  await conn.query(
+    `UPDATE guardian_code_counter SET next_number = ? WHERE id = 1`,
+    [next + 1],
+  );
+  return `${GUARDIAN_CODE_PREFIX}${String(next).padStart(5, "0")}`;
+}
+
+// Shared "this student has left the school" check — Graduated or any
+// Transferred-* status. A student in either state is meant to be
+// re-admitted (Promotion → Re-admitted) before their record moves again;
+// used to lock Information Update and guardian-linking below, alongside
+// the several other terminal-status checks already scattered through
+// this file for grade/stream changes, promotion, etc.
+function isTerminalStudentStatus(status) {
+  return (
+    status === "Graduated" || String(status || "").startsWith("Transferred")
+  );
+}
+
 const JWT_EXPIRES_IN = "30m"; // short-lived on purpose — see refresh notes below
 
 function issueAuthToken(
@@ -365,7 +556,9 @@ function issueAuthToken(
     title,
     is_class_monitor,
     can_act_independently,
+    permissions,
     must_change_password,
+    is_restricted,
   },
 ) {
   const token = jwt.sign(
@@ -378,6 +571,20 @@ function issueAuthToken(
       title: title || null,
       is_class_monitor: !!is_class_monitor,
       can_act_independently: !!can_act_independently,
+      // "IT Specialist" scope restriction — only ever true for a
+      // super_admins row (see requireSuperAdminPermission below); every
+      // other role just carries false and is unaffected.
+      is_restricted: !!is_restricted,
+      // Granular per-action delegation for a Teacher Development
+      // Coordinator — see requirePermission() above. Always present
+      // (defaults to all-false) so requirePermission's
+      // req.user.permissions[key] lookup never throws for a role/title
+      // that doesn't have it.
+      permissions: permissions || {
+        hire_teacher: false,
+        appoint_school_admin: false,
+        transfer_teacher: false,
+      },
       must_change_password: !!must_change_password,
     },
     JWT_SECRET,
@@ -716,11 +923,215 @@ async function requireRegistrarOnly(req, res, next) {
 //     UNIQUE KEY subject_level_stream (subject_name, school_level, stream)
 //   );
 //
-// Super admin (super_admins, already live for login) stays manually
-// seeded, no auto-ID generation, no school_id/zone_id scoping — every
-// school_id-scoped query in this file needs its own super-admin bypass
-// to actually be usable by them; that's a broader follow-up, not part
-// of this block.
+// Super admin (super_admins) — no school_id/zone_id scoping, same as
+// before; every school_id-scoped query in this file still needs its own
+// super-admin bypass to actually be usable by them, that's still a
+// broader follow-up, not part of this block.
+//
+// UPDATED: no longer a single hardcoded/manually-seeded row. Per spec,
+// super_admins now splits into two tiers via a `title` column (same
+// pattern as zonal_admins.title, reusing issueAuthToken's existing
+// generic `title` field — no JWT shape change needed):
+//   - Owner: full authority, INCLUDING the only account type that can
+//     mint another super_admins row (see POST /api/super/super-admins,
+//     requireOwner-gated). There is always at least one Owner — the
+//     original manually-seeded row should have its title backfilled to
+//     'Owner' as part of this migration so the system never ends up
+//     with zero Owners.
+//   - IT Lead: identical operational authority to Owner on every
+//     existing Super Admin screen (schools, regions, subject
+//     dictionary, roster, zonal admins, streams) — the split is
+//     specifically about ACCOUNT CREATION, not day-to-day capability.
+//     An IT Lead can't create or reset another super admin's password;
+//     only an Owner can.
+//   ALTER TABLE super_admins
+//     ADD COLUMN title ENUM('Owner','IT Lead') NULL,
+//     ADD COLUMN first_name VARCHAR(100) NULL,
+//     ADD COLUMN middle_name VARCHAR(100) NULL,
+//     ADD COLUMN last_name VARCHAR(100) NULL,
+//     ADD COLUMN contact_number VARCHAR(30) NULL,
+//     ADD COLUMN email VARCHAR(150) NULL,
+//     ADD COLUMN created_by VARCHAR(20) NULL, -- super_admins.admin_id of the Owner who created this row; NULL for the original seeded row
+//     ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP;
+//   -- Backfill the existing seeded row so there's always exactly one
+//   -- Owner going into this migration:
+//   --   UPDATE super_admins SET title = 'Owner' WHERE title IS NULL;
+const SUPER_ADMIN_TITLES = ["Owner", "IT Lead"];
+function getSuperAdminTitleCode(title) {
+  if (title === "Owner") return "OWN";
+  if (title === "IT Lead") return "ITL";
+  return null;
+}
+// Same numbering convention as getNextZonalAdminId — one shared
+// 'SA-<code>-NNN' sequence across both titles combined isn't needed
+// since each title gets its own '-OWN-'/'-ITL-' run, floor 001.
+async function getNextSuperAdminId(title) {
+  const titleCode = getSuperAdminTitleCode(title);
+  const [adminRows] = await pool.query(
+    `SELECT admin_id FROM super_admins WHERE admin_id LIKE ?`,
+    [`%-${titleCode}-%`],
+  );
+  let maxNumber = 0;
+  adminRows.forEach((r) => {
+    const m = new RegExp(`-${titleCode}-(\\d+)$`).exec(r.admin_id);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (!isNaN(n) && n > maxNumber) maxNumber = n;
+    }
+  });
+  return `SA-${titleCode}-${String(maxNumber + 1).padStart(3, "0")}`;
+}
+// A fresh IT Lead (or additionally-created Owner) account always starts
+// on this password, same "change it after first login" expectation as
+// DEFAULT_ZONAL_ADMIN_PASSWORD.
+const DEFAULT_SUPER_ADMIN_PASSWORD = "1130";
+
+// Archiving / deletion for schools — three distinct actions from the
+// Schools screen's Delete button:
+//   - Archive: school is hidden from the active Schools list and moves
+//     to the Archived Schools screen. Nothing else changes — every
+//     student/teacher/admin row tied to it is untouched.
+//   - Delete (unassign): the school row itself is removed, but people
+//     tied to it are detached (their school_id set NULL) rather than
+//     deleted — they still exist, just no longer assigned anywhere.
+//     Only reachable for tables where that FK column is nullable; see
+//     getSchoolDependentTables()/deleteSchoolUnassign() below for what
+//     happens on a NOT NULL column.
+//   - Wipe: school row AND every dependent row (students, teachers,
+//     enrollments, everything) are deleted. Irreversible.
+// Transfer (move every dependent row to a different school, then
+// delete the original) lives on the Archived Schools screen only — a
+// school is archived first, then from there Super Admin decides to
+// Wipe or Transfer it.
+//   ALTER TABLE schools
+//     ADD COLUMN is_archived TINYINT(1) NOT NULL DEFAULT 0,
+//     ADD COLUMN archived_at DATETIME NULL,
+//     ADD COLUMN archived_by VARCHAR(20) NULL; -- super_admins.admin_id who archived it
+
+// "IT Specialist" — NOT a new title (Owner/IT Lead above keep exactly
+// the authority they already have). Instead this is a scope-
+// restriction flag any EXISTING super admin account (Owner or IT Lead)
+// can be given: once is_restricted is on, that account only reaches
+// the specific screens explicitly granted below via
+// super_admin_permissions — everything else 403s through
+// requireSuperAdminPermission. An unrestricted account (the default)
+// keeps full super admin access exactly as today. Mirrors the
+// zonal_admin_permissions delegation pattern above, just for the
+// Super Admin side.
+//   ALTER TABLE super_admins ADD COLUMN is_restricted TINYINT(1) NOT NULL DEFAULT 0;
+//   CREATE TABLE super_admin_permissions (
+//     admin_id VARCHAR(20) NOT NULL, -- super_admins.admin_id
+//     permission_key ENUM('manage_schools','manage_zonal_admins','manage_subject_dictionary','manage_roster','manage_streams','view_audit_log') NOT NULL,
+//     granted BOOLEAN NOT NULL DEFAULT FALSE,
+//     granted_by VARCHAR(20) NULL,   -- super_admins.admin_id (an Owner/IT Lead) who last changed this row
+//     granted_at DATETIME NULL,
+//     PRIMARY KEY (admin_id, permission_key),
+//     FOREIGN KEY (admin_id) REFERENCES super_admins(admin_id)
+//   );
+const SUPER_ADMIN_PERMISSION_KEYS = [
+  "manage_schools",
+  "manage_zonal_admins",
+  "manage_subject_dictionary",
+  "manage_roster",
+  "manage_streams",
+  "view_audit_log",
+];
+// Narrows requireSuperAdmin further for a scope-restricted account —
+// stack the two on any route worth gating. An account that ISN'T
+// restricted (is_restricted false/NULL, the default for every existing
+// Owner/IT Lead) always passes through unchanged; this only ever takes
+// access away from an account that's explicitly been marked
+// restricted, never grants anything extra.
+// Rollout is incremental on purpose, same as PERMISSION_KEYS above only
+// gating 3 of a TDC's actions rather than every route a TDC's title
+// touches — this currently gates the Schools screens (see
+// requireSuperAdminPermission("manage_schools") below); wrap more
+// routes with the matching key as the IT Specialist role gets used on
+// more screens.
+function requireSuperAdminPermission(key) {
+  return async function (req, res, next) {
+    if (!req.user || req.user.role !== "super_admins") {
+      return res
+        .status(403)
+        .json({ error: "This action is restricted to super admin accounts." });
+    }
+    if (!req.user.is_restricted) return next();
+    try {
+      const [rows] = await pool.query(
+        "SELECT granted FROM super_admin_permissions WHERE admin_id = ? AND permission_key = ?",
+        [req.user.user_id, key],
+      );
+      if (rows.length > 0 && rows[0].granted) return next();
+      return res.status(403).json({
+        error: "Your account doesn't have access to this screen.",
+      });
+    } catch (err) {
+      console.error("requireSuperAdminPermission error:", err);
+      return res.status(500).json({ error: "Could not verify permissions." });
+    }
+  };
+}
+
+// Every table with a live FK column pointing at schools(id) — read from
+// information_schema rather than hand-listed, so archive/delete/
+// transfer below don't quietly miss a table a future migration adds.
+// Cached after the first successful call; the set of FK columns only
+// changes when a migration runs, never during normal operation.
+let _schoolDependentTablesCache = null;
+async function getSchoolDependentTables() {
+  if (_schoolDependentTablesCache) return _schoolDependentTablesCache;
+  const [rows] = await pool.query(
+    `SELECT k.TABLE_NAME, k.COLUMN_NAME, c.IS_NULLABLE
+       FROM information_schema.KEY_COLUMN_USAGE k
+       JOIN information_schema.COLUMNS c
+         ON c.TABLE_SCHEMA = k.TABLE_SCHEMA AND c.TABLE_NAME = k.TABLE_NAME AND c.COLUMN_NAME = k.COLUMN_NAME
+      WHERE k.TABLE_SCHEMA = DATABASE()
+        AND k.REFERENCED_TABLE_NAME = 'schools'
+        AND k.REFERENCED_COLUMN_NAME = 'id'`,
+  );
+  _schoolDependentTablesCache = rows.map((r) => ({
+    table: r.TABLE_NAME,
+    column: r.COLUMN_NAME,
+    nullable: r.IS_NULLABLE === "YES",
+  }));
+  return _schoolDependentTablesCache;
+}
+
+// Granular delegation for a Teacher Development Coordinator — replaces
+// the old all-or-nothing can_act_independently flag as the thing Super
+// Admin actually manages (can_act_independently stays on the schema for
+// backward compatibility — see the fallback in POST /api/login below —
+// but the Role Permissions screen writes to THIS table instead).
+// Grounded in the three things a delegated TDC can actually do directly
+// today (mirrors zonal_proposals.proposal_type, minus assign_supervisor
+// — that one has no direct-act path at all, see createSupervisorAccount,
+// so there's nothing for a permission to gate there).
+//   CREATE TABLE zonal_admin_permissions (
+//     admin_id VARCHAR(20) NOT NULL, -- zonal_admins.admin_id, always a Teacher Development Coordinator
+//     permission_key ENUM('hire_teacher','appoint_school_admin','transfer_teacher') NOT NULL,
+//     granted BOOLEAN NOT NULL DEFAULT FALSE,
+//     granted_by VARCHAR(20) NULL,   -- super_admins.admin_id who last changed this row
+//     granted_at DATETIME NULL,
+//     PRIMARY KEY (admin_id, permission_key),
+//     FOREIGN KEY (admin_id) REFERENCES zonal_admins(admin_id)
+//   );
+const PERMISSION_KEYS = [
+  "hire_teacher",
+  "appoint_school_admin",
+  "transfer_teacher",
+];
+function requireOwner(req, res, next) {
+  if (
+    !req.user ||
+    req.user.role !== "super_admins" ||
+    req.user.title !== "Owner"
+  ) {
+    return res.status(403).json({
+      error: "This action is restricted to the Owner.",
+    });
+  }
+  next();
+}
 function requireZonalAdmin(req, res, next) {
   if (!req.user || req.user.role !== "zonal_admins") {
     return res
@@ -758,6 +1169,12 @@ function requireHeadOfEducation(req, res, next) {
 // needed since Supervisors never get can_act_independently set, but
 // it's here so a bad seed value can't accidentally grant one supervisor
 // hiring power.
+// SUPERSEDED by requirePermission() below, which replaces the single
+// flag with the three granular permissions Role Permissions actually
+// manages — kept here (unused now) as a reference for the all-or-
+// nothing behavior it used to gate, and because can_act_independently
+// itself is still a real column other things read (see the login-time
+// legacy-grant fallback below).
 function requireCanActInZone(req, res, next) {
   if (!req.user || req.user.role !== "zonal_admins") {
     return res
@@ -776,6 +1193,37 @@ function requireCanActInZone(req, res, next) {
         ? "You don't have delegated authority to do this directly — submit a proposal instead."
         : "This action is restricted to the Head of Education.",
   });
+}
+// Role Permissions: same shape as requireCanActInZone, but checks one
+// specific permission_key (see PERMISSION_KEYS/zonal_admin_permissions
+// above) instead of the single can_act_independently flag — a Head of
+// Education still always passes; a Teacher Development Coordinator only
+// passes for the specific action Super Admin has granted them, so e.g.
+// a TDC delegated to hire teachers but not to appoint school admins can
+// do one directly and not the other. req.user.permissions is computed
+// once at login (see POST /api/login) and travels in the JWT, same as
+// can_act_independently used to.
+function requirePermission(permissionKey) {
+  return (req, res, next) => {
+    if (!req.user || req.user.role !== "zonal_admins") {
+      return res.status(403).json({
+        error: "This action is restricted to zonal admin accounts.",
+      });
+    }
+    if (req.user.title === "Head of Education") return next();
+    if (
+      req.user.title === "Teacher Development Coordinator" &&
+      req.user.permissions &&
+      req.user.permissions[permissionKey]
+    )
+      return next();
+    return res.status(403).json({
+      error:
+        req.user.title === "Teacher Development Coordinator"
+          ? "You don't have delegated authority to do this directly — submit a proposal instead."
+          : "This action is restricted to the Head of Education.",
+    });
+  };
 }
 
 // Subject Dictionary uses a wider permission than requireCanActInZone:
@@ -951,6 +1399,14 @@ app.get(
 //   ALTER TABLE school_admins ADD COLUMN education_level ENUM('TVET / College Diploma','Bachelor''s Degree','Master''s Degree','PhD / Doctoral Degree') NULL AFTER sex;
 // and the login query (see /api/login) should reject is_active = FALSE
 // school_admins the same way it should for teachers.
+// Every new School Admin (created via the appoint_school_admin proposal
+// push, below) gets this same default password if the proposal's payload
+// didn't carry one — same pattern as DEFAULT_SUPERVISOR_PASSWORD. The
+// "Appoint School Admin" proposal form never collects a password from the
+// Teacher Development Coordinator (see za_admin_default_password_note in
+// the UI), so payload.password is normally absent here.
+const DEFAULT_SCHOOL_ADMIN_PASSWORD = "1121";
+
 async function createSchoolAdminAccount({
   school_id,
   first_name,
@@ -986,7 +1442,10 @@ async function createSchoolAdminAccount({
   }
 
   const admin_id = await getNextStaffId();
-  const hashedPassword = await bcrypt.hash(password, 10);
+  const hashedPassword = await bcrypt.hash(
+    password || DEFAULT_SCHOOL_ADMIN_PASSWORD,
+    10,
+  );
   await pool.query(
     `INSERT INTO school_admins (admin_id, school_id, first_name, middle_name, last_name, title, sex, education_level, contact_number, email, security_password)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1117,7 +1576,7 @@ async function createSupervisorAccount({
 app.post(
   "/api/zonal/admin-users",
   requireAuth,
-  requireCanActInZone,
+  requirePermission("appoint_school_admin"),
   async (req, res) => {
     const {
       school_id,
@@ -1333,7 +1792,7 @@ async function pushIncomingTeacher({
 app.post(
   "/api/zonal/teachers",
   requireAuth,
-  requireCanActInZone,
+  requirePermission("hire_teacher"),
   async (req, res) => {
     const {
       school_id,
@@ -1739,7 +2198,12 @@ app.post(
           school_id: proposal.school_id,
           ...payload,
         });
-        message = "Account created.";
+        message = payload.password
+          ? "Account created."
+          : `Account created. Share ID ${resultId} and the default password (${DEFAULT_SCHOOL_ADMIN_PASSWORD}) with them — they'll be asked to change it after first login.`;
+        if (!payload.password) {
+          extra = { default_password: DEFAULT_SCHOOL_ADMIN_PASSWORD };
+        }
       }
 
       await pool.query(
@@ -1833,6 +2297,31 @@ app.post(
     } catch (err) {
       console.error("/api/zonal/teamleader/:id/delegate error:", err);
       res.status(500).json({ error: "Could not update delegation" });
+    }
+  },
+);
+
+// Re-checks a zonal admin's OWN password — the step-up confirmation the
+// frontend's showPasswordConfirm() calls right before a sensitive zonal
+// action (e.g. submitting a teacher transfer proposal). Same pattern as
+// /api/admin/verify-password and /api/super/verify-password: reuses
+// verifyCurrentUserPassword, which already supports zonal_admins via
+// AUTH_SOURCES_BY_ROLE.
+app.post(
+  "/api/zonal/verify-password",
+  requireAuth,
+  requireZonalAdmin,
+  async (req, res) => {
+    const { password } = req.body;
+    if (!password)
+      return res.status(400).json({ error: "Password is required." });
+    try {
+      const ok = await verifyCurrentUserPassword(req, password);
+      if (!ok) return res.status(401).json({ error: "Incorrect password." });
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("/api/zonal/verify-password error:", err);
+      res.status(500).json({ error: "Could not verify password." });
     }
   },
 );
@@ -2467,29 +2956,33 @@ const SCHOOL_LEVEL_GRADES = {
   GENERAL: [9, 10],
   PREPARATORY: [11, 12],
 };
-const SCHOOL_STREAMS = ["NATURAL SCIENCE", "SOCIAL SCIENCE"];
+// SCHOOL_STREAMS itself is declared further below (`let`, not `const`)
+// as part of the Stream Setup catalog — see refreshStreamCache() — now
+// that it's a live, Super-Admin-managed list instead of a fixed pair.
 
 // school_prefix is no longer typed in by the person registering the
-// school - it's derived here from the name + level, so "Birhan" +
-// PREPARATORY always becomes BPR, "Newland" + BASIC always becomes NBS,
-// with no risk of someone fat-fingering a prefix that collides with
-// (or looks nothing like) the school's own name.
-// Multi-word names use one initial per word (e.g. "Gambella City" -> GC
-// + level code).
-const SCHOOL_LEVEL_CODE = {
-  BASIC: "BS",
-  CORE: "CR",
-  GENERAL: "GN",
-  PREPARATORY: "PR",
-};
+// school - it's derived here from the name alone, so "Gambella Unity
+// School" always becomes GUS, with no risk of someone fat-fingering a
+// prefix that collides with (or looks nothing like) the school's own
+// name. One initial per word (e.g. "Gambella City" -> GC). Two schools
+// with the same initials (regardless of level) fall through to
+// getNextAvailableSchoolPrefix below, which appends 2, 3, 4... to stay
+// unique — this used to also fold in a 2-letter level code
+// (SCHOOL_LEVEL_CODE) to reduce that kind of collision, but that made
+// every prefix (and therefore every student ID built on it) longer
+// than necessary; school_level is kept as a parameter only so the one
+// call site below doesn't need touching, but is no longer used here.
+// NOTE: existing schools' prefixes (registered before this change,
+// e.g. "GUSBS") are left as-is on purpose — this only changes what
+// NEW schools get going forward, not already-issued prefixes or the
+// student IDs built on them.
 function buildSchoolPrefixBase(school_name, school_level) {
-  const initials = school_name
+  return school_name
     .trim()
     .split(/\s+/)
     .filter(Boolean)
     .map((w) => w[0].toUpperCase())
     .join("");
-  return initials + SCHOOL_LEVEL_CODE[school_level];
 }
 
 // If the derived prefix is already taken (e.g. two schools both start
@@ -2511,6 +3004,165 @@ async function getNextAvailableSchoolPrefix(basePrefix) {
   return `${basePrefix}${n}`;
 }
 
+// --- Educational Level vs. Grade-Tier ---
+// Per spec these are two separate concepts that the original build
+// collapsed into one: Educational Level (Primary/Middle/Secondary) is
+// what a school registers as ONCE and never changes; Grade-Tier
+// (BASIC/CORE/GENERAL/PREPARATORY, i.e. SCHOOL_LEVELS above) is the
+// finer-grained thing subject dictionary/roster/prefix logic actually
+// keys off. A Secondary school carries BOTH the GENERAL and PREPARATORY
+// tiers at once (grades 9-12 under one registration), which is exactly
+// what a single schools.school_level column can't represent.
+//
+//   ALTER TABLE schools ADD COLUMN educational_level ENUM('PRIMARY','MIDDLE','SECONDARY') NULL AFTER school_name;
+//   -- Backfill from the existing single-tier data (best available
+//   -- guess — re-check Secondary rows by hand, since a school that was
+//   -- only ever registered as GENERAL under the old model may actually
+//   -- also run a PREPARATORY wing that was never entered anywhere):
+//   --   UPDATE schools SET educational_level = 'PRIMARY' WHERE school_level = 'BASIC';
+//   --   UPDATE schools SET educational_level = 'MIDDLE' WHERE school_level = 'CORE';
+//   --   UPDATE schools SET educational_level = 'SECONDARY' WHERE school_level IN ('GENERAL','PREPARATORY');
+//   ALTER TABLE schools MODIFY educational_level ENUM('PRIMARY','MIDDLE','SECONDARY') NOT NULL;
+//
+//   -- Which grade-tier(s) a school actually offers — one row per tier,
+//   -- so a Secondary school gets two rows (GENERAL and PREPARATORY)
+//   -- instead of being forced to pick one. schools.school_level is
+//   -- KEPT (not dropped) as the school's "primary" tier for backward
+//   -- compatibility — every existing single-tier query elsewhere in
+//   -- this file (subject dictionary joins, roster class-level bounds,
+//   -- teacher/student assignment, prefix generation) keeps reading it
+//   -- unchanged; only screens that need full tier-awareness (Class &
+//   -- Grade Mapping, and PREPARATORY-specific stream logic) read this
+//   -- table. For a Secondary school, school_level is set to GENERAL
+//   -- (the lower of its two tiers) purely so those single-tier
+//   -- consumers have a sane default; PREPARATORY-specific behavior
+//   -- (streams, PREPARATORY-only subject dictionary rows) checks THIS
+//   -- table instead of school_level so it still fires correctly.
+//   -- Fully threading multi-tier awareness through every one of those
+//   -- existing single-tier call sites (rather than defaulting to the
+//   -- lower tier) is flagged as a larger follow-up, not part of this
+//   -- pass — see the note on POST /api/super/schools below.
+//   CREATE TABLE school_grade_tiers (
+//     school_id INT NOT NULL,
+//     school_level ENUM('BASIC','CORE','GENERAL','PREPARATORY') NOT NULL,
+//     PRIMARY KEY (school_id, school_level),
+//     FOREIGN KEY (school_id) REFERENCES schools(id)
+//   );
+//   -- Backfill one row per existing school from its current single
+//   -- school_level, then add the missing PREPARATORY row for any
+//   -- Secondary school that should have one (per-school manual review
+//   -- — there's no reliable automatic way to know which GENERAL
+//   -- schools also run a PREPARATORY wing):
+//   --   INSERT INTO school_grade_tiers (school_id, school_level) SELECT id, school_level FROM schools;
+//
+// --- Multi-Tier School Registration ---
+// A single campus can host more than one Educational Level at once
+// (e.g. a combined Primary + Middle School), so educational_level can no
+// longer be a single-valued column either — same problem, same fix as
+// school_grade_tiers above, just one level up. schools.educational_level
+// is KEPT (not dropped) as the school's "primary" Educational Level for
+// backward compatibility, same reasoning as schools.school_level above:
+// it's set to whichever of the school's selected levels is lowest
+// (PRIMARY before MIDDLE before SECONDARY), so single-value consumers
+// still get a sane default. Every other consumer (school setup form,
+// Schools list, Class & Grade Mapping) reads school_educational_levels
+// instead, for the full set.
+// Provisioned automatically on first use (like academic_years/
+// student_academic_year_snapshots above) rather than requiring a manual
+// migration step first — GET /api/super/schools joins against this
+// table unconditionally, so a missing table here would otherwise 500
+// the entire Schools list rather than just one feature.
+let schoolEducationalLevelsTableReady = false;
+async function ensureSchoolEducationalLevelsTable() {
+  if (schoolEducationalLevelsTableReady) return;
+  await pool.query(`
+        CREATE TABLE IF NOT EXISTS school_educational_levels (
+            school_id INT NOT NULL,
+            educational_level ENUM('PRIMARY','MIDDLE','SECONDARY') NOT NULL,
+            PRIMARY KEY (school_id, educational_level),
+            FOREIGN KEY (school_id) REFERENCES schools(id)
+        )
+    `);
+  // Backfill one row per existing school from its current single
+  // educational_level, so a school registered before this table existed
+  // still shows its (one) level in the Schools list/Class & Grade
+  // Mapping instead of an empty badge set. INSERT IGNORE so a school
+  // that's already been re-saved as multi-tier via the checkbox form
+  // isn't touched.
+  await pool.query(`
+        INSERT IGNORE INTO school_educational_levels (school_id, educational_level)
+        SELECT id, educational_level FROM schools WHERE educational_level IS NOT NULL
+    `);
+  schoolEducationalLevelsTableReady = true;
+}
+const EDUCATIONAL_LEVELS = ["PRIMARY", "MIDDLE", "SECONDARY"];
+// What educational_level implies for school_grade_tiers at registration
+// time — SECONDARY is the one case where this is more than one tier.
+const EDUCATIONAL_LEVEL_TIERS = {
+  PRIMARY: ["BASIC"],
+  MIDDLE: ["CORE"],
+  SECONDARY: ["GENERAL", "PREPARATORY"],
+};
+// (schools.school_level for a fresh registration is now derived directly
+// from the union of tiers the chosen Educational Level(s) imply — see
+// POST /api/super/schools — rather than from a fixed per-level lookup,
+// now that a school can carry more than one Educational Level at once.)
+
+// --- Stream Setup ---
+// Per spec this is meant to be its own system-wide screen ("define the
+// streams schools can draw from"), not just an inline toggle bolted
+// onto school registration. Every existing validation point in this
+// file already goes through the SCHOOL_STREAMS array (school setup,
+// add/remove a school's streams, subject dictionary, roster upload —
+// see every `SCHOOL_STREAMS.includes(...)` below), so turning that
+// array from a hardcoded const into a live, Super-Admin-managed
+// catalog makes every one of those checks respect it automatically,
+// with no changes needed at any of those call sites.
+//   CREATE TABLE streams (
+//     stream_id INT AUTO_INCREMENT PRIMARY KEY,
+//     stream_name VARCHAR(100) NOT NULL UNIQUE,
+//     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+//   );
+//   INSERT INTO streams (stream_name) VALUES ('NATURAL SCIENCE'), ('SOCIAL SCIENCE');
+//   -- The columns that used to hard-code the 2-value ENUM need
+//   -- widening so a stream added later via Stream Setup isn't silently
+//   -- rejected by the database itself:
+//   ALTER TABLE school_streams MODIFY stream_name VARCHAR(100) NOT NULL;
+//   ALTER TABLE subject_dictionary MODIFY stream VARCHAR(100) NULL;
+//   ALTER TABLE pending_roster MODIFY stream VARCHAR(100) NULL;
+//   -- NOTE: students.stream / class_sections.stream / subjects.stream
+//   -- are a SEPARATE, title-case convention ('Natural Science', not
+//   -- 'NATURAL SCIENCE') used for actually placing a student/class/
+//   -- subject in a stream — see SUBJECT_STREAM_TO_DICT_STREAM below.
+//   -- A stream added here becomes selectable for a school and taggable
+//   -- in the subject dictionary immediately; wiring a brand-new stream
+//   -- name (beyond the original Natural/Social Science pair) into
+//   -- THOSE title-case places too is a larger follow-up, out of scope
+//   -- for this pass — flagged here rather than silently half-done.
+let SCHOOL_STREAMS = ["NATURAL SCIENCE", "SOCIAL SCIENCE"];
+// Re-reads the streams catalog from the database into the in-memory
+// SCHOOL_STREAMS cache every existing validation point already reads —
+// called once at boot and again after every Stream Setup write, same
+// "compute once, trust the cache until something changes" shape as the
+// rest of this file's caching. Falls back to leaving the previous
+// in-memory value in place on a query failure (e.g. table doesn't
+// exist yet on a not-yet-migrated database) rather than clearing it to
+// empty and breaking every stream check server-wide.
+async function refreshStreamCache() {
+  try {
+    const [rows] = await pool.query(
+      "SELECT stream_name FROM streams ORDER BY stream_name",
+    );
+    if (rows.length > 0) SCHOOL_STREAMS = rows.map((r) => r.stream_name);
+  } catch (err) {
+    console.error(
+      "refreshStreamCache error (keeping previous SCHOOL_STREAMS):",
+      err,
+    );
+  }
+}
+refreshStreamCache();
+
 // Same random-code pattern as generateTransferCode() (student transfers,
 // below) — a distinct prefix (ASG- vs TRF-) keeps the two kinds of code
 // visually distinguishable wherever they're printed or typed in.
@@ -2521,7 +3173,7 @@ function generateTeacherAssignmentCode() {
 app.get(
   "/api/zonal/generate-assignment-code",
   requireAuth,
-  requireCanActInZone,
+  requirePermission("hire_teacher"),
   (req, res) => {
     res.json({ code: generateTeacherAssignmentCode() });
   },
@@ -2593,7 +3245,7 @@ async function transferTeacherToSchool({
 app.post(
   "/api/zonal/teachers/:teacher_id/transfer",
   requireAuth,
-  requireCanActInZone,
+  requirePermission("transfer_teacher"),
   async (req, res) => {
     const { teacher_id } = req.params;
     const { to_school_id } = req.body;
@@ -3392,6 +4044,61 @@ async function hasSubjectAccess(
 
 // --- API Endpoints ---
 
+// Read-only pre-check used by New Entrant Registration's guardian section —
+// lets the Registrar see whether a guardian with this Fayda number already
+// exists (so the same parent isn't duplicated across siblings) before
+// deciding whether to link to them or create a new guardian record.
+// Unlike EMIS, a match here is the GOOD outcome, not a conflict — one
+// guardian is meant to link to multiple children.
+//
+// New tables needed:
+//   CREATE TABLE guardians (
+//     id INT AUTO_INCREMENT PRIMARY KEY,
+//     full_name VARCHAR(255) NOT NULL,
+//     phone_number VARCHAR(10) NOT NULL,
+//     fayda_number VARCHAR(16) NOT NULL UNIQUE,
+//     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+//   );
+//   CREATE TABLE student_guardians (
+//     id INT AUTO_INCREMENT PRIMARY KEY,
+//     student_id VARCHAR(20) NOT NULL,
+//     guardian_id INT NOT NULL,
+//     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+//     UNIQUE KEY uniq_student_guardian (student_id, guardian_id),
+//     FOREIGN KEY (guardian_id) REFERENCES guardians(id)
+//   );
+app.get(
+  "/api/guardians/lookup/:fayda_number",
+  requireAuth,
+  requireRegistrarOrRecorder,
+  async (req, res) => {
+    try {
+      await ensureGuardianParentCodeSupport();
+      const fayda = normalizeFaydaNumber(req.params.fayda_number);
+      if (!isValidFaydaFormat(fayda)) {
+        return res.status(400).json({
+          error: "Fayda number must be exactly 16 digits.",
+        });
+      }
+
+      const [rows] = await pool.query(
+        "SELECT id, parent_code, full_name, phone_number, fayda_number FROM guardians WHERE fayda_number = ?",
+        [fayda],
+      );
+      if (rows.length === 0) {
+        return res.status(404).json({
+          error:
+            "No guardian on file with that Fayda number — will be created as new.",
+        });
+      }
+      res.json({ guardian: rows[0] });
+    } catch (err) {
+      console.error("/api/guardians/lookup error:", err);
+      res.status(500).json({ error: "Could not look up that Fayda number." });
+    }
+  },
+);
+
 app.post(
   "/api/register",
   requireAuth,
@@ -3404,6 +4111,7 @@ app.post(
     const conn = await pool.getConnection();
 
     try {
+      await ensureGuardianParentCodeSupport();
       const {
         first_name,
         middle_name,
@@ -3413,7 +4121,86 @@ app.post(
         class_level,
         sex,
         stream,
+        emis_id,
+        guardian,
       } = req.body;
+      // Optional field — normalize now so what we store matches what
+      // /api/emis/lookup would have shown the Registrar at entry time.
+      // We re-validate format here (not just trust the frontend) since
+      // this is the point that actually writes the students row.
+      const normalizedEmisId = emis_id ? normalizeEmisId(emis_id) : null;
+      if (normalizedEmisId && !isValidEmisIdFormat(normalizedEmisId)) {
+        return res.status(400).json({
+          error: "EMIS ID must be 10-13 letters/numbers (e.g. STU113168894).",
+        });
+      }
+
+      // Guardian is REQUIRED — every new entrant needs one linked at
+      // registration. Two shapes coming from the frontend, matching the
+      // lookup-then-confirm flow in GET /api/guardians/lookup:
+      //   { id: 123 }                                -> link to existing guardian
+      //   { full_name, phone_number, fayda_number }   -> create a new guardian
+      if (!guardian || typeof guardian !== "object") {
+        return res.status(400).json({
+          error: "Guardian/parent information is required.",
+        });
+      }
+      let guardianFaydaNormalized = null;
+      if (!guardian.id) {
+        if (
+          !guardian.full_name ||
+          !guardian.phone_number ||
+          !guardian.fayda_number
+        ) {
+          return res.status(400).json({
+            error:
+              "Guardian full name, phone number, and Fayda number are required.",
+          });
+        }
+        guardianFaydaNormalized = normalizeFaydaNumber(guardian.fayda_number);
+        if (!isValidFaydaFormat(guardianFaydaNormalized)) {
+          return res.status(400).json({
+            error: "Guardian's Fayda number must be exactly 16 digits.",
+          });
+        }
+      }
+
+      // Grade 7 and 9 are the two entry points that sit right after an
+      // EASE (national exam) grade at the PREVIOUS school (6->7, 8->9)
+      // — a new entrant arriving into either one needs to show they
+      // actually passed that exam there, via the admission number the
+      // Ministry results sheet uses to identify them. This only checks
+      // eligibility (no write to ease_candidates/ease_exam_results,
+      // which belong to the school that actually administered/uploaded
+      // that exam) — a failed/missing/pending match blocks registration
+      // outright, same "no override" rule as the Promote gate for a
+      // student already at this school.
+      const enteringGrade = Number(class_level);
+      if (enteringGrade === 7 || enteringGrade === 9) {
+        const { admission_number } = req.body;
+        if (!admission_number || !String(admission_number).trim()) {
+          return res.status(400).json({
+            error: `An admission number is required to verify the Grade ${enteringGrade - 1} national exam result before enrolling into Grade ${enteringGrade}.`,
+          });
+        }
+        await ensureEaseTables();
+        const [easeRows] = await pool.query(
+          `SELECT result, mark, cutoff FROM ease_exam_results
+           WHERE admission_number = ? AND class_level = ?
+           ORDER BY uploaded_at DESC LIMIT 1`,
+          [String(admission_number).trim(), enteringGrade - 1],
+        );
+        if (easeRows.length === 0) {
+          return res.status(400).json({
+            error: `No Grade ${enteringGrade - 1} national exam result found for admission number "${admission_number}".`,
+          });
+        }
+        if (easeRows[0].result !== "Pass") {
+          return res.status(400).json({
+            error: `This admission number's Grade ${enteringGrade - 1} national exam result is a Fail — not eligible for Grade ${enteringGrade}.`,
+          });
+        }
+      }
 
       // school_id comes from the authenticated session, never the request
       // body — otherwise a registrar could register a student under any
@@ -3486,7 +4273,8 @@ app.post(
       // runs the Placement Wizard for this grade/stream. See
       // GET/POST /api/registrar/unassigned-queue and /trigger-placement.
       // must_change_password column: ALTER TABLE students ADD COLUMN must_change_password TINYINT(1) NOT NULL DEFAULT 0;
-      const sql = `INSERT INTO students (student_id, school_id, school_name, first_name, middle_name, last_name, sex, class_level, stream, section, phone_number, fayda_number, status, lms_username, email_address, assigned_computer, security_password, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, TRUE)`;
+      // emis_id column: ALTER TABLE students ADD COLUMN emis_id VARCHAR(20) NULL UNIQUE;
+      const sql = `INSERT INTO students (student_id, school_id, school_name, first_name, middle_name, last_name, sex, class_level, stream, section, phone_number, fayda_number, emis_id, status, lms_username, email_address, assigned_computer, security_password, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)`;
       await conn.query(sql, [
         student_id,
         school_id,
@@ -3499,12 +4287,62 @@ app.post(
         stream,
         phone_number,
         fayda_number,
+        normalizedEmisId,
         status,
         lms_username,
         email_address,
         assigned_pc,
         security_password,
       ]);
+
+      // Resolve the guardian: either link to an existing one (Registrar
+      // already confirmed the Fayda match via GET /api/guardians/lookup)
+      // or create a new guardian row. Either way, one row goes into
+      // student_guardians linking this student to that guardian — that
+      // join table is what lets one guardian have multiple children.
+      let guardian_id;
+      let newGuardianParentCode = null;
+      if (guardian.id) {
+        const [existingGuardian] = await conn.query(
+          "SELECT id FROM guardians WHERE id = ? FOR UPDATE",
+          [guardian.id],
+        );
+        if (existingGuardian.length === 0) {
+          await conn.rollback();
+          return res.status(400).json({
+            error:
+              "That guardian record no longer exists — please look up the Fayda number again.",
+          });
+        }
+        guardian_id = existingGuardian[0].id;
+      } else {
+        // Brand-new guardian: same default-password + forced-reset
+        // pattern as a brand-new student (see DEFAULT_GUARDIAN_PASSWORD
+        // above) — this is what lets them log into the Guardian Portal
+        // for the first time at all, since a guardian record created
+        // via New Entrant Registration otherwise has no credentials.
+        const guardianSecurityPassword = await bcrypt.hash(
+          DEFAULT_GUARDIAN_PASSWORD,
+          10,
+        );
+        const guardianParentCode = await generateNextGuardianParentCode(conn);
+        const [guardianInsert] = await conn.query(
+          "INSERT INTO guardians (parent_code, full_name, phone_number, fayda_number, security_password, must_change_password) VALUES (?, ?, ?, ?, ?, TRUE)",
+          [
+            guardianParentCode,
+            normalizeName(guardian.full_name),
+            guardian.phone_number,
+            guardianFaydaNormalized,
+            guardianSecurityPassword,
+          ],
+        );
+        guardian_id = guardianInsert.insertId;
+        newGuardianParentCode = guardianParentCode;
+      }
+      await conn.query(
+        "INSERT INTO student_guardians (student_id, guardian_id) VALUES (?, ?)",
+        [student_id, guardian_id],
+      );
 
       await conn.commit();
 
@@ -3513,12 +4351,258 @@ app.post(
         student_id,
         assigned_pc,
         security_password: plain_password,
+        // Only present when a brand-new guardian was created this call
+        // (not when linking to an existing one) — this is the login ID
+        // the Registrar hands to the parent, same idea as showing the
+        // student's own default password just above.
+        guardian_parent_code: newGuardianParentCode,
       });
     } catch (err) {
       await conn.rollback();
+      // UNIQUE constraint on emis_id — most likely cause: two Registrars
+      // raced to register/link the same EMIS ID, or the frontend's
+      // pre-check (GET /api/emis/lookup) was skipped/stale.
+      if (
+        err.code === "ER_DUP_ENTRY" &&
+        String(err.sqlMessage).includes("emis_id")
+      ) {
+        return res.status(409).json({
+          error: "This EMIS ID is already linked to another student.",
+        });
+      }
+      // UNIQUE constraint on guardians.fayda_number — same race, but for
+      // the guardian lookup: someone else registered this exact Fayda
+      // number as a new guardian in the moment between this Registrar's
+      // lookup and their submit.
+      if (
+        err.code === "ER_DUP_ENTRY" &&
+        String(err.sqlMessage).includes("fayda_number")
+      ) {
+        return res.status(409).json({
+          error:
+            "A guardian with this Fayda number was just registered — please look it up again to link instead of creating a new one.",
+        });
+      }
       res.status(500).json({ error: "Registration failed: " + err.message });
     } finally {
       conn.release();
+    }
+  },
+);
+
+// Registrar-only: link a guardian to a student who doesn't have one on
+// file yet. Surfaced from the Information Update tab, which only shows
+// this form once GET /api/student/:id comes back with an empty
+// `guardians` array — this route re-checks that server-side too, since a
+// student is only ever meant to pick up a guardian this way once. Same
+// two-shape guardian resolution as registration (see POST /api/register
+// and GET /api/guardians/lookup/:fayda_number just above):
+//   { id: 123 }                                -> link to existing guardian
+//   { full_name, phone_number, fayda_number }   -> create a new guardian
+app.post(
+  "/api/student/:id/guardian",
+  requireAuth,
+  requireRegistrarOrRecorder,
+  async (req, res) => {
+    const conn = await pool.getConnection();
+    try {
+      await ensureGuardianParentCodeSupport();
+      const { guardian } = req.body;
+      if (!guardian || typeof guardian !== "object") {
+        return res
+          .status(400)
+          .json({ error: "Guardian/parent information is required." });
+      }
+      let guardianFaydaNormalized = null;
+      if (!guardian.id) {
+        if (
+          !guardian.full_name ||
+          !guardian.phone_number ||
+          !guardian.fayda_number
+        ) {
+          return res.status(400).json({
+            error:
+              "Guardian full name, phone number, and Fayda number are required.",
+          });
+        }
+        guardianFaydaNormalized = normalizeFaydaNumber(guardian.fayda_number);
+        if (!isValidFaydaFormat(guardianFaydaNormalized)) {
+          return res.status(400).json({
+            error: "Guardian's Fayda number must be exactly 16 digits.",
+          });
+        }
+      }
+
+      await conn.beginTransaction();
+
+      const [studentRows] = await conn.query(
+        "SELECT student_id, status FROM students WHERE student_id = ? AND school_id = ? FOR UPDATE",
+        [req.params.id, req.user.school_id],
+      );
+      if (studentRows.length === 0) {
+        await conn.rollback();
+        return res
+          .status(404)
+          .json({ error: "Student not found in your school." });
+      }
+
+      // Same lock as Information Update generally — a Graduated or
+      // Transferred student can't pick up a guardian link either until
+      // they're re-admitted.
+      if (isTerminalStudentStatus(studentRows[0].status)) {
+        await conn.rollback();
+        return res.status(409).json({
+          error: `This student's status is "${studentRows[0].status}" — their record is locked. Re-admit them first (Promotion → Re-admitted) before linking a guardian.`,
+        });
+      }
+
+      // A student is only meant to be missing a guardian before this
+      // form is ever used on them — once linked, further changes belong
+      // in a dedicated "manage guardians" flow, not silently re-run here.
+      const [existingLinks] = await conn.query(
+        "SELECT guardian_id FROM student_guardians WHERE student_id = ?",
+        [req.params.id],
+      );
+      if (existingLinks.length > 0) {
+        await conn.rollback();
+        return res
+          .status(409)
+          .json({ error: "This student already has a guardian on file." });
+      }
+
+      let guardian_id;
+      let newGuardianParentCode = null;
+      if (guardian.id) {
+        const [existingGuardian] = await conn.query(
+          "SELECT id FROM guardians WHERE id = ? FOR UPDATE",
+          [guardian.id],
+        );
+        if (existingGuardian.length === 0) {
+          await conn.rollback();
+          return res.status(400).json({
+            error:
+              "That guardian record no longer exists — please look up the Fayda number again.",
+          });
+        }
+        guardian_id = existingGuardian[0].id;
+      } else {
+        // Same default-password + forced-reset pattern as the New
+        // Entrant Registration path above — see DEFAULT_GUARDIAN_PASSWORD.
+        const guardianSecurityPassword = await bcrypt.hash(
+          DEFAULT_GUARDIAN_PASSWORD,
+          10,
+        );
+        const guardianParentCode = await generateNextGuardianParentCode(conn);
+        const [guardianInsert] = await conn.query(
+          "INSERT INTO guardians (parent_code, full_name, phone_number, fayda_number, security_password, must_change_password) VALUES (?, ?, ?, ?, ?, TRUE)",
+          [
+            guardianParentCode,
+            normalizeName(guardian.full_name),
+            guardian.phone_number,
+            guardianFaydaNormalized,
+            guardianSecurityPassword,
+          ],
+        );
+        guardian_id = guardianInsert.insertId;
+        newGuardianParentCode = guardianParentCode;
+      }
+      await conn.query(
+        "INSERT INTO student_guardians (student_id, guardian_id) VALUES (?, ?)",
+        [req.params.id, guardian_id],
+      );
+
+      await conn.commit();
+      res.json({
+        message: "Guardian linked to student.",
+        guardian_parent_code: newGuardianParentCode,
+      });
+    } catch (err) {
+      await conn.rollback();
+      if (
+        err.code === "ER_DUP_ENTRY" &&
+        String(err.sqlMessage).includes("fayda_number")
+      ) {
+        return res.status(409).json({
+          error:
+            "A guardian with this Fayda number was just registered — please look it up again to link instead of creating a new one.",
+        });
+      }
+      console.error("/api/student/:id/guardian error:", err);
+      res.status(500).json({ error: "Could not link guardian to student." });
+    } finally {
+      conn.release();
+    }
+  },
+);
+
+// Read-only pre-check used by New Entrant Registration and Transfer Hub's
+// external/manual incoming form — lets the Registrar see who an EMIS ID
+// belongs to (per the Super Admin's uploaded emis_registry) and confirm
+// before it gets linked, and blocks it up front if it's already linked to
+// a different student on this platform. Does NOT write anything.
+app.get(
+  "/api/emis/lookup/:emis_id",
+  requireAuth,
+  requireRegistrarOrRecorder,
+  async (req, res) => {
+    try {
+      const emisId = normalizeEmisId(req.params.emis_id);
+      if (!isValidEmisIdFormat(emisId)) {
+        return res.status(400).json({
+          error: "EMIS ID must be 10-13 letters/numbers (e.g. STU113168894).",
+        });
+      }
+
+      // Already linked to a student on this platform? Block regardless of
+      // whether it's in the Ministry registry — this is the case that
+      // actually matters most (prevents two students sharing one EMIS ID).
+      const [linked] = await pool.query(
+        "SELECT student_id, first_name, middle_name, last_name, school_name FROM students WHERE emis_id = ?",
+        [emisId],
+      );
+      if (linked.length > 0) {
+        const s = linked[0];
+        return res.status(409).json({
+          error: "This EMIS ID is already linked to another student.",
+          existing_student: {
+            student_id: s.student_id,
+            name: [s.first_name, s.middle_name, s.last_name]
+              .filter(Boolean)
+              .join(" "),
+            school_name: s.school_name,
+          },
+        });
+      }
+
+      // Match against the Ministry registry the Super Admin uploaded.
+      // NOTE: emis_registry doesn't exist until the Super Admin's EMIS
+      // upload feature ships — until then this query will simply error
+      // (table not found), which we treat below as "no registry loaded
+      // yet" so entry still works, just always unverified.
+      try {
+        const [registryRows] = await pool.query(
+          "SELECT emis_id, student_name, dob, moe_school_code, grade FROM emis_registry WHERE emis_id = ?",
+          [emisId],
+        );
+        if (registryRows.length === 0) {
+          return res.status(404).json({
+            error:
+              "Not found in the EMIS registry — can still be saved as unverified.",
+          });
+        }
+        return res.json({ match: registryRows[0] });
+      } catch (registryErr) {
+        if (registryErr.code === "ER_NO_SUCH_TABLE") {
+          return res.status(404).json({
+            error:
+              "EMIS registry not uploaded yet — can still be saved as unverified.",
+          });
+        }
+        throw registryErr;
+      }
+    } catch (err) {
+      console.error("/api/emis/lookup error:", err);
+      res.status(500).json({ error: "Could not look up that EMIS ID." });
     }
   },
 );
@@ -4040,11 +5124,12 @@ app.get(
   blockIfMustChangePassword,
   async (req, res) => {
     try {
+      await ensureGuardianParentCodeSupport();
       const [rows] = await pool.query(
         `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.class_level, st.section, st.stream, st.sex,
                     st.status, st.lms_username, st.email_address, st.assigned_computer,
                     st.phone_number, st.created_at, st.profile_photo_url, st.id_photo_url, st.is_class_monitor,
-                    z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region, sc.school_name, sc.moe_school_code, sc.school_prefix, sc.logo_url, sc.school_level
+                    z.zone_name AS zone, z.logo_url AS zone_logo_url, w.woreda_name AS woreda, r.region_name AS region, sc.school_name, sc.moe_school_code, sc.school_prefix, sc.logo_url, sc.school_level
              FROM students st
              LEFT JOIN schools sc ON sc.id = st.school_id
              LEFT JOIN zone z ON z.zone_id = sc.zone_id
@@ -4057,6 +5142,25 @@ app.get(
         return res.status(404).json({ error: "Student record not found" });
       const profile = rows[0];
       profile.qr_payload = signQrPayload(profile.student_id);
+
+      // Guardian(s) linked to this student — powers the "My Guardian/
+      // Parent" page, where the student can see their guardian's
+      // parent_code and (while it's still the untouched default) the
+      // first-login password, so they can hand both to their guardian
+      // for the Guardian Portal's first sign-in. must_change_password
+      // is what tells the frontend whether that default password is
+      // still valid to show — once the guardian has actually logged in
+      // and set their own password, it's no longer shown here.
+      const [guardians] = await pool.query(
+        `SELECT g.id, g.parent_code, g.full_name, g.phone_number, g.must_change_password
+         FROM guardians g
+         JOIN student_guardians sg ON sg.guardian_id = g.id
+         WHERE sg.student_id = ?
+         ORDER BY g.full_name`,
+        [req.user.user_id],
+      );
+      profile.guardians = guardians;
+
       // "Newland" + "SECONDARY SCHOOL" -> "NEWLAND SECONDARY SCHOOL" — the
       // level isn't implied by school_name alone, and two schools can
       // share a name at different levels. Same helper the certificate/
@@ -4159,8 +5263,10 @@ app.get(
         .filter(Boolean)
         .join(" ");
       const issued = s.created_at ? new Date(s.created_at) : new Date();
-      const expires = new Date(issued);
-      expires.setFullYear(expires.getFullYear() + 1);
+      // Valid through the end of the Ethiopian year it was issued in —
+      // see idCardExpiryForEthiopianYears for why this replaced a plain
+      // "+1 calendar year from created_at".
+      const expires = idCardExpiryForEthiopianYears(issued, 1);
       const fmt = (d) =>
         d.toLocaleDateString("en-GB", {
           year: "numeric",
@@ -6885,6 +7991,20 @@ function approximateEthiopianYear(gregorianDate) {
   return d >= newYearCutoff ? d.getFullYear() - 7 : d.getFullYear() - 8;
 }
 
+// Every ID card (student, teacher, school admin, zonal admin) rolls
+// forward using the Ethiopian calendar's own year length — 365 days,
+// not a Gregorian "+1 calendar year" (which can land on a different day
+// of the week/month depending on Gregorian leap years) and not rounded
+// down to the nearest Ethiopian New Year either (that briefly gave a
+// card issued right before Meskerem 1 only a few days of validity). A
+// 1-year card is issuedDate + 365 days; a 2-year card is +730 days —
+// i.e. Ethiopian New Year's beginning to two full Ethiopian years later.
+function idCardExpiryForEthiopianYears(issuedDate, validityYears) {
+  const expires = new Date(issuedDate);
+  expires.setDate(expires.getDate() + 365 * validityYears);
+  return expires;
+}
+
 // The CURRENT academic year for header display, e.g. "2018 E.C. (2025/26 GC)".
 // An Ethiopian academic year straddles two Gregorian years (starts ~Sept,
 // ends ~July), so unlike approximateEthiopianYear() above (a single EC
@@ -7278,18 +8398,36 @@ async function rolloverAcademicYear(school_id) {
   }
 }
 
-// The printed school name combines the school's own name with its
-// level (e.g. "Newland" + "SECONDARY SCHOOL" -> "NEWLAND SECONDARY
-// SCHOOL"), since the level isn't otherwise implied by the name.
-// school_level is already stored upper-case (see SCHOOL_LEVELS above);
-// .toUpperCase() on the whole joined string is just a safety net for
-// the name half and for any caller that doesn't have a school_level
-// to pass (falls back to the name alone, still upper-cased).
+// The printed school name — just the name Super Admin gave the school,
+// nothing appended. Used to combine schoolName with schoolLevel (e.g.
+// "Newland" + "SECONDARY SCHOOL" -> "NEWLAND SECONDARY SCHOOL"), but
+// that made every certificate, report card, ID card, and transcript
+// header longer than the school's actual name for no real reason — the
+// level isn't something these documents need to spell out next to the
+// name. Kept as its own function (rather than inlining schoolName.
+// toUpperCase() at each call site) so every document still renders the
+// name identically if this ever needs to change again. schoolLevel is
+// no longer used, kept as a parameter only so none of the many call
+// sites below need touching.
 function buildSchoolDisplayName(schoolName, schoolLevel) {
-  return (
-    [schoolName, schoolLevel].filter(Boolean).join(" ").toUpperCase() ||
-    "SCHOOL"
-  );
+  return (schoolName || "").toUpperCase().trim() || "SCHOOL";
+}
+
+// Certificates, transcripts, and ID cards all print a "Stream" field.
+// Grades 9-10 (GENERAL) and 11-12 (PREPARATORY, Natural/Social Science)
+// already carry a real stream value end-to-end. Grades 1-6 and 7-8 never
+// have one on file (BASIC/CORE students aren't streamed at all) — those
+// two tiers instead print their own tier name in that field, per the
+// explicit rule: Grades 1-6 -> "Basic", Grades 7-8 -> "Core". Any other
+// grade (or a missing/unparsable class_level) falls back to whatever
+// stream value was actually on file, unchanged.
+function resolveDocumentStream(classLevel, streamValue) {
+  const grade = parseInt(classLevel, 10);
+  if (Number.isInteger(grade)) {
+    if (grade >= 1 && grade <= 6) return "Basic";
+    if (grade === 7 || grade === 8) return "Core";
+  }
+  return streamValue;
 }
 
 // Full Ethiopian date conversion for message text (e.g. absence
@@ -7618,7 +8756,9 @@ function renderCertificateHtml(data) {
     __SEX__: escapeHtml(data.sex || "—"),
     __GRADE__: escapeHtml(data.grade),
     __SECTION__: escapeHtml(data.section),
-    __STREAM__: escapeHtml(data.stream || "—"),
+    __STREAM__: escapeHtml(
+      resolveDocumentStream(data.grade, data.stream) || "—",
+    ),
     __ACADEMIC_YEAR__: escapeHtml(data.academic_year || "—"),
     __ZONE__: escapeHtml(data.zone || "—"),
     __WOREDA__: escapeHtml(data.woreda || "—"),
@@ -7634,6 +8774,19 @@ function renderCertificateHtml(data) {
     __RESULT_PROMOTED_CLASS__: data.result_promoted_class || "",
     __RESULT_DETAINED_CLASS__: data.result_detained_class || "",
     __PROMOTED_TO_GRADE_TEXT__: escapeHtml(data.promoted_to_grade_text || "—"),
+    // Grades 6/8/12 sit a national exam (EASE) that decides progression,
+    // not this school's own cutoff — the report card shows a disclaimer
+    // in place of the Promoted/Detained checkboxes for those three
+    // grades. EASE_GRADES lives once, shared with the Promote-action
+    // gate and the EASE Candidates screens.
+    __EASE_GATE_HIDDEN_CLASS__: EASE_GRADES.includes(Number(data.grade))
+      ? "hidden"
+      : "",
+    __EASE_GATE_VISIBLE_CLASS__: EASE_GRADES.includes(Number(data.grade))
+      ? ""
+      : "hidden",
+    __EASE_GATE_TEXT__:
+      "Academic progression and graduation eligibility are contingent upon the results of the national examination.",
     __VERIFY_CODE__: escapeHtml(data.verify_code || "—"),
     __VERIFY_DOMAIN__: escapeHtml(verifyDomain),
   };
@@ -8080,11 +9233,38 @@ async function countAbsentDays(
   );
   if (startDate > endDate) return 0;
 
+  // Once the semester has been administratively closed, there's no
+  // class in session from the closing date onward — same reasoning
+  // the attendance calendar/streak endpoints already apply (see
+  // getSemesterClosedDate) — so those days must never count as
+  // absent here either. Without this, a term whose marks get pushed
+  // (syncedAt) some days or weeks AFTER Academic VP closed the
+  // semester — a completely normal order of operations — silently
+  // counted every school day in that in-between gap as an
+  // unexplained absence on the printed report card, even though
+  // there was no class in session for the student to have missed.
+  const semesterStatus = await getSemesterStatus(school_id);
+  let effectiveEndDate = endDate;
+  if (semesterStatus === "closed") {
+    const closedDateStr = await getSemesterClosedDate(school_id);
+    if (closedDateStr) {
+      const dayBeforeClose = new Date(closedDateStr);
+      dayBeforeClose.setDate(dayBeforeClose.getDate() - 1);
+      if (dayBeforeClose < effectiveEndDate) effectiveEndDate = dayBeforeClose;
+    }
+  }
+  if (startDate > effectiveEndDate) return 0;
+
   const [presentRows] = await pool.query(
     `SELECT attendance_date FROM student_attendance
          WHERE student_id = ? AND school_id = ? AND status = 'present'
            AND attendance_date >= ? AND attendance_date <= ?`,
-    [student_id, school_id, toDateOnly(startDate), toDateOnly(endDate)],
+    [
+      student_id,
+      school_id,
+      toDateOnly(startDate),
+      toDateOnly(effectiveEndDate),
+    ],
   );
   const presentSet = new Set(
     presentRows.map((r) => toDateOnly(new Date(r.attendance_date))),
@@ -8098,7 +9278,12 @@ async function countAbsentDays(
     `SELECT date_from, date_to FROM absence_requests
          WHERE student_id = ? AND school_id = ? AND status = 'approved'
            AND date_to >= ? AND date_from <= ?`,
-    [student_id, school_id, toDateOnly(startDate), toDateOnly(endDate)],
+    [
+      student_id,
+      school_id,
+      toDateOnly(startDate),
+      toDateOnly(effectiveEndDate),
+    ],
   );
   const excusedSet = new Set();
   excusedRows.forEach((r) => {
@@ -8112,7 +9297,7 @@ async function countAbsentDays(
 
   let absentDays = 0;
   const cursor = new Date(startDate);
-  while (cursor <= endDate) {
+  while (cursor <= effectiveEndDate) {
     const day = toDateOnly(cursor);
     if (isSchoolDay(cursor) && !presentSet.has(day) && !excusedSet.has(day))
       absentDays++;
@@ -8354,10 +9539,24 @@ function streamBucketFor(streamText) {
 // subject_name, keeping it "applicable" if ANY of its configured rows
 // matches the student's stream bucket (or is stream = NULL, i.e.
 // visible in every bucket).
-function dedupeSubjectsForStream(allSubjects, streamBucket) {
+// classLevel is optional (existing callers that don't pass one keep the
+// old stream-only behavior — grade range simply isn't checked). When
+// given, a subject also has to fall inside its own min_class_level/
+// max_class_level range (either side NULL = unbounded on that side,
+// same convention as the stream column) to count as applicable, in
+// addition to the existing stream check — a subject only prints/counts
+// when BOTH checks pass.
+function dedupeSubjectsForStream(allSubjects, streamBucket, classLevel) {
   const bySubject = new Map();
   allSubjects.forEach((subj) => {
-    const applicableHere = subj.stream === null || subj.stream === streamBucket;
+    const streamOk = subj.stream === null || subj.stream === streamBucket;
+    const gradeOk =
+      classLevel == null ||
+      ((subj.min_class_level == null ||
+        Number(classLevel) >= Number(subj.min_class_level)) &&
+        (subj.max_class_level == null ||
+          Number(classLevel) <= Number(subj.max_class_level)));
+    const applicableHere = streamOk && gradeOk;
     const existing = bySubject.get(subj.subject_name);
     if (!existing || (!existing.applicable && applicableHere)) {
       bySubject.set(subj.subject_name, {
@@ -8367,6 +9566,35 @@ function dedupeSubjectsForStream(allSubjects, streamBucket) {
     }
   });
   return [...bySubject.values()];
+}
+
+// Self-heals the `subjects` table with nullable min_class_level/
+// max_class_level grade-range columns (NULL = unbounded on that side,
+// same convention as the existing stream column) — lets a subject be
+// scoped to a grade range (e.g. an elective that only starts at Grade
+// 9, or one that stops after Grade 10) in addition to a stream, without
+// a manual migration step first. Same self-healing reasoning as
+// ensureSuperAdminCoreTables elsewhere in this file.
+let subjectsGradeRangeReady = false;
+async function ensureSubjectsGradeRangeColumns() {
+  if (subjectsGradeRangeReady) return;
+  const [cols] = await pool.query(
+    `SELECT COLUMN_NAME FROM information_schema.columns
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'subjects'
+       AND COLUMN_NAME IN ('min_class_level','max_class_level')`,
+  );
+  const have = new Set(cols.map((c) => c.COLUMN_NAME));
+  if (!have.has("min_class_level")) {
+    await pool.query(
+      `ALTER TABLE subjects ADD COLUMN min_class_level INT NULL AFTER stream`,
+    );
+  }
+  if (!have.has("max_class_level")) {
+    await pool.query(
+      `ALTER TABLE subjects ADD COLUMN max_class_level INT NULL AFTER min_class_level`,
+    );
+  }
+  subjectsGradeRangeReady = true;
 }
 
 // Removing a subject_dictionary entry deliberately doesn't touch a
@@ -8416,8 +9644,9 @@ async function buildYearSummaries(student_id, school_id, terms) {
   // subject with stream = NULL applies to every bucket (General,
   // Natural, Social) — that's how a school-wide subject like English,
   // Math, or IT is meant to be configured once and show up everywhere.
+  await ensureSubjectsGradeRangeColumns();
   const [allSubjectsRaw] = await pool.query(
-    `SELECT subject_name, stream FROM subjects WHERE school_id = ? ORDER BY subject_name`,
+    `SELECT subject_name, stream, min_class_level, max_class_level FROM subjects WHERE school_id = ? ORDER BY subject_name`,
     [school_id],
   );
   const allSubjects = await filterToZoneDictionary(allSubjectsRaw, school_id);
@@ -8435,6 +9664,7 @@ async function buildYearSummaries(student_id, school_id, terms) {
       const dedupedSubjects = dedupeSubjectsForStream(
         allSubjects,
         streamBucket,
+        class_level,
       );
       const configuredNames = new Set(
         dedupedSubjects.map((s) => s.subject_name),
@@ -8749,8 +9979,9 @@ app.get(
       // students.stream already uses; streamBucketFor() classifies by
       // keyword so this keeps working whether a given subjects row has
       // been migrated yet or not.
+      await ensureSubjectsGradeRangeColumns();
       const [allSubjectsRaw] = await pool.query(
-        `SELECT subject_name, stream FROM subjects WHERE school_id = ? ORDER BY subject_name`,
+        `SELECT subject_name, stream, min_class_level, max_class_level FROM subjects WHERE school_id = ? ORDER BY subject_name`,
         [req.user.school_id],
       );
       const allSubjects = await filterToZoneDictionary(
@@ -8765,6 +9996,7 @@ app.get(
       const dedupedSubjects = dedupeSubjectsForStream(
         allSubjects,
         streamBucket,
+        latest.class_level,
       );
       const seenSubjectNames = new Set(
         dedupedSubjects.map((s) => s.subject_name),
@@ -9792,6 +11024,48 @@ app.post(
   },
 );
 
+// Self-service version of the route above, for a Zonal Admin to set
+// their OWN zone's logo directly (rather than needing a Super Admin to
+// do it for them via /api/super/zones/:zone_id/logo). Always scoped to
+// the caller's own req.user.zone_id — same "own tenant only" pattern as
+// /api/admin/school-logo below, just for zonal_admins instead of
+// school_admins. Cascades identically: /api/me's zone_logo_url picks up
+// whichever route last wrote the row, and the student ID card
+// (buildIdCardHtml) reads the same zone.logo_url column.
+app.post(
+  "/api/zonal/logo",
+  requireAuth,
+  requireZonalAdmin,
+  handleUploadError(upload.single("logo")),
+  async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+      if (!req.file.mimetype.startsWith("image/")) {
+        return res.status(400).json({
+          error: "Logo must be an image file (JPEG, PNG, GIF, or WEBP).",
+        });
+      }
+
+      const converted = await convertHeicIfNeeded(req.file);
+      if (converted) req.file = converted;
+
+      const filePath = `/uploads/${req.file.filename}`;
+      const [result] = await pool.query(
+        "UPDATE zone SET logo_url = ? WHERE zone_id = ?",
+        [filePath, req.user.zone_id],
+      );
+      if (result.affectedRows === 0)
+        return res.status(404).json({ error: "Zone not found" });
+
+      await logAudit(req, "zone.logo_update", "zone", req.user.zone_id, null);
+      res.json({ logo_url: filePath });
+    } catch (err) {
+      console.error("POST /api/zonal/logo error:", err);
+      res.status(500).json({ error: "Could not upload zone logo" });
+    }
+  },
+);
+
 app.post(
   "/api/admin/school-logo",
   requireAuth,
@@ -9881,13 +11155,27 @@ app.get("/api/student/:id", requireAuth, async (req, res) => {
       .json({ error: "You can only view your own record." });
   }
   try {
+    await ensureGuardianParentCodeSupport();
     const [results] = await pool.query(
       "SELECT * FROM students WHERE student_id = ? AND school_id = ?",
       [req.params.id, req.user.school_id],
     );
     if (results.length === 0)
       return res.status(404).json({ error: "Student not found" });
-    res.json(results[0]);
+    // Guardian(s) on file for this student — powers the "no guardian" /
+    // "has guardian" labeling on the Student Registry and the
+    // Information Update tab's guardian section. An empty array means
+    // this student can still have one linked via
+    // POST /api/student/:id/guardian.
+    const [guardians] = await pool.query(
+      `SELECT g.id, g.parent_code, g.full_name, g.phone_number, g.fayda_number
+       FROM guardians g
+       JOIN student_guardians sg ON sg.guardian_id = g.id
+       WHERE sg.student_id = ?
+       ORDER BY g.full_name`,
+      [req.params.id],
+    );
+    res.json({ ...results[0], guardians });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -9934,25 +11222,24 @@ app.put(
           .status(404)
           .json({ error: "Student not found in your school." });
       }
+
+      // A Graduated or Transferred student's record is fully locked —
+      // no field on Information Update, not even a name/phone/Fayda
+      // typo fix, until they're re-admitted (Promotion → Re-admitted).
+      // Re-admission is the only door back in, since it's also what
+      // resets their password and logs the decision properly; letting
+      // edits slip through here otherwise would leave a "left" student's
+      // record quietly drifting after they're gone.
+      const currentStatus = beforeRows[0].status;
+      if (isTerminalStudentStatus(currentStatus)) {
+        return res.status(409).json({
+          error: `This student's status is "${currentStatus}" — their record is locked. Re-admit them first (Promotion → Re-admitted) before editing their information.`,
+        });
+      }
+
       const gradeOrStreamChanged =
         String(beforeRows[0].class_level) !== String(class_level) ||
         String(beforeRows[0].stream) !== String(stream);
-
-      // Changing grade/stream for a student who's graduated or
-      // transferred out is effectively re-enrolling them — that has to
-      // go through Re-admission (Promotion tab), which resets their
-      // password and logs the decision, not slip through here as a side
-      // effect of an otherwise-routine info edit. Fixing a name/phone/
-      // Fayda typo on their historical record is still fine either way.
-      const currentStatus = beforeRows[0].status;
-      const isTerminalStatus =
-        currentStatus === "Graduated" ||
-        String(currentStatus || "").startsWith("Transferred");
-      if (gradeOrStreamChanged && isTerminalStatus) {
-        return res.status(409).json({
-          error: `This student's status is "${currentStatus}" — re-admit them first (Promotion → Re-admitted) before changing their grade or stream.`,
-        });
-      }
 
       // Status used to be force-set to 'Active' on every info update
       // (back when it only tracked Fayda-number completeness). That's
@@ -10139,6 +11426,34 @@ app.get(
   },
 );
 
+// Looks up a student's EASE (national exam, Grades 6/8/12) status for a
+// given class_level — 'Not Marked' (Registrar hasn't entered an
+// admission number for them yet), 'Pending Result' (marked, but no
+// matching result uploaded yet), or 'Pass'/'Fail' (Super Admin's CSV
+// upload matched a result for this admission_number+class_level+
+// exam_year). Shared by the Promote gate, the New Entrant admission
+// check, and both EASE Candidates screens.
+async function getEaseStatusForStudent(student_id, school_id, class_level) {
+  await ensureEaseTables();
+  const [candidateRows] = await pool.query(
+    `SELECT admission_number, exam_year FROM ease_candidates
+     WHERE student_id = ? AND school_id = ? AND class_level = ?
+     ORDER BY marked_at DESC LIMIT 1`,
+    [student_id, school_id, class_level],
+  );
+  if (candidateRows.length === 0)
+    return { status: "Not Marked", candidate: null, result: null };
+  const candidate = candidateRows[0];
+  const [resultRows] = await pool.query(
+    `SELECT mark, cutoff, average, percentile, result FROM ease_exam_results
+     WHERE admission_number = ? AND class_level = ? AND exam_year = ?`,
+    [candidate.admission_number, class_level, candidate.exam_year],
+  );
+  if (resultRows.length === 0)
+    return { status: "Pending Result", candidate, result: null };
+  return { status: resultRows[0].result, candidate, result: resultRows[0] };
+}
+
 app.put(
   "/api/promote/:id",
   requireAuth,
@@ -10187,6 +11502,31 @@ app.put(
         }
         action = expectedAction;
         override_reason = null; // no override is possible for these grades, so nothing to log
+      }
+
+      // Grades 6 and 8 additionally require a Pass on file from the
+      // national exam (EASE) before an actual promotion (6->7, 8->9)
+      // can be written — the school's own cutoff above still runs
+      // (it's what decides retain for these grades), but "promote"
+      // specifically is blocked until the exam result says so, no
+      // matter what the internal cutoff computed.
+      if (EASE_GRADES.includes(Number(currentGrade)) && action === "promote") {
+        const ease = await getEaseStatusForStudent(
+          req.params.id,
+          req.user.school_id,
+          Number(currentGrade),
+        );
+        if (ease.status !== "Pass") {
+          const reason =
+            ease.status === "Not Marked"
+              ? "This student hasn't been marked as an EASE candidate yet."
+              : ease.status === "Pending Result"
+                ? "This student is marked as an EASE candidate, but no result has been uploaded yet."
+                : "This student's EASE result is a Fail.";
+          return res.status(400).json({
+            error: `Grade ${currentGrade} promotion requires a Pass on the national exam. ${reason}`,
+          });
+        }
       }
 
       if (action !== "promote" && action !== "retain") {
@@ -10898,7 +12238,8 @@ async function fetchStudentRegistryRows(
     }
     const [rows] = await pool.query(
       `SELECT sn.student_id, sn.first_name, sn.middle_name, sn.last_name, sn.sex, sn.class_level, sn.section, sn.stream,
-                    sn.status, sn.snapshotted_at AS as_of
+                    sn.status, sn.snapshotted_at AS as_of,
+                    (SELECT COUNT(*) FROM student_guardians sg WHERE sg.student_id = sn.student_id) AS guardian_count
              FROM student_academic_year_snapshots sn ${where}
              ORDER BY sn.first_name, sn.last_name`,
       params,
@@ -10916,6 +12257,7 @@ async function fetchStudentRegistryRows(
       enrolled_at: null,
       left_at: null,
       as_of_snapshot: r.as_of,
+      has_guardian: r.guardian_count > 0,
     }));
   }
 
@@ -10941,7 +12283,8 @@ async function fetchStudentRegistryRows(
                 s.status, s.created_at, s.graduated_at,
                 (SELECT st.initiated_at FROM student_transfers st
                    WHERE st.from_school_id = s.school_id AND st.student_id = s.student_id
-                   ORDER BY st.initiated_at DESC LIMIT 1) AS transfer_out_at
+                   ORDER BY st.initiated_at DESC LIMIT 1) AS transfer_out_at,
+                (SELECT COUNT(*) FROM student_guardians sg WHERE sg.student_id = s.student_id) AS guardian_count
          FROM students s ${where}
          ORDER BY s.first_name, s.last_name`,
     params,
@@ -10964,6 +12307,7 @@ async function fetchStudentRegistryRows(
       status: r.status,
       enrolled_at: r.created_at,
       left_at,
+      has_guardian: r.guardian_count > 0,
     };
   });
 }
@@ -10985,6 +12329,727 @@ app.get(
     } catch (err) {
       console.error("/api/registrar/students error:", err);
       res.status(500).json({ error: "Could not load the student registry." });
+    }
+  },
+);
+
+// Guardian/Parent nav — every guardian who has at least one child
+// enrolled at this school, with a count of how many of their children
+// are here. A guardian can be linked to children at other schools too
+// (same Fayda-based guardian record, siblings elsewhere), but this list
+// — and the children returned below — only ever surfaces this school's
+// own students, never another school's roster.
+app.get(
+  "/api/registrar/guardians",
+  requireAuth,
+  requireRegistrarOrRecorder,
+  async (req, res) => {
+    try {
+      await ensureGuardianParentCodeSupport();
+      const { q } = req.query;
+      const params = [req.user.school_id];
+      let searchClause = "";
+      if (q && q.trim()) {
+        searchClause =
+          " AND (g.full_name LIKE ? OR g.phone_number LIKE ? OR g.fayda_number LIKE ?)";
+        const like = `%${q.trim()}%`;
+        params.push(like, like, like);
+      }
+      const [rows] = await pool.query(
+        `SELECT g.id, g.parent_code, g.full_name, g.phone_number, g.fayda_number,
+                COUNT(DISTINCT sg.student_id) AS children_count
+         FROM guardians g
+         JOIN student_guardians sg ON sg.guardian_id = g.id
+         JOIN students s ON s.student_id = sg.student_id AND s.school_id = ?
+         WHERE 1=1 ${searchClause}
+         GROUP BY g.id, g.parent_code, g.full_name, g.phone_number, g.fayda_number
+         ORDER BY g.full_name`,
+        params,
+      );
+      res.json(rows);
+    } catch (err) {
+      console.error("/api/registrar/guardians error:", err);
+      res.status(500).json({ error: "Could not load guardians." });
+    }
+  },
+);
+
+// Linked children for one guardian — scoped to req.user.school_id both
+// to confirm the guardian actually has a child here (404 otherwise, so a
+// Registrar can't fish for guardian details via another school's child)
+// and to make sure only this school's children ever show up in the list,
+// even if the same guardian also has kids enrolled elsewhere.
+app.get(
+  "/api/registrar/guardians/:id/children",
+  requireAuth,
+  requireRegistrarOrRecorder,
+  async (req, res) => {
+    try {
+      await ensureGuardianParentCodeSupport();
+      const [guardianRows] = await pool.query(
+        `SELECT DISTINCT g.id, g.parent_code, g.full_name, g.phone_number, g.fayda_number
+         FROM guardians g
+         JOIN student_guardians sg ON sg.guardian_id = g.id
+         JOIN students s ON s.student_id = sg.student_id AND s.school_id = ?
+         WHERE g.id = ?
+         LIMIT 1`,
+        [req.user.school_id, req.params.id],
+      );
+      if (guardianRows.length === 0) {
+        return res.status(404).json({ error: "Guardian not found." });
+      }
+      const [children] = await pool.query(
+        `SELECT s.student_id, s.first_name, s.middle_name, s.last_name, s.class_level, s.section, s.stream, s.status
+         FROM students s
+         JOIN student_guardians sg ON sg.student_id = s.student_id
+         WHERE sg.guardian_id = ? AND s.school_id = ?
+         ORDER BY s.first_name, s.last_name`,
+        [req.params.id, req.user.school_id],
+      );
+      res.json({
+        guardian: guardianRows[0],
+        children: children.map((c) => ({
+          student_id: c.student_id,
+          full_name: [c.first_name, c.middle_name, c.last_name]
+            .filter(Boolean)
+            .join(" "),
+          class_level: c.class_level,
+          section: c.section,
+          stream: c.stream,
+          status: c.status,
+        })),
+      });
+    } catch (err) {
+      console.error("/api/registrar/guardians/:id/children error:", err);
+      res
+        .status(500)
+        .json({ error: "Could not load this guardian's children." });
+    }
+  },
+);
+
+// Correcting a guardian's on-file details — most commonly a mistyped
+// Fayda number caught after the fact. Requires the acting Registrar's
+// own password (same step-up confirmation used before starting/
+// cancelling a transfer, or before changing a section's capacity):
+// a guardian record can be shared across siblings and even across
+// schools, so an edit here isn't a cosmetic tweak to one student's
+// record — it's worth a deliberate re-auth. Scoped the same way as
+// GET .../children: only guardians with a child at this school can be
+// edited from here.
+app.put(
+  "/api/registrar/guardians/:id",
+  requireAuth,
+  requireRegistrarOrRecorder,
+  async (req, res) => {
+    try {
+      const { full_name, phone_number, fayda_number, password } = req.body;
+      if (!full_name || !phone_number || !fayda_number) {
+        return res.status(400).json({
+          error:
+            "Guardian full name, phone number, and Fayda number are required.",
+        });
+      }
+      const faydaNormalized = normalizeFaydaNumber(fayda_number);
+      if (!isValidFaydaFormat(faydaNormalized)) {
+        return res.status(400).json({
+          error: "Guardian's Fayda number must be exactly 16 digits.",
+        });
+      }
+      if (!(await verifyCurrentUserPassword(req, password))) {
+        return res.status(401).json({ error: "Incorrect password." });
+      }
+
+      const [guardianRows] = await pool.query(
+        `SELECT DISTINCT g.id
+         FROM guardians g
+         JOIN student_guardians sg ON sg.guardian_id = g.id
+         JOIN students s ON s.student_id = sg.student_id AND s.school_id = ?
+         WHERE g.id = ?
+         LIMIT 1`,
+        [req.user.school_id, req.params.id],
+      );
+      if (guardianRows.length === 0) {
+        return res.status(404).json({ error: "Guardian not found." });
+      }
+
+      await pool.query(
+        "UPDATE guardians SET full_name = ?, phone_number = ?, fayda_number = ? WHERE id = ?",
+        [
+          normalizeName(full_name),
+          phone_number,
+          faydaNormalized,
+          req.params.id,
+        ],
+      );
+      res.json({ message: "Guardian updated." });
+    } catch (err) {
+      if (
+        err.code === "ER_DUP_ENTRY" &&
+        String(err.sqlMessage).includes("fayda_number")
+      ) {
+        return res.status(409).json({
+          error:
+            "Another guardian is already registered with this Fayda number.",
+        });
+      }
+      console.error("/api/registrar/guardians/:id error:", err);
+      res.status(500).json({ error: "Could not update guardian." });
+    }
+  },
+);
+
+// =====================================================================
+// GUARDIAN PORTAL
+// =====================================================================
+// Everything below is for the guardian/parent themselves, logged into
+// their own portal (data-role="guardians") — as opposed to the
+// Registrar-facing /api/registrar/guardians/* routes above, which
+// manage guardian records FROM the school side.
+//
+// A guardian is deliberately NOT school-scoped: req.user.school_id is
+// always null for this role (see /api/login and /api/me), and every
+// route below instead scopes by student_guardians ownership — the
+// same guardian can see children at several different schools, which
+// is the entire point of the cross-school Fayda matching this table
+// exists for.
+
+// Resolves the caller's real guardians.id (the student_guardians FK)
+// from req.user.user_id, which is the parent_code login ID, not the
+// row's PK — see the comment on AUTH_SOURCES_BY_ROLE.guardians. Every
+// route below calls this first; a null return means the token's
+// guardian no longer exists (e.g. deleted) and the caller should 404.
+async function resolveGuardianId(req) {
+  await ensureGuardianParentCodeSupport();
+  const [rows] = await pool.query(
+    "SELECT id FROM guardians WHERE parent_code = ?",
+    [req.user.user_id],
+  );
+  return rows.length > 0 ? rows[0].id : null;
+}
+
+// Confirms this guardian actually has this exact child linked before
+// letting any child-scoped route touch that student's records — the
+// same "child must belong to you" check a Registrar route does with
+// school_id, just via student_guardians instead. Returns the student's
+// own school_id (needed for every downstream marks/attendance/conduct
+// query, since those tables are still keyed by school_id) or null if
+// the link doesn't exist.
+async function requireOwnChild(guardianId, studentId) {
+  const [rows] = await pool.query(
+    `SELECT s.student_id, s.school_id, s.first_name, s.middle_name, s.last_name,
+            s.class_level, s.section, s.stream, s.status, s.profile_photo_url
+       FROM students s
+       JOIN student_guardians sg ON sg.student_id = s.student_id
+      WHERE sg.guardian_id = ? AND s.student_id = ?`,
+    [guardianId, studentId],
+  );
+  return rows.length > 0 ? rows[0] : null;
+}
+
+// Guardian's own profile fields — mirrors /api/student/me's shape and
+// exclusion of security_password, just for the guardians table instead.
+// parent_code is shown here deliberately (it's the guardian's own
+// login identifier, same idea as showing a student their own
+// student_id, not a secret like security_password is). fayda_number is
+// still included too — it's their own data, just no longer the login id.
+app.get(
+  "/api/guardian/me",
+  requireAuth,
+  requireRole("guardians"),
+  blockIfMustChangePassword,
+  async (req, res) => {
+    try {
+      await ensureGuardianParentCodeSupport();
+      await ensureGuardianAvatarSupport();
+      const [rows] = await pool.query(
+        "SELECT id, parent_code, full_name, phone_number, fayda_number, avatar_url FROM guardians WHERE parent_code = ?",
+        [req.user.user_id],
+      );
+      if (rows.length === 0) {
+        return res.status(404).json({ error: "Guardian record not found" });
+      }
+
+      // Guardians aren't tied to one school/zone (they can have children
+      // at several), so there's no single "own" zone the way a
+      // school_admins/zonal_admins account has one. As a reasonable
+      // stand-in for the sidebar logo, use the zone/school of the first
+      // linked child (ordered the same way the My Children list is) —
+      // covers the common case of a guardian whose children are all at
+      // the same school, same "logo cascades down" idea as /api/me's
+      // zone_logo_url for other roles.
+      let zone_logo_url = null;
+      let school_logo_url = null;
+      const [logoRows] = await pool
+        .query(
+          `SELECT sc.logo_url AS school_logo_url, z.logo_url AS zone_logo_url
+             FROM student_guardians sg
+             JOIN students s ON s.student_id = sg.student_id
+             JOIN schools sc ON sc.id = s.school_id
+             LEFT JOIN zone z ON z.zone_id = sc.zone_id
+            WHERE sg.guardian_id = ?
+            ORDER BY sc.school_name, s.class_level, s.first_name
+            LIMIT 1`,
+          [rows[0].id],
+        )
+        .catch(() => [[]]);
+      if (logoRows && logoRows.length > 0) {
+        school_logo_url = logoRows[0].school_logo_url || null;
+        zone_logo_url = logoRows[0].zone_logo_url || null;
+      }
+
+      res.json({ ...rows[0], zone_logo_url, school_logo_url });
+    } catch (err) {
+      console.error("/api/guardian/me error:", err);
+      res.status(500).json({ error: "Could not load your profile" });
+    }
+  },
+);
+
+// Avatar / profile picture for a guardian — same self-serve pattern as
+// /api/zonal/upload-avatar etc. Shown in the Guardian Portal sidebar/
+// topbar (nav-avatar) and on the My Profile page, replacing the plain
+// initials badge once set.
+app.post(
+  "/api/guardian/upload-avatar",
+  requireAuth,
+  requireRole("guardians"),
+  blockIfMustChangePassword,
+  handleUploadError(upload.single("avatar")),
+  async (req, res) => {
+    try {
+      await ensureGuardianAvatarSupport();
+      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+      if (!req.file.mimetype.startsWith("image/")) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(400).json({
+          error: "Profile picture must be an image file (JPEG or PNG).",
+        });
+      }
+      const converted = await convertHeicIfNeeded(req.file);
+      if (converted) req.file = converted;
+      const filePath = `/uploads/${req.file.filename}`;
+      await pool.query(
+        "UPDATE guardians SET avatar_url = ? WHERE parent_code = ?",
+        [filePath, req.user.user_id],
+      );
+      res.json({ avatar_url: filePath });
+    } catch (err) {
+      console.error("/api/guardian/upload-avatar error:", err);
+      res.status(500).json({ error: "Could not upload profile picture" });
+    }
+  },
+);
+
+// Multi-School Overview — every child linked to this guardian, at
+// whichever school(s) they're actually enrolled in, with enough per-
+// child summary (school, class, status) to drive the dashboard's list
+// without a round trip per card. school_name is joined in per-row
+// (not resolved once) since children can genuinely be at different
+// schools.
+app.get(
+  "/api/guardian/children",
+  requireAuth,
+  requireRole("guardians"),
+  blockIfMustChangePassword,
+  async (req, res) => {
+    try {
+      const guardianId = await resolveGuardianId(req);
+      if (!guardianId) {
+        return res.status(404).json({ error: "Guardian record not found." });
+      }
+      const [rows] = await pool.query(
+        `SELECT s.student_id, s.first_name, s.middle_name, s.last_name,
+                s.class_level, s.section, s.stream, s.status,
+                s.profile_photo_url, s.school_id, sc.school_name, sc.logo_url
+           FROM student_guardians sg
+           JOIN students s ON s.student_id = sg.student_id
+           JOIN schools sc ON sc.id = s.school_id
+          WHERE sg.guardian_id = ?
+          ORDER BY sc.school_name, s.class_level, s.first_name`,
+        [guardianId],
+      );
+      res.json(
+        rows.map((r) => ({
+          student_id: r.student_id,
+          full_name: [r.first_name, r.middle_name, r.last_name]
+            .filter(Boolean)
+            .join(" "),
+          class_level: r.class_level,
+          section: r.section,
+          stream: r.stream,
+          status: r.status,
+          profile_photo_url: r.profile_photo_url || null,
+          school_id: r.school_id,
+          school_name: r.school_name,
+          school_logo_url: r.logo_url || null,
+        })),
+      );
+    } catch (err) {
+      console.error("/api/guardian/children error:", err);
+      res.status(500).json({ error: "Could not load your children." });
+    }
+  },
+);
+
+// One child's dashboard summary — current enrollment status, today's
+// attendance, this term's conduct grade, and days-absent-so-far, all in
+// one call so the guardian's per-child view doesn't need four separate
+// widgets each firing their own request. Reuses the exact same
+// countConductWarnings/conductGradeForWarningCount/getTermWindow
+// helpers the student's own report card uses, scoped to this term's
+// window, so a parent and their child are always looking at the same
+// numbers.
+app.get(
+  "/api/guardian/children/:student_id/overview",
+  requireAuth,
+  requireRole("guardians"),
+  blockIfMustChangePassword,
+  async (req, res) => {
+    try {
+      const guardianId = await resolveGuardianId(req);
+      if (!guardianId) {
+        return res.status(404).json({ error: "Guardian record not found." });
+      }
+      const child = await requireOwnChild(guardianId, req.params.student_id);
+      if (!child) {
+        return res
+          .status(404)
+          .json({ error: "This child isn't linked to your account." });
+      }
+
+      const currentTerm = await getCurrentTerm(child.school_id);
+      const [statusRows] = await pool.query(
+        `SELECT status, reason FROM student_term_status
+           WHERE school_id = ? AND student_id = ? AND term = ?`,
+        [child.school_id, child.student_id, currentTerm],
+      );
+
+      const [presentRows] = await pool.query(
+        `SELECT attendance_date FROM student_attendance
+           WHERE student_id = ? AND school_id = ? AND status = 'present'
+           ORDER BY attendance_date DESC LIMIT 120`,
+        [child.student_id, child.school_id],
+      );
+      const presentDates = new Set(
+        presentRows.map((r) => toDateOnly(new Date(r.attendance_date))),
+      );
+      const termStartDate = await getTermStartDate(child.school_id);
+      const semesterStatus = await getSemesterStatus(child.school_id);
+      const closedFrom =
+        semesterStatus === "closed"
+          ? await getSemesterClosedDate(child.school_id)
+          : null;
+
+      // Passing "now" (rather than a real sync timestamp) as the last
+      // arg is deliberate here: unlike the report card's synced-only
+      // conduct grade, the guardian dashboard wants a live, as-of-today
+      // count, not one gated behind this term having been pushed yet —
+      // getTermWindow only uses this value as the window's END date.
+      const { startDate, endDate } = await getTermWindow(
+        child.student_id,
+        child.school_id,
+        child.class_level,
+        child.section,
+        child.stream,
+        currentTerm,
+        new Date(),
+      );
+      const conduct_warnings = await countConductWarnings(
+        child.student_id,
+        child.school_id,
+        startDate,
+        endDate,
+      );
+
+      res.json({
+        student_id: child.student_id,
+        full_name: [child.first_name, child.middle_name, child.last_name]
+          .filter(Boolean)
+          .join(" "),
+        class_level: child.class_level,
+        section: child.section,
+        stream: child.stream,
+        enrollment_status: child.status,
+        term: currentTerm,
+        term_status: statusRows.length > 0 ? statusRows[0].status : "Active",
+        term_status_reason: statusRows.length > 0 ? statusRows[0].reason : null,
+        present_today: presentDates.has(toDateOnly(new Date())),
+        attendance_streak: computeStreak(
+          presentDates,
+          120,
+          termStartDate,
+          closedFrom,
+        ),
+        conduct_warnings,
+        conduct_grade: conductGradeForWarningCount(conduct_warnings),
+      });
+    } catch (err) {
+      console.error("/api/guardian/children/:student_id/overview error:", err);
+      res.status(500).json({ error: "Could not load this child's overview." });
+    }
+  },
+);
+
+// Academic performance — same raw per-assessment rows as the student's
+// own /api/student/my-marks, just fetched for a linked child instead of
+// req.user themselves.
+app.get(
+  "/api/guardian/children/:student_id/marks",
+  requireAuth,
+  requireRole("guardians"),
+  blockIfMustChangePassword,
+  async (req, res) => {
+    try {
+      const guardianId = await resolveGuardianId(req);
+      if (!guardianId) {
+        return res.status(404).json({ error: "Guardian record not found." });
+      }
+      const child = await requireOwnChild(guardianId, req.params.student_id);
+      if (!child) {
+        return res
+          .status(404)
+          .json({ error: "This child isn't linked to your account." });
+      }
+      const [marks] = await pool.query(
+        `SELECT s.subject_id, s.subject_name, m.score, m.type, m.term
+           FROM marks m
+           JOIN subjects s ON m.subject_id = s.subject_id AND s.school_id = m.school_id
+          WHERE m.student_id = ? AND m.school_id = ?
+          ORDER BY m.term, s.subject_name, m.type`,
+        [child.student_id, child.school_id],
+      );
+      res.json(marks);
+    } catch (err) {
+      console.error("/api/guardian/children/:student_id/marks error:", err);
+      res.status(500).json({ error: "Could not load this child's marks." });
+    }
+  },
+);
+
+// Daily attendance — a 60-day day-by-day list (present / absent /
+// excused / weekend / holiday), same status classification as the
+// student portal's attendance-calendar widget but flattened to a
+// single recent window rather than a paged 182-day one, since a
+// guardian is checking in on recent days far more than paging back
+// through a whole year.
+app.get(
+  "/api/guardian/children/:student_id/attendance",
+  requireAuth,
+  requireRole("guardians"),
+  blockIfMustChangePassword,
+  async (req, res) => {
+    const WINDOW_DAYS = 60;
+    try {
+      const guardianId = await resolveGuardianId(req);
+      if (!guardianId) {
+        return res.status(404).json({ error: "Guardian record not found." });
+      }
+      const child = await requireOwnChild(guardianId, req.params.student_id);
+      if (!child) {
+        return res
+          .status(404)
+          .json({ error: "This child isn't linked to your account." });
+      }
+
+      const to = new Date();
+      const from = new Date(to);
+      from.setDate(from.getDate() - (WINDOW_DAYS - 1));
+
+      const [presentRows] = await pool.query(
+        `SELECT attendance_date FROM student_attendance
+           WHERE student_id = ? AND school_id = ? AND status = 'present'
+             AND attendance_date >= ? AND attendance_date <= ?`,
+        [child.student_id, child.school_id, toDateOnly(from), toDateOnly(to)],
+      );
+      const presentSet = new Set(
+        presentRows.map((r) => toDateOnly(new Date(r.attendance_date))),
+      );
+
+      const [excusedRows] = await pool.query(
+        `SELECT date_from, date_to FROM absence_requests
+           WHERE student_id = ? AND school_id = ? AND status = 'approved'
+             AND date_to >= ? AND date_from <= ?`,
+        [child.student_id, child.school_id, toDateOnly(from), toDateOnly(to)],
+      );
+      const excusedSet = new Set();
+      excusedRows.forEach((r) => {
+        const cur = new Date(r.date_from);
+        const end = new Date(r.date_to);
+        while (cur <= end) {
+          excusedSet.add(toDateOnly(cur));
+          cur.setDate(cur.getDate() + 1);
+        }
+      });
+
+      const today = toDateOnly(new Date());
+      const termStartDate = await getTermStartDate(child.school_id);
+      const semesterStatus = await getSemesterStatus(child.school_id);
+      const semesterClosedDate =
+        semesterStatus === "closed"
+          ? await getSemesterClosedDate(child.school_id)
+          : null;
+
+      const days = [];
+      const cursor = new Date(from);
+      while (cursor <= to) {
+        const dateStr = toDateOnly(cursor);
+        let status;
+        const holidayName = getEthiopianHolidayName(cursor);
+        if (termStartDate && dateStr < termStartDate) status = "not_started";
+        else if (semesterClosedDate && dateStr >= semesterClosedDate)
+          status = "semester_closed";
+        else if (holidayName) status = "holiday";
+        else if (!isSchoolDay(cursor)) status = "weekend";
+        else if (dateStr > today) status = "future";
+        else if (presentSet.has(dateStr)) status = "present";
+        else if (excusedSet.has(dateStr)) status = "excused";
+        else status = "absent";
+        days.push({ date: dateStr, status, holiday_name: holidayName || null });
+        cursor.setDate(cursor.getDate() + 1);
+      }
+
+      res.json({ from: toDateOnly(from), to: toDateOnly(to), days });
+    } catch (err) {
+      console.error(
+        "/api/guardian/children/:student_id/attendance error:",
+        err,
+      );
+      res
+        .status(500)
+        .json({ error: "Could not load this child's attendance." });
+    }
+  },
+);
+
+// Conduct — the same indiscipline-warning notifications the student's
+// own report card counts, but shown as a real-time feed here (what
+// happened and when) rather than just a term-end grade, since a
+// guardian is meant to find out about a conduct issue as it happens,
+// not just see the letter grade weeks later.
+app.get(
+  "/api/guardian/children/:student_id/conduct",
+  requireAuth,
+  requireRole("guardians"),
+  blockIfMustChangePassword,
+  async (req, res) => {
+    try {
+      const guardianId = await resolveGuardianId(req);
+      if (!guardianId) {
+        return res.status(404).json({ error: "Guardian record not found." });
+      }
+      const child = await requireOwnChild(guardianId, req.params.student_id);
+      if (!child) {
+        return res
+          .status(404)
+          .json({ error: "This child isn't linked to your account." });
+      }
+      const [rows] = await pool.query(
+        `SELECT notif_id, message, sent_at
+           FROM student_notifications
+          WHERE student_id = ? AND school_id = ? AND assessment_type = 'conduct_warning'
+          ORDER BY sent_at DESC`,
+        [child.student_id, child.school_id],
+      );
+      const currentTerm = await getCurrentTerm(child.school_id);
+      // Same "now" reasoning as the overview route above — a live count,
+      // not gated behind a marks push.
+      const { startDate, endDate } = await getTermWindow(
+        child.student_id,
+        child.school_id,
+        child.class_level,
+        child.section,
+        child.stream,
+        currentTerm,
+        new Date(),
+      );
+      const term_warning_count = await countConductWarnings(
+        child.student_id,
+        child.school_id,
+        startDate,
+        endDate,
+      );
+      res.json({
+        term_warning_count,
+        term_conduct_grade: conductGradeForWarningCount(term_warning_count),
+        warnings: rows,
+      });
+    } catch (err) {
+      console.error("/api/guardian/children/:student_id/conduct error:", err);
+      res
+        .status(500)
+        .json({ error: "Could not load this child's conduct record." });
+    }
+  },
+);
+
+// Mandatory first-login password reset — identical shape/flow to
+// /api/student/update-password (see that route's comments), just
+// against the guardians table and a real password rather than a
+// 6-digit PIN, since a guardian's own default is the free-text "1234"
+// (see DEFAULT_GUARDIAN_PASSWORD), not a PIN-shaped one. Deliberately
+// NOT behind blockIfMustChangePassword, for the same reason that
+// route isn't either — this is the only way out of that state.
+app.post(
+  "/api/guardian/update-password",
+  requireAuth,
+  requireRole("guardians"),
+  async (req, res) => {
+    const { currentPass, newPass } = req.body;
+    if (!currentPass || !newPass) {
+      return res
+        .status(400)
+        .json({ error: "Current and new password are both required" });
+    }
+    if (String(newPass).length < 4) {
+      return res
+        .status(400)
+        .json({ error: "New password must be at least 4 characters" });
+    }
+    if (newPass === DEFAULT_GUARDIAN_PASSWORD) {
+      return res.status(400).json({
+        error: "Choose a password other than the default one you were given.",
+      });
+    }
+
+    try {
+      await ensureGuardianParentCodeSupport();
+      const [rows] = await pool.query(
+        "SELECT security_password FROM guardians WHERE parent_code = ?",
+        [req.user.user_id],
+      );
+      if (rows.length === 0) {
+        return res.status(404).json({ error: "Guardian record not found" });
+      }
+      const match = await bcrypt.compare(
+        currentPass,
+        rows[0].security_password,
+      );
+      if (!match) {
+        return res.status(401).json({ error: "Current password incorrect" });
+      }
+
+      const hashed = await bcrypt.hash(newPass, 10);
+      await pool.query(
+        "UPDATE guardians SET security_password = ?, must_change_password = FALSE WHERE parent_code = ?",
+        [hashed, req.user.user_id],
+      );
+
+      // Re-issue the session cookie with must_change_password cleared —
+      // same reasoning as the student route this mirrors.
+      issueAuthToken(res, {
+        user_id: req.user.user_id,
+        role: req.user.role,
+        must_change_password: false,
+      });
+
+      res.json({
+        message: "Password updated successfully",
+        must_change_password: false,
+      });
+    } catch (err) {
+      console.error("/api/guardian/update-password error:", err);
+      res.status(500).json({ error: "Password update failed" });
     }
   },
 );
@@ -11042,6 +13107,7 @@ app.get(
         "Section",
         "Stream",
         "Status",
+        "Guardian",
         "Enrolled",
         "Left",
       ];
@@ -11060,6 +13126,7 @@ app.get(
             r.section || "",
             r.stream || "",
             r.status || "",
+            r.has_guardian ? "Has Guardian" : "No Guardian",
             r.enrolled_at ? formatEthiopianDateOnly(r.enrolled_at) : "",
             r.left_at ? formatEthiopianDateOnly(r.left_at) : "",
           ]
@@ -11118,6 +13185,7 @@ app.get(
                 <td>Grade ${escapeHtml(r.class_level ?? "—")}${r.section ? "-" + escapeHtml(r.section) : ""}</td>
                 <td>${escapeHtml(r.stream || "—")}</td>
                 <td>${escapeHtml(r.status || "—")}</td>
+                <td>${r.has_guardian ? "Has Guardian" : "No Guardian"}</td>
             </tr>`,
         )
         .join("");
@@ -11134,8 +13202,8 @@ app.get(
   <h1>Student Registry — ${escapeHtml(yearLabel)}</h1>
   <p class="muted">${rows.length} student(s)${status ? ` · Status: ${escapeHtml(status)}` : ""}${class_level ? ` · Grade ${escapeHtml(class_level)}` : ""} · Generated ${new Date().toLocaleDateString("en-GB", { year: "numeric", month: "short", day: "numeric" })}</p>
   <table>
-    <thead><tr><th>Student ID</th><th>Name</th><th>Sex</th><th>Class</th><th>Stream</th><th>Status</th></tr></thead>
-    <tbody>${tableRows || '<tr><td colspan="6">No students match this filter.</td></tr>'}</tbody>
+    <thead><tr><th>Student ID</th><th>Name</th><th>Sex</th><th>Class</th><th>Stream</th><th>Status</th><th>Guardian</th></tr></thead>
+    <tbody>${tableRows || '<tr><td colspan="7">No students match this filter.</td></tr>'}</tbody>
   </table>
 </body></html>`;
 
@@ -11283,6 +13351,136 @@ app.post(
     } catch (err) {
       console.error("/api/registrar/trigger-placement error:", err);
       res.status(500).json({ error: "Placement failed." });
+    }
+  },
+);
+
+// --- EMIS Retrieval Requests (Registrar only) ---
+// The other half of Super Admin's /api/super/emis-requests flow — see
+// the emis_retrieval_requests schema comment on
+// ensureSuperAdminCoreTables for the full picture. Scoped to this
+// Registrar's own school_id throughout; a Registrar can't see or act
+// on another school's requests.
+// Same shape as GET /api/super/schools/:id/emis-roster, scoped to the
+// Registrar's own school — feeds the Registrar's EMIS nav (list of
+// students with EMIS linked/verified vs. still unlinked). The Registrar
+// can see this at any time; sending a retrieval request is still only
+// something the Super Admin can initiate (POST /api/super/schools/:id/
+// emis-requests) — this endpoint is read-only.
+app.get(
+  "/api/registrar/emis-roster",
+  requireAuth,
+  requireRegistrarOrRecorder,
+  async (req, res) => {
+    try {
+      const roster = await getEmisRosterForSchool(req.user.school_id);
+      res.json(roster);
+    } catch (err) {
+      console.error("/api/registrar/emis-roster error:", err);
+      res.status(500).json({ error: "Could not load the EMIS roster." });
+    }
+  },
+);
+
+app.get(
+  "/api/registrar/emis-requests",
+  requireAuth,
+  requireRegistrarOnly,
+  async (req, res) => {
+    try {
+      await ensureSuperAdminCoreTables();
+      const [rows] = await pool.query(
+        `SELECT request_id, requested_by, student_count, note, status,
+                    reviewed_by, reviewed_at, rejection_reason, fulfilled_count, fulfilled_at, created_at
+             FROM emis_retrieval_requests
+             WHERE school_id = ?
+             ORDER BY created_at DESC`,
+        [req.user.school_id],
+      );
+      res.json(rows);
+    } catch (err) {
+      console.error("/api/registrar/emis-requests GET error:", err);
+      res
+        .status(500)
+        .json({ error: "Could not load EMIS retrieval requests." });
+    }
+  },
+);
+
+app.post(
+  "/api/registrar/emis-requests/:id/approve",
+  requireAuth,
+  requireRegistrarOnly,
+  async (req, res) => {
+    try {
+      const [rows] = await pool.query(
+        "SELECT request_id, status FROM emis_retrieval_requests WHERE request_id = ? AND school_id = ?",
+        [req.params.id, req.user.school_id],
+      );
+      if (rows.length === 0)
+        return res.status(404).json({ error: "Request not found." });
+      if (rows[0].status !== "pending")
+        return res
+          .status(400)
+          .json({ error: "This request was already reviewed." });
+      await pool.query(
+        `UPDATE emis_retrieval_requests
+             SET status = 'approved', reviewed_by = ?, reviewed_at = NOW()
+             WHERE request_id = ?`,
+        [req.user.user_id, req.params.id],
+      );
+      await logAudit(
+        req,
+        "emis_request.approve",
+        "school",
+        req.user.school_id,
+        `Approved EMIS retrieval request #${req.params.id}`,
+      );
+      res.json({
+        message:
+          "Request approved. The Super Admin can now download the roster.",
+      });
+    } catch (err) {
+      console.error("/api/registrar/emis-requests/:id/approve error:", err);
+      res.status(500).json({ error: "Could not approve the request." });
+    }
+  },
+);
+
+app.post(
+  "/api/registrar/emis-requests/:id/reject",
+  requireAuth,
+  requireRegistrarOnly,
+  async (req, res) => {
+    const { reason } = req.body;
+    try {
+      const [rows] = await pool.query(
+        "SELECT request_id, status FROM emis_retrieval_requests WHERE request_id = ? AND school_id = ?",
+        [req.params.id, req.user.school_id],
+      );
+      if (rows.length === 0)
+        return res.status(404).json({ error: "Request not found." });
+      if (rows[0].status !== "pending")
+        return res
+          .status(400)
+          .json({ error: "This request was already reviewed." });
+      await pool.query(
+        `UPDATE emis_retrieval_requests
+             SET status = 'rejected', reviewed_by = ?, reviewed_at = NOW(), rejection_reason = ?
+             WHERE request_id = ?`,
+        [req.user.user_id, reason?.trim() || null, req.params.id],
+      );
+      await logAudit(
+        req,
+        "emis_request.reject",
+        "school",
+        req.user.school_id,
+        `Rejected EMIS retrieval request #${req.params.id}${reason ? `: ${reason}` : ""}`,
+      );
+      res.json({ message: "Request rejected." });
+    } catch (err) {
+      console.error("/api/registrar/emis-requests/:id/reject error:", err);
+      res.status(500).json({ error: "Could not reject the request." });
     }
   },
 );
@@ -11458,9 +13656,20 @@ async function insertTransferredStudent(conn, school_id, fields) {
 
   // section is left NULL on purpose — transferred-in students wait for
   // the Placement Wizard exactly like new registrations do.
+  // For an in-network transfer (via transfer_code), fields.emis_id arrives
+  // already-normalized inside the source student's snapshot JSON — see
+  // POST /api/registrar/transfers/outgoing, which now includes emis_id in
+  // the snapshot it captures. It just carries over automatically; no new
+  // lookup needed for that path. For an external/manual transfer, the
+  // caller has already run it through GET /api/emis/lookup the same way
+  // New Entrant Registration does.
+  const normalizedEmisId = fields.emis_id
+    ? normalizeEmisId(fields.emis_id)
+    : null;
+
   await conn.query(
-    `INSERT INTO students (student_id, school_id, school_name, first_name, middle_name, last_name, sex, class_level, stream, section, phone_number, fayda_number, status, lms_username, email_address, assigned_computer, security_password, must_change_password)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, TRUE)`,
+    `INSERT INTO students (student_id, school_id, school_name, first_name, middle_name, last_name, sex, class_level, stream, section, phone_number, fayda_number, emis_id, status, lms_username, email_address, assigned_computer, security_password, must_change_password)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)`,
     [
       student_id,
       school_id,
@@ -11473,6 +13682,7 @@ async function insertTransferredStudent(conn, school_id, fields) {
       fields.stream,
       fields.phone_number || null,
       fields.fayda_number || null,
+      normalizedEmisId,
       status,
       lms_username,
       email_address,
@@ -11550,6 +13760,7 @@ async function getStudentAcademicChain(school_id, student_id) {
       ]
         .filter(Boolean)
         .join(" "),
+      class_level: studentRow.class_level,
       entered_at: incoming ? incoming.completed_at : studentRow.created_at,
       left_at: null, // filled in below once the chain is fully walked
       status: studentRow.status,
@@ -11588,10 +13799,37 @@ async function getStudentAcademicChain(school_id, student_id) {
     }
   }
 
-  // Merge into a flat per-grade (9-12) summary across the whole chain —
-  // this is what answers "does this student already have a grade 9/10/
-  // 11/12 record, and has a document already been issued for it".
-  const grade_summary = [9, 10, 11, 12].map((class_level) => {
+  // Merge into a flat per-grade summary across the whole chain — this
+  // is what answers "does this student already have a grade N record,
+  // and has a document already been issued for it". Used to hardcode
+  // grades 9-12 here regardless of the actual student, which is wrong
+  // for the majority of students: BASIC (1-6) and CORE (7-8) students
+  // would only ever see "No record"/"Not issued" across all four rows,
+  // and any student's real grade never appeared at all unless it
+  // happened to fall in 9-12. The grade list now comes from what's
+  // actually on file for THIS student across the whole chain: their
+  // current class_level at every stop (so a freshly-registered grade
+  // with no promotion or document yet still shows up, not just grades
+  // that already have one), plus every from/to class_level touched by
+  // a promotion, plus every class_level a document was ever issued
+  // for — deduplicated and sorted low to high.
+  const gradeLevels = new Set();
+  for (const stop of chain) {
+    if (stop.class_level != null) gradeLevels.add(Number(stop.class_level));
+    stop.promotions.forEach((p) => {
+      if (p.from_class_level != null)
+        gradeLevels.add(Number(p.from_class_level));
+      if (p.to_class_level != null) gradeLevels.add(Number(p.to_class_level));
+    });
+    stop.documents.forEach((d) => {
+      if (d.class_level != null) gradeLevels.add(Number(d.class_level));
+    });
+  }
+  const sortedGradeLevels = Array.from(gradeLevels)
+    .filter((n) => Number.isInteger(n))
+    .sort((a, b) => a - b);
+
+  const grade_summary = sortedGradeLevels.map((class_level) => {
     let has_academic_record = false;
     let promoted_entry = null;
     const documents = [];
@@ -11708,6 +13946,7 @@ app.post(
         stream: student.stream,
         phone_number: student.phone_number,
         fayda_number: student.fayda_number,
+        emis_id: student.emis_id,
       };
 
       await conn.query(
@@ -12037,10 +14276,20 @@ app.post(
         stream,
         phone_number,
         fayda_number,
+        emis_id,
       } = req.body;
       if (!first_name || !last_name || !sex || !class_level || !stream) {
         return res.status(400).json({
           error: "First name, last name, sex, grade, and stream are required.",
+        });
+      }
+      // Same optional-field, re-validated-server-side treatment as
+      // /api/register — see GET /api/emis/lookup for the pre-check the
+      // frontend runs before the Registrar gets here.
+      const normalizedEmisId = emis_id ? normalizeEmisId(emis_id) : null;
+      if (normalizedEmisId && !isValidEmisIdFormat(normalizedEmisId)) {
+        return res.status(400).json({
+          error: "EMIS ID must be 10-13 letters/numbers (e.g. STU113168894).",
         });
       }
 
@@ -12057,6 +14306,7 @@ app.post(
           stream,
           phone_number,
           fayda_number,
+          emis_id: normalizedEmisId,
         },
       );
 
@@ -12075,6 +14325,7 @@ app.post(
             stream,
             phone_number,
             fayda_number,
+            emis_id: normalizedEmisId,
           }),
           student_id,
           req.user.user_id,
@@ -12089,6 +14340,14 @@ app.post(
       });
     } catch (err) {
       await conn.rollback();
+      if (
+        err.code === "ER_DUP_ENTRY" &&
+        String(err.sqlMessage).includes("emis_id")
+      ) {
+        return res.status(409).json({
+          error: "This EMIS ID is already linked to another student.",
+        });
+      }
       console.error("/api/registrar/transfers/incoming/manual error:", err);
       res
         .status(500)
@@ -12540,34 +14799,55 @@ app.get(
   requireRegistrarOnly,
   async (req, res) => {
     try {
+      // The Graduation Wizard only unlocks once Semester 2 is closed —
+      // but closing Semester 2 is exactly what runs rolloverAcademicYear,
+      // which immediately flips every Active student (Grade 12 included)
+      // to 'Unregistered'. So by the time this screen is usable, Grade
+      // 12 students are never 'Active' anymore — matching only 'Active'
+      // here made this list (and the process endpoint below) come back
+      // empty every time. 'Unregistered' is included so they're visible
+      // and actionable (graduate or readmit) right after rollover, same
+      // as 'Active' would be for a school that hasn't rolled over yet.
       const [rows] = await pool.query(
         `SELECT student_id, first_name, middle_name, last_name, sex, class_level, section, stream
-             FROM students WHERE school_id = ? AND CAST(class_level AS UNSIGNED) >= 12 AND status = 'Active'
+             FROM students WHERE school_id = ? AND CAST(class_level AS UNSIGNED) >= 12 AND status IN ('Active', 'Unregistered')
              ORDER BY first_name, last_name`,
         [req.user.school_id],
       );
       const cutoff_mark = await getPassMarkCutoff(req.user.school_id);
       const leaderboard = await getSchoolYearLeaderboard(req.user.school_id);
-      const withCategory = rows.map((r) => {
-        const entry = leaderboard.find(
-          (l) => String(l.student_id) === String(r.student_id),
-        );
-        const year_average = entry ? entry.year_average : null;
-        const category =
-          year_average === null
-            ? "No marks on record yet"
-            : year_average >= cutoff_mark
-              ? "Eligible for Promotion"
-              : "Detained/Retained";
-        return {
-          ...r,
-          full_name: [r.first_name, r.middle_name, r.last_name]
-            .filter(Boolean)
-            .join(" "),
-          year_average,
-          category,
-        };
-      });
+      const withCategory = await Promise.all(
+        rows.map(async (r) => {
+          const entry = leaderboard.find(
+            (l) => String(l.student_id) === String(r.student_id),
+          );
+          const year_average = entry ? entry.year_average : null;
+          const category =
+            year_average === null
+              ? "No marks on record yet"
+              : year_average >= cutoff_mark
+                ? "Eligible for Promotion"
+                : "Detained/Retained";
+          // Grade 12 progression is actually decided by the national
+          // exam (EASE), not this internal cutoff — the cutoff/average
+          // above is still shown for reference, but ease_status is what
+          // POST /api/registrar/graduation/process actually gates on.
+          const ease = await getEaseStatusForStudent(
+            r.student_id,
+            req.user.school_id,
+            12,
+          );
+          return {
+            ...r,
+            full_name: [r.first_name, r.middle_name, r.last_name]
+              .filter(Boolean)
+              .join(" "),
+            year_average,
+            category,
+            ease_status: ease.status,
+          };
+        }),
+      );
       res.json(withCategory);
     } catch (err) {
       console.error("/api/registrar/graduation/eligible error:", err);
@@ -12610,20 +14890,48 @@ app.post(
       return res.status(401).json({ error: "Incorrect password." });
     }
     try {
+      // Same 'Unregistered' reasoning as the eligible-list query above —
+      // by the time Semester 2 is closed (a hard prerequisite checked
+      // just above), rollover has already flipped these students out of
+      // 'Active'.
       const [studentRows] = await pool.query(
         `SELECT student_id, class_level FROM students
-             WHERE school_id = ? AND status = 'Active' AND student_id IN (?)`,
+             WHERE school_id = ? AND status IN ('Active', 'Unregistered') AND student_id IN (?)`,
         [req.user.school_id, student_ids],
       );
       const cutoff_mark = await getPassMarkCutoff(req.user.school_id);
       const leaderboard = await getSchoolYearLeaderboard(req.user.school_id);
 
-      // Same rule as regular promotion: below the cut-off needs a
-      // written override reason, checked server-side too since this
-      // is what actually gets committed.
+      // Grade 12 graduation is gated on the national exam (EASE), not
+      // this school's own internal cutoff — the internal average is
+      // still computed below (and still needs an override reason to
+      // graduate someone below it), but a student without a Pass on
+      // file is skipped outright, no override possible: same "no
+      // disagreeing with the exam" rule as the Grade 6/8 Promote gate.
+      // A Fail specifically isn't handled here at all — that student
+      // needs the distinct readmit decision (POST
+      // /api/registrar/graduation/grade12-readmit below), not a skip
+      // they could retry from this same form.
       const toGraduate = [];
       const skipped = [];
       for (const s of studentRows) {
+        const ease = await getEaseStatusForStudent(
+          s.student_id,
+          req.user.school_id,
+          12,
+        );
+        if (ease.status !== "Pass") {
+          skipped.push({
+            student_id: s.student_id,
+            reason:
+              ease.status === "Not Marked"
+                ? "Not yet marked as an EASE candidate."
+                : ease.status === "Pending Result"
+                  ? "Marked as an EASE candidate, but no result uploaded yet."
+                  : "EASE result is a Fail — use the Grade 12 readmit decision instead.",
+          });
+          continue;
+        }
         const entry = leaderboard.find(
           (l) => String(l.student_id) === String(s.student_id),
         );
@@ -12646,7 +14954,7 @@ app.post(
       if (toGraduate.length > 0) {
         const [result] = await pool.query(
           `UPDATE students SET status = 'Graduated', graduation_batch = ?, graduated_at = NOW()
-                 WHERE school_id = ? AND status = 'Active' AND student_id IN (?)`,
+                 WHERE school_id = ? AND status IN ('Active', 'Unregistered') AND student_id IN (?)`,
           [batch_tag, req.user.school_id, toGraduate],
         );
         graduated = result.affectedRows;
@@ -12660,6 +14968,350 @@ app.post(
     } catch (err) {
       console.error("/api/registrar/graduation/process error:", err);
       res.status(500).json({ error: "Could not graduate this batch" });
+    }
+  },
+);
+
+// Distinct from the ordinary Grade 9-11 "retain" decision on PUT
+// /api/promote/:id — a Grade 12 student who fails EASE isn't simply
+// staying at the same grade for another routine cycle, they're
+// specifically being readmitted to repeat Grade 12 after a national
+// exam failure, which the Registrar wants tracked as its own kind of
+// decision (own audit action name below) rather than folded into the
+// generic retain path. Requires the student's EASE status to actually
+// be 'Fail' — a student who's simply unmarked/pending has no result to
+// readmit them over yet, and a Pass should go through the normal
+// graduation endpoint instead.
+// Self-heals promotion_audit_log.action to accept 'grade12_readmit'
+// alongside the original 'promote'/'retain' pair — same widen-the-enum
+// reasoning as the pending_roster self-heals above (MySQL strict mode
+// hard-errors on an out-of-range ENUM value rather than truncating).
+let promotionAuditActionReady = false;
+async function ensurePromotionAuditActionEnum() {
+  if (promotionAuditActionReady) return;
+  const [cols] = await pool.query(
+    `SELECT COLUMN_TYPE FROM information_schema.columns
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'promotion_audit_log' AND COLUMN_NAME = 'action'`,
+  );
+  if (
+    cols.length > 0 &&
+    cols[0].COLUMN_TYPE !== "enum('promote','retain','grade12_readmit')"
+  ) {
+    await pool.query(
+      `ALTER TABLE promotion_audit_log MODIFY action ENUM('promote','retain','grade12_readmit') NOT NULL`,
+    );
+  }
+  promotionAuditActionReady = true;
+}
+
+app.post(
+  "/api/registrar/graduation/grade12-readmit",
+  requireAuth,
+  requireRegistrarOnly,
+  async (req, res) => {
+    const { student_id } = req.body;
+    if (!student_id)
+      return res.status(400).json({ error: "student_id is required." });
+    try {
+      const [studentRows] = await pool.query(
+        "SELECT class_level, status FROM students WHERE student_id = ? AND school_id = ?",
+        [student_id, req.user.school_id],
+      );
+      if (studentRows.length === 0)
+        return res
+          .status(404)
+          .json({ error: "Student not found in your school." });
+      if (Number(studentRows[0].class_level) !== 12) {
+        return res
+          .status(400)
+          .json({ error: "This decision only applies to Grade 12 students." });
+      }
+      const ease = await getEaseStatusForStudent(
+        student_id,
+        req.user.school_id,
+        12,
+      );
+      if (ease.status !== "Fail") {
+        return res.status(400).json({
+          error:
+            ease.status === "Pass"
+              ? "This student passed EASE — graduate them via the normal graduation workflow instead."
+              : "This student has no EASE Fail result on file to readmit them over.",
+        });
+      }
+      // class_level/section/stream stay exactly as-is — same as a
+      // normal retain, the student simply repeats Grade 12. Status is
+      // forced back to 'Active' unconditionally (not just confirmed) —
+      // by the time this is reachable the student is usually
+      // 'Unregistered' (Semester 2 close/rollover runs before the
+      // Graduation Wizard unlocks at all), and this is exactly what's
+      // supposed to restore their login access.
+      await pool.query(
+        "UPDATE students SET status = 'Active' WHERE student_id = ? AND school_id = ?",
+        [student_id, req.user.school_id],
+      );
+      await ensurePromotionAuditActionEnum();
+      await pool.query(
+        `INSERT INTO promotion_audit_log
+             (student_id, school_id, action, from_class_level, to_class_level, year_average, cutoff_mark, was_override, override_reason, decided_by)
+             VALUES (?, ?, 'grade12_readmit', 12, 12, ?, ?, FALSE, ?, ?)`,
+        [
+          student_id,
+          req.user.school_id,
+          ease.result?.mark ?? null,
+          ease.result?.cutoff ?? null,
+          `EASE Fail (mark ${ease.result?.mark ?? "—"}, cutoff ${ease.result?.cutoff ?? "—"})`,
+          req.user.user_id,
+        ],
+      );
+      res.json({
+        message: "Recorded — student readmitted to repeat Grade 12.",
+      });
+    } catch (err) {
+      console.error("/api/registrar/graduation/grade12-readmit error:", err);
+      res.status(500).json({ error: "Could not record the readmit decision." });
+    }
+  },
+);
+
+// --- EASE Candidates (Registrar side) ---
+// Table of the school's own Grade 6/8/12 students, filterable by
+// grade/section/stream/status. Each row's status is resolved live via
+// getEaseStatusForStudent — Not Marked / Pending Result / Pass / Fail —
+// rather than stored, so a result the Super Admin uploads after the
+// Registrar has already marked a candidate shows up immediately without
+// any extra write.
+app.get(
+  "/api/registrar/ease-candidates",
+  requireAuth,
+  requireRegistrarOrRecorder,
+  async (req, res) => {
+    try {
+      const { class_level, section, stream, status } = req.query;
+      const grades = class_level ? [Number(class_level)] : EASE_GRADES;
+      if (class_level && !EASE_GRADES.includes(Number(class_level))) {
+        return res.status(400).json({
+          error: `class_level must be one of: ${EASE_GRADES.join(", ")}.`,
+        });
+      }
+      let sql = `SELECT student_id, first_name, middle_name, last_name, sex, class_level, section, stream
+                 FROM students WHERE school_id = ? AND class_level IN (?) AND status = 'Active'`;
+      const params = [req.user.school_id, grades];
+      if (section) {
+        sql += ` AND TRIM(UPPER(section)) = TRIM(UPPER(?))`;
+        params.push(section);
+      }
+      if (stream) {
+        sql += ` AND TRIM(UPPER(stream)) = TRIM(UPPER(?))`;
+        params.push(stream);
+      }
+      sql += ` ORDER BY class_level, first_name, last_name`;
+      const [students] = await pool.query(sql, params);
+
+      // Computed once per request (not per row/grade) — the same school
+      // either has Grade 7 or it doesn't, regardless of how many Grade 6
+      // candidates are in this list. Only Grade 6 and Grade 8 candidates
+      // are ever gated on this (Grade 12's "next grade" is graduation
+      // itself, handled by the existing, separate graduation flow).
+      const schoolGrades = await getSchoolGradeSet(req.user.school_id);
+
+      const withStatus = await Promise.all(
+        students.map(async (s) => {
+          const ease = await getEaseStatusForStudent(
+            s.student_id,
+            req.user.school_id,
+            s.class_level,
+          );
+          const nextGrade = Number(s.class_level) + 1;
+          const hasNextGradeHere =
+            Number(s.class_level) === 12 ? null : schoolGrades.has(nextGrade);
+          return {
+            ...s,
+            full_name: [s.first_name, s.middle_name, s.last_name]
+              .filter(Boolean)
+              .join(" "),
+            admission_number: ease.candidate?.admission_number ?? null,
+            exam_year: ease.candidate?.exam_year ?? null,
+            ease_status: ease.status,
+            mark: ease.result?.mark ?? null,
+            cutoff: ease.result?.cutoff ?? null,
+            average: ease.result?.average ?? null,
+            percentile: ease.result?.percentile ?? null,
+            // null for Grade 12 (not applicable there); true/false for
+            // Grade 6/8 — false is what triggers the Graduated/Outgoing
+            // button client-side instead of the normal promote flow.
+            has_next_grade_here: hasNextGradeHere,
+          };
+        }),
+      );
+
+      const filtered = status
+        ? withStatus.filter(
+            (s) => s.ease_status.toLowerCase() === String(status).toLowerCase(),
+          )
+        : withStatus;
+
+      res.json(filtered);
+    } catch (err) {
+      console.error("/api/registrar/ease-candidates GET error:", err);
+      res.status(500).json({ error: "Could not load EASE candidates." });
+    }
+  },
+);
+
+// Per-row action — no batch select, matching the spec. Registrar types
+// the student's admission number and this either creates or updates
+// (re-typo-fix) this year's ease_candidates row for them. Re-marking is
+// allowed (e.g. to correct a typo before a result has matched) — the
+// UNIQUE KEY on (student_id, exam_year) means this is an upsert, not a
+// duplicate-insert error.
+app.post(
+  "/api/registrar/ease-candidates/:student_id",
+  requireAuth,
+  requireRegistrarOrRecorder,
+  async (req, res) => {
+    const { admission_number } = req.body;
+    if (!admission_number || !String(admission_number).trim()) {
+      return res.status(400).json({ error: "admission_number is required." });
+    }
+    try {
+      const [studentRows] = await pool.query(
+        "SELECT class_level, first_name FROM students WHERE student_id = ? AND school_id = ? AND status = 'Active'",
+        [req.params.student_id, req.user.school_id],
+      );
+      if (studentRows.length === 0) {
+        return res
+          .status(404)
+          .json({ error: "Student not found in your school." });
+      }
+      const class_level = Number(studentRows[0].class_level);
+      if (!EASE_GRADES.includes(class_level)) {
+        return res.status(400).json({
+          error: `Only Grade ${EASE_GRADES.join("/")} students can be marked as EASE candidates.`,
+        });
+      }
+      await ensureEaseTables();
+      const exam_year = currentEaseExamYear();
+      await pool.query(
+        `INSERT INTO ease_candidates (student_id, school_id, class_level, admission_number, first_name, exam_year, marked_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE admission_number = VALUES(admission_number), class_level = VALUES(class_level),
+               first_name = VALUES(first_name), marked_by = VALUES(marked_by), marked_at = NOW()`,
+        [
+          req.params.student_id,
+          req.user.school_id,
+          class_level,
+          String(admission_number).trim(),
+          studentRows[0].first_name,
+          exam_year,
+          req.user.user_id,
+        ],
+      );
+      const ease = await getEaseStatusForStudent(
+        req.params.student_id,
+        req.user.school_id,
+        class_level,
+      );
+      res.json({
+        message: "Marked as EASE candidate.",
+        ease_status: ease.status,
+      });
+    } catch (err) {
+      console.error(
+        "/api/registrar/ease-candidates/:student_id POST error:",
+        err,
+      );
+      res
+        .status(500)
+        .json({ error: "Could not mark this student as a candidate." });
+    }
+  },
+);
+
+// --- EASE Candidates: Graduated/Outgoing (Grade 6/8 leaving school) ---
+// For a school that doesn't offer the grade right above this student's
+// current one (e.g. a Grade 6 school with no Grade 7 tier, or a
+// Grade 8 school with no Grade 9 tier — see schoolHasGrade), a Pass OR
+// a Fail on the national exam means the same thing operationally: this
+// student can't continue at THIS school and has to enroll somewhere
+// else. Rather than force that student's account to sit in limbo, this
+// marks them the same way the rest of the app already treats "no longer
+// at this school" — status = 'Transferred - EASE Outgoing' — which
+// immediately (with zero extra code) rides on every existing terminal-
+// status guard already in this file: login is blocked
+// (isTerminalStudentStatus / the /api/login check), their record is
+// locked against edits, and they're excluded from every "active
+// students" query. If the student later re-enrolls at this same
+// school, the Registrar undoes this exactly the same way they'd undo a
+// graduation or external transfer — the existing Re-admission screen
+// (GET/POST /api/registrar/readmit/:id) already accepts any
+// Transferred-* status.
+app.post(
+  "/api/registrar/ease-candidates/:student_id/outgoing",
+  requireAuth,
+  requireRegistrarOrRecorder,
+  async (req, res) => {
+    try {
+      const [studentRows] = await pool.query(
+        "SELECT class_level, status FROM students WHERE student_id = ? AND school_id = ? AND status = 'Active'",
+        [req.params.student_id, req.user.school_id],
+      );
+      if (studentRows.length === 0) {
+        return res
+          .status(404)
+          .json({ error: "Active student not found in your school." });
+      }
+      const class_level = Number(studentRows[0].class_level);
+      if (![6, 8].includes(class_level)) {
+        return res.status(400).json({
+          error:
+            "Only Grade 6 or Grade 8 students can be marked Graduated/Outgoing this way.",
+        });
+      }
+      const hasNextGradeHere = await schoolHasGrade(
+        req.user.school_id,
+        class_level + 1,
+      );
+      if (hasNextGradeHere) {
+        return res.status(409).json({
+          error: `Your school offers Grade ${class_level + 1} — promote this student normally instead of marking them Outgoing.`,
+        });
+      }
+      const ease = await getEaseStatusForStudent(
+        req.params.student_id,
+        req.user.school_id,
+        class_level,
+      );
+      if (ease.status !== "Pass" && ease.status !== "Fail") {
+        return res.status(409).json({
+          error:
+            ease.status === "Not Marked"
+              ? "This student hasn't been marked as an EASE candidate yet."
+              : "This student is marked as an EASE candidate, but no result has been uploaded yet.",
+        });
+      }
+      await pool.query(
+        `UPDATE students SET status = 'Transferred - EASE Outgoing' WHERE student_id = ? AND school_id = ?`,
+        [req.params.student_id, req.user.school_id],
+      );
+      await logAudit(
+        req,
+        "ease.mark_outgoing",
+        "student",
+        req.params.student_id,
+        `Grade ${class_level} EASE ${ease.status} — no Grade ${class_level + 1} at this school; marked Graduated/Outgoing`,
+      );
+      res.json({
+        message: `${req.params.student_id} marked Graduated/Outgoing and their account has been locked. Re-admit them from the Re-admission screen if they return to this school.`,
+      });
+    } catch (err) {
+      console.error(
+        "/api/registrar/ease-candidates/:student_id/outgoing error:",
+        err,
+      );
+      res
+        .status(500)
+        .json({ error: "Could not mark this student Graduated/Outgoing." });
     }
   },
 );
@@ -13577,8 +16229,9 @@ async function buildReportCardForStudent(
   // being migrated to the same long label students.stream already
   // uses; streamBucketFor() classifies by keyword so this keeps
   // working whether a given subjects row has been migrated yet or not.
+  await ensureSubjectsGradeRangeColumns();
   const [allSubjectsRaw] = await pool.query(
-    `SELECT subject_name, stream FROM subjects WHERE school_id = ? ORDER BY subject_name`,
+    `SELECT subject_name, stream, min_class_level, max_class_level FROM subjects WHERE school_id = ? ORDER BY subject_name`,
     [school_id],
   );
   const allSubjects = await filterToZoneDictionary(allSubjectsRaw, school_id);
@@ -13587,7 +16240,11 @@ async function buildReportCardForStudent(
   latest.subjects.forEach((sub) => {
     marksBySubject[sub.subject_name] = sub;
   });
-  const dedupedSubjects = dedupeSubjectsForStream(allSubjects, streamBucket);
+  const dedupedSubjects = dedupeSubjectsForStream(
+    allSubjects,
+    streamBucket,
+    latest.class_level,
+  );
   const seenSubjectNames = new Set(dedupedSubjects.map((s) => s.subject_name));
   const mergedSubjects = dedupedSubjects.map((subj) => {
     const applicable = subj.applicable;
@@ -13667,141 +16324,18 @@ async function buildReportCardForStudent(
   return { ok: true, html, verify_code, class_level: latest.class_level };
 }
 
-app.get(
-  "/api/registrar/documents/report-card/:student_id/pdf",
-  requireAuth,
-  requireRegistrarOnly,
-  async (req, res) => {
-    try {
-      const isSample = req.params.student_id === SAMPLE_STUDENT.student_id;
-
-      let html, verify_code;
-      if (isSample) {
-        verify_code = "SAMPLE";
-        html = renderCertificateHtml({
-          school_name: "Newland High School (Sample)",
-          school_level: "GENERAL",
-          region: "Sample Region",
-          zone: "Sample Zone",
-          woreda: "Sample Woreda",
-          kebele: "Sample Kebele",
-          photo_html: buildPhotoHtml(null),
-          student_id: SAMPLE_STUDENT.student_id,
-          student_name: "Sample Student",
-          sex: "Female",
-          grade: 10,
-          section: "A",
-          stream: "General",
-          academic_year: `${approximateEthiopianYear(new Date())} E.C.`,
-          homeroom_teacher_name: "Sample Teacher",
-          homeroom_signature_html: "",
-          principal_name: "Sample Principal",
-          principal_signature_html: "",
-          subjects: [
-            {
-              en: "Sample Subject",
-              amh: null,
-              s1: 88,
-              s2: 91,
-              applicable: true,
-            },
-            {
-              en: "Sample Stream-Only Subject",
-              amh: null,
-              s1: null,
-              s2: null,
-              applicable: false,
-            },
-          ],
-          conduct_s1: "A",
-          conduct_s2: "A",
-          conduct_year: "A",
-          absent_days_s1: 0,
-          absent_days_s2: 0,
-          rank: 1,
-          class_size: 30,
-          result_promoted_class: "on",
-          result_detained_class: "",
-          promoted_to_grade_text: "Grade 11",
-          verify_code: "SAMPLE",
-          verify_url: `${req.protocol}://${req.get("host")}/verify/document/SAMPLE`,
-        });
-      } else {
-        // ?class_level=9 lets the Registrar pull an earlier grade's
-        // report card instead of the student's most recent one — e.g.
-        // downloading a Grade 12 student's Grade 9 record. Omitted
-        // (or invalid) falls back to the latest grade on file.
-        const requestedClassLevel =
-          req.query.class_level && !Number.isNaN(Number(req.query.class_level))
-            ? Number(req.query.class_level)
-            : null;
-        const result = await buildReportCardForStudent(
-          req.params.student_id,
-          req.user.school_id,
-          req,
-          requestedClassLevel,
-        );
-        if (!result.ok) {
-          const notFound = result.reason === "student record not found";
-          return res.status(404).json({
-            error: notFound
-              ? "Student not found in your school."
-              : "No report card record found for that grade.",
-          });
-        }
-        html = result.html;
-        verify_code = result.verify_code;
-      }
-
-      const browser = await getBrowser();
-      const page = await browser.newPage();
-      // See the matching comment on /api/student/certificate.pdf — without
-      // these, a JS error inside the template's own script (certificate.js)
-      // produces a silently blank marks table/QR with nothing in our logs.
-      page.on("pageerror", (err) =>
-        console.error(
-          `/api/registrar/documents/report-card render error (student ${req.params.student_id}):`,
-          err,
-        ),
-      );
-      page.on("console", (msg) => {
-        if (msg.type() === "error")
-          console.error(
-            `/api/registrar/documents/report-card console error (student ${req.params.student_id}):`,
-            msg.text(),
-          );
-      });
-      try {
-        // See the matching comment on /api/student/certificate.pdf.
-        await page.emulateMediaType("print");
-        await page.setContent(html, { waitUntil: "networkidle0" });
-        await page.evaluate(() => document.fonts.ready);
-        const pdfBuffer = await page.pdf({
-          printBackground: true,
-          preferCSSPageSize: true,
-        });
-        res.setHeader("Content-Type", "application/pdf");
-        const disposition = isSample ? "inline" : "attachment";
-        res.setHeader(
-          "Content-Disposition",
-          `${disposition}; filename="ReportCard-${req.params.student_id}.pdf"`,
-        );
-        res.send(pdfBuffer);
-      } finally {
-        await page.close();
-      }
-    } catch (err) {
-      console.error("/api/registrar/documents/report-card/pdf error:", err);
-      res.status(500).json({ error: "Could not generate the report card." });
-    }
-  },
-);
-
-// Bulk Report Cards — every student in one grade/section/stream,
+// Bulk Report Cards -- every student in one grade/section/stream,
 // combined into a single PDF (pdf-lib merges each student's page) so
 // the whole section can be printed as one file. buildReportCardForStudent
 // never blocks on incomplete marks now, so every student in the
-// section is included — missing marks just print null on their page.
+// section is included -- missing marks just print null on their page.
+//
+// IMPORTANT: this MUST be registered before the single-student
+// /api/registrar/documents/report-card/:student_id/pdf route below --
+// Express matches routes in registration order, and that route's
+// :student_id wildcard would otherwise swallow 'bulk' as if it were a
+// student ID, making every bulk request fail with "Student not found
+// in your school." before it ever reached this handler.
 app.get(
   "/api/registrar/documents/report-card/bulk/pdf",
   requireAuth,
@@ -13943,13 +16477,269 @@ app.get(
   },
 );
 
-// Official Transcript — the full Grade 9-12 academic record, rendered
-// from templates/transcript.html (the four-year grid), as opposed to
-// Report Card above which is one year's marks sheet from
-// templates/certificate.html. Every COMPLETE year on file (both
-// semesters synced) gets a column; an in-progress year is left off
-// rather than shown half-filled. Each issuance is logged with its own
-// verify code (see /verify/document/:code) as the audit trail.
+app.get(
+  "/api/registrar/documents/report-card/:student_id/pdf",
+  requireAuth,
+  requireRegistrarOnly,
+  async (req, res) => {
+    try {
+      const isSample = req.params.student_id === SAMPLE_STUDENT.student_id;
+
+      let html, verify_code;
+      if (isSample) {
+        verify_code = "SAMPLE";
+        html = renderCertificateHtml({
+          school_name: "Newland High School (Sample)",
+          school_level: "GENERAL",
+          region: "Sample Region",
+          zone: "Sample Zone",
+          woreda: "Sample Woreda",
+          kebele: "Sample Kebele",
+          photo_html: buildPhotoHtml(null),
+          student_id: SAMPLE_STUDENT.student_id,
+          student_name: "Sample Student",
+          sex: "Female",
+          grade: 10,
+          section: "A",
+          stream: "General",
+          academic_year: `${approximateEthiopianYear(new Date())} E.C.`,
+          homeroom_teacher_name: "Sample Teacher",
+          homeroom_signature_html: "",
+          principal_name: "Sample Principal",
+          principal_signature_html: "",
+          subjects: [
+            {
+              en: "Sample Subject",
+              amh: null,
+              s1: 88,
+              s2: 91,
+              applicable: true,
+            },
+            {
+              en: "Sample Stream-Only Subject",
+              amh: null,
+              s1: null,
+              s2: null,
+              applicable: false,
+            },
+          ],
+          conduct_s1: "A",
+          conduct_s2: "A",
+          conduct_year: "A",
+          absent_days_s1: 0,
+          absent_days_s2: 0,
+          rank: 1,
+          class_size: 30,
+          result_promoted_class: "on",
+          result_detained_class: "",
+          promoted_to_grade_text: "Grade 11",
+          verify_code: "SAMPLE",
+          verify_url: `${req.protocol}://${req.get("host")}/verify/document/SAMPLE`,
+        });
+      } else {
+        // ?class_level=9 lets the Registrar pull an earlier grade's
+        // report card instead of the student's most recent one — e.g.
+        // downloading a Grade 12 student's Grade 9 record. Omitted
+        // (or invalid) falls back to the latest grade on file.
+        const requestedClassLevel =
+          req.query.class_level && !Number.isNaN(Number(req.query.class_level))
+            ? Number(req.query.class_level)
+            : null;
+        const result = await buildReportCardForStudent(
+          req.params.student_id,
+          req.user.school_id,
+          req,
+          requestedClassLevel,
+        );
+        if (!result.ok) {
+          const notFound = result.reason === "student record not found";
+          return res.status(404).json({
+            error: notFound
+              ? "Student not found in your school."
+              : "No report card record found for that grade.",
+          });
+        }
+        html = result.html;
+        verify_code = result.verify_code;
+      }
+
+      const browser = await getBrowser();
+      const page = await browser.newPage();
+      // See the matching comment on /api/student/certificate.pdf — without
+      // these, a JS error inside the template's own script (certificate.js)
+      // produces a silently blank marks table/QR with nothing in our logs.
+      page.on("pageerror", (err) =>
+        console.error(
+          `/api/registrar/documents/report-card render error (student ${req.params.student_id}):`,
+          err,
+        ),
+      );
+      page.on("console", (msg) => {
+        if (msg.type() === "error")
+          console.error(
+            `/api/registrar/documents/report-card console error (student ${req.params.student_id}):`,
+            msg.text(),
+          );
+      });
+      try {
+        // See the matching comment on /api/student/certificate.pdf.
+        await page.emulateMediaType("print");
+        await page.setContent(html, { waitUntil: "networkidle0" });
+        await page.evaluate(() => document.fonts.ready);
+        const pdfBuffer = await page.pdf({
+          printBackground: true,
+          preferCSSPageSize: true,
+        });
+        res.setHeader("Content-Type", "application/pdf");
+        const disposition = isSample ? "inline" : "attachment";
+        res.setHeader(
+          "Content-Disposition",
+          `${disposition}; filename="ReportCard-${req.params.student_id}.pdf"`,
+        );
+        res.send(pdfBuffer);
+      } finally {
+        await page.close();
+      }
+    } catch (err) {
+      console.error("/api/registrar/documents/report-card/pdf error:", err);
+      res.status(500).json({ error: "Could not generate the report card." });
+    }
+  },
+);
+
+// Shared by the transcript PDF route and the Registrar's year-preview
+// endpoint below it: resolves each computed year's real, stamped EC
+// label (student_academic_year_snapshots is written once, at the
+// moment each academic year actually rolled over, so it's a
+// historical fact rather than a guess computed at print time) so both
+// surfaces always show the exact same year labels the printed
+// document will use. Falls back to academicYearForClassLevel's
+// backward-computed guess for grades a student passed through before
+// the snapshot mechanism existed.
+async function ecYearLabelsForStudent(
+  student_id,
+  school_id,
+  currentClassLevel,
+) {
+  const [snapshotRows] = await pool.query(
+    `SELECT sy.class_level, ay.label FROM student_academic_year_snapshots sy
+         JOIN academic_years ay ON ay.id = sy.academic_year_id
+         WHERE sy.student_id = ? AND sy.school_id = ?
+         ORDER BY sy.snapshotted_at DESC`,
+    [student_id, school_id],
+  );
+  const ecLabelByLevel = {};
+  for (const row of snapshotRows) {
+    // A repeated grade would have two snapshot rows for the same
+    // class_level; only one column is ever shown per grade level, so
+    // (already-known limitation) this keeps the most recent attempt —
+    // snapshotRows is ordered newest-first, and only the first row
+    // seen per class_level is kept.
+    if (!(row.class_level in ecLabelByLevel)) {
+      ecLabelByLevel[row.class_level] = ecYearNumberFromLabel(row.label);
+    }
+  }
+  // The student's CURRENT grade hasn't rolled over into a snapshot yet
+  // — that only happens at the NEXT Semester 2 close — so it's covered
+  // separately from the school's live "current" academic_years row.
+  if (currentClassLevel != null && !(currentClassLevel in ecLabelByLevel)) {
+    const currentYear = await getCurrentAcademicYear(school_id);
+    ecLabelByLevel[currentClassLevel] = ecYearNumberFromLabel(
+      currentYear.label,
+    );
+  }
+  return ecLabelByLevel;
+}
+
+function ecYearForClassLevel(classLevel, ecLabelByLevel, currentClassLevel) {
+  return (
+    ecLabelByLevel[classLevel] ||
+    (() => {
+      const label = academicYearForClassLevel(classLevel, currentClassLevel);
+      return label ? label.replace(" E.C.", "") : null;
+    })()
+  );
+}
+
+// Lets the Registrar preview exactly which academic years this
+// student's transcript would include by default — every complete year
+// on file, same computation the PDF route below uses — before
+// printing, and decide whether to narrow that down. Read-only: no
+// document is issued and no verify code is logged just from calling
+// this. Pass the resulting class_level list back to the PDF route as
+// ?class_levels=1,2,3 to feature only those years; omit it to get the
+// full default set, unchanged from before this endpoint existed.
+app.get(
+  "/api/registrar/documents/transcript/:student_id/years",
+  requireAuth,
+  requireRegistrarOnly,
+  async (req, res) => {
+    try {
+      const terms = await getCertificateTerms(
+        req.params.student_id,
+        req.user.school_id,
+      );
+      let year_summary = await buildYearSummaries(
+        req.params.student_id,
+        req.user.school_id,
+        terms,
+      );
+      if (year_summary.length === 0) {
+        const fallback = await fallbackCurrentYearEntry(
+          req.params.student_id,
+          req.user.school_id,
+        );
+        if (!fallback)
+          return res
+            .status(404)
+            .json({ error: "Student not found in your school." });
+        year_summary = [fallback];
+      }
+      const [studentRows] = await pool.query(
+        "SELECT class_level FROM students WHERE student_id = ? AND school_id = ?",
+        [req.params.student_id, req.user.school_id],
+      );
+      if (studentRows.length === 0)
+        return res
+          .status(404)
+          .json({ error: "Student not found in your school." });
+      const currentClassLevel = studentRows[0].class_level;
+
+      const ecLabelByLevel = await ecYearLabelsForStudent(
+        req.params.student_id,
+        req.user.school_id,
+        currentClassLevel,
+      );
+
+      const years = year_summary.map((y) => ({
+        class_level: y.class_level,
+        ec_year: ecYearForClassLevel(
+          y.class_level,
+          ecLabelByLevel,
+          currentClassLevel,
+        ),
+      }));
+      res.json({ years });
+    } catch (err) {
+      console.error(
+        `/api/registrar/documents/transcript/${req.params.student_id}/years error:`,
+        err,
+      );
+      res.status(500).json({ error: "Could not load transcript years." });
+    }
+  },
+);
+
+// Official Transcript — every complete year on file (both semesters
+// synced) gets a column, from templates/transcript.html; an
+// in-progress year is left off rather than shown half-filled. As
+// opposed to Report Card above which is one year's marks sheet from
+// templates/certificate.html. The Registrar can narrow the default set
+// of years down via ?class_levels=1,2,3 (see the /years preview
+// endpoint above) — never wider than what's actually on file, since
+// this only filters the same year_summary computed below. Each
+// issuance is logged with its own verify code (see
+// /verify/document/:code) as the audit trail.
 app.get(
   "/api/registrar/documents/transcript/:student_id/pdf",
   requireAuth,
@@ -14039,6 +16829,31 @@ app.get(
               .status(404)
               .json({ error: "Student not found in your school." });
           year_summary = [fallback];
+        }
+
+        // Optional Registrar override (see the /years preview endpoint
+        // above): a comma-separated list of class levels to feature on
+        // this printed transcript instead of every complete year on
+        // file — e.g. deliberately leaving off a repeated grade, or
+        // printing a shorter record for a specific request. This can
+        // only ever narrow year_summary down to a subset of what was
+        // actually computed; it can never add a grade that isn't
+        // genuinely on file. Malformed or empty-after-filtering input
+        // silently falls back to the full default set rather than
+        // erroring the whole transcript out.
+        if (req.query.class_levels) {
+          const wanted = new Set(
+            String(req.query.class_levels)
+              .split(",")
+              .map((v) => parseInt(v.trim(), 10))
+              .filter((v) => Number.isInteger(v)),
+          );
+          if (wanted.size > 0) {
+            const filtered = year_summary.filter((y) =>
+              wanted.has(Number(y.class_level)),
+            );
+            if (filtered.length > 0) year_summary = filtered;
+          }
         }
 
         const [studentRows] = await pool.query(
@@ -14137,48 +16952,17 @@ app.get(
 
         const latest = year_summary[year_summary.length - 1];
 
-        // Real, stamped EC year per grade — student_academic_year_
-        // snapshots is written once, at the moment each academic
-        // year actually rolled over (see rolloverAcademicYear), so
-        // it's a historical fact rather than a guess computed at
-        // print time. Without this, academicYearForClassLevel()
-        // below re-derives every past grade's year from TODAY's
-        // date each time the document is printed — which drifts a
-        // year every rollover even though nothing about the
-        // student changed, and can't tell two attempts at a
-        // repeated grade apart. Scoped to this school only, same
-        // tenant boundary as every other query here — a
-        // transferred-in student's history from their previous
-        // school isn't something this school has snapshots for.
-        const [snapshotRows] = await pool.query(
-          `SELECT sy.class_level, ay.label FROM student_academic_year_snapshots sy
-                 JOIN academic_years ay ON ay.id = sy.academic_year_id
-                 WHERE sy.student_id = ? AND sy.school_id = ?
-                 ORDER BY sy.snapshotted_at DESC`,
-          [req.params.student_id, req.user.school_id],
+        // Real, stamped EC year per grade — scoped to this school
+        // only, same tenant boundary as every other query here (a
+        // transferred-in student's history from their previous school
+        // isn't something this school has snapshots for). Shared with
+        // the /years preview endpoint above so both always agree on
+        // the same label for the same grade.
+        const ecLabelByLevel = await ecYearLabelsForStudent(
+          req.params.student_id,
+          req.user.school_id,
+          s.class_level,
         );
-        const ecLabelByLevel = {};
-        for (const row of snapshotRows) {
-          // A repeated grade would have two snapshot rows for the
-          // same class_level; the transcript only has one column
-          // per grade level to show, so (already-known limitation)
-          // this keeps the most recent attempt — snapshotRows is
-          // ordered newest-first, and only the first row seen per
-          // class_level is kept.
-          if (!(row.class_level in ecLabelByLevel)) {
-            ecLabelByLevel[row.class_level] = ecYearNumberFromLabel(row.label);
-          }
-        }
-        // The student's CURRENT grade hasn't rolled over into a
-        // snapshot yet — that only happens at the NEXT Semester 2
-        // close — so it's covered separately from the school's
-        // live "current" academic_years row instead.
-        if (!(s.class_level in ecLabelByLevel)) {
-          const currentYear = await getCurrentAcademicYear(req.user.school_id);
-          ecLabelByLevel[s.class_level] = ecYearNumberFromLabel(
-            currentYear.label,
-          );
-        }
 
         const years = year_summary.map((y) => {
           const s1 = terms.find(
@@ -14193,15 +16977,11 @@ app.get(
             // back to the backward-computed guess, for students
             // who passed through this grade before the snapshot
             // mechanism existed.
-            ec_year:
-              ecLabelByLevel[y.class_level] ||
-              (() => {
-                const label = academicYearForClassLevel(
-                  y.class_level,
-                  s.class_level,
-                );
-                return label ? label.replace(" E.C.", "") : null;
-              })(),
+            ec_year: ecYearForClassLevel(
+              y.class_level,
+              ecLabelByLevel,
+              s.class_level,
+            ),
             subjects: y.subjects.map((sub) => ({
               name: sub.subject_name,
               s1: sub.semester_1,
@@ -14249,7 +17029,7 @@ app.get(
           student_id: s.student_id,
           student_name: studentFullName,
           sex: s.sex,
-          stream: latest.stream,
+          stream: resolveDocumentStream(latest.class_level, latest.stream),
           school_name: school.school_name,
           school_level: school.school_level,
           school_display_name: buildSchoolDisplayName(
@@ -14392,38 +17172,97 @@ function idCardCss(watermarkDataUri, printMode) {
         .id-card { width: 430px; max-width: 100%; border-radius: 14px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.15); border: 1px solid #e2e8f0; background: white; position: relative; }
         ${watermarkDataUri ? `.id-card::before { content: ''; position: absolute; inset: 0; background-image: url('${watermarkDataUri}'); background-repeat: no-repeat; background-position: center; background-size: 38% auto; opacity: 0.08; pointer-events: none; z-index: 0; }` : ""}
         .id-card-header, .id-card-body, .id-card-footer, .id-card-back-body, .id-card-address-bar { position: relative; z-index: 1; }
-        .id-card-header { background: linear-gradient(135deg, #1e3a8a 0%, #1565a8 100%); color: white; display: flex; align-items: center; gap: 12px; padding: 14px 16px; min-height: 42px; }
+        .id-card-header { background: linear-gradient(135deg, #1e3a8a 0%, #1565a8 100%); color: white; display: flex; align-items: center; gap: 12px; padding: ${printMode ? "10px 16px" : "14px 16px"}; min-height: 42px; }
         .id-card-logo { width: 42px; height: 42px; border-radius: 50%; background: white; object-fit: contain; flex-shrink: 0; padding: 3px; }
         .id-card-header-text { display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; flex: 1; min-width: 0; }
         .id-card-school-name { font-size: 0.95rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.03em; line-height: 1.25; overflow-wrap: break-word; }
-        .id-card-subtitle { font-size: 0.64rem; opacity: 0.85; letter-spacing: 0.02em; margin-top: 2px; }
-        .id-card-body { display: flex; gap: 16px; padding: 18px 16px 10px; }
+        .id-card-subtitle { font-size: 0.64rem; opacity: 0.85; letter-spacing: 0.02em; margin-top: 2px; line-height: 1.2; }
+        /* --idcard-natural-h below is a fixed constant derived from the
+           real CR-80 badge aspect ratio (see the comment above this
+           function), not from content — it must stay fixed so the
+           printed card comes out the correct physical size. That's fine
+           for the usual 5 field rows, but School Code is an optional
+           6th row (only when s.moe_school_code is set) that wasn't
+           accounted for, and used to spill past the fixed box into the
+           footer's dashed divider below it. Trimmed the row/name
+           spacing here (and dropped id-card-body's own bottom padding
+           by 2px) to reclaim just enough height for that 6th row to
+           fit inside the same fixed box; overflow: hidden as a safety
+           net so if a field is ever long enough to still overflow
+           (long phone number wrapping to 2 lines, etc.), it clips
+           cleanly at the box edge instead of visibly crossing the
+           divider the way School Code used to. */
+        .id-card-body { display: flex; gap: 16px; padding: 16px 16px 4px; overflow: hidden; }
         .id-card-photo-col { display: flex; flex-direction: column; align-items: center; gap: 4px; flex-shrink: 0; }
         .id-card-photo { width: 80px; height: 96px; border-radius: 8px; background: #1e3a8a; color: white; font-size: 1.6rem; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; border: 1px solid #e2e8f0; overflow: hidden; }
         .id-card-photo img { width: 100%; height: 100%; object-fit: cover; }
         .id-card-photo-label { font-size: 0.6rem; font-weight: 700; color: #64748b; letter-spacing: 0.02em; text-align: center; }
-        .id-card-fields { flex: 1; font-size: 0.82rem; min-width: 0; }
-        .id-card-fields div { display: flex; flex-direction: row; align-items: baseline; flex-wrap: wrap; gap: 5px; padding: 3px 0; }
-        .id-card-fields .id-label { font-weight: 700; color: #64748b; font-size: 0.63rem; letter-spacing: 0.01em; white-space: nowrap; }
-        .id-card-name { font-size: 1.05rem; font-weight: 800; color: #1e3a8a; margin-bottom: 6px; }
-        .id-card-footer { display: flex; justify-content: space-between; align-items: flex-end; padding: 10px 16px 16px; border-top: 1px dashed #e2e8f0; margin-top: 8px; }
+        .id-card-fields { flex: 1; font-size: 0.82rem; min-width: 0; margin-bottom: 6px; }
+        /* line-height pinned explicitly (not left at the font's own
+           "normal") on every row and label below that can contain
+           Amharic text. The font stack ('Segoe UI', Tahoma, ...) has no
+           Ethiopic coverage, so those characters always render in
+           whatever Ethiopic font the OS substitutes — and different
+           substituted fonts carry very different default line-height
+           metrics, sometimes noticeably taller than the Latin fallback
+           this was tuned against. Without a fixed line-height, that
+           substitution alone was enough to push the fields column past
+           the card's fixed-height box on some environments (e.g. the
+           Contact row crowding the footer divider) even though nothing
+           in the layout itself had changed. Pinning it keeps every row's
+           height identical and predictable regardless of which font
+           actually paints the glyphs. */
+        .id-card-fields div { display: flex; flex-direction: row; align-items: baseline; flex-wrap: wrap; gap: 5px; padding: 1px 0; line-height: 1.2; }
+        .id-card-fields .id-label { font-weight: 700; color: #64748b; font-size: 0.63rem; letter-spacing: 0.01em; white-space: nowrap; line-height: 1.2; }
+        .id-card-name { font-size: 1.05rem; font-weight: 800; color: #1e3a8a; margin-bottom: 4px; line-height: 1.2; }
+        /* margin-bottom on .id-card-fields above (plus the trimmed body/row
+           padding) reserves a guaranteed gap ahead of this dashed divider,
+           instead of relying on the fixed card height happening to leave
+           just enough slack — that's what was letting the last field row
+           (e.g. Contact) sit flush against or clip into this border. */
+        /* Print-only: measured with the actual header logo/flag (42px)
+           and a real principal-signature image (34px) in place — not
+           just placeholder text — the fixed-height front face came up
+           ~8px short of what header + body (6 rows, incl. optional
+           School Code) + footer actually need, which is what let the
+           last field row clip into the footer's divider even after the
+           row-spacing trim above. Reclaiming it from the footer (which
+           the signature image makes the taller of the two fixed
+           sections) rather than shrinking the fields further, since the
+           fields are already tight. Screen (non-print) sizing is
+           untouched — only print/PDF mode is fixed-height at all. */
+        .id-card-footer { display: flex; justify-content: space-between; align-items: flex-end; padding: ${printMode ? "6px 16px 10px" : "10px 16px 16px"}; border-top: 1px dashed #e2e8f0; margin-top: ${printMode ? "2px" : "4px"}; }
         .id-card-signature { text-align: center; flex-shrink: 0; }
-        .id-card-signature img { height: 34px; object-fit: contain; display: block; margin: 0 auto 2px; }
-        .id-card-signature-line { font-size: 0.62rem; color: #64748b; border-top: 1px solid #1e293b; padding-top: 2px; margin-top: 2px; white-space: nowrap; }
+        .id-card-signature img { height: ${printMode ? "26px" : "34px"}; object-fit: contain; display: block; margin: 0 auto ${printMode ? "1px" : "2px"}; }
+        .id-card-signature-line { font-size: 0.62rem; color: #64748b; border-top: 1px solid #1e293b; padding-top: ${printMode ? "1px" : "2px"}; margin-top: ${printMode ? "1px" : "2px"}; white-space: nowrap; }
         .id-card-validity { text-align: right; font-size: ${printMode ? "0.5rem" : "0.62rem"}; color: #64748b; max-width: 55%; ${printMode ? "line-height: 1.15;" : ""} }
         .id-card-validity strong { color: #1e293b; display: block; margin-top: ${printMode ? "1px" : "2px"}; }
         .id-card-expired { color: #dc2626 !important; }
         .id-card-sample-badge { position:absolute; top:10px; right:-34px; transform:rotate(40deg); background:#f59e0b; color:#fff; font-size:0.6rem; font-weight:800; letter-spacing:0.04em; text-transform:uppercase; padding:3px 42px; z-index:2; box-shadow:0 2px 6px rgba(0,0,0,0.2); }
-        .id-card-back-body { padding: ${printMode ? "16px 16px 6px" : "20px 18px 10px"}; }
-        .id-card-back-body h4 { color: #1e3a8a; font-size: ${printMode ? "0.84rem" : "0.9rem"}; margin-bottom: ${printMode ? "7px" : "10px"}; }
-        .id-card-terms { padding-left: ${printMode ? "15px" : "18px"}; font-size: ${printMode ? "0.7rem" : "0.76rem"}; color: #1e293b; line-height: ${printMode ? "1.38" : "1.5"}; }
-        .id-card-terms li { margin-bottom: ${printMode ? "4px" : "6px"}; }
-        .id-card-return-note { font-size: ${printMode ? "0.7rem" : "0.8rem"}; font-weight: 700; margin-top: ${printMode ? "7px" : "10px"}; }
-        .id-card-back-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: ${printMode ? "4px" : "4px"}; }
+        .id-card-back-body { padding: ${printMode ? "14px 16px 6px" : "20px 18px 10px"}; overflow: hidden; }
+        .id-card-back-body h4 { color: #1e3a8a; font-size: ${printMode ? "0.84rem" : "0.9rem"}; margin-bottom: ${printMode ? "6px" : "10px"}; }
+        .id-card-terms { padding-left: ${printMode ? "15px" : "18px"}; font-size: ${printMode ? "0.7rem" : "0.76rem"}; color: #1e293b; line-height: ${printMode ? "1.3" : "1.5"}; }
+        .id-card-terms li { margin-bottom: ${printMode ? "3px" : "6px"}; }
+        .id-card-return-note { font-size: ${printMode ? "0.7rem" : "0.8rem"}; font-weight: 700; margin-top: ${printMode ? "6px" : "10px"}; }
+        .id-card-back-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: ${printMode ? "3px" : "4px"}; }
         .id-card-back-footer .id-card-return-note { margin-top: 0; flex: 1; }
-        .id-card-verify { font-size: 0.62rem; color: #64748b; text-align: right; white-space: nowrap; }
-        .id-card-verify strong { color: #1e293b; letter-spacing: 0.02em; }
-        .id-card-qr { display: block; width: 44px; height: 44px; margin: 0 0 3px auto; }
+        .id-card-verify { font-size: 0.62rem; color: #64748b; text-align: right; }
+        /* Was 44px, too small to scan (see prior comment history below in
+           git blame). A first pass bumped this straight to 84px on the
+           assumption the back face had ~74px of slack above the address
+           bar — that estimate was wrong: 84px used up all of it and left
+           the QR sitting flush against (visibly dipping into) the
+           address bar with zero clearance. 68px, combined with the
+           trims above (terms/heading/footer spacing reclaimed a further
+           ~9px), leaves a real safety margin below it. Scales to ~51px
+           (~0.53in/13.6mm) on the physical card — still a solid
+           improvement over the original 33px and comfortably scannable
+           at normal ID-check distance. If this ever needs to go bigger
+           again, increase margin-bottom below alongside it, not just
+           width/height, so the safety gap grows too instead of
+           shrinking. */
+        .id-card-qr { display: block; width: 68px; height: 68px; margin: 0 0 8px auto; }
+        .id-card-qr-unavailable { display: inline-block; }
         .id-card-address-bar { background: linear-gradient(135deg, #1e3a8a 0%, #1565a8 100%); color: white; text-align: center; font-size: ${printMode ? "0.6rem" : "0.62rem"}; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em; padding: ${printMode ? "7px 10px" : "8px 10px"}; line-height: ${printMode ? "1.3" : "1.4"}; }
         .id-card-flip-btn { border:1px solid #e2e8f0; background:#fff; color:#1e3a8a; font-weight:700; font-size:0.78rem; padding:8px 18px; border-radius:8px; cursor:pointer; margin: 0 4px; }
         .id-card-flip-btn:hover { background:#f1f5f9; }
@@ -14470,12 +17309,13 @@ async function buildIdCardHtml(
     .join("")
     .toUpperCase();
   const issued = s.created_at ? new Date(s.created_at) : new Date();
-  const expires = new Date(issued);
-  // Valid 1 school year, not 2 — same rule as the student's own card
-  // (script.js renderIDCard): students move up a grade/section every
-  // year, so last year's card is out of date info before the plastic
-  // even wears out.
-  expires.setFullYear(expires.getFullYear() + 1);
+  // Valid through the end of the Ethiopian year it was issued in — same
+  // rule as the student's own docx download above (see
+  // idCardExpiryForEthiopianYears): students move up a grade/section
+  // every year, so last year's card is out of date info before the
+  // plastic even wears out, and now that boundary lines up with the
+  // actual Ethiopian school year instead of a rolling anniversary date.
+  const expires = idCardExpiryForEthiopianYears(issued, 1);
   const isExpired = expires < new Date();
   const fmt = (d) => formatDualDateText(d);
 
@@ -14487,9 +17327,21 @@ async function buildIdCardHtml(
     : escapeHtml(initials || "?");
 
   const logoDataUri = !isSample ? readUploadedImageAsDataUri(s.logo_url) : null;
-  const logoHtml = logoDataUri
-    ? `<img src="${logoDataUri}" alt="School logo" class="id-card-logo">`
-    : "";
+
+  // Zone logo (set by a super admin or the zone's own Zonal Admin via
+  // POST /api/zonal/logo — see that route's comment) takes over the
+  // header's single logo slot entirely once a zone has uploaded one —
+  // not shown alongside the school's own logo. Falls back to the
+  // school logo when the zone hasn't set one yet, so the header is
+  // never left with no emblem at all.
+  const zoneLogoDataUri = !isSample
+    ? readUploadedImageAsDataUri(s.zone_logo_url)
+    : null;
+  const logoStackHtml = zoneLogoDataUri
+    ? `<img src="${zoneLogoDataUri}" alt="Zone logo" class="id-card-logo">`
+    : logoDataUri
+      ? `<img src="${logoDataUri}" alt="School logo" class="id-card-logo">`
+      : "";
 
   const flagDataUri = readStaticImageAsDataUri(
     path.join(__dirname, "public", "assets", "images", "gambella_flag.png"),
@@ -14540,8 +17392,7 @@ async function buildIdCardHtml(
   }
   const verifyHtml = !isSample
     ? `<div class="id-card-verify">
-             ${qrDataUri ? `<img src="${qrDataUri}" alt="Attendance QR code" class="id-card-qr">` : ""}
-             Verify code<br><strong>${escapeHtml(signQrPayload(s.student_id))}</strong>
+             ${qrDataUri ? `<img src="${qrDataUri}" alt="Attendance QR code" class="id-card-qr">` : '<span class="id-card-qr-unavailable">QR unavailable</span>'}
            </div>`
     : `<div class="id-card-verify">Sample card — no verification code</div>`;
 
@@ -14553,7 +17404,7 @@ async function buildIdCardHtml(
     <div class="id-card id-card-front">
       ${isSample ? '<div class="id-card-sample-badge">SAMPLE</div>' : ""}
       <div class="id-card-header">
-        ${logoHtml}
+        ${logoStackHtml}
         <div class="id-card-header-text">
           <div class="id-card-school-name">${escapeHtml(schoolDisplayName)}</div>
           <div class="id-card-subtitle">የተማሪ መታወቂያ ካርድ | Student Identity Card</div>
@@ -14569,7 +17420,7 @@ async function buildIdCardHtml(
           <div class="id-card-name">${escapeHtml(full)}</div>
           <div><span class="id-label">የተማሪ መታወቂያ | Student ID</span><span>${escapeHtml(s.student_id)}</span></div>
           <div><span class="id-label">ክፍል | Class</span><span>Grade ${escapeHtml(s.class_level)} - ${escapeHtml(s.section || "Unassigned")}</span></div>
-          <div><span class="id-label">ትምህርት ዘርፍ | Stream</span><span>${escapeHtml(s.stream || "—")}</span></div>
+          <div><span class="id-label">ትምህርት ዘርፍ | Stream</span><span>${escapeHtml(resolveDocumentStream(s.class_level, s.stream) || "—")}</span></div>
           <div><span class="id-label">ስልክ ቁጥር | Contact</span><span>${escapeHtml(s.phone_number || "—")}</span></div>
           ${s.moe_school_code ? `<div><span class="id-label">የትምህርት ቤት ኮድ | School Code</span><span>${escapeHtml(s.moe_school_code)}</span></div>` : ""}
         </div>
@@ -14631,6 +17482,7 @@ async function loadIdCardSubject(student_id, school_id) {
         created_at: new Date(),
         moe_school_code: "SAMPLE-001",
         logo_url: null,
+        zone_logo_url: null,
         woreda: null,
         zone: null,
         region: null,
@@ -14643,7 +17495,7 @@ async function loadIdCardSubject(student_id, school_id) {
     `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.class_level, st.section, st.stream,
                 st.phone_number, st.created_at, st.id_photo_url,
                 sc.school_name, sc.school_level, sc.moe_school_code, sc.logo_url,
-                z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region
+                z.zone_name AS zone, z.logo_url AS zone_logo_url, w.woreda_name AS woreda, r.region_name AS region
          FROM students st
          LEFT JOIN schools sc ON sc.id = st.school_id
          LEFT JOIN zone z ON z.zone_id = sc.zone_id
@@ -14872,7 +17724,7 @@ app.get(
         `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.class_level, st.section, st.stream,
                     st.phone_number, st.created_at, st.id_photo_url,
                     sc.school_name, sc.school_level, sc.moe_school_code, sc.logo_url,
-                    z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region
+                    z.zone_name AS zone, z.logo_url AS zone_logo_url, w.woreda_name AS woreda, r.region_name AS region
              FROM students st
              LEFT JOIN schools sc ON sc.id = st.school_id
              LEFT JOIN zone z ON z.zone_id = sc.zone_id
@@ -15452,14 +18304,84 @@ app.get("/api/class-sections", requireAuth, async (req, res) => {
   }
 });
 
+// --- Grade Levels a school is actually configured for ---
+// Powers every Grade <select> across the Registrar portal (New Entrant
+// Registration, External/Manual Transfer, Section Setup, Student
+// Registry filter — see loadSchoolGradeLevels()/GRADE_SELECT_CONFIGS in
+// that portal's app.js). Expands this school's school_grade_tiers rows
+// (BASIC/CORE/GENERAL/PREPARATORY) into the actual grade numbers each
+// tier spans via SCHOOL_LEVEL_GRADES, so a school registered with all
+// four tiers correctly offers grades 1-12 instead of the Registrar
+// frontend's hardcoded [9,10,11,12] fallback (which only fires if this
+// endpoint is missing or errors — which, before this endpoint existed,
+// was every single time).
+// Shared expansion of a school's school_grade_tiers rows
+// (BASIC/CORE/GENERAL/PREPARATORY) into the actual set of grade numbers
+// it offers, via SCHOOL_LEVEL_GRADES — used by the grade-levels endpoint
+// below AND by the EASE Candidates "does this school even have the next
+// grade to promote into" check (schoolHasGrade), so both stay in sync
+// off one definition instead of two copies of the same tier->grades math.
+async function getSchoolGradeSet(school_id) {
+  const [tierRows] = await pool.query(
+    "SELECT school_level FROM school_grade_tiers WHERE school_id = ?",
+    [school_id],
+  );
+  let tiers = tierRows.map((r) => r.school_level);
+  // Falls back to this school's single-valued school_level if
+  // school_grade_tiers has no rows yet (e.g. a school registered
+  // before the multi-tier migration ran and never re-saved) — same
+  // "sane single-tier default" fallback used elsewhere in this file,
+  // rather than returning an empty grade list and breaking every
+  // Grade picker in the portal.
+  if (tiers.length === 0) {
+    const [schoolRows] = await pool.query(
+      "SELECT school_level FROM schools WHERE id = ?",
+      [school_id],
+    );
+    if (schoolRows.length > 0 && schoolRows[0].school_level) {
+      tiers = [schoolRows[0].school_level];
+    }
+  }
+  const grades = new Set();
+  tiers.forEach((tier) => {
+    const range = SCHOOL_LEVEL_GRADES[tier];
+    if (!range) return;
+    for (let g = range[0]; g <= range[1]; g++) grades.add(g);
+  });
+  return grades;
+}
+
+// Whether a school offers a given grade at all — the EASE Candidates
+// screen uses this to decide whether a Grade 6/8 candidate can be
+// promoted in-house (Grade 7/9 exists here) or has to leave for another
+// school (Grade 7/9 doesn't exist here), see POST
+// .../ease-candidates/:student_id/outgoing below.
+async function schoolHasGrade(school_id, grade) {
+  const grades = await getSchoolGradeSet(school_id);
+  return grades.has(Number(grade));
+}
+
+app.get("/api/school/grade-levels", requireAuth, async (req, res) => {
+  try {
+    const grades = await getSchoolGradeSet(req.user.school_id);
+    res.json({ grades: [...grades].sort((a, b) => a - b) });
+  } catch (err) {
+    console.error("/api/school/grade-levels error:", err);
+    res
+      .status(500)
+      .json({ error: "Could not load this school's grade levels." });
+  }
+});
+
 app.get(
   "/api/academic-vp/subjects",
   requireAuth,
   requireAdminTitle("Academic VP"),
   async (req, res) => {
     try {
+      await ensureSubjectsGradeRangeColumns();
       const [rows] = await pool.query(
-        "SELECT subject_id, subject_name, stream FROM subjects WHERE school_id = ? ORDER BY subject_name",
+        "SELECT subject_id, subject_name, stream, min_class_level, max_class_level FROM subjects WHERE school_id = ? ORDER BY subject_name",
         [req.user.school_id],
       );
       res.json(rows);
@@ -15513,8 +18435,39 @@ app.post(
   requireAdminTitle("Academic VP"),
   async (req, res) => {
     const { subject_name, stream } = req.body;
+    let { min_class_level, max_class_level } = req.body;
     if (!subject_name || !subject_name.trim())
       return res.status(400).json({ error: "subject_name is required" });
+    // Optional grade-range restriction (NULL either side = unbounded on
+    // that side), same convention as the stream column — a subject with
+    // no range set applies to every grade in its stream, matching the
+    // pre-existing behavior exactly.
+    min_class_level =
+      min_class_level === "" || min_class_level == null
+        ? null
+        : parseInt(min_class_level, 10);
+    max_class_level =
+      max_class_level === "" || max_class_level == null
+        ? null
+        : parseInt(max_class_level, 10);
+    if (
+      min_class_level != null &&
+      (isNaN(min_class_level) || min_class_level < 1 || min_class_level > 12)
+    )
+      return res.status(400).json({ error: "min_class_level must be 1-12." });
+    if (
+      max_class_level != null &&
+      (isNaN(max_class_level) || max_class_level < 1 || max_class_level > 12)
+    )
+      return res.status(400).json({ error: "max_class_level must be 1-12." });
+    if (
+      min_class_level != null &&
+      max_class_level != null &&
+      min_class_level > max_class_level
+    )
+      return res.status(400).json({
+        error: "min_class_level can't be greater than max_class_level.",
+      });
     // Validated against the global subject_dictionary for the school's
     // own level (and, for PREPARATORY, its stream) — not a hardcoded
     // list — so Super Admin can add/retire subjects for a level (e.g. a
@@ -15559,6 +18512,7 @@ app.post(
       });
     }
     try {
+      await ensureSubjectsGradeRangeColumns();
       const [existing] = await pool.query(
         "SELECT subject_id FROM subjects WHERE school_id = ? AND subject_name = ? AND stream = ?",
         [req.user.school_id, subject_name.trim(), stream],
@@ -15569,8 +18523,14 @@ app.post(
         });
 
       const [insertResult] = await pool.query(
-        "INSERT INTO subjects (school_id, subject_name, stream) VALUES (?, ?, ?)",
-        [req.user.school_id, subject_name.trim(), stream],
+        "INSERT INTO subjects (school_id, subject_name, stream, min_class_level, max_class_level) VALUES (?, ?, ?, ?, ?)",
+        [
+          req.user.school_id,
+          subject_name.trim(),
+          stream,
+          min_class_level,
+          max_class_level,
+        ],
       );
       res.json({
         message: "Subject added.",
@@ -15579,6 +18539,66 @@ app.post(
     } catch (err) {
       console.error("/api/academic-vp/subjects POST error:", err);
       res.status(500).json({ error: "Could not add subject" });
+    }
+  },
+);
+
+// Edits just the grade-range restriction on an already-configured
+// subject — separate from the add form above so an existing row (which
+// may already be referenced by teacher_assignments/marks) never needs
+// to be deleted and re-added just to narrow or clear its range.
+app.put(
+  "/api/academic-vp/subjects/:subject_id/grade-range",
+  requireAuth,
+  requireAdminTitle("Academic VP"),
+  async (req, res) => {
+    let { min_class_level, max_class_level } = req.body;
+    min_class_level =
+      min_class_level === "" || min_class_level == null
+        ? null
+        : parseInt(min_class_level, 10);
+    max_class_level =
+      max_class_level === "" || max_class_level == null
+        ? null
+        : parseInt(max_class_level, 10);
+    if (
+      min_class_level != null &&
+      (isNaN(min_class_level) || min_class_level < 1 || min_class_level > 12)
+    )
+      return res.status(400).json({ error: "min_class_level must be 1-12." });
+    if (
+      max_class_level != null &&
+      (isNaN(max_class_level) || max_class_level < 1 || max_class_level > 12)
+    )
+      return res.status(400).json({ error: "max_class_level must be 1-12." });
+    if (
+      min_class_level != null &&
+      max_class_level != null &&
+      min_class_level > max_class_level
+    )
+      return res.status(400).json({
+        error: "min_class_level can't be greater than max_class_level.",
+      });
+    try {
+      await ensureSubjectsGradeRangeColumns();
+      const [result] = await pool.query(
+        "UPDATE subjects SET min_class_level = ?, max_class_level = ? WHERE subject_id = ? AND school_id = ?",
+        [
+          min_class_level,
+          max_class_level,
+          req.params.subject_id,
+          req.user.school_id,
+        ],
+      );
+      if (result.affectedRows === 0)
+        return res.status(404).json({ error: "Subject not found." });
+      res.json({ message: "Grade range updated." });
+    } catch (err) {
+      console.error(
+        "/api/academic-vp/subjects/:subject_id/grade-range PUT error:",
+        err,
+      );
+      res.status(500).json({ error: "Could not update grade range" });
     }
   },
 );
@@ -16443,9 +19463,11 @@ app.get("/api/teacher/id-card", requireAuth, async (req, res) => {
     const schoolAddress =
       [row0.zone, row0.woreda, row0.region].filter(Boolean).join(", ") || null;
 
-    // ID cards are valid for 2 years from the day they're issued/viewed.
-    const validUntilDate = new Date();
-    validUntilDate.setFullYear(validUntilDate.getFullYear() + 2);
+    // ID cards are valid through the end of the second Ethiopian year
+    // from whenever this is viewed/printed — see
+    // idCardExpiryForEthiopianYears for why this replaced a rolling
+    // "+2 calendar years from today".
+    const validUntilDate = idCardExpiryForEthiopianYears(new Date(), 2);
     const validUntil = `${String(validUntilDate.getMonth() + 1).padStart(2, "0")}/${String(validUntilDate.getDate()).padStart(2, "0")}/${validUntilDate.getFullYear()}`;
 
     res.json({
@@ -16507,9 +19529,9 @@ app.get(
         [row0.zone, row0.woreda, row0.region].filter(Boolean).join(", ") ||
         null;
 
-      // Same 2-year validity convention as the teacher ID card.
-      const validUntilDate = new Date();
-      validUntilDate.setFullYear(validUntilDate.getFullYear() + 2);
+      // Same Ethiopian-year-aligned 2-year validity as the teacher ID
+      // card (see idCardExpiryForEthiopianYears).
+      const validUntilDate = idCardExpiryForEthiopianYears(new Date(), 2);
       const validUntil = `${String(validUntilDate.getMonth() + 1).padStart(2, "0")}/${String(validUntilDate.getDate()).padStart(2, "0")}/${validUntilDate.getFullYear()}`;
 
       res.json({
@@ -16564,9 +19586,9 @@ app.get(
 
       const row0 = rows[0];
 
-      // Same 2-year validity convention as the teacher/school-admin ID cards.
-      const validUntilDate = new Date();
-      validUntilDate.setFullYear(validUntilDate.getFullYear() + 2);
+      // Same Ethiopian-year-aligned 2-year validity as the
+      // teacher/school-admin ID cards (see idCardExpiryForEthiopianYears).
+      const validUntilDate = idCardExpiryForEthiopianYears(new Date(), 2);
       const validUntil = `${String(validUntilDate.getMonth() + 1).padStart(2, "0")}/${String(validUntilDate.getDate()).padStart(2, "0")}/${validUntilDate.getFullYear()}`;
 
       // The Head of Education signs off on every zonal admin's ID card in
@@ -21519,6 +24541,54 @@ app.get("/api/teacher/my-sections", requireAuth, async (req, res) => {
 // once they actually open the request list).
 app.get("/api/notifications", requireAuth, async (req, res) => {
   try {
+    // Zonal admins (Head of Education / Teacher Development Coordinator /
+    // Supervisor) have their own notification sources — unread messages
+    // from school admins (admin_messages, same hub school_admins use),
+    // plus, for the Head of Education only, proposals still awaiting
+    // their approval. Kept as its own branch rather than reusing the
+    // teacher query below since neither table nor scoping (zone_id, not
+    // school_id) match the teacher case.
+    if (req.user.role === "zonal_admins") {
+      const [messages] = await pool.query(
+        `SELECT m.message_id, s.school_name, m.subject
+             FROM admin_messages m JOIN schools s ON s.id = m.school_id
+             WHERE m.recipient_type = 'zonal_admins' AND m.recipient_id = ? AND m.is_read = 0
+             ORDER BY m.sent_at DESC`,
+        [req.user.user_id],
+      );
+      const messageItems = messages.map((m) => ({
+        type: "thread",
+        thread_id: m.message_id,
+        subject: m.subject || "(No subject)",
+        from: m.school_name,
+        reply_count: 1,
+      }));
+
+      let proposalItems = [];
+      if (req.user.title === "Head of Education") {
+        const [proposals] = await pool.query(
+          `SELECT p.proposal_id, p.proposal_type, s.school_name
+               FROM zonal_proposals p JOIN schools s ON s.id = p.school_id
+               WHERE p.zone_id = ? AND p.status = 'pending'
+               ORDER BY p.created_at DESC`,
+          [req.user.zone_id],
+        );
+        proposalItems = proposals.map((p) => ({
+          type: "proposal",
+          proposal_id: p.proposal_id,
+          proposal_type: p.proposal_type,
+          school_name: p.school_name,
+        }));
+      }
+
+      return res.json({
+        unread_count: messageItems.length + proposalItems.length,
+        message_count: messageItems.length,
+        proposal_count: proposalItems.length,
+        items: [...messageItems, ...proposalItems],
+      });
+    }
+
     const [threads] = await pool.query(
       `SELECT t.thread_id, t.subject, t.recipient_role, t.last_read_at,
                     COUNT(m.message_id) as reply_count
@@ -21639,6 +24709,18 @@ const AUTH_SOURCES_BY_ROLE = {
   zonal_admins: { table: "zonal_admins", idCol: "admin_id" },
   super_admins: { table: "super_admins", idCol: "admin_id" },
   registrar_users: { table: "registrar_users", idCol: "registrar_id" },
+  // Unlike every other role above, a guardian's idCol is NOT its primary
+  // key — guardians.id is an internal auto-increment int used as the FK
+  // in student_guardians, but a guardian has no reason to know that
+  // number. parent_code (PAR#####, assigned once at first-time creation
+  // — see generateNextGuardianParentCode above) is what they actually
+  // log in with, same way student_id/teacher_id/admin_id double as both
+  // PK and login id for every other role. Fayda number is deliberately
+  // NOT the login id (too sensitive/long to type as a username).
+  // Anywhere we need the real guardians.id (to join against
+  // student_guardians), we resolve it from req.user.user_id — see
+  // resolveGuardianId() below.
+  guardians: { table: "guardians", idCol: "parent_code" },
 };
 
 // Re-checks the CURRENTLY logged-in user's own password against their
@@ -21651,12 +24733,18 @@ async function verifyCurrentUserPassword(req, password) {
   if (!password) return false;
   const src = AUTH_SOURCES_BY_ROLE[req.user?.role];
   if (!src) return false;
-  const [rows] = await pool.query(
-    `SELECT security_password FROM ${src.table} WHERE ${src.idCol} = ?`,
-    [req.user.user_id],
-  );
-  if (rows.length === 0 || !rows[0].security_password) return false;
-  return bcrypt.compare(password, rows[0].security_password);
+  if (req.user?.role === "guardians") await ensureGuardianParentCodeSupport();
+  try {
+    const [rows] = await pool.query(
+      `SELECT security_password FROM ${src.table} WHERE ${src.idCol} = ?`,
+      [req.user.user_id],
+    );
+    if (rows.length === 0 || !rows[0].security_password) return false;
+    return bcrypt.compare(password, rows[0].security_password);
+  } catch (err) {
+    if (err.code === "ER_NO_SUCH_TABLE") return false;
+    throw err;
+  }
 }
 
 app.post("/api/login", loginLimiter, async (req, res) => {
@@ -21666,15 +24754,39 @@ app.post("/api/login", loginLimiter, async (req, res) => {
   const authSources = Object.values(AUTH_SOURCES_BY_ROLE);
 
   try {
+    // Guardians' login column (parent_code) is added lazily like every
+    // other self-healing table/column in this file — but unlike those,
+    // it's queried on EVERY login attempt below (the loop over
+    // authSources checks every role's table, not just guardians), so it
+    // has to be ready before that loop runs at all, or login breaks for
+    // every role, not just guardians.
+    await ensureGuardianParentCodeSupport();
+
     let user = null;
     let userRole = null;
 
-    // Sequentially check each table
+    // Sequentially check each table. Wrapped per-source: a table that
+    // doesn't exist yet (e.g. registrar_users, a standalone account
+    // type not every deployment provisions) shouldn't take down login
+    // for every OTHER role just because it's missing — this treats a
+    // missing table the same as "no match here, keep checking", and
+    // logs once so the gap is still visible in the server console.
     for (const source of authSources) {
-      const [rows] = await pool.query(
-        `SELECT * FROM ${source.table} WHERE ${source.idCol} = ?`,
-        [id],
-      );
+      let rows;
+      try {
+        [rows] = await pool.query(
+          `SELECT * FROM ${source.table} WHERE ${source.idCol} = ?`,
+          [id],
+        );
+      } catch (sourceErr) {
+        if (sourceErr.code === "ER_NO_SUCH_TABLE") {
+          console.warn(
+            `Login: table '${source.table}' doesn't exist — skipping it for this login attempt. If this role is unused, this warning is harmless.`,
+          );
+          continue;
+        }
+        throw sourceErr;
+      }
       if (rows.length > 0) {
         user = rows[0];
         userRole = source.table; // e.g., 'students'
@@ -21758,11 +24870,52 @@ app.post("/api/login", loginLimiter, async (req, res) => {
       if (zoneRows && zoneRows.length > 0) zone_name = zoneRows[0].zone_name;
     }
 
-    // Only students carry the default/reset-PIN flow — every other
-    // role sets its own password at creation time, so this is false
-    // for them regardless of what's on the row.
+    // Students AND guardians carry the default/reset-password flow —
+    // every other role sets its own password at creation time, so this
+    // is false for them regardless of what's on the row. See
+    // DEFAULT_GUARDIAN_PASSWORD and the two guardians INSERTs above for
+    // where a guardian's must_change_password starts out TRUE.
     const mustChangePassword =
-      userRole === "students" ? !!user.must_change_password : false;
+      userRole === "students" || userRole === "guardians"
+        ? !!user.must_change_password
+        : false;
+
+    // Granular permissions for a Teacher Development Coordinator — see
+    // requirePermission()/zonal_admin_permissions above. If explicit
+    // rows exist, they're authoritative. If none exist yet (an account
+    // delegated the old way, before Role Permissions existed for them)
+    // and the legacy can_act_independently flag is set, treat that as a
+    // one-time full legacy grant so nobody who could act directly
+    // yesterday is silently locked out today — the moment Super Admin
+    // touches their permissions on the new screen, explicit rows are
+    // written and this fallback stops applying to them.
+    let permissions = {
+      hire_teacher: false,
+      appoint_school_admin: false,
+      transfer_teacher: false,
+    };
+    if (
+      userRole === "zonal_admins" &&
+      user.title === "Teacher Development Coordinator"
+    ) {
+      const [permRows] = await pool
+        .query(
+          "SELECT permission_key, granted FROM zonal_admin_permissions WHERE admin_id = ?",
+          [id],
+        )
+        .catch(() => [[]]);
+      if (permRows && permRows.length > 0) {
+        permRows.forEach((p) => {
+          permissions[p.permission_key] = !!p.granted;
+        });
+      } else if (user.can_act_independently) {
+        permissions = {
+          hire_teacher: true,
+          appoint_school_admin: true,
+          transfer_teacher: true,
+        };
+      }
+    }
 
     issueAuthToken(res, {
       user_id: id,
@@ -21775,7 +24928,9 @@ app.post("/api/login", loginLimiter, async (req, res) => {
         userRole === "students" ? !!user.is_class_monitor : false,
       can_act_independently:
         userRole === "zonal_admins" ? !!user.can_act_independently : false,
+      permissions,
       must_change_password: mustChangePassword,
+      is_restricted: userRole === "super_admins" ? !!user.is_restricted : false,
     });
 
     // The token itself is httpOnly and never exposed to JS — this JSON
@@ -21794,8 +24949,10 @@ app.post("/api/login", loginLimiter, async (req, res) => {
       title: user.title || null,
       can_act_independently:
         userRole === "zonal_admins" ? !!user.can_act_independently : false,
+      permissions,
       school_name,
       must_change_password: mustChangePassword,
+      is_restricted: userRole === "super_admins" ? !!user.is_restricted : false,
     });
   } catch (err) {
     console.error("Login Error:", err);
@@ -21808,6 +24965,7 @@ app.post("/api/login", loginLimiter, async (req, res) => {
 // user's identity/school — it can't decode the cookie itself.
 app.get("/api/me", requireAuth, async (req, res) => {
   try {
+    await ensureGuardianParentCodeSupport();
     let school_name = null;
     let school_level = null;
     let moe_school_code = null;
@@ -21960,6 +25118,42 @@ app.get("/api/me", requireAuth, async (req, res) => {
         avatar_url = zaPhotoRows[0].avatar_url || null;
         id_photo_url = zaPhotoRows[0].id_photo_url || null;
       }
+    } else if (req.user.role === "guardians") {
+      // Guardians aren't scoped to a school_id (that's the whole point —
+      // one guardian can have children at several schools), so none of
+      // the school_name/logo_url resolution above ever runs for them.
+      // req.user.user_id is the parent_code login ID (see
+      // AUTH_SOURCES_BY_ROLE), not guardians.id, so look the row up by
+      // that instead.
+      const [guardianRows] = await pool
+        .query(
+          "SELECT full_name, phone_number FROM guardians WHERE parent_code = ?",
+          [req.user.user_id],
+        )
+        .catch(() => [[]]);
+      if (guardianRows && guardianRows.length > 0) {
+        admin_full_name = guardianRows[0].full_name || null;
+      }
+    } else if (req.user.role === "super_admins") {
+      // Owner/IT Lead — same first/middle/last split as every other
+      // admin table, so the Super Admin topbar can show a real name
+      // instead of just "Super Admin" once accounts have one (the
+      // original manually-seeded row may still have these NULL).
+      // avatar_url is the same self-serve pattern as zonal_admins/
+      // school_admins/teachers — see POST /api/super/upload-avatar.
+      const [saRows] = await pool
+        .query(
+          "SELECT first_name, middle_name, last_name, avatar_url FROM super_admins WHERE admin_id = ?",
+          [req.user.user_id],
+        )
+        .catch(() => [[]]);
+      if (saRows && saRows.length > 0) {
+        admin_full_name =
+          [saRows[0].first_name, saRows[0].middle_name, saRows[0].last_name]
+            .filter(Boolean)
+            .join(" ") || null;
+        avatar_url = saRows[0].avatar_url || null;
+      }
     }
     // is_registrar drives app.js's full-admin nav (Section Setup,
     // Placement Wizard, Manage Recorders). True either for a
@@ -21984,6 +25178,9 @@ app.get("/api/me", requireAuth, async (req, res) => {
       zone_logo_url,
       title: req.user.title || null,
       can_act_independently: !!req.user.can_act_independently,
+      permissions: req.user.permissions || null,
+      is_restricted:
+        req.user.role === "super_admins" ? !!req.user.is_restricted : false,
       school_name,
       school_level,
       moe_school_code,
@@ -24764,21 +27961,40 @@ app.listen(3001, () =>
 
 // SUPER ADMIN — everything Super Admin owns: creating Zonal Admin (Head
 // of Education / Teacher Development Coordinator) accounts and assigning
-// them to a Region/Zone, School setup (name, level, streams), the
-// Subject Dictionary, and pre-loading a school's student roster for its
+// them to a Region/Zone, School setup (name, educational level, grade
+// tiers, streams), Role Permissions, Stream Setup, the Subject
+// Dictionary, and pre-loading a school's student roster for its
 // Registrar to finish. requireSuperAdmin (defined earlier, next to
-// requireZonalAdmin) gates every route below.
+// requireZonalAdmin) gates every route below; a handful of
+// account-creation routes (see POST /api/super/super-admins and its
+// reset-password route) are further gated by requireOwner.
 //
-// Super Admin itself is NOT created through this API — per spec, it's a
-// single hardcoded/manually-seeded row in super_admins, not something
-// this system mints. There's deliberately no POST /api/super/admins.
+// UPDATED — Super Admin now mints its own kind: see the Owner/IT Lead
+// title split documented next to requireOwner above. The system still
+// needs exactly one Owner seeded by hand to bootstrap from (there's no
+// way to create the very first super admin through the API, same
+// bootstrapping problem every other role's very first account has), but
+// from there an Owner can create as many IT Lead (or additional Owner)
+// accounts as needed via POST /api/super/super-admins.
 //
-// Schema additions needed for this block:
+// Schema additions needed for this block — school_streams and
+// pending_roster are both provisioned automatically on first use below
+// (ensureSuperAdminCoreTables()), same reasoning as
+// ensureSchoolEducationalLevelsTable() above: a missing table on either
+// one would otherwise 500 core, frequently-hit actions (registering any
+// Secondary/Preparatory school, the EMIS Roster screen) rather than
+// something rare enough to leave as a manual migration step.
 //
 //   CREATE TABLE school_streams (
 //     stream_id INT AUTO_INCREMENT PRIMARY KEY,
 //     school_id INT NOT NULL,
-//     stream_name ENUM('NATURAL SCIENCE','SOCIAL SCIENCE') NOT NULL,
+//     stream_name VARCHAR(100) NOT NULL, -- widened up front (see the
+//                                        -- Stream Setup schema note
+//                                        -- above) rather than the
+//                                        -- original 2-value ENUM, since
+//                                        -- streams are a live catalog
+//                                        -- by the time this table is
+//                                        -- first created now.
 //     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 //     UNIQUE KEY school_stream (school_id, stream_name),
 //     FOREIGN KEY (school_id) REFERENCES schools(id)
@@ -24798,7 +28014,8 @@ app.listen(3001, () =>
 //     sex ENUM('Male','Female') NOT NULL,
 //     class_level INT NOT NULL,
 //     section VARCHAR(20) NOT NULL,
-//     stream ENUM('NATURAL SCIENCE','SOCIAL SCIENCE') NULL,
+//     stream VARCHAR(100) NULL, -- widened up front, same reasoning as
+//                               -- school_streams.stream_name above
 //     status ENUM('pending','assigned') NOT NULL DEFAULT 'pending',
 //     assigned_student_id VARCHAR(20) NULL, -- students.student_id, once assigned
 //     uploaded_by VARCHAR(20) NOT NULL,     -- super_admins.admin_id
@@ -24876,6 +28093,242 @@ async function logAudit(req, action, target_type, target_id, details) {
   } catch (err) {
     console.error("logAudit error (non-fatal):", err);
   }
+}
+
+// Provisions school_streams and pending_roster on first use, same
+// self-healing reasoning as ensureSchoolEducationalLevelsTable above —
+// both are hard dependencies of core, frequently-hit Super Admin
+// actions (registering any Secondary/Preparatory school touches
+// school_streams; the EMIS Roster screen touches pending_roster), so a
+// missing table here shouldn't need a manual migration step first.
+let superAdminCoreTablesReady = false;
+async function ensureSuperAdminCoreTables() {
+  if (superAdminCoreTablesReady) return;
+  await pool.query(`
+        CREATE TABLE IF NOT EXISTS school_streams (
+            stream_id INT AUTO_INCREMENT PRIMARY KEY,
+            school_id INT NOT NULL,
+            stream_name VARCHAR(100) NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY school_stream (school_id, stream_name),
+            FOREIGN KEY (school_id) REFERENCES schools(id)
+        )
+    `);
+  await pool.query(`
+        CREATE TABLE IF NOT EXISTS pending_roster (
+            pending_id INT AUTO_INCREMENT PRIMARY KEY,
+            school_id INT NOT NULL,
+            first_name VARCHAR(100) NOT NULL,
+            middle_name VARCHAR(100) NULL,
+            last_name VARCHAR(100) NOT NULL,
+            sex ENUM('Male','Female') NOT NULL,
+            class_level INT NOT NULL,
+            section VARCHAR(20) NOT NULL,
+            stream VARCHAR(100) NULL,
+            status ENUM('pending','assigned') NOT NULL DEFAULT 'pending',
+            assigned_student_id VARCHAR(20) NULL,
+            uploaded_by VARCHAR(20) NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (school_id) REFERENCES schools(id)
+        )
+    `);
+  // Self-heal an existing pending_roster table that predates the
+  // uploaded_by column above — CREATE TABLE IF NOT EXISTS is a no-op
+  // once the table already exists, so a table created before this
+  // column was added would otherwise 500 every single roster upload
+  // with "Unknown column 'uploaded_by' in field list" forever. Added
+  // nullable (rather than matching the fresh-table NOT NULL above)
+  // since any pre-existing rows on an older table have no value to
+  // backfill it with.
+  const [pendingRosterCols] = await pool.query(
+    `SELECT COLUMN_NAME FROM information_schema.columns
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pending_roster' AND COLUMN_NAME = 'uploaded_by'`,
+  );
+  if (pendingRosterCols.length === 0) {
+    await pool.query(
+      `ALTER TABLE pending_roster ADD COLUMN uploaded_by VARCHAR(20) NULL AFTER assigned_student_id`,
+    );
+  }
+  // Self-heal an existing pending_roster table whose `sex` column
+  // predates the full-word ENUM above — a different gap than
+  // uploaded_by just above (a missing column), this is a column that
+  // exists but was defined narrower by an older version of this table
+  // (e.g. an abbreviated ENUM('M','F'), the same kind of "widen later"
+  // situation stream_name/stream went through — see the Stream Setup
+  // schema note higher up in this file). MySQL in strict mode treats a
+  // value outside an ENUM's value list as a hard error rather than a
+  // warning, so any school whose pending_roster predates this column's
+  // current definition would 500 on every single roster upload with
+  // "Data truncated for column 'sex'" forever. Note: MODIFY on an enum
+  // with existing rows outside the new value list would itself
+  // silently blank those rows' sex — acceptable here since
+  // pending_roster only ever holds not-yet-assigned queue rows, not
+  // live student records.
+  const [pendingRosterSexCol] = await pool.query(
+    `SELECT COLUMN_TYPE FROM information_schema.columns
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pending_roster' AND COLUMN_NAME = 'sex'`,
+  );
+  if (
+    pendingRosterSexCol.length > 0 &&
+    pendingRosterSexCol[0].COLUMN_TYPE !== "enum('Male','Female')"
+  ) {
+    await pool.query(
+      `ALTER TABLE pending_roster MODIFY sex ENUM('Male','Female') NOT NULL`,
+    );
+  }
+  // Self-heal an existing pending_roster table whose `status` column
+  // predates the 'assigned' value above — same gap as `sex` just above,
+  // just caught later: a table created before POST
+  // /api/registrar/pending-roster/:id/assign-id existed (or before it
+  // started writing status = "assigned") may still have an older ENUM
+  // that doesn't include 'assigned' (e.g. just ENUM('pending')). MySQL
+  // in strict mode treats that as "Data truncated for column 'status'"
+  // and rolls back the whole assign-id transaction, so every single
+  // assign attempt fails until this column is widened — exactly the
+  // symptom this fixes. Same trade-off noted above for `sex` applies
+  // here too: MODIFY would blank any existing row whose status falls
+  // outside the new value list, but pending_roster only ever holds
+  // not-yet-assigned queue rows, so that's not a concern in practice.
+  const [pendingRosterStatusCol] = await pool.query(
+    `SELECT COLUMN_TYPE FROM information_schema.columns
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pending_roster' AND COLUMN_NAME = 'status'`,
+  );
+  if (
+    pendingRosterStatusCol.length > 0 &&
+    pendingRosterStatusCol[0].COLUMN_TYPE !== "enum('pending','assigned')"
+  ) {
+    await pool.query(
+      `ALTER TABLE pending_roster MODIFY status ENUM('pending','assigned') NOT NULL DEFAULT 'pending'`,
+    );
+  }
+  // Self-heal an existing pending_roster table whose `assigned_student_id`
+  // column predates the VARCHAR(20) definition above — same class of
+  // drift as `sex`/`status` just above, on the column that stores the
+  // real student_id (e.g. "GUSBS00002") once assign-id runs. An older
+  // table may still have this as an INT (a reasonable guess before this
+  // table ever stored a real, letter-prefixed student_id), which
+  // rejects any actual student_id with "Incorrect integer value" the
+  // moment assign-id tries to write one. Widened to VARCHAR(20) NULL
+  // regardless of whatever numeric type it currently is.
+  const [pendingRosterAssignedIdCol] = await pool.query(
+    `SELECT DATA_TYPE FROM information_schema.columns
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pending_roster' AND COLUMN_NAME = 'assigned_student_id'`,
+  );
+  if (
+    pendingRosterAssignedIdCol.length > 0 &&
+    pendingRosterAssignedIdCol[0].DATA_TYPE !== "varchar"
+  ) {
+    await pool.query(
+      `ALTER TABLE pending_roster MODIFY assigned_student_id VARCHAR(20) NULL`,
+    );
+  }
+  // EMIS Retrieval Requests — the Super Admin -> Registrar handshake
+  // for students who already have a student_id/login but no EMIS ID
+  // yet (a different gap than pending_roster above, which is for
+  // brand-new students with no record at all). One row per request; a
+  // request doesn't snapshot which exact students it covers — approval
+  // just unlocks the Super Admin's LIVE "still missing an EMIS ID at
+  // this school" query for download (see GET
+  // /api/super/emis-requests/:id/download), same reasoning
+  // ensureSchoolEducationalLevelsTable's tier tables use grade-tier
+  // membership live rather than freezing a list at request time.
+  // student_count is only a snapshot for display on the request list
+  // (so Super Admin/Registrar can see roughly how many were involved
+  // without needing to open the download).
+  await pool.query(`
+        CREATE TABLE IF NOT EXISTS emis_retrieval_requests (
+            request_id INT AUTO_INCREMENT PRIMARY KEY,
+            school_id INT NOT NULL,
+            requested_by VARCHAR(20) NOT NULL,
+            student_count INT NOT NULL DEFAULT 0,
+            note TEXT NULL,
+            status ENUM('pending','approved','rejected','fulfilled') NOT NULL DEFAULT 'pending',
+            reviewed_by VARCHAR(20) NULL,
+            reviewed_at DATETIME NULL,
+            rejection_reason TEXT NULL,
+            fulfilled_count INT NULL,
+            fulfilled_at DATETIME NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (school_id) REFERENCES schools(id)
+        )
+    `);
+  superAdminCoreTablesReady = true;
+}
+
+// EASE (national exam, Grades 6/8/12) candidates + results — same
+// two-table join-on-admission-number pattern emis_registry/students
+// already uses: ease_candidates is the Registrar's own "who did we
+// mark" list (one row per student they've entered an admission number
+// for), ease_exam_results is the Ministry results sheet the Super
+// Admin uploads (one row per admission number, school-agnostic — the
+// same CSV can cover every school at once). A candidate's Pass/Fail
+// status is never stored directly on ease_candidates; it's always
+// looked up live by joining admission_number (+class_level, +
+// exam_year) against ease_exam_results, so a result uploaded after a
+// student was marked still resolves correctly without a second write.
+// first_name is kept on both sides purely as a confirmation check
+// (matches the emis_registry pattern) — the real join key is the
+// admission number.
+let easeTablesReady = false;
+async function ensureEaseTables() {
+  if (easeTablesReady) return;
+  await pool.query(`
+        CREATE TABLE IF NOT EXISTS ease_candidates (
+            candidate_id INT AUTO_INCREMENT PRIMARY KEY,
+            student_id VARCHAR(20) NOT NULL,
+            school_id INT NOT NULL,
+            class_level INT NOT NULL,
+            admission_number VARCHAR(50) NOT NULL,
+            first_name VARCHAR(100) NULL,
+            exam_year VARCHAR(10) NOT NULL,
+            marked_by VARCHAR(20) NOT NULL,
+            marked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY student_exam_year (student_id, exam_year),
+            FOREIGN KEY (school_id) REFERENCES schools(id)
+        )
+    `);
+  await pool.query(`
+        CREATE TABLE IF NOT EXISTS ease_exam_results (
+            result_id INT AUTO_INCREMENT PRIMARY KEY,
+            admission_number VARCHAR(50) NOT NULL,
+            first_name VARCHAR(100) NULL,
+            class_level INT NOT NULL,
+            exam_year VARCHAR(10) NOT NULL,
+            mark DECIMAL(6,2) NULL,
+            cutoff DECIMAL(6,2) NULL,
+            average DECIMAL(6,2) NULL,
+            percentile DECIMAL(6,2) NULL,
+            result ENUM('Pass','Fail') NOT NULL,
+            uploaded_by VARCHAR(20) NOT NULL,
+            uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY admission_class_year (admission_number, class_level, exam_year)
+        )
+    `);
+  // Existing installs (table already created before average/percentile
+  // existed) need these added by hand — CREATE TABLE IF NOT EXISTS above
+  // is a no-op once the table exists:
+  //   ALTER TABLE ease_exam_results ADD COLUMN average DECIMAL(6,2) NULL AFTER cutoff;
+  //   ALTER TABLE ease_exam_results ADD COLUMN percentile DECIMAL(6,2) NULL AFTER average;
+  easeTablesReady = true;
+}
+
+// The three grades gated by a national exam rather than this school's
+// own cutoff — Grade 6 (-> 7), Grade 8 (-> 9), and Grade 12 (->
+// graduation). Shared by the report card disclaimer swap, the
+// Promote-action gate, and the EASE Candidates screens, so the list
+// only ever needs to change in one place.
+const EASE_GRADES = [6, 8, 12];
+// The current Ethiopian-calendar exam year an EASE mark/candidate
+// belongs to — EASE candidates/results are scoped per exam_year (same
+// student can in principle sit the exam more than once across years),
+// so this needs a single shared definition rather than each call site
+// guessing its own. Uses the same EC-year computation the transcript
+// already relies on (academicYearForClassLevel), anchored off the
+// CURRENT server-side academic year rather than a per-student one,
+// since an exam year is a school-wide/ministry-wide calendar concept,
+// not something that varies by which student it's attached to.
+function currentEaseExamYear() {
+  return String(getCurrentAcademicYearLabel().ec_year);
 }
 
 // A fresh zonal admin account always starts on this password and is
@@ -25231,7 +28684,7 @@ app.get(
   async (req, res) => {
     const { region_id } = req.query;
     try {
-      let query = "SELECT zone_id, zone_name, region_id FROM zone";
+      let query = "SELECT zone_id, zone_name, region_id, logo_url FROM zone";
       const params = [];
       if (region_id) {
         query += " WHERE region_id = ?";
@@ -25299,19 +28752,43 @@ app.get(
   "/api/super/schools",
   requireAuth,
   requireSuperAdmin,
+  requireSuperAdminPermission("manage_schools"),
   async (req, res) => {
     try {
+      await ensureSchoolEducationalLevelsTable();
       const [schools] = await pool.query(
-        `SELECT sc.id, sc.school_name, sc.school_level, sc.school_prefix, sc.moe_school_code,
+        `SELECT sc.id, sc.school_name, sc.school_level, sc.educational_level, sc.school_prefix, sc.moe_school_code,
                     sc.zone_id, z.zone_name, z.region_id, r.region_name,
-                    w.woreda_name AS woreda
+                    w.woreda_name AS woreda,
+                    GROUP_CONCAT(DISTINCT gt.school_level ORDER BY gt.school_level) AS grade_tiers,
+                    GROUP_CONCAT(DISTINCT sel.educational_level ORDER BY FIELD(sel.educational_level, 'PRIMARY','MIDDLE','SECONDARY')) AS educational_levels
              FROM schools sc
              LEFT JOIN zone z ON z.zone_id = sc.zone_id
              LEFT JOIN region r ON r.region_id = z.region_id
              LEFT JOIN woreda w ON w.woreda_id = sc.woreda_id
+             LEFT JOIN school_grade_tiers gt ON gt.school_id = sc.id
+             LEFT JOIN school_educational_levels sel ON sel.school_id = sc.id
+             WHERE sc.is_archived = 0
+             GROUP BY sc.id
              ORDER BY r.region_name, z.zone_name, sc.school_name`,
       );
-      res.json(schools);
+      res.json(
+        schools.map((s) => ({
+          ...s,
+          grade_tiers: s.grade_tiers ? s.grade_tiers.split(",") : [],
+          // Falls back to the single legacy educational_level column for
+          // any school registered before school_educational_levels
+          // existed (ensureSchoolEducationalLevelsTable's backfill
+          // above handles this on the very next request either way —
+          // this fallback only matters for the instant between the
+          // table being created and that backfill finishing).
+          educational_levels: s.educational_levels
+            ? s.educational_levels.split(",")
+            : s.educational_level
+              ? [s.educational_level]
+              : [],
+        })),
+      );
     } catch (err) {
       console.error("/api/super/schools GET error:", err);
       res.status(500).json({ error: "Could not load schools" });
@@ -25319,22 +28796,49 @@ app.get(
   },
 );
 
-// School setup — name, level, region/zone/woreda/kebele, and (for
-// PREPARATORY schools) which streams it offers. streams is optional and
-// only meaningful when school_level is PREPARATORY; anything sent for
-// another level is ignored, since BASIC/CORE/GENERAL schools don't have
-// streams to choose from. requires the caller's own password (see POST
-// /api/super/verify-password) to have been confirmed just before this
-// call, same UX gate school setup/subject dictionary/roster upload all
-// share — see showPasswordConfirm() in the frontend.
+// Static reference for the Class & Grade Mapping screen — Educational
+// Level -> Grade-Tier(s) -> grade range. Not a database table: this
+// mapping is fixed by the spec, not something Super Admin edits (the
+// derivation itself lives in EDUCATIONAL_LEVEL_TIERS/SCHOOL_LEVEL_GRADES
+// above; this route just exposes it for display).
+app.get(
+  "/api/super/grade-tier-mapping",
+  requireAuth,
+  requireSuperAdmin,
+  (req, res) => {
+    res.json(
+      EDUCATIONAL_LEVELS.map((level) => ({
+        educational_level: level,
+        tiers: EDUCATIONAL_LEVEL_TIERS[level].map((tier) => ({
+          school_level: tier,
+          grades: SCHOOL_LEVEL_GRADES[tier],
+        })),
+      })),
+    );
+  },
+);
+
+// School setup — name, EDUCATIONAL LEVEL (Primary/Middle/Secondary,
+// set once here and never changed — see the schema note above
+// getNextAvailableSchoolPrefix), region/zone/woreda/kebele, and (for a
+// Secondary school, which always carries both GENERAL and PREPARATORY —
+// see EDUCATIONAL_LEVEL_TIERS) which streams it offers. streams is
+// optional and only meaningful for a Secondary school; anything sent
+// for Primary/Middle is ignored, since those don't have a PREPARATORY
+// tier to pick streams for. requires the caller's own password (see
+// POST /api/super/verify-password) to have been confirmed just before
+// this call, same UX gate school setup/subject dictionary/roster
+// upload all share — see showPasswordConfirm() in the frontend.
 app.post(
   "/api/super/schools",
   requireAuth,
   requireSuperAdmin,
+  requireSuperAdminPermission("manage_schools"),
   async (req, res) => {
     const {
+      educational_level, // legacy single-value shape, still accepted below
+      educational_levels,
       school_name,
-      school_level,
       moe_school_code,
       region_id,
       zone_id,
@@ -25342,16 +28846,49 @@ app.post(
       kebele_id,
       streams,
     } = req.body;
-    if (!school_name || !school_level || !zone_id) {
-      return res
-        .status(400)
-        .json({ error: "school_name, school_level, and zone_id are required" });
-    }
-    if (!SCHOOL_LEVELS.includes(school_level)) {
+    // Multi-Tier School Registration: a campus can host more than one
+    // Educational Level at once (e.g. Primary + Middle under one
+    // umbrella), so this now takes an array. educational_level (single
+    // string) is still accepted for any older caller and normalized
+    // into a one-item array, rather than breaking that shape outright.
+    const levelsInput = Array.isArray(educational_levels)
+      ? educational_levels
+      : educational_level
+        ? [educational_level]
+        : [];
+    if (!school_name || levelsInput.length === 0 || !zone_id) {
       return res.status(400).json({
-        error: `school_level must be one of: ${SCHOOL_LEVELS.join(", ")}`,
+        error:
+          "school_name, at least one educational level, and zone_id are required",
       });
     }
+    // Dedupe while preserving canonical PRIMARY/MIDDLE/SECONDARY order,
+    // so the tier union and prefix below are deterministic regardless of
+    // the order the checkboxes were ticked in on the client.
+    const levels = EDUCATIONAL_LEVELS.filter((l) => levelsInput.includes(l));
+    if (
+      levels.length !== new Set(levelsInput).size ||
+      levels.length !== levelsInput.length
+    ) {
+      return res.status(400).json({
+        error: `educational_levels must only contain: ${EDUCATIONAL_LEVELS.join(", ")}`,
+      });
+    }
+    // Union of every tier implied by any selected level, deduped and
+    // ordered BASIC -> CORE -> GENERAL -> PREPARATORY (e.g. Primary +
+    // Middle together -> BASIC + CORE; Primary + Secondary -> BASIC +
+    // GENERAL + PREPARATORY). Same list this school's Subject
+    // Configuration and roster screens key off.
+    const tierSet = new Set(levels.flatMap((l) => EDUCATIONAL_LEVEL_TIERS[l]));
+    const gradeTiers = SCHOOL_LEVELS.filter((t) => tierSet.has(t));
+    // schools.school_level/educational_level stay single-valued for
+    // backward compat (see the school_educational_levels schema comment
+    // above) — both default to the LOWEST tier/level this school
+    // actually offers, same "lower of the two" reasoning the old
+    // SECONDARY-only path already used for school_level.
+    const primaryTier = gradeTiers[0];
+    const primaryEducationalLevel = levels[0];
+    const offersPreparatory = gradeTiers.includes("PREPARATORY");
     if (
       streams &&
       (!Array.isArray(streams) ||
@@ -25363,16 +28900,19 @@ app.post(
     }
     const conn = await pool.getConnection();
     try {
+      await ensureSchoolEducationalLevelsTable();
+      await ensureSuperAdminCoreTables();
       await conn.beginTransaction();
       const cleanName = normalizeName(school_name);
-      const basePrefix = buildSchoolPrefixBase(cleanName, school_level);
+      const basePrefix = buildSchoolPrefixBase(cleanName, primaryTier);
       const school_prefix = await getNextAvailableSchoolPrefix(basePrefix);
       const [result] = await conn.query(
-        `INSERT INTO schools (school_name, school_level, school_prefix, moe_school_code, region_id, zone_id, woreda_id, kebele_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO schools (school_name, school_level, educational_level, school_prefix, moe_school_code, region_id, zone_id, woreda_id, kebele_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           cleanName,
-          school_level,
+          primaryTier,
+          primaryEducationalLevel,
           school_prefix,
           moe_school_code || null,
           region_id || null,
@@ -25383,11 +28923,28 @@ app.post(
       );
       const school_id = result.insertId;
 
-      if (
-        school_level === "PREPARATORY" &&
-        Array.isArray(streams) &&
-        streams.length > 0
-      ) {
+      // One row per Educational Level this school was registered under
+      // (see school_educational_levels schema comment above) — the
+      // actual fix for "one campus, multiple levels".
+      await conn.query(
+        `INSERT INTO school_educational_levels (school_id, educational_level) VALUES ${levels.map(() => "(?, ?)").join(", ")}`,
+        levels.flatMap((level) => [school_id, level]),
+      );
+
+      // One row per grade-tier the union of selected levels implies — a
+      // Secondary school (or any combination that includes it) gets
+      // BOTH a GENERAL and a PREPARATORY row here (see
+      // school_grade_tiers schema comment above), which is the actual
+      // fix for "no way to represent a school spanning two tiers";
+      // schools.school_level above stays single-valued only for the
+      // existing call sites that were never taught to look at this
+      // table.
+      await conn.query(
+        `INSERT INTO school_grade_tiers (school_id, school_level) VALUES ${gradeTiers.map(() => "(?, ?)").join(", ")}`,
+        gradeTiers.flatMap((tier) => [school_id, tier]),
+      );
+
+      if (offersPreparatory && Array.isArray(streams) && streams.length > 0) {
         await conn.query(
           `INSERT INTO school_streams (school_id, stream_name) VALUES ${streams.map(() => "(?, ?)").join(", ")}`,
           streams.flatMap((s) => [school_id, s]),
@@ -25400,7 +28957,7 @@ app.post(
         "school.create",
         "school",
         school_id,
-        `${cleanName} (${school_level}) in zone ${zone_id}`,
+        `${cleanName} (${levels.join(" + ")}: ${gradeTiers.join(" + ")}) in zone ${zone_id}`,
       );
       res.json({
         message: `School registered as ${school_prefix}.`,
@@ -25422,6 +28979,442 @@ app.post(
   },
 );
 
+// Add an Educational Level to an already-registered school — e.g. a
+// Primary-only school later opens a Middle School wing. Deliberately
+// ADD-ONLY: this never removes a level/tier the school already carries,
+// since students may already be placed in it (that's a much bigger,
+// separate operation — reassigning/archiving students — not a simple
+// edit). school_prefix and the legacy single-valued
+// schools.school_level/educational_level columns are also left alone:
+// per the schema note above getNextAvailableSchoolPrefix, those are set
+// once at registration from the LOWEST tier/level, and changing them
+// after students/teachers already have prefix-based IDs would be
+// disruptive; a newly-added level only shows up in
+// school_educational_levels/school_grade_tiers (the full-set tables
+// every multi-tier-aware screen already reads — see GET
+// /api/super/schools above), the same tables POST /api/super/schools
+// itself writes to.
+// school_name IS editable here (unlike prefix/level) — a rename is a
+// correction to a label, not a change to the identity/ID scheme the
+// prefix and grade-tier columns are load-bearing for, so it carries
+// none of that disruption risk. Either add_educational_levels or
+// school_name (or both) may be sent; at least one is required.
+app.put(
+  "/api/super/schools/:id",
+  requireAuth,
+  requireSuperAdmin,
+  requireSuperAdminPermission("manage_schools"),
+  async (req, res) => {
+    const schoolId = req.params.id;
+    const { add_educational_levels, streams, school_name } = req.body;
+    const addInput = Array.isArray(add_educational_levels)
+      ? add_educational_levels
+      : [];
+    const trimmedName =
+      typeof school_name === "string" ? school_name.trim() : undefined;
+    if (trimmedName !== undefined && trimmedName === "") {
+      return res.status(400).json({ error: "school_name cannot be blank." });
+    }
+    if (addInput.length === 0 && trimmedName === undefined) {
+      return res.status(400).json({
+        error:
+          "Send add_educational_levels (non-empty array) and/or school_name to update.",
+      });
+    }
+    const addLevels = EDUCATIONAL_LEVELS.filter((l) => addInput.includes(l));
+    if (
+      addInput.length > 0 &&
+      (addLevels.length !== new Set(addInput).size ||
+        addLevels.length !== addInput.length)
+    ) {
+      return res.status(400).json({
+        error: `add_educational_levels must only contain: ${EDUCATIONAL_LEVELS.join(", ")}`,
+      });
+    }
+    if (
+      streams &&
+      (!Array.isArray(streams) ||
+        streams.some((s) => !SCHOOL_STREAMS.includes(s)))
+    ) {
+      return res.status(400).json({
+        error: `streams must only contain: ${SCHOOL_STREAMS.join(", ")}`,
+      });
+    }
+    const conn = await pool.getConnection();
+    try {
+      await ensureSchoolEducationalLevelsTable();
+      await ensureSuperAdminCoreTables();
+      await conn.beginTransaction();
+
+      const [schoolRows] = await conn.query(
+        "SELECT id, school_name FROM schools WHERE id = ? FOR UPDATE",
+        [schoolId],
+      );
+      if (schoolRows.length === 0) {
+        await conn.rollback();
+        return res.status(404).json({ error: "School not found." });
+      }
+      const oldName = schoolRows[0].school_name;
+      const renaming = trimmedName !== undefined && trimmedName !== oldName;
+
+      let newLevels = [];
+      let newTiers = [];
+      if (addLevels.length > 0) {
+        const [existingLevelRows] = await conn.query(
+          "SELECT educational_level FROM school_educational_levels WHERE school_id = ?",
+          [schoolId],
+        );
+        const existingLevels = new Set(
+          existingLevelRows.map((r) => r.educational_level),
+        );
+        newLevels = addLevels.filter((l) => !existingLevels.has(l));
+        if (newLevels.length === 0 && !renaming) {
+          await conn.rollback();
+          return res.status(400).json({
+            error: "This school already has every level you selected.",
+          });
+        }
+
+        if (newLevels.length > 0) {
+          await conn.query(
+            `INSERT INTO school_educational_levels (school_id, educational_level) VALUES ${newLevels.map(() => "(?, ?)").join(", ")}`,
+            newLevels.flatMap((level) => [schoolId, level]),
+          );
+
+          // Only the NEW tiers those new levels imply — a level the school
+          // already carried (and therefore whose tier row already exists)
+          // is left untouched. INSERT IGNORE guards the rare case a tier is
+          // implied by two different levels (not possible today, since each
+          // level maps to a disjoint tier set, but cheap insurance).
+          const existingTierRows = await conn.query(
+            "SELECT school_level FROM school_grade_tiers WHERE school_id = ?",
+            [schoolId],
+          );
+          const existingTiers = new Set(
+            existingTierRows[0].map((r) => r.school_level),
+          );
+          const impliedTiers = new Set(
+            newLevels.flatMap((l) => EDUCATIONAL_LEVEL_TIERS[l]),
+          );
+          newTiers = SCHOOL_LEVELS.filter(
+            (t) => impliedTiers.has(t) && !existingTiers.has(t),
+          );
+          if (newTiers.length > 0) {
+            await conn.query(
+              `INSERT IGNORE INTO school_grade_tiers (school_id, school_level) VALUES ${newTiers.map(() => "(?, ?)").join(", ")}`,
+              newTiers.flatMap((tier) => [schoolId, tier]),
+            );
+          }
+
+          if (
+            newTiers.includes("PREPARATORY") &&
+            Array.isArray(streams) &&
+            streams.length > 0
+          ) {
+            await conn.query(
+              `INSERT IGNORE INTO school_streams (school_id, stream_name) VALUES ${streams.map(() => "(?, ?)").join(", ")}`,
+              streams.flatMap((s) => [schoolId, s]),
+            );
+          }
+        }
+      }
+
+      if (renaming) {
+        await conn.query("UPDATE schools SET school_name = ? WHERE id = ?", [
+          trimmedName,
+          schoolId,
+        ]);
+      }
+
+      await conn.commit();
+      const auditParts = [];
+      if (newLevels.length > 0)
+        auditParts.push(
+          `Added level(s) ${newLevels.join(" + ")} (tier(s) ${newTiers.join(" + ") || "none new"})`,
+        );
+      if (renaming) auditParts.push(`Renamed "${oldName}" to "${trimmedName}"`);
+      await logAudit(
+        req,
+        "school.update",
+        "school",
+        schoolId,
+        `${auditParts.join("; ")} — ${renaming ? trimmedName : oldName}`,
+      );
+      const messageParts = [];
+      if (newLevels.length > 0)
+        messageParts.push(`now also offers ${newLevels.join(" + ")}`);
+      if (renaming) messageParts.push(`renamed to ${trimmedName}`);
+      res.json({
+        message: `${renaming ? trimmedName : oldName} ${messageParts.join(" and ") || "updated"}.`,
+        added_educational_levels: newLevels,
+        added_grade_tiers: newTiers,
+        school_name: renaming ? trimmedName : oldName,
+      });
+    } catch (err) {
+      await conn.rollback();
+      console.error("/api/super/schools/:id PUT error:", err);
+      res.status(500).json({ error: "Could not update school." });
+    } finally {
+      conn.release();
+    }
+  },
+);
+
+// --- Super Admin: archive / delete / wipe / transfer a school ---
+// See the is_archived/is_restricted migration note above
+// DEFAULT_SUPER_ADMIN_PASSWORD for the shape of what each action does.
+
+// Archive: soft-hide only. Nothing dependent on this school is touched.
+app.patch(
+  "/api/super/schools/:id/archive",
+  requireAuth,
+  requireSuperAdmin,
+  requireSuperAdminPermission("manage_schools"),
+  async (req, res) => {
+    try {
+      const [result] = await pool.query(
+        `UPDATE schools SET is_archived = 1, archived_at = NOW(), archived_by = ?
+             WHERE id = ? AND is_archived = 0`,
+        [req.user.user_id, req.params.id],
+      );
+      if (result.affectedRows === 0) {
+        return res.status(404).json({
+          error: "School not found, or already archived.",
+        });
+      }
+      await logAudit(req, "school.archive", "school", req.params.id, null);
+      res.json({ message: "School archived." });
+    } catch (err) {
+      console.error("/api/super/schools/:id/archive error:", err);
+      res.status(500).json({ error: "Could not archive school." });
+    }
+  },
+);
+
+// List archived schools — its own screen, separate from the active
+// Schools list above (which now excludes is_archived = 1 rows).
+app.get(
+  "/api/super/schools/archived",
+  requireAuth,
+  requireSuperAdmin,
+  requireSuperAdminPermission("manage_schools"),
+  async (req, res) => {
+    try {
+      const [schools] = await pool.query(
+        `SELECT sc.id, sc.school_name, sc.school_prefix, sc.archived_at,
+                    sc.archived_by, z.zone_name, r.region_name
+             FROM schools sc
+             LEFT JOIN zone z ON z.zone_id = sc.zone_id
+             LEFT JOIN region r ON r.region_id = z.region_id
+             WHERE sc.is_archived = 1
+             ORDER BY sc.archived_at DESC`,
+      );
+      res.json(schools);
+    } catch (err) {
+      console.error("/api/super/schools/archived GET error:", err);
+      res.status(500).json({ error: "Could not load archived schools." });
+    }
+  },
+);
+
+// Restore an archived school back to the active list, unchanged.
+app.post(
+  "/api/super/schools/:id/restore",
+  requireAuth,
+  requireSuperAdmin,
+  requireSuperAdminPermission("manage_schools"),
+  async (req, res) => {
+    try {
+      const [result] = await pool.query(
+        `UPDATE schools SET is_archived = 0, archived_at = NULL, archived_by = NULL
+             WHERE id = ? AND is_archived = 1`,
+        [req.params.id],
+      );
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: "Archived school not found." });
+      }
+      await logAudit(req, "school.restore", "school", req.params.id, null);
+      res.json({ message: "School restored." });
+    } catch (err) {
+      console.error("/api/super/schools/:id/restore error:", err);
+      res.status(500).json({ error: "Could not restore school." });
+    }
+  },
+);
+
+// Delete a school — mode=unassign (default) detaches dependent rows
+// (school_id set NULL) rather than deleting them, and only where that
+// column is nullable; a NOT NULL dependent (e.g. a roster/enrollment
+// row that can't exist without a school) is left in place and blocks
+// this mode — use mode=wipe instead. mode=wipe deletes every dependent
+// row outright, then the school itself. Either mode may be called on
+// an active OR an already-archived school (the Archived Schools screen
+// re-uses this same route for its own Wipe button).
+app.delete(
+  "/api/super/schools/:id",
+  requireAuth,
+  requireSuperAdmin,
+  requireSuperAdminPermission("manage_schools"),
+  async (req, res) => {
+    const schoolId = req.params.id;
+    const mode = req.query.mode === "wipe" ? "wipe" : "unassign";
+    const conn = await pool.getConnection();
+    try {
+      const [schoolRows] = await conn.query(
+        "SELECT school_name FROM schools WHERE id = ?",
+        [schoolId],
+      );
+      if (schoolRows.length === 0) {
+        conn.release();
+        return res.status(404).json({ error: "School not found." });
+      }
+      const schoolName = schoolRows[0].school_name;
+      const dependents = await getSchoolDependentTables();
+
+      await conn.beginTransaction();
+      // FK checks off for the duration of this transaction only — the
+      // dependent tables aren't necessarily deletable in a single safe
+      // order relative to EACH OTHER (a table discovered here might
+      // itself be referenced by another one), and information_schema
+      // doesn't hand us that ordering for free. Scoped to this
+      // connection/transaction and always re-enabled in `finally`.
+      await conn.query("SET FOREIGN_KEY_CHECKS = 0");
+      const blocked = [];
+      for (const dep of dependents) {
+        if (mode === "wipe") {
+          await conn.query(`DELETE FROM ?? WHERE ?? = ?`, [
+            dep.table,
+            dep.column,
+            schoolId,
+          ]);
+        } else if (dep.nullable) {
+          await conn.query(`UPDATE ?? SET ?? = NULL WHERE ?? = ?`, [
+            dep.table,
+            dep.column,
+            dep.column,
+            schoolId,
+          ]);
+        } else {
+          const [[{ cnt }]] = await conn.query(
+            `SELECT COUNT(*) AS cnt FROM ?? WHERE ?? = ?`,
+            [dep.table, dep.column, schoolId],
+          );
+          if (cnt > 0) blocked.push(`${dep.table} (${cnt})`);
+        }
+      }
+      if (mode === "unassign" && blocked.length > 0) {
+        await conn.query("SET FOREIGN_KEY_CHECKS = 1");
+        await conn.rollback();
+        return res.status(409).json({
+          error: `Can't delete-and-unassign — these records require a school and can't be detached: ${blocked.join(", ")}. Use "Delete completely" instead, or move them to another school first.`,
+        });
+      }
+      await conn.query("DELETE FROM schools WHERE id = ?", [schoolId]);
+      await conn.query("SET FOREIGN_KEY_CHECKS = 1");
+      await conn.commit();
+      await logAudit(
+        req,
+        mode === "wipe" ? "school.wipe" : "school.delete_unassign",
+        "school",
+        schoolId,
+        schoolName,
+      );
+      res.json({
+        message:
+          mode === "wipe"
+            ? `${schoolName} and all its records were permanently deleted.`
+            : `${schoolName} was deleted. Its students and staff were unassigned, not deleted.`,
+      });
+    } catch (err) {
+      await conn.query("SET FOREIGN_KEY_CHECKS = 1").catch(() => {});
+      await conn.rollback().catch(() => {});
+      console.error("/api/super/schools/:id DELETE error:", err);
+      res.status(500).json({ error: "Could not delete school." });
+    } finally {
+      conn.release();
+    }
+  },
+);
+
+// Transfer: move every dependent row from this school to another one,
+// then delete this (normally already-archived) school. NOTE: if a
+// dependent table has a uniqueness constraint that isn't just per-
+// school (e.g. two schools each already have a "STU-014"), the
+// transfer for that row will fail and the whole transaction rolls
+// back — nothing is left half-moved. Re-run after resolving the
+// collision (e.g. renumbering on one side) if that happens.
+app.post(
+  "/api/super/schools/:id/transfer",
+  requireAuth,
+  requireSuperAdmin,
+  requireSuperAdminPermission("manage_schools"),
+  async (req, res) => {
+    const schoolId = req.params.id;
+    const { target_school_id } = req.body;
+    if (!target_school_id) {
+      return res.status(400).json({ error: "target_school_id is required." });
+    }
+    if (String(target_school_id) === String(schoolId)) {
+      return res
+        .status(400)
+        .json({ error: "Can't transfer a school's records to itself." });
+    }
+    const conn = await pool.getConnection();
+    try {
+      const [[source], [target]] = await Promise.all([
+        conn.query("SELECT school_name FROM schools WHERE id = ?", [schoolId]),
+        conn.query("SELECT school_name FROM schools WHERE id = ?", [
+          target_school_id,
+        ]),
+      ]).then((r) => r.map((x) => x[0]));
+      if (!source) {
+        conn.release();
+        return res.status(404).json({ error: "Source school not found." });
+      }
+      if (!target) {
+        conn.release();
+        return res.status(404).json({ error: "Target school not found." });
+      }
+      const dependents = await getSchoolDependentTables();
+      await conn.beginTransaction();
+      await conn.query("SET FOREIGN_KEY_CHECKS = 0");
+      for (const dep of dependents) {
+        await conn.query(`UPDATE ?? SET ?? = ? WHERE ?? = ?`, [
+          dep.table,
+          dep.column,
+          target_school_id,
+          dep.column,
+          schoolId,
+        ]);
+      }
+      await conn.query("DELETE FROM schools WHERE id = ?", [schoolId]);
+      await conn.query("SET FOREIGN_KEY_CHECKS = 1");
+      await conn.commit();
+      await logAudit(
+        req,
+        "school.transfer",
+        "school",
+        schoolId,
+        `${source.school_name} -> ${target.school_name}`,
+      );
+      res.json({
+        message: `${source.school_name}'s records were moved to ${target.school_name}, and ${source.school_name} was removed.`,
+      });
+    } catch (err) {
+      await conn.query("SET FOREIGN_KEY_CHECKS = 1").catch(() => {});
+      await conn.rollback().catch(() => {});
+      console.error("/api/super/schools/:id/transfer error:", err);
+      res.status(500).json({
+        error:
+          "Could not transfer school records — a record ID may already exist at the target school. " +
+          (err.sqlMessage || err.message || ""),
+      });
+    } finally {
+      conn.release();
+    }
+  },
+);
+
 // Add/remove a stream on an existing PREPARATORY school — e.g. a school
 // that only launched with Natural Science later adds Social Science.
 app.post(
@@ -25436,13 +29429,23 @@ app.post(
       });
     }
     try {
+      await ensureSuperAdminCoreTables();
       const [schoolRows] = await pool.query(
-        "SELECT id, school_level FROM schools WHERE id = ?",
+        "SELECT id FROM schools WHERE id = ?",
         [req.params.id],
       );
       if (schoolRows.length === 0)
         return res.status(404).json({ error: "School not found." });
-      if (schoolRows[0].school_level !== "PREPARATORY") {
+      // Checks school_grade_tiers rather than the legacy single-valued
+      // school_level, so a Secondary school (GENERAL + PREPARATORY) is
+      // correctly recognized here even though school_level itself
+      // defaults to GENERAL for that school — see the school_grade_tiers
+      // schema note above getNextAvailableSchoolPrefix.
+      const [tierRows] = await pool.query(
+        "SELECT 1 FROM school_grade_tiers WHERE school_id = ? AND school_level = 'PREPARATORY'",
+        [req.params.id],
+      );
+      if (tierRows.length === 0) {
         return res
           .status(400)
           .json({ error: "Only PREPARATORY schools have streams." });
@@ -25471,6 +29474,7 @@ app.delete(
   requireSuperAdmin,
   async (req, res) => {
     try {
+      await ensureSuperAdminCoreTables();
       const [result] = await pool.query(
         "DELETE FROM school_streams WHERE stream_id = ? AND school_id = ?",
         [req.params.stream_id, req.params.id],
@@ -25499,6 +29503,7 @@ app.get(
   requireSuperAdmin,
   async (req, res) => {
     try {
+      await ensureSuperAdminCoreTables();
       const [rows] = await pool.query(
         "SELECT stream_id, stream_name FROM school_streams WHERE school_id = ? ORDER BY stream_name",
         [req.params.id],
@@ -25706,6 +29711,804 @@ app.delete(
   },
 );
 
+// --- Super Admin: Subject Setup Matrix ---
+// A table view over the exact same subject_dictionary rows as the
+// level-filtered CRUD routes above (GET/POST/PUT/DELETE
+// /api/super/subject-dictionary) — one row per distinct subject name,
+// one column per Grade-Tier that doesn't carry a stream (BASIC/CORE/
+// GENERAL) plus one column per currently-live stream under PREPARATORY
+// (see SCHOOL_STREAMS/refreshStreamCache() — this reads the same live
+// catalog Stream Setup manages, so a renamed/added stream shows up here
+// automatically rather than being hardcoded to "Natural/Social
+// Science"). Lets a subject like English be ticked across every level
+// at once instead of being re-entered per level.
+function subjectMatrixColumnKey(school_level, stream) {
+  return school_level === "PREPARATORY" && stream
+    ? `PREPARATORY:${stream}`
+    : school_level;
+}
+app.get(
+  "/api/super/subject-dictionary/matrix",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    try {
+      const [rows] = await pool.query(
+        "SELECT subject_dict_id, subject_name, school_level, stream FROM subject_dictionary ORDER BY subject_name, school_level, stream",
+      );
+      const bySubject = new Map();
+      for (const row of rows) {
+        if (!bySubject.has(row.subject_name)) {
+          bySubject.set(row.subject_name, {
+            subject_name: row.subject_name,
+            cells: {},
+          });
+        }
+        const entry = bySubject.get(row.subject_name);
+        if (row.school_level === "PREPARATORY" && row.stream === null) {
+          // Legacy "applies to both streams" row from before this
+          // matrix existed (see the level-filtered POST route's stream
+          // handling above) — shown as every currently-live stream
+          // checked, all pointing at this one row, so it displays
+          // correctly without a migration. Saving this row from the
+          // matrix (even leaving every stream checked) normalizes it
+          // into one explicit row per stream — see the PUT handler.
+          for (const streamName of SCHOOL_STREAMS) {
+            entry.cells[subjectMatrixColumnKey("PREPARATORY", streamName)] =
+              row.subject_dict_id;
+          }
+        } else {
+          entry.cells[subjectMatrixColumnKey(row.school_level, row.stream)] =
+            row.subject_dict_id;
+        }
+      }
+      res.json({
+        streams: SCHOOL_STREAMS,
+        subjects: Array.from(bySubject.values()),
+      });
+    } catch (err) {
+      console.error("/api/super/subject-dictionary/matrix GET error:", err);
+      res.status(500).json({ error: "Could not load the subject matrix" });
+    }
+  },
+);
+
+// Saves one subject's full row of checkboxes in one go — every
+// non-stream column (BASIC/CORE/GENERAL) plus one column per live
+// stream under PREPARATORY. Rather than diffing against whatever's on
+// file, this simply replaces this subject's rows outright: delete
+// everything currently on file for subject_name, then insert one row
+// per checked column. subject_dict_id is not referenced anywhere else
+// as a stable foreign key (every consumer looks a row up fresh by
+// name+level+stream — see /api/academic-vp/subject-dictionary above),
+// so new IDs on every save are safe. original_subject_name (when
+// renaming an existing row) is what gets deleted; subject_name is what
+// gets (re)inserted.
+app.put(
+  "/api/super/subject-dictionary/matrix",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    const { subject_name, original_subject_name, columns } = req.body;
+    if (!subject_name || !subject_name.trim() || !columns) {
+      return res
+        .status(400)
+        .json({ error: "subject_name and columns are required" });
+    }
+    const cleanName = normalizeName(subject_name);
+    const priorName = original_subject_name
+      ? normalizeName(original_subject_name)
+      : cleanName;
+    const NON_STREAM_LEVELS = ["BASIC", "CORE", "GENERAL"];
+    const toInsert = [];
+    for (const level of NON_STREAM_LEVELS) {
+      if (columns[level]) toInsert.push({ school_level: level, stream: null });
+    }
+    for (const streamName of SCHOOL_STREAMS) {
+      if (columns[subjectMatrixColumnKey("PREPARATORY", streamName)]) {
+        toInsert.push({ school_level: "PREPARATORY", stream: streamName });
+      }
+    }
+    if (toInsert.length === 0) {
+      return res.status(400).json({
+        error: "Select at least one level/stream for this subject.",
+      });
+    }
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      // If this is a rename, only the old name's rows are cleared here
+      // — a genuine duplicate under the NEW name (a different subject
+      // that already happens to share it) is caught by the unique
+      // insert below instead of silently merging the two.
+      await conn.query(
+        "DELETE FROM subject_dictionary WHERE subject_name = ?",
+        [priorName],
+      );
+      const [existingUnderNewName] =
+        priorName !== cleanName
+          ? await conn.query(
+              "SELECT subject_dict_id FROM subject_dictionary WHERE subject_name = ?",
+              [cleanName],
+            )
+          : [[]];
+      if (existingUnderNewName.length > 0) {
+        await conn.rollback();
+        return res.status(409).json({
+          error: `"${cleanName}" already exists in the dictionary — merge or remove it first.`,
+        });
+      }
+      await conn.query(
+        `INSERT INTO subject_dictionary (subject_name, school_level, stream, status, added_by, approved_by, approved_at)
+             VALUES ${toInsert.map(() => "(?, ?, ?, 'approved', ?, ?, ?)").join(", ")}`,
+        toInsert.flatMap((c) => [
+          cleanName,
+          c.school_level,
+          c.stream,
+          req.user.user_id,
+          req.user.user_id,
+          new Date(),
+        ]),
+      );
+      await conn.commit();
+      await logAudit(
+        req,
+        "subject.matrix_save",
+        "subject",
+        null,
+        `${cleanName}: ${toInsert.map((c) => (c.stream ? `${c.school_level}/${c.stream}` : c.school_level)).join(", ")}`,
+      );
+      res.json({ message: "Subject saved." });
+    } catch (err) {
+      await conn.rollback();
+      console.error("/api/super/subject-dictionary/matrix PUT error:", err);
+      res.status(500).json({ error: "Could not save subject" });
+    } finally {
+      conn.release();
+    }
+  },
+);
+
+app.delete(
+  "/api/super/subject-dictionary/matrix/:subject_name",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    try {
+      const cleanName = normalizeName(req.params.subject_name);
+      const [result] = await pool.query(
+        "DELETE FROM subject_dictionary WHERE subject_name = ?",
+        [cleanName],
+      );
+      if (result.affectedRows === 0)
+        return res.status(404).json({ error: "Subject not found." });
+      await logAudit(req, "subject.delete", "subject", null, cleanName);
+      res.json({ message: "Subject removed from dictionary." });
+    } catch (err) {
+      console.error("/api/super/subject-dictionary/matrix DELETE error:", err);
+      res.status(500).json({ error: "Could not remove subject" });
+    }
+  },
+);
+
+// --- Super Admin: Stream Setup (system-wide) ---
+// The streams a school can draw from, managed as its own catalog
+// instead of being bolted onto school registration — see the `streams`
+// schema note and refreshStreamCache() above. Every write here
+// refreshes the in-memory SCHOOL_STREAMS cache immediately afterward,
+// so school setup/subject dictionary/roster validation see the change
+// on the very next request, not just after a server restart.
+app.get(
+  "/api/super/streams",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    try {
+      const [rows] = await pool.query(
+        "SELECT stream_id, stream_name FROM streams ORDER BY stream_name",
+      );
+      res.json(rows);
+    } catch (err) {
+      console.error("/api/super/streams GET error:", err);
+      res.status(500).json({ error: "Could not load streams" });
+    }
+  },
+);
+app.post(
+  "/api/super/streams",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    const { stream_name } = req.body;
+    if (!stream_name || !stream_name.trim())
+      return res.status(400).json({ error: "stream_name is required" });
+    try {
+      const cleanName = stream_name.trim().toUpperCase();
+      const [result] = await pool.query(
+        "INSERT INTO streams (stream_name) VALUES (?)",
+        [cleanName],
+      );
+      await refreshStreamCache();
+      await logAudit(
+        req,
+        "stream.create",
+        "stream",
+        result.insertId,
+        cleanName,
+      );
+      res.json({ message: "Stream added.", stream_id: result.insertId });
+    } catch (err) {
+      console.error("/api/super/streams POST error:", err);
+      if (err.code === "ER_DUP_ENTRY")
+        return res
+          .status(409)
+          .json({ error: "A stream with that name already exists." });
+      res.status(500).json({ error: "Could not add stream" });
+    }
+  },
+);
+app.put(
+  "/api/super/streams/:stream_id",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    const { stream_name } = req.body;
+    if (!stream_name || !stream_name.trim())
+      return res.status(400).json({ error: "stream_name is required" });
+    try {
+      const cleanName = stream_name.trim().toUpperCase();
+      const [result] = await pool.query(
+        "UPDATE streams SET stream_name = ? WHERE stream_id = ?",
+        [cleanName, req.params.stream_id],
+      );
+      if (result.affectedRows === 0)
+        return res.status(404).json({ error: "Stream not found." });
+      // Renaming here does NOT rename the value already stored on
+      // school_streams/subject_dictionary rows that reference the old
+      // name (those columns hold the stream name directly, not a
+      // foreign key to stream_id — see the schema note above) — existing
+      // rows keep the name they were written with until re-saved. This
+      // matches this file's existing style of flagging rather than
+      // silently working around a schema limitation.
+      await refreshStreamCache();
+      await logAudit(
+        req,
+        "stream.edit",
+        "stream",
+        req.params.stream_id,
+        cleanName,
+      );
+      res.json({ message: "Stream updated." });
+    } catch (err) {
+      console.error("/api/super/streams PUT error:", err);
+      if (err.code === "ER_DUP_ENTRY")
+        return res
+          .status(409)
+          .json({ error: "A stream with that name already exists." });
+      res.status(500).json({ error: "Could not update stream" });
+    }
+  },
+);
+app.delete(
+  "/api/super/streams/:stream_id",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    try {
+      await ensureSuperAdminCoreTables();
+      const [rows] = await pool.query(
+        "SELECT stream_name FROM streams WHERE stream_id = ?",
+        [req.params.stream_id],
+      );
+      if (rows.length === 0)
+        return res.status(404).json({ error: "Stream not found." });
+      const streamName = rows[0].stream_name;
+      const [[inUseSchools], [inUseSubjects]] = await Promise.all([
+        pool.query(
+          "SELECT stream_id FROM school_streams WHERE stream_name = ? LIMIT 1",
+          [streamName],
+        ),
+        pool.query(
+          "SELECT subject_dict_id FROM subject_dictionary WHERE stream = ? LIMIT 1",
+          [streamName],
+        ),
+      ]);
+      if (inUseSchools.length > 0 || inUseSubjects.length > 0) {
+        return res.status(409).json({
+          error:
+            "This stream is still in use by a school or the subject dictionary — remove those first.",
+        });
+      }
+      await pool.query("DELETE FROM streams WHERE stream_id = ?", [
+        req.params.stream_id,
+      ]);
+      await refreshStreamCache();
+      await logAudit(
+        req,
+        "stream.delete",
+        "stream",
+        req.params.stream_id,
+        streamName,
+      );
+      res.json({ message: "Stream removed." });
+    } catch (err) {
+      console.error("/api/super/streams DELETE error:", err);
+      res.status(500).json({ error: "Could not remove stream" });
+    }
+  },
+);
+
+// --- Super Admin: Role Permissions ---
+// The concrete, togglable list PERMISSION_KEYS defines — replaces the
+// old all-or-nothing can_act_independently checkbox on the Zonal Admins
+// screen with one toggle per action for a specific Teacher Development
+// Coordinator. GET returns the EFFECTIVE permissions (explicit rows if
+// any exist, else the legacy can_act_independently fallback — same
+// logic POST /api/login uses to build the JWT, kept in sync here so the
+// screen shows what's actually in force, not just what's literally been
+// saved in zonal_admin_permissions).
+app.get(
+  "/api/super/zonal-admins/:admin_id/permissions",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    try {
+      const [adminRows] = await pool.query(
+        "SELECT title, can_act_independently FROM zonal_admins WHERE admin_id = ?",
+        [req.params.admin_id],
+      );
+      if (adminRows.length === 0)
+        return res.status(404).json({ error: "Zonal admin not found." });
+      if (adminRows[0].title !== "Teacher Development Coordinator") {
+        return res.status(400).json({
+          error:
+            "Only a Teacher Development Coordinator has delegable permissions.",
+        });
+      }
+      const [permRows] = await pool.query(
+        "SELECT permission_key, granted FROM zonal_admin_permissions WHERE admin_id = ?",
+        [req.params.admin_id],
+      );
+      const permissions = Object.fromEntries(
+        PERMISSION_KEYS.map((k) => [k, false]),
+      );
+      if (permRows.length > 0) {
+        permRows.forEach((p) => {
+          permissions[p.permission_key] = !!p.granted;
+        });
+      } else if (adminRows[0].can_act_independently) {
+        PERMISSION_KEYS.forEach((k) => {
+          permissions[k] = true;
+        });
+      }
+      res.json({ admin_id: req.params.admin_id, permissions });
+    } catch (err) {
+      console.error(
+        "/api/super/zonal-admins/:admin_id/permissions GET error:",
+        err,
+      );
+      res.status(500).json({ error: "Could not load permissions" });
+    }
+  },
+);
+app.put(
+  "/api/super/zonal-admins/:admin_id/permissions",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    const { permissions } = req.body;
+    if (!permissions || typeof permissions !== "object") {
+      return res.status(400).json({ error: "permissions object is required" });
+    }
+    const badKeys = Object.keys(permissions).filter(
+      (k) => !PERMISSION_KEYS.includes(k),
+    );
+    if (badKeys.length > 0) {
+      return res.status(400).json({
+        error: `permissions may only contain: ${PERMISSION_KEYS.join(", ")}`,
+      });
+    }
+    try {
+      const [adminRows] = await pool.query(
+        "SELECT title FROM zonal_admins WHERE admin_id = ?",
+        [req.params.admin_id],
+      );
+      if (adminRows.length === 0)
+        return res.status(404).json({ error: "Zonal admin not found." });
+      if (adminRows[0].title !== "Teacher Development Coordinator") {
+        return res.status(400).json({
+          error:
+            "Only a Teacher Development Coordinator has delegable permissions.",
+        });
+      }
+      const entries = PERMISSION_KEYS.filter((k) => k in permissions).map(
+        (k) => [req.params.admin_id, k, !!permissions[k], req.user.user_id],
+      );
+      if (entries.length > 0) {
+        await pool.query(
+          `INSERT INTO zonal_admin_permissions (admin_id, permission_key, granted, granted_by, granted_at)
+               VALUES ${entries.map(() => "(?, ?, ?, ?, NOW())").join(", ")}
+               ON DUPLICATE KEY UPDATE granted = VALUES(granted), granted_by = VALUES(granted_by), granted_at = VALUES(granted_at)`,
+          entries.flat(),
+        );
+      }
+      await logAudit(
+        req,
+        "zonal_admin.permissions_edit",
+        "zonal_admin",
+        req.params.admin_id,
+        JSON.stringify(permissions),
+      );
+      res.json({ message: "Permissions updated." });
+    } catch (err) {
+      console.error(
+        "/api/super/zonal-admins/:admin_id/permissions PUT error:",
+        err,
+      );
+      res.status(500).json({ error: "Could not update permissions" });
+    }
+  },
+);
+
+// --- Super Admin: manage OTHER super admin accounts (Owner only to
+// create/reset; any super admin can list) ---
+// See the title/Owner/IT Lead schema note above requireZonalAdmin for
+// the split this replaces "no POST /api/super/admins, ever" with.
+app.get(
+  "/api/super/super-admins",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    try {
+      const [rows] = await pool.query(
+        `SELECT admin_id, title, first_name, middle_name, last_name, contact_number, email, created_by, created_at, is_restricted
+             FROM super_admins ORDER BY title, admin_id`,
+      );
+      res.json(rows);
+    } catch (err) {
+      console.error("/api/super/super-admins GET error:", err);
+      res.status(500).json({ error: "Could not load super admins" });
+    }
+  },
+);
+app.post(
+  "/api/super/super-admins",
+  requireAuth,
+  requireOwner,
+  async (req, res) => {
+    const { title, first_name, middle_name, last_name, contact_number, email } =
+      req.body;
+    if (!title || !first_name || !last_name) {
+      return res
+        .status(400)
+        .json({ error: "title, first_name, and last_name are required" });
+    }
+    if (!SUPER_ADMIN_TITLES.includes(title)) {
+      return res.status(400).json({
+        error: `title must be one of: ${SUPER_ADMIN_TITLES.join(", ")}`,
+      });
+    }
+    try {
+      const admin_id = await getNextSuperAdminId(title);
+      const hashedPassword = await bcrypt.hash(
+        DEFAULT_SUPER_ADMIN_PASSWORD,
+        10,
+      );
+      await pool.query(
+        `INSERT INTO super_admins (admin_id, title, first_name, middle_name, last_name, contact_number, email, security_password, created_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          admin_id,
+          title,
+          normalizeName(first_name),
+          normalizeName(middle_name) || null,
+          normalizeName(last_name),
+          contact_number || null,
+          email || null,
+          hashedPassword,
+          req.user.user_id,
+        ],
+      );
+      await logAudit(req, "super_admin.create", "super_admin", admin_id, title);
+      res.json({
+        message: `${title} account created as ${admin_id}.`,
+        admin_id,
+        default_password: DEFAULT_SUPER_ADMIN_PASSWORD,
+      });
+    } catch (err) {
+      console.error("/api/super/super-admins POST error:", err);
+      res.status(500).json({ error: "Could not create super admin account" });
+    }
+  },
+);
+app.post(
+  "/api/super/super-admins/:admin_id/reset-password",
+  requireAuth,
+  requireOwner,
+  async (req, res) => {
+    try {
+      const hashedPassword = await bcrypt.hash(
+        DEFAULT_SUPER_ADMIN_PASSWORD,
+        10,
+      );
+      const [result] = await pool.query(
+        "UPDATE super_admins SET security_password = ? WHERE admin_id = ?",
+        [hashedPassword, req.params.admin_id],
+      );
+      if (result.affectedRows === 0)
+        return res.status(404).json({ error: "Super admin not found." });
+      await logAudit(
+        req,
+        "super_admin.reset_password",
+        "super_admin",
+        req.params.admin_id,
+        null,
+      );
+      res.json({
+        message: "Password reset.",
+        default_password: DEFAULT_SUPER_ADMIN_PASSWORD,
+      });
+    } catch (err) {
+      console.error(
+        "/api/super/super-admins/:admin_id/reset-password error:",
+        err,
+      );
+      res.status(500).json({ error: "Could not reset password" });
+    }
+  },
+);
+
+// Change an existing super admin's title (Owner <-> IT Lead) — creation
+// time is the only place this could be set before. Owner-only, same as
+// creating the account in the first place. Guards the same invariant
+// the title-column migration comment above promises: the system always
+// keeps at least one Owner, so demoting the last Owner is rejected
+// rather than leaving nobody able to reach this screen at all.
+app.put(
+  "/api/super/super-admins/:admin_id/title",
+  requireAuth,
+  requireOwner,
+  async (req, res) => {
+    const { title } = req.body;
+    if (!SUPER_ADMIN_TITLES.includes(title)) {
+      return res.status(400).json({
+        error: `title must be one of: ${SUPER_ADMIN_TITLES.join(", ")}`,
+      });
+    }
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [rows] = await conn.query(
+        "SELECT admin_id, title FROM super_admins WHERE admin_id = ? FOR UPDATE",
+        [req.params.admin_id],
+      );
+      if (rows.length === 0) {
+        await conn.rollback();
+        return res.status(404).json({ error: "Super admin not found." });
+      }
+      const current = rows[0];
+      if (current.title === title) {
+        await conn.rollback();
+        return res.json({ message: `Already ${title}.`, title });
+      }
+      if (current.title === "Owner" && title !== "Owner") {
+        const [[{ ownerCount }]] = await conn.query(
+          "SELECT COUNT(*) AS ownerCount FROM super_admins WHERE title = 'Owner'",
+        );
+        if (ownerCount <= 1) {
+          await conn.rollback();
+          return res.status(400).json({
+            error:
+              "Can't change the last Owner's title — promote another account to Owner first.",
+          });
+        }
+      }
+      await conn.query("UPDATE super_admins SET title = ? WHERE admin_id = ?", [
+        title,
+        req.params.admin_id,
+      ]);
+      await conn.commit();
+      await logAudit(
+        req,
+        "super_admin.title_update",
+        "super_admin",
+        req.params.admin_id,
+        `${current.title} -> ${title}`,
+      );
+      res.json({
+        message: `${req.params.admin_id}'s title is now ${title}.`,
+        title,
+      });
+    } catch (err) {
+      await conn.rollback();
+      console.error("/api/super/super-admins/:admin_id/title PUT error:", err);
+      res.status(500).json({ error: "Could not update title." });
+    } finally {
+      conn.release();
+    }
+  },
+);
+
+// Toggle the "IT Specialist" scope restriction on an existing super
+// admin account (Owner or IT Lead — the title itself doesn't change).
+// Owner-only, same as every other account-shape change on this screen.
+// Turning restriction ON does NOT touch that account's existing
+// super_admin_permissions rows — any previously granted screens are
+// still there, just newly enforced; turning it OFF simply stops
+// enforcing them (rows are left in place in case it's turned back on).
+app.put(
+  "/api/super/super-admins/:admin_id/restricted",
+  requireAuth,
+  requireOwner,
+  async (req, res) => {
+    const { is_restricted } = req.body;
+    try {
+      const [result] = await pool.query(
+        "UPDATE super_admins SET is_restricted = ? WHERE admin_id = ?",
+        [!!is_restricted, req.params.admin_id],
+      );
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: "Super admin not found." });
+      }
+      await logAudit(
+        req,
+        "super_admin.restricted_update",
+        "super_admin",
+        req.params.admin_id,
+        is_restricted ? "restricted (IT Specialist)" : "unrestricted",
+      );
+      res.json({
+        message: is_restricted
+          ? `${req.params.admin_id} is now scope-restricted (IT Specialist).`
+          : `${req.params.admin_id} has full super admin access again.`,
+        is_restricted: !!is_restricted,
+      });
+    } catch (err) {
+      console.error(
+        "/api/super/super-admins/:admin_id/restricted PUT error:",
+        err,
+      );
+      res.status(500).json({ error: "Could not update account access." });
+    }
+  },
+);
+
+// A restricted account's OWN effective permissions — unlike the
+// Owner-only route below (which can inspect ANY admin), this is just
+// "what can I, the caller, currently reach", so an IT Specialist who
+// is an IT Lead (not an Owner) can still drive their own nav/UI without
+// needing Owner-only access to get there. Unrestricted accounts get
+// every key back as true (matches requireSuperAdminPermission's
+// pass-through for a non-restricted caller).
+app.get(
+  "/api/super/account/permissions",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    try {
+      if (!req.user.is_restricted) {
+        return res.json({
+          is_restricted: false,
+          permissions: Object.fromEntries(
+            SUPER_ADMIN_PERMISSION_KEYS.map((k) => [k, true]),
+          ),
+        });
+      }
+      const [permRows] = await pool.query(
+        "SELECT permission_key, granted FROM super_admin_permissions WHERE admin_id = ?",
+        [req.user.user_id],
+      );
+      const permissions = Object.fromEntries(
+        SUPER_ADMIN_PERMISSION_KEYS.map((k) => [k, false]),
+      );
+      permRows.forEach((p) => {
+        permissions[p.permission_key] = !!p.granted;
+      });
+      res.json({ is_restricted: true, permissions });
+    } catch (err) {
+      console.error("/api/super/account/permissions error:", err);
+      res.status(500).json({ error: "Could not load your permissions" });
+    }
+  },
+);
+
+// Which specific screens a scope-restricted ("IT Specialist") super
+// admin account can reach — same read/write shape as the Zonal Admin
+// Role Permissions routes above, just against super_admin_permissions
+// instead of zonal_admin_permissions. Owner-only to view or change,
+// same as the restriction toggle itself.
+app.get(
+  "/api/super/super-admins/:admin_id/permissions",
+  requireAuth,
+  requireOwner,
+  async (req, res) => {
+    try {
+      const [adminRows] = await pool.query(
+        "SELECT admin_id FROM super_admins WHERE admin_id = ?",
+        [req.params.admin_id],
+      );
+      if (adminRows.length === 0) {
+        return res.status(404).json({ error: "Super admin not found." });
+      }
+      const [permRows] = await pool.query(
+        "SELECT permission_key, granted FROM super_admin_permissions WHERE admin_id = ?",
+        [req.params.admin_id],
+      );
+      const permissions = Object.fromEntries(
+        SUPER_ADMIN_PERMISSION_KEYS.map((k) => [k, false]),
+      );
+      permRows.forEach((p) => {
+        permissions[p.permission_key] = !!p.granted;
+      });
+      res.json({ admin_id: req.params.admin_id, permissions });
+    } catch (err) {
+      console.error(
+        "/api/super/super-admins/:admin_id/permissions GET error:",
+        err,
+      );
+      res.status(500).json({ error: "Could not load permissions" });
+    }
+  },
+);
+app.put(
+  "/api/super/super-admins/:admin_id/permissions",
+  requireAuth,
+  requireOwner,
+  async (req, res) => {
+    const { permissions } = req.body;
+    if (!permissions || typeof permissions !== "object") {
+      return res.status(400).json({ error: "permissions object is required" });
+    }
+    const badKeys = Object.keys(permissions).filter(
+      (k) => !SUPER_ADMIN_PERMISSION_KEYS.includes(k),
+    );
+    if (badKeys.length > 0) {
+      return res.status(400).json({
+        error: `permissions may only contain: ${SUPER_ADMIN_PERMISSION_KEYS.join(", ")}`,
+      });
+    }
+    try {
+      const [adminRows] = await pool.query(
+        "SELECT admin_id FROM super_admins WHERE admin_id = ?",
+        [req.params.admin_id],
+      );
+      if (adminRows.length === 0) {
+        return res.status(404).json({ error: "Super admin not found." });
+      }
+      const entries = SUPER_ADMIN_PERMISSION_KEYS.filter(
+        (k) => k in permissions,
+      ).map((k) => [
+        req.params.admin_id,
+        k,
+        !!permissions[k],
+        req.user.user_id,
+      ]);
+      if (entries.length > 0) {
+        await pool.query(
+          `INSERT INTO super_admin_permissions (admin_id, permission_key, granted, granted_by, granted_at)
+               VALUES ${entries.map(() => "(?, ?, ?, ?, NOW())").join(", ")}
+               ON DUPLICATE KEY UPDATE granted = VALUES(granted), granted_by = VALUES(granted_by), granted_at = VALUES(granted_at)`,
+          entries.flat(),
+        );
+      }
+      await logAudit(
+        req,
+        "super_admin.permissions_edit",
+        "super_admin",
+        req.params.admin_id,
+        JSON.stringify(permissions),
+      );
+      res.json({ message: "Permissions updated." });
+    } catch (err) {
+      console.error(
+        "/api/super/super-admins/:admin_id/permissions PUT error:",
+        err,
+      );
+      res.status(500).json({ error: "Could not update permissions" });
+    }
+  },
+);
+
 // Re-checks Super Admin's OWN password — the step-up confirmation the
 // frontend calls right before school setup, subject dictionary writes,
 // zonal admin creation, or a roster upload, same showPasswordConfirm()
@@ -25727,6 +30530,124 @@ app.post(
     } catch (err) {
       console.error("/api/super/verify-password error:", err);
       res.status(500).json({ error: "Could not verify password." });
+    }
+  },
+);
+
+// Profile Settings — avatar upload, same self-serve pattern as
+// /api/zonal/upload-avatar (see that route's comment for why this is a
+// separate column from any future ID-card-only photo). Any super
+// admin, Owner or IT Lead, can set their own avatar.
+// Requires this column if it doesn't exist yet:
+//   ALTER TABLE super_admins ADD COLUMN avatar_url VARCHAR(255) NULL;
+app.post(
+  "/api/super/upload-avatar",
+  requireAuth,
+  requireSuperAdmin,
+  handleUploadError(upload.single("avatar")),
+  async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+      if (!req.file.mimetype.startsWith("image/")) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(400).json({
+          error: "Profile picture must be an image file (JPEG or PNG).",
+        });
+      }
+      const converted = await convertHeicIfNeeded(req.file);
+      if (converted) req.file = converted;
+      const filePath = `/uploads/${req.file.filename}`;
+      await pool.query(
+        "UPDATE super_admins SET avatar_url = ? WHERE admin_id = ?",
+        [filePath, req.user.user_id],
+      );
+      await logAudit(
+        req,
+        "super_admin.avatar_update",
+        "super_admin",
+        req.user.user_id,
+        null,
+      );
+      res.json({ avatar_url: filePath });
+    } catch (err) {
+      console.error("/api/super/upload-avatar error:", err);
+      res.status(500).json({ error: "Could not upload profile picture" });
+    }
+  },
+);
+
+// Profile Settings — display name (view-only fields the frontend shows
+// alongside the avatar/password controls) and self-serve password
+// change. Exact same shape/behavior as /api/zonal/account: passing
+// first/middle/last_name updates the display name, passing
+// current_password + new_password changes the password (current
+// password required either way — "prove you're still you" before a
+// credential change), and either can be sent alone or together.
+app.post(
+  "/api/super/account",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    const {
+      first_name,
+      middle_name,
+      last_name,
+      current_password,
+      new_password,
+    } = req.body;
+    try {
+      const [rows] = await pool.query(
+        "SELECT first_name, middle_name, last_name, security_password FROM super_admins WHERE admin_id = ?",
+        [req.user.user_id],
+      );
+      if (rows.length === 0)
+        return res.status(404).json({ error: "Account not found." });
+
+      if (first_name || middle_name || last_name) {
+        await pool.query(
+          "UPDATE super_admins SET first_name = ?, middle_name = ?, last_name = ? WHERE admin_id = ?",
+          [
+            normalizeName(first_name?.trim()) || rows[0].first_name,
+            normalizeName(middle_name?.trim()) || rows[0].middle_name,
+            normalizeName(last_name?.trim()) || rows[0].last_name,
+            req.user.user_id,
+          ],
+        );
+      }
+      if (new_password) {
+        if (!current_password)
+          return res
+            .status(400)
+            .json({ error: "Enter your current password to set a new one." });
+        const matches = await bcrypt.compare(
+          current_password,
+          rows[0].security_password,
+        );
+        if (!matches)
+          return res
+            .status(401)
+            .json({ error: "Current password is incorrect." });
+        if (new_password.length < 6)
+          return res
+            .status(400)
+            .json({ error: "New password must be at least 6 characters." });
+        const hashed = await bcrypt.hash(new_password, 10);
+        await pool.query(
+          "UPDATE super_admins SET security_password = ? WHERE admin_id = ?",
+          [hashed, req.user.user_id],
+        );
+      }
+      await logAudit(
+        req,
+        "super_admin.account_update",
+        "super_admin",
+        req.user.user_id,
+        new_password ? "name+password" : "name",
+      );
+      res.json({ message: "Account updated." });
+    } catch (err) {
+      console.error("/api/super/account error:", err);
+      res.status(500).json({ error: "Could not update your account" });
     }
   },
 );
@@ -25810,13 +30731,34 @@ function validateRosterRow(row) {
     return "Class must be a number 1–12";
   row.class_level = classNum;
   if (!row.section) return "Missing Section";
-  if (row.stream) {
-    const streamNorm = row.stream.trim().toUpperCase();
-    if (!SCHOOL_STREAMS.includes(streamNorm))
-      return `Stream must be one of: ${SCHOOL_STREAMS.join(", ")}`;
-    row.stream = streamNorm;
+  // students.stream (and class_sections.stream, which every section is
+  // keyed by — see class_sections schema note above, NOT NULL) always
+  // stores a literal tier/stream name, mirroring streamOptionsHtmlForGrade
+  // in the Registrar frontend exactly: Grades 1-6 lock to "Basic", 7-8
+  // to "Core", 9-10 to "General" (none of these are a real choice, so
+  // whatever's in the uploaded Stream cell is ignored and the tier name
+  // is filled in automatically — this also means a row's target section
+  // can actually be matched against class_sections by class_level+stream
+  // later, which it couldn't if this were left null). Grades 11-12
+  // require a real choice, stored as the long TITLE-CASE label (e.g.
+  // "Natural Science") — a DIFFERENT casing convention than the
+  // SCHOOL_STREAMS catalog used by Stream Setup/Subject Dictionary (e.g.
+  // "NATURAL SCIENCE"; see SUBJECT_STREAM_TO_DICT_STREAM above).
+  if (row.class_level >= 1 && row.class_level <= 6) {
+    row.stream = "Basic";
+  } else if (row.class_level === 7 || row.class_level === 8) {
+    row.stream = "Core";
+  } else if (row.class_level === 9 || row.class_level === 10) {
+    row.stream = "General";
   } else {
-    row.stream = null;
+    // 11 or 12
+    if (!row.stream) return "Stream is required for Grade 11-12";
+    const streamNorm = row.stream.trim().toUpperCase();
+    const longForm = Object.keys(SUBJECT_STREAM_TO_DICT_STREAM).find(
+      (long) => SUBJECT_STREAM_TO_DICT_STREAM[long] === streamNorm,
+    );
+    if (!longForm) return `Stream must be one of: ${SCHOOL_STREAMS.join(", ")}`;
+    row.stream = longForm;
   }
   return null;
 }
@@ -25829,6 +30771,7 @@ app.post(
   async (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
     try {
+      await ensureSuperAdminCoreTables();
       const [schoolRows] = await pool.query(
         "SELECT id FROM schools WHERE id = ?",
         [req.params.id],
@@ -25846,14 +30789,54 @@ app.post(
         rawRows = XLSX.utils.sheet_to_json(firstSheet, { defval: "" });
       }
 
+      // Grades this specific school is actually configured for — same
+      // school_grade_tiers -> SCHOOL_LEVEL_GRADES expansion as GET
+      // /api/school/grade-levels, just scoped to the TARGET school
+      // (req.params.id) rather than the logged-in user's own school_id,
+      // since here it's Super Admin uploading on behalf of some other
+      // school. Without this, uploading e.g. a Grade 8 student to a
+      // school that only offers Grades 9-12 would insert into
+      // pending_roster fine and only surface as confusion later, when
+      // the Registrar can't figure out why a Grade 8 student showed up
+      // at a school with no Grade 8 section to place them in.
+      const [tierRows] = await pool.query(
+        "SELECT school_level FROM school_grade_tiers WHERE school_id = ?",
+        [req.params.id],
+      );
+      let schoolTiers = tierRows.map((r) => r.school_level);
+      if (schoolTiers.length === 0) {
+        const [schoolLevelRows] = await pool.query(
+          "SELECT school_level FROM schools WHERE id = ?",
+          [req.params.id],
+        );
+        if (schoolLevelRows.length > 0 && schoolLevelRows[0].school_level) {
+          schoolTiers = [schoolLevelRows[0].school_level];
+        }
+      }
+      const allowedGrades = new Set();
+      schoolTiers.forEach((tier) => {
+        const range = SCHOOL_LEVEL_GRADES[tier];
+        if (!range) return;
+        for (let g = range[0]; g <= range[1]; g++) allowedGrades.add(g);
+      });
+
       const goodRows = [];
       const errors = [];
       rawRows.forEach((raw, i) => {
         const row = normalizeRosterRow(raw);
         const err = validateRosterRow(row);
-        if (err)
+        if (err) {
           errors.push({ row: i + 2, error: err }); // +2: header row + 1-indexing
-        else goodRows.push(row);
+          return;
+        }
+        if (allowedGrades.size > 0 && !allowedGrades.has(row.class_level)) {
+          errors.push({
+            row: i + 2,
+            error: `This school doesn't offer Grade ${row.class_level}.`,
+          });
+          return;
+        }
+        goodRows.push(row);
       });
 
       if (goodRows.length > 0) {
@@ -25900,6 +30883,7 @@ app.get(
   requireSuperAdmin,
   async (req, res) => {
     try {
+      await ensureSuperAdminCoreTables();
       const [rows] = await pool.query(
         `SELECT pending_id, first_name, middle_name, last_name, sex, class_level, section, stream, status, assigned_student_id, created_at
              FROM pending_roster WHERE school_id = ? ORDER BY created_at DESC`,
@@ -25909,6 +30893,687 @@ app.get(
     } catch (err) {
       console.error("/api/super/schools/:id/roster GET error:", err);
       res.status(500).json({ error: "Could not load pending roster" });
+    }
+  },
+);
+
+// --- Super Admin: EASE (national exam) Results ---
+// One table, switched by a Grade 6/8/12 toggle on the frontend
+// (class_level query param here). CSV upload populates ease_exam_results
+// — the single school-agnostic Ministry results sheet everything else
+// (the report card disclaimer, the Promote gate, New Entrant admission,
+// the Registrar's own EASE Candidates screen) reads from live via
+// getEaseStatusForStudent. Required columns (case-insensitive header
+// match): Admission Number, First Name, Mark, Cutoff, Result. Result
+// may be left blank in the sheet and is then derived from Mark vs
+// Cutoff; if given explicitly it's trusted over the derived value (a
+// school might have a manually-adjudicated case).
+const easeResultsUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (ext === ".csv") return cb(null, true);
+    cb(new Error("EASE results must be a .csv file."));
+  },
+});
+
+const EASE_RESULTS_HEADER_MAP = {
+  "admission number": "admission_number",
+  "admission #": "admission_number",
+  "first name": "first_name",
+  mark: "mark",
+  cutoff: "cutoff",
+  average: "average",
+  avg: "average",
+  percentile: "percentile",
+  result: "result",
+};
+function normalizeEaseResultsRow(rawRow) {
+  const row = {};
+  for (const [header, field] of Object.entries(EASE_RESULTS_HEADER_MAP)) {
+    const key = Object.keys(rawRow).find(
+      (k) => k.trim().toLowerCase() === header,
+    );
+    if (key && row[field] === undefined)
+      row[field] = String(rawRow[key]).trim();
+  }
+  return row;
+}
+// Average and Percentile are Ministry-supplied, informational columns
+// (shown on both the Super Admin and Registrar EASE screens) — they
+// play no part in deriving Pass/Fail, which stays exactly Mark-vs-Cutoff
+// as before, so a sheet that omits them (or leaves cells blank) still
+// imports fine.
+function validateEaseResultsRow(row) {
+  if (!row.admission_number) return "Missing Admission Number";
+  const mark = row.mark === "" || row.mark == null ? null : Number(row.mark);
+  if (row.mark !== "" && row.mark != null && isNaN(mark))
+    return "Mark must be a number";
+  const cutoff =
+    row.cutoff === "" || row.cutoff == null ? null : Number(row.cutoff);
+  if (row.cutoff !== "" && row.cutoff != null && isNaN(cutoff))
+    return "Cutoff must be a number";
+  const average =
+    row.average === "" || row.average == null ? null : Number(row.average);
+  if (row.average !== "" && row.average != null && isNaN(average))
+    return "Average must be a number";
+  const percentile =
+    row.percentile === "" || row.percentile == null
+      ? null
+      : Number(row.percentile);
+  if (row.percentile !== "" && row.percentile != null && isNaN(percentile))
+    return "Percentile must be a number";
+  row.mark = mark;
+  row.cutoff = cutoff;
+  row.average = average;
+  row.percentile = percentile;
+  let result = row.result ? row.result.trim().toLowerCase() : "";
+  if (result === "pass" || result === "p") row.result = "Pass";
+  else if (result === "fail" || result === "f") row.result = "Fail";
+  else if (mark != null && cutoff != null)
+    row.result = mark >= cutoff ? "Pass" : "Fail";
+  else return "Result must be Pass or Fail (or provide both Mark and Cutoff)";
+  return null;
+}
+
+app.post(
+  "/api/super/ease-results/upload",
+  requireAuth,
+  requireSuperAdmin,
+  easeResultsUpload.single("results"),
+  async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+    const class_level = Number(req.body.class_level || req.query.class_level);
+    if (!EASE_GRADES.includes(class_level)) {
+      return res.status(400).json({
+        error: `class_level must be one of: ${EASE_GRADES.join(", ")}.`,
+      });
+    }
+    const exam_year = req.body.exam_year
+      ? String(req.body.exam_year).trim()
+      : currentEaseExamYear();
+    try {
+      await ensureEaseTables();
+      const text = req.file.buffer.toString("utf8").replace(/\r/g, "");
+      const lines = text.split("\n").filter((l) => l.trim() !== "");
+      const rawRows =
+        lines.length === 0
+          ? []
+          : (() => {
+              const headers = lines[0]
+                .split(",")
+                .map((h) => h.trim().toLowerCase());
+              return lines.slice(1).map((line) => {
+                const cells = line.split(",").map((c) => c.trim());
+                const row = {};
+                headers.forEach((h, i) => (row[h] = cells[i] ?? ""));
+                return row;
+              });
+            })();
+
+      const goodRows = [];
+      const errors = [];
+      rawRows.forEach((raw, i) => {
+        const row = normalizeEaseResultsRow(raw);
+        const err = validateEaseResultsRow(row);
+        if (err) {
+          errors.push({ row: i + 2, error: err });
+          return;
+        }
+        goodRows.push(row);
+      });
+
+      let imported = 0;
+      for (const row of goodRows) {
+        await pool.query(
+          `INSERT INTO ease_exam_results (admission_number, first_name, class_level, exam_year, mark, cutoff, average, percentile, result, uploaded_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON DUPLICATE KEY UPDATE first_name = VALUES(first_name), mark = VALUES(mark),
+                 cutoff = VALUES(cutoff), average = VALUES(average), percentile = VALUES(percentile),
+                 result = VALUES(result), uploaded_by = VALUES(uploaded_by), uploaded_at = NOW()`,
+          [
+            row.admission_number,
+            row.first_name || null,
+            class_level,
+            exam_year,
+            row.mark,
+            row.cutoff,
+            row.average,
+            row.percentile,
+            row.result,
+            req.user.user_id,
+          ],
+        );
+        imported++;
+      }
+
+      await logAudit(
+        req,
+        "ease_results.upload",
+        "ease_exam_results",
+        null,
+        `Grade ${class_level}, ${exam_year}: ${imported} imported, ${errors.length} skipped`,
+      );
+      res.json({
+        message: `${imported} result${imported === 1 ? "" : "s"} imported for Grade ${class_level}.`,
+        imported,
+        skipped: errors.length,
+        errors,
+      });
+    } catch (err) {
+      console.error("/api/super/ease-results/upload error:", err);
+      res.status(500).json({ error: "Could not process the results file" });
+    }
+  },
+);
+
+// One row per uploaded result, left-joined against whichever school's
+// Registrar has (if any) marked that admission number as a candidate —
+// a result uploaded before any Registrar marks a matching candidate
+// still shows up here (School/Student blank) rather than being hidden,
+// since Super Admin uploads independently of any one school's pace.
+// Candidate-driven (not result-driven): starts from every Registrar's
+// ease_candidates row for this grade/year, LEFT JOIN'd against whatever
+// result (if any) has been uploaded — so a student the Registrar
+// already marked shows up here as "Pending" immediately, not only once
+// a result exists to match against. UNION'd with any uploaded results
+// that have NO matching candidate yet (a result uploaded before any
+// Registrar has marked that admission number) so those aren't hidden
+// either — Super Admin uploads independently of any one school's pace.
+app.get(
+  "/api/super/ease-results",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    const class_level = Number(req.query.class_level);
+    if (!EASE_GRADES.includes(class_level)) {
+      return res.status(400).json({
+        error: `class_level must be one of: ${EASE_GRADES.join(", ")}.`,
+      });
+    }
+    try {
+      await ensureEaseTables();
+      const exam_year = req.query.exam_year
+        ? String(req.query.exam_year).trim()
+        : currentEaseExamYear();
+
+      const [candidateRows] = await pool.query(
+        `SELECT c.admission_number, sc.school_name, c.student_id,
+                s.first_name, s.middle_name, s.last_name,
+                r.mark, r.cutoff, r.average, r.percentile, r.result
+           FROM ease_candidates c
+           LEFT JOIN ease_exam_results r
+             ON r.admission_number = c.admission_number AND r.class_level = c.class_level AND r.exam_year = c.exam_year
+           LEFT JOIN schools sc ON sc.id = c.school_id
+           LEFT JOIN students s ON s.student_id = c.student_id
+          WHERE c.class_level = ? AND c.exam_year = ?
+          ORDER BY sc.school_name, c.admission_number`,
+        [class_level, exam_year],
+      );
+      const [unmatchedResultRows] = await pool.query(
+        `SELECT r.admission_number, r.first_name AS result_first_name, r.mark, r.cutoff, r.average, r.percentile, r.result
+           FROM ease_exam_results r
+           LEFT JOIN ease_candidates c
+             ON c.admission_number = r.admission_number AND c.class_level = r.class_level AND c.exam_year = r.exam_year
+          WHERE r.class_level = ? AND r.exam_year = ? AND c.candidate_id IS NULL
+          ORDER BY r.admission_number`,
+        [class_level, exam_year],
+      );
+
+      const out = candidateRows.map((r) => ({
+        school_name: r.school_name || null,
+        student_name: r.student_id
+          ? [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(" ")
+          : null,
+        admission_number: r.admission_number,
+        mark: r.mark,
+        cutoff: r.cutoff,
+        average: r.average,
+        percentile: r.percentile,
+        result: r.result || "Pending",
+      }));
+      unmatchedResultRows.forEach((r) => {
+        out.push({
+          school_name: null,
+          student_name: r.result_first_name || null,
+          admission_number: r.admission_number,
+          mark: r.mark,
+          cutoff: r.cutoff,
+          average: r.average,
+          percentile: r.percentile,
+          result: r.result,
+        });
+      });
+      res.json(out);
+    } catch (err) {
+      console.error("/api/super/ease-results GET error:", err);
+      res.status(500).json({ error: "Could not load EASE results" });
+    }
+  },
+);
+
+// --- Super Admin: EMIS Roster (retrieve -> Registrar approves ->
+// download -> map offline -> re-upload) ---
+// For students who ALREADY have a student_id/login at a school but no
+// emis_id yet — distinct from pending_roster above, which is for
+// brand-new students with no record at all. The Registrar has to
+// approve before Super Admin can pull the list, since it's still that
+// school's own student data; see the emis_retrieval_requests schema
+// comment on ensureSuperAdminCoreTables for why approval doesn't
+// freeze a snapshot of which students are in it.
+//
+// Only counts a student "active" (status = 'Active') as missing an
+// EMIS ID — a transferred/graduated/withdrawn student isn't something
+// either side needs to chase down here.
+async function getEmisMissingStudents(school_id) {
+  const [rows] = await pool.query(
+    `SELECT student_id, first_name, middle_name, last_name, class_level, section
+         FROM students
+         WHERE school_id = ? AND status = 'Active' AND emis_id IS NULL
+         ORDER BY class_level, section, last_name, first_name`,
+    [school_id],
+  );
+  return rows;
+}
+
+// Full EMIS Roster for a school — every active student, whether or not
+// they have an emis_id, plus (where the Super Admin's emis_registry
+// upload exists) whether that emis_id actually matches a row in the
+// Ministry registry ("Verified") or was saved without a registry match
+// ("Unverified" — see the same distinction on GET /api/emis/lookup).
+// This is the single source both the Super Admin's EMIS Roster screen
+// and the Registrar's own EMIS nav read from, so the two sides always
+// agree on who still needs to be requested/linked.
+async function getEmisRosterForSchool(school_id) {
+  let rows;
+  try {
+    [rows] = await pool.query(
+      `SELECT s.student_id, s.first_name, s.middle_name, s.last_name,
+              s.class_level, s.section, s.emis_id,
+              (s.emis_id IS NOT NULL AND er.emis_id IS NOT NULL) AS verified
+         FROM students s
+         LEFT JOIN emis_registry er ON er.emis_id = s.emis_id
+         WHERE s.school_id = ? AND s.status = 'Active'
+         ORDER BY s.class_level, s.section, s.last_name, s.first_name`,
+      [school_id],
+    );
+  } catch (err) {
+    // emis_registry doesn't exist until the Super Admin's EMIS registry
+    // upload feature has been used at least once — every linked student
+    // just shows as Unverified rather than the whole roster 500ing.
+    if (err.code !== "ER_NO_SUCH_TABLE") throw err;
+    [rows] = await pool.query(
+      `SELECT student_id, first_name, middle_name, last_name,
+              class_level, section, emis_id, FALSE AS verified
+         FROM students
+         WHERE school_id = ? AND status = 'Active'
+         ORDER BY class_level, section, last_name, first_name`,
+      [school_id],
+    );
+  }
+  const students = rows.map((r) => ({ ...r, verified: !!r.verified }));
+  const without_emis = students.filter((s) => !s.emis_id).length;
+  const verified = students.filter((s) => s.verified).length;
+  const with_emis = students.length - without_emis;
+  return {
+    students,
+    total: students.length,
+    with_emis,
+    verified,
+    unverified: with_emis - verified,
+    without_emis,
+  };
+}
+
+// Lets Super Admin see, per school, how many active students are still
+// missing an EMIS ID before deciding whether it's worth sending a
+// retrieval request for that school.
+app.get(
+  "/api/super/schools/:id/emis-missing",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    try {
+      const [schoolRows] = await pool.query(
+        "SELECT id, school_name FROM schools WHERE id = ?",
+        [req.params.id],
+      );
+      if (schoolRows.length === 0)
+        return res.status(404).json({ error: "School not found." });
+      const students = await getEmisMissingStudents(req.params.id);
+      res.json({
+        school_id: schoolRows[0].id,
+        school_name: schoolRows[0].school_name,
+        count: students.length,
+        students,
+      });
+    } catch (err) {
+      console.error("/api/super/schools/:id/emis-missing error:", err);
+      res
+        .status(500)
+        .json({ error: "Could not load students missing an EMIS ID." });
+    }
+  },
+);
+
+// Full EMIS Roster for one school — powers the Super Admin's EMIS
+// Roster screen (summary cards + Verified/Unverified/No-EMIS table).
+// Unlike /emis-missing above (which only ever returns the no-EMIS
+// subset for building a request), this always returns every active
+// student so the screen can show the whole picture at once.
+app.get(
+  "/api/super/schools/:id/emis-roster",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    try {
+      const [schoolRows] = await pool.query(
+        "SELECT id, school_name FROM schools WHERE id = ?",
+        [req.params.id],
+      );
+      if (schoolRows.length === 0)
+        return res.status(404).json({ error: "School not found." });
+      const roster = await getEmisRosterForSchool(req.params.id);
+      res.json({
+        school_id: schoolRows[0].id,
+        school_name: schoolRows[0].school_name,
+        ...roster,
+      });
+    } catch (err) {
+      console.error("/api/super/schools/:id/emis-roster error:", err);
+      res.status(500).json({ error: "Could not load the EMIS roster." });
+    }
+  },
+);
+
+// Sends the actual request to that school's Registrar. student_count is
+// just a snapshot for display on the list screens (see schema
+// comment); the number that actually matters is recomputed live at
+// download time.
+app.post(
+  "/api/super/schools/:id/emis-requests",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    const { note } = req.body;
+    try {
+      await ensureSuperAdminCoreTables();
+      const [schoolRows] = await pool.query(
+        "SELECT id, school_name FROM schools WHERE id = ?",
+        [req.params.id],
+      );
+      if (schoolRows.length === 0)
+        return res.status(404).json({ error: "School not found." });
+      const students = await getEmisMissingStudents(req.params.id);
+      if (students.length === 0) {
+        return res.status(400).json({
+          error: "Every active student at this school already has an EMIS ID.",
+        });
+      }
+      const [result] = await pool.query(
+        `INSERT INTO emis_retrieval_requests (school_id, requested_by, student_count, note)
+             VALUES (?, ?, ?, ?)`,
+        [
+          req.params.id,
+          req.user.user_id,
+          students.length,
+          note?.trim() || null,
+        ],
+      );
+      await logAudit(
+        req,
+        "emis_request.create",
+        "school",
+        req.params.id,
+        `Requested EMIS retrieval for ${students.length} student(s) at ${schoolRows[0].school_name}`,
+      );
+      res.json({
+        message: `Request sent to ${schoolRows[0].school_name}'s Registrar for ${students.length} student(s).`,
+        request_id: result.insertId,
+      });
+    } catch (err) {
+      console.error("/api/super/schools/:id/emis-requests POST error:", err);
+      res
+        .status(500)
+        .json({ error: "Could not send the EMIS retrieval request." });
+    }
+  },
+);
+
+// Every request THIS Super Admin (or any Super Admin — schools screen
+// is unscoped, same reasoning as GET /api/super/schools above) has
+// sent, across every school, newest first.
+app.get(
+  "/api/super/emis-requests",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    try {
+      await ensureSuperAdminCoreTables();
+      const [rows] = await pool.query(
+        `SELECT r.request_id, r.school_id, sc.school_name, r.requested_by, r.student_count, r.note,
+                    r.status, r.reviewed_by, r.reviewed_at, r.rejection_reason,
+                    r.fulfilled_count, r.fulfilled_at, r.created_at
+             FROM emis_retrieval_requests r
+             JOIN schools sc ON sc.id = r.school_id
+             ORDER BY r.created_at DESC`,
+      );
+      res.json(rows);
+    } catch (err) {
+      console.error("/api/super/emis-requests GET error:", err);
+      res
+        .status(500)
+        .json({ error: "Could not load EMIS retrieval requests." });
+    }
+  },
+);
+
+// Download — only once the Registrar has approved. Pulls the LIVE
+// missing-EMIS list (not whatever the count was at request time — see
+// schema comment), as a CSV with a blank EMIS ID column for the Super
+// Admin to fill in offline and upload back via the route below.
+app.get(
+  "/api/super/emis-requests/:id/download",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    try {
+      const [reqRows] = await pool.query(
+        `SELECT r.request_id, r.school_id, r.status, sc.school_name
+             FROM emis_retrieval_requests r JOIN schools sc ON sc.id = r.school_id
+             WHERE r.request_id = ?`,
+        [req.params.id],
+      );
+      if (reqRows.length === 0)
+        return res.status(404).json({ error: "Request not found." });
+      const request = reqRows[0];
+      if (request.status !== "approved" && request.status !== "fulfilled") {
+        return res.status(400).json({
+          error: "This request hasn't been approved by the Registrar yet.",
+        });
+      }
+      const students = await getEmisMissingStudents(request.school_id);
+      const csvEscape = (v) => {
+        const s = v == null ? "" : String(v);
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      };
+      const header = [
+        "Student ID",
+        "First Name",
+        "Middle Name",
+        "Last Name",
+        "Class",
+        "Section",
+        "EMIS ID",
+      ];
+      const lines = [header.join(",")];
+      students.forEach((s) => {
+        lines.push(
+          [
+            s.student_id,
+            s.first_name,
+            s.middle_name || "",
+            s.last_name,
+            s.class_level,
+            s.section || "",
+            "", // left blank — fill in offline, then re-upload
+          ]
+            .map(csvEscape)
+            .join(","),
+        );
+      });
+      await logAudit(
+        req,
+        "emis_request.download",
+        "school",
+        request.school_id,
+        `Downloaded ${students.length} missing-EMIS row(s) for ${request.school_name}`,
+      );
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="EMIS-Roster-${request.school_name.replace(/[^a-z0-9]+/gi, "-")}.csv"`,
+      );
+      res.send(lines.join("\n"));
+    } catch (err) {
+      console.error("/api/super/emis-requests/:id/download error:", err);
+      res
+        .status(500)
+        .json({ error: "Could not generate the EMIS roster download." });
+    }
+  },
+);
+
+// Re-upload — the completed CSV (Student ID + EMIS ID filled in) comes
+// back here. CSV only, deliberately — unlike the roster upload above,
+// this doesn't need .xlsx support, and it sidesteps that route's
+// undocumented dependency on a global XLSX (never imported in this
+// file — worth fixing separately). Bad rows are skipped, not fatal,
+// same "report both what worked and what didn't" approach as roster
+// upload. A row's EMIS ID must pass the same format check (10-13
+// letters/numbers) and can't already be linked to a different student.
+const emisRosterUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (ext === ".csv") return cb(null, true);
+    cb(new Error("The mapped roster must be a .csv file."));
+  },
+});
+function parseEmisRosterCsv(buffer) {
+  const text = buffer.toString("utf8").replace(/\r/g, "");
+  const lines = text.split("\n").filter((l) => l.trim() !== "");
+  if (lines.length === 0) return [];
+  const headers = lines[0].split(",").map((h) => h.trim().toLowerCase());
+  return lines.slice(1).map((line) => {
+    const cells = line.split(",").map((c) => c.trim());
+    const row = {};
+    headers.forEach((h, i) => {
+      row[h] = cells[i] ?? "";
+    });
+    return row;
+  });
+}
+app.post(
+  "/api/super/emis-requests/:id/upload",
+  requireAuth,
+  requireSuperAdmin,
+  emisRosterUpload.single("roster"),
+  async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+    try {
+      const [reqRows] = await pool.query(
+        "SELECT request_id, school_id, status FROM emis_retrieval_requests WHERE request_id = ?",
+        [req.params.id],
+      );
+      if (reqRows.length === 0)
+        return res.status(404).json({ error: "Request not found." });
+      const request = reqRows[0];
+      if (request.status !== "approved" && request.status !== "fulfilled") {
+        return res.status(400).json({
+          error: "This request hasn't been approved by the Registrar yet.",
+        });
+      }
+
+      const rawRows = parseEmisRosterCsv(req.file.buffer);
+      let fulfilled = 0;
+      const errors = [];
+      for (let i = 0; i < rawRows.length; i++) {
+        const raw = rawRows[i];
+        const studentIdKey = Object.keys(raw).find(
+          (k) => k.trim().toLowerCase() === "student id",
+        );
+        const emisIdKey = Object.keys(raw).find(
+          (k) => k.trim().toLowerCase() === "emis id",
+        );
+        const student_id = studentIdKey ? String(raw[studentIdKey]).trim() : "";
+        const emisRaw = emisIdKey ? String(raw[emisIdKey]).trim() : "";
+        if (!student_id) continue; // blank trailing lines etc.
+        if (!emisRaw) continue; // still unmapped — skip silently, not an error
+        const emis_id = normalizeEmisId(emisRaw);
+        if (!isValidEmisIdFormat(emis_id)) {
+          errors.push({
+            row: i + 2,
+            student_id,
+            error: "Invalid EMIS ID format.",
+          });
+          continue;
+        }
+        try {
+          const [result] = await pool.query(
+            "UPDATE students SET emis_id = ? WHERE student_id = ? AND school_id = ? AND emis_id IS NULL",
+            [emis_id, student_id, request.school_id],
+          );
+          if (result.affectedRows === 0) {
+            errors.push({
+              row: i + 2,
+              student_id,
+              error:
+                "No matching student at this school with a missing EMIS ID.",
+            });
+          } else {
+            fulfilled++;
+          }
+        } catch (err) {
+          if (
+            err.code === "ER_DUP_ENTRY" ||
+            String(err.sqlMessage).includes("emis_id")
+          ) {
+            errors.push({
+              row: i + 2,
+              student_id,
+              error: "This EMIS ID is already linked to another student.",
+            });
+          } else {
+            throw err;
+          }
+        }
+      }
+
+      await pool.query(
+        `UPDATE emis_retrieval_requests
+             SET status = 'fulfilled', fulfilled_count = COALESCE(fulfilled_count, 0) + ?, fulfilled_at = NOW()
+             WHERE request_id = ?`,
+        [fulfilled, req.params.id],
+      );
+      await logAudit(
+        req,
+        "emis_request.upload",
+        "school",
+        request.school_id,
+        `${fulfilled} EMIS ID(s) mapped, ${errors.length} skipped`,
+      );
+      res.json({
+        message: `${fulfilled} student${fulfilled === 1 ? "" : "s"} now have an EMIS ID on file.`,
+        fulfilled,
+        skipped: errors.length,
+        errors,
+      });
+    } catch (err) {
+      console.error("/api/super/emis-requests/:id/upload error:", err);
+      res.status(500).json({ error: "Could not process the mapped roster." });
     }
   },
 );
@@ -26032,11 +31697,12 @@ app.get(
 app.post(
   "/api/registrar/pending-roster/:id/assign-id",
   requireAuth,
-  requireRole("registrar_users"),
+  requireRegistrarOrRecorder,
   async (req, res) => {
     const { fayda_number, phone_number } = req.body;
     const conn = await pool.getConnection();
     try {
+      await ensureSuperAdminCoreTables();
       await conn.beginTransaction();
 
       // Locks the school row first, same as /api/register — guarantees no
@@ -26070,6 +31736,48 @@ app.post(
         });
       }
       const pending = pendingRows[0];
+
+      // Same section-readiness check the pending-roster list surfaces
+      // to the Registrar before they even click Assign ID (see GET
+      // /api/registrar/pending-roster below) — re-checked here,
+      // authoritatively, inside this transaction so a section that gets
+      // deleted or fills up between page load and this click can't slip
+      // a student into a section that no longer exists or has no room.
+      const [sectionRows] = await conn.query(
+        `SELECT max_capacity FROM class_sections
+             WHERE school_id = ? AND class_level = ? AND stream = ? AND section_name = ? AND is_active = 1`,
+        [
+          req.user.school_id,
+          pending.class_level,
+          pending.stream,
+          pending.section,
+        ],
+      );
+      if (sectionRows.length === 0) {
+        await conn.rollback();
+        return res.status(409).json({
+          error: `Section ${pending.section} for Grade ${pending.class_level}${pending.stream ? " - " + pending.stream : ""} hasn't been set up yet. Set it up in Section Setup first, then come back to assign this student.`,
+        });
+      }
+      const { max_capacity } = sectionRows[0];
+      if (max_capacity != null) {
+        const [[{ occCount }]] = await conn.query(
+          `SELECT COUNT(*) AS occCount FROM students
+               WHERE school_id = ? AND class_level = ? AND stream = ? AND section = ? AND status = 'Active'`,
+          [
+            req.user.school_id,
+            pending.class_level,
+            pending.stream,
+            pending.section,
+          ],
+        );
+        if (occCount >= max_capacity) {
+          await conn.rollback();
+          return res.status(409).json({
+            error: `Section ${pending.section} for Grade ${pending.class_level}${pending.stream ? " - " + pending.stream : ""} is full (${occCount}/${max_capacity}). Raise its capacity in Section Setup, or place this student in a different section.`,
+          });
+        }
+      }
 
       const [[{ studentCount }]] = await conn.query(
         "SELECT COUNT(*) as studentCount FROM students WHERE school_id = ?",
@@ -26134,15 +31842,82 @@ app.post(
 app.get(
   "/api/registrar/pending-roster",
   requireAuth,
-  requireRole("registrar_users"),
+  requireRegistrarOrRecorder,
   async (req, res) => {
     try {
+      await ensureSuperAdminCoreTables();
       const [rows] = await pool.query(
         `SELECT pending_id, first_name, middle_name, last_name, sex, class_level, section, stream, status, assigned_student_id, created_at
              FROM pending_roster WHERE school_id = ? AND status = 'pending' ORDER BY class_level, section, last_name`,
         [req.user.school_id],
       );
-      res.json(rows);
+      // Attach whether each row's target section is actually ready to
+      // receive a student — does it exist yet (set up via Section
+      // Setup) and, if it has a capacity limit, is there still room? —
+      // so the Registrar can see at a glance which rows are ready to
+      // assign vs which need Section Setup or are blocked on capacity,
+      // before they even try. Checked live against
+      // class_sections/students rather than cached at upload time, so a
+      // section created or resized after the roster was uploaded is
+      // picked up automatically. The authoritative version of this same
+      // check runs again inside assign-id itself (see above) — this is
+      // just a preview.
+      // Case/whitespace-insensitive on purpose: MySQL's default collation
+      // already treats "Natural Science" and "NATURAL SCIENCE" as equal
+      // (see the stream = ? check inside assign-id below), but this Map
+      // lookup is plain JS string equality, which isn't. Without
+      // normalizing here, a pending row whose stream/section happens to
+      // differ only in case from class_sections would show as "Section
+      // Not Set Up" in this preview even though assign-id itself would
+      // have accepted it — normalize both sides the same way so the
+      // preview matches what actually happens on Assign ID.
+      const norm = (v) =>
+        String(v ?? "")
+          .trim()
+          .toUpperCase();
+      const sectionKey = (level, stream, name) =>
+        `${level}\u0000${norm(stream)}\u0000${norm(name)}`;
+      let sectionMap = new Map();
+      let occMap = new Map();
+      if (rows.length > 0) {
+        const [sectionRows] = await pool.query(
+          `SELECT class_level, stream, section_name, max_capacity
+               FROM class_sections WHERE school_id = ? AND is_active = 1`,
+          [req.user.school_id],
+        );
+        sectionMap = new Map(
+          sectionRows.map((s) => [
+            sectionKey(s.class_level, s.stream, s.section_name),
+            s,
+          ]),
+        );
+        const [occRows] = await pool.query(
+          `SELECT class_level, stream, section, COUNT(*) AS cnt FROM students
+               WHERE school_id = ? AND status = 'Active'
+               GROUP BY class_level, stream, section`,
+          [req.user.school_id],
+        );
+        occMap = new Map(
+          occRows.map((o) => [
+            sectionKey(o.class_level, o.stream, o.section),
+            o.cnt,
+          ]),
+        );
+      }
+      const enriched = rows.map((r) => {
+        const key = sectionKey(r.class_level, r.stream, r.section);
+        const section = sectionMap.get(key);
+        let section_state = "ready";
+        if (!section) section_state = "missing";
+        else if (
+          section.max_capacity != null &&
+          (occMap.get(key) || 0) >= section.max_capacity
+        ) {
+          section_state = "full";
+        }
+        return { ...r, section_state };
+      });
+      res.json(enriched);
     } catch (err) {
       console.error("/api/registrar/pending-roster GET error:", err);
       res.status(500).json({ error: "Could not load pending roster" });

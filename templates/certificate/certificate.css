@@ -294,6 +294,19 @@ tr.rank td.subject{ color:oklch(0.36 0.07 60); }
 .promoted-to .cap .amh{ color:var(--ink-soft); font-weight:500; }
 .promoted-to .val{ flex:1; border-bottom:1px solid var(--ink-soft); font-weight:700; padding:0 2px 2px; }
 
+/* Grades 6/8/12 (EASE — national exam) show this disclaimer instead of
+   the Promoted/Detained checkboxes above, since this school's own
+   cutoff doesn't decide progression for those grades. Server toggles
+   which block is visible via __EASE_GATE_HIDDEN_CLASS__/
+   __EASE_GATE_VISIBLE_CLASS__ — both blocks stay in the DOM either way,
+   `.hidden` just removes the one that doesn't apply, same as the rest
+   of this template's token-driven class toggling (see .verdict.on). */
+.hidden{ display:none !important; }
+.ease-gate-note{
+  border:1.5px solid var(--line); border-radius:3px; padding:8px 10px;
+  font-size:0.8rem; line-height:1.4; color:var(--ink-soft); background:var(--accent-bg);
+}
+
 /* Signature strip: name printed plainly (no underline), short signature line */
 .sign-strip{
   margin-top:var(--s3); padding-top:var(--s2);

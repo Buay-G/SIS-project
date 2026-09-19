@@ -16,20 +16,13 @@ let CURRENT_SCHOOL_ID = null;
 let CURRENT_SCHOOL_NAME = null;
 let CURRENT_SCHOOL_LEVEL = null;
 
-// Every place the school's name is shown should show it combined with its
-// level ("PRIMARY SCHOOL"/"SECONDARY SCHOOL" from the server) — e.g.
-// "Newland Secondary School (Secondary School)" — using the same
-// za_school_level_* i18n labels the Zonal Admin portal already defines,
-// since i18n.js is shared across both portals. Falls back to the bare
-// name if level isn't set (older records, or school_id missing).
+// Every place the school's name is shown used to append the level in
+// parentheses ("Newland Secondary School (Secondary School)") — dropped
+// per the same fix applied to the School Admin portal: schools already
+// type their level into the name itself, so appending school_level
+// again just duplicated it. This now always shows the bare name.
 function formatSchoolNameWithLevel(name, level) {
-    if (!name) return '—';
-    if (!level) return name;
-    const key = level === 'PRIMARY SCHOOL' ? 'za_school_level_primary'
-        : level === 'SECONDARY SCHOOL' ? 'za_school_level_secondary'
-        : null;
-    const levelLabel = key && typeof t === 'function' ? t(key) : level;
-    return `${name} (${levelLabel})`;
+    return name || '—';
 }
 
 // The top-bar title used to always show the school name, which meant a
@@ -106,11 +99,27 @@ async function checkAuthAndInit() {
         const schoolLogoEl = document.getElementById('nav-school-logo');
         if (schoolLogoEl) {
             if (data.logo_url) {
-                schoolLogoEl.src = data.logo_url;
+                schoolLogoEl.src = API_BASE + data.logo_url;
                 schoolLogoEl.alt = CURRENT_SCHOOL_NAME ? `${CURRENT_SCHOOL_NAME} logo` : "School logo";
                 schoolLogoEl.style.display = 'block';
             } else {
                 schoolLogoEl.style.display = 'none';
+            }
+        }
+
+        // Same idea, alongside the school's own logo — the ZONE logo,
+        // set by a Super Admin via /api/super/zones/:zone_id/logo. This
+        // is a separate image, not a replacement for the school logo
+        // above: a school can have its own crest AND belong to a zone
+        // that has its own logo, and both should be visible.
+        const zoneLogoEl = document.getElementById('nav-zone-logo');
+        if (zoneLogoEl) {
+            if (data.zone_logo_url) {
+                zoneLogoEl.src = API_BASE + data.zone_logo_url;
+                zoneLogoEl.alt = data.zone_name ? `${data.zone_name} logo` : "Zone logo";
+                zoneLogoEl.style.display = 'block';
+            } else {
+                zoneLogoEl.style.display = 'none';
             }
         }
 
@@ -1978,12 +1987,12 @@ function renderPhotoRequests(requests) {
             <div class="request-photo-thumbs">
                 <figure>
                     ${r.current_photo_url
-                        ? `<img class="request-photo-thumb" src="${escapeHtml(r.current_photo_url)}" alt="Current photo">`
+                        ? `<img class="request-photo-thumb" src="${escapeHtml(API_BASE + r.current_photo_url)}" alt="Current photo">`
                         : `<div class="request-photo-thumb"></div>`}
                     <figcaption>Current</figcaption>
                 </figure>
                 <figure>
-                    <img class="request-photo-thumb" src="${escapeHtml(r.requested_photo_url)}" alt="Requested photo">
+                    <img class="request-photo-thumb" src="${escapeHtml(API_BASE + r.requested_photo_url)}" alt="Requested photo">
                     <figcaption>Requested</figcaption>
                 </figure>
             </div>
@@ -2046,7 +2055,7 @@ function renderAbsenceRequests(requests) {
         const from = new Date(r.date_from).toLocaleDateString();
         const to = new Date(r.date_to).toLocaleDateString();
         const attachment = r.attachment_url
-            ? `<a href="${escapeHtml(r.attachment_url)}" target="_blank" rel="noopener" style="font-size:0.78rem;">${typeof t === 'function' ? t('absence_view_attachment') : 'View attachment'}</a>`
+            ? `<a href="${escapeHtml(API_BASE + r.attachment_url)}" target="_blank" rel="noopener" style="font-size:0.78rem;">${typeof t === 'function' ? t('absence_view_attachment') : 'View attachment'}</a>`
             : '';
         const authorityNote = r.within_homeroom_authority
             ? ''
@@ -3128,9 +3137,9 @@ function renderStudentTableAndStats(students) {
             // without one yet show a plain placeholder instead of a
             // clickable thumbnail.
             const photoCell = s.id_photo_url
-                ? `<img src="${escapeHtml(s.id_photo_url)}" alt="Photo of ${escapeHtml(fullName)}"
+                ? `<img src="${escapeHtml(API_BASE + s.id_photo_url)}" alt="Photo of ${escapeHtml(fullName)}"
                        class="student-photo-thumb" data-action="preview-student-photo"
-                       data-photo-url="${escapeHtml(s.id_photo_url)}" data-student-name="${escapeHtml(fullName)}" />`
+                       data-photo-url="${escapeHtml(API_BASE + s.id_photo_url)}" data-student-name="${escapeHtml(fullName)}" />`
                 : `<div class="student-photo-thumb-placeholder" aria-hidden="true">—</div>`;
             return `
             <tr>
@@ -3250,7 +3259,7 @@ async function loadProfileData() {
         const navAvatar = document.getElementById('nav-avatar');
         const navAvatarInitials = document.getElementById('nav-avatar-initials');
         if (data.avatar_url && navAvatar) {
-            navAvatar.src = data.avatar_url;
+            navAvatar.src = API_BASE + data.avatar_url;
             navAvatar.style.display = '';
             if (navAvatarInitials) navAvatarInitials.style.display = 'none';
         } else {
@@ -3264,7 +3273,7 @@ async function loadProfileData() {
         const profileImg = document.getElementById('profile-img');
         const initialsEl = document.getElementById('profile-avatar-initials');
         if (data.avatar_url && profileImg) {
-            profileImg.src = data.avatar_url;
+            profileImg.src = API_BASE + data.avatar_url;
             profileImg.alt = data.full_name ? `Profile photo of ${data.full_name}` : "Profile photo";
             profileImg.style.display = '';
             if (initialsEl) initialsEl.style.display = 'none';
@@ -3367,7 +3376,7 @@ function renderTeacherIdCard(data) {
     const photo = document.getElementById('idcard-photo');
     const placeholder = document.getElementById('idcard-photo-placeholder');
     if (data.avatar_url && photo) {
-        photo.src = data.avatar_url;
+        photo.src = API_BASE + data.avatar_url;
         photo.alt = data.full_name ? `Photo of ${data.full_name}` : 'Teacher photo';
         photo.style.display = 'block';
         if (placeholder) placeholder.style.display = 'none';
@@ -3491,7 +3500,7 @@ window.uploadAvatar = async () => {
         if (res.ok) {
             const result = await res.json();
             const img = document.getElementById('profile-img');
-            if (img) img.src = result.new_avatar_url;
+            if (img) img.src = API_BASE + result.new_avatar_url;
         } else {
             const errorData = await res.json().catch(() => ({}));
             showAlertModal(errorData.error || "Failed to upload avatar.");
@@ -3528,7 +3537,7 @@ async function loadTeacherDocumentStatus() {
         const sigImg = document.getElementById('signature-preview');
         const sigEmpty = document.getElementById('signature-preview-empty');
         if (data.signature_url && sigImg) {
-            sigImg.src = data.signature_url;
+            sigImg.src = API_BASE + data.signature_url;
             sigImg.style.display = 'block';
             if (sigEmpty) sigEmpty.style.display = 'none';
         } else if (sigEmpty) {
@@ -3545,7 +3554,7 @@ async function loadTeacherDocumentStatus() {
         const idImg = document.getElementById('teacher-idphoto-preview');
         const idEmpty = document.getElementById('teacher-idphoto-preview-empty');
         if (data.id_photo_url && idImg) {
-            idImg.src = data.id_photo_url;
+            idImg.src = API_BASE + data.id_photo_url;
             idImg.style.display = 'block';
             if (idEmpty) idEmpty.style.display = 'none';
         } else if (idEmpty) {

@@ -823,19 +823,6 @@ textarea.form-input { line-height: 1.5; resize: none; height: 90px; }
     color: #991b1b;
 }
 
-/* ---- GUARDIAN CREDENTIAL BOX (My Guardian/Parent page) ---- */
-.guardian-credential-box {
-    margin-top: 12px;
-    padding: 12px 14px;
-    border-radius: 8px;
-    font-size: 0.85rem;
-    background: #eff6ff;
-    border: 1px solid #bfdbfe;
-    color: #1e3a8a;
-}
-.guardian-credential-box p { border-bottom: none; padding: 2px 0; }
-.guardian-credential-box strong { margin-right: 6px; }
-
 /* ---- TOAST NOTIFICATIONS ---- */
 #toast-container {
     position: fixed;
@@ -947,7 +934,7 @@ textarea.form-input { line-height: 1.5; resize: none; height: 90px; }
 .id-card-logo { width: 42px; height: 42px; border-radius: 50%; background: white; object-fit: contain; flex-shrink: 0; padding: 3px; }
 .id-card-header-text { display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; flex: 1; min-width: 0; }
 .id-card-school-name { font-size: 0.95rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.03em; line-height: 1.25; overflow-wrap: break-word; }
-.id-card-subtitle { font-size: 0.64rem; opacity: 0.85; letter-spacing: 0.02em; margin-top: 2px; line-height: 1.2; }
+.id-card-subtitle { font-size: 0.64rem; opacity: 0.85; letter-spacing: 0.02em; margin-top: 2px; }
 .id-card-body { display: flex; gap: 16px; padding: 18px 16px 10px; }
 .id-card-photo-col { display: flex; flex-direction: column; align-items: center; gap: 4px; flex-shrink: 0; }
 .id-card-photo {
@@ -967,17 +954,9 @@ textarea.form-input { line-height: 1.5; resize: none; height: 90px; }
 .id-card-photo img { width: 100%; height: 100%; object-fit: cover; }
 .id-card-photo-label { font-size: 0.6rem; font-weight: 700; color: var(--muted); letter-spacing: 0.02em; text-align: center; }
 .id-card-fields { flex: 1; font-size: 0.82rem; min-width: 0; }
-/* line-height pinned explicitly (not left at the font's own "normal")
-   on every row/label below that can contain Amharic text — see the
-   matching comment in server.js's idCardCss for the full reasoning:
-   the font stack has no Ethiopic coverage, so those glyphs render in
-   whatever Ethiopic font the OS substitutes, and different substituted
-   fonts carry very different default line-heights. That alone was
-   enough to push these rows past the print view's fixed-height card
-   box on some environments even with identical markup/content. */
-.id-card-fields div { display: flex; flex-direction: row; align-items: baseline; flex-wrap: wrap; gap: 5px; padding: 3px 0; line-height: 1.2; }
-.id-card-fields .id-label { font-weight: 700; color: var(--muted); font-size: 0.63rem; letter-spacing: 0.01em; white-space: nowrap; line-height: 1.2; }
-.id-card-name { font-size: 1.05rem; font-weight: 800; color: var(--primary); margin-bottom: 6px; line-height: 1.2; }
+.id-card-fields div { display: flex; flex-direction: row; align-items: baseline; flex-wrap: wrap; gap: 5px; padding: 3px 0; }
+.id-card-fields .id-label { font-weight: 700; color: var(--muted); font-size: 0.63rem; letter-spacing: 0.01em; white-space: nowrap; }
+.id-card-name { font-size: 1.05rem; font-weight: 800; color: var(--primary); margin-bottom: 6px; }
 .id-card-footer {
     display: flex;
     justify-content: space-between;
@@ -1128,35 +1107,14 @@ textarea.form-input { line-height: 1.5; resize: none; height: 90px; }
        6th "School Code" row (only present when moe_school_code is set)
        needs this row/name spacing reclaimed to fit inside that same
        fixed box — otherwise it spills past the bottom of .id-card-body
-       into the footer's dashed divider below it. overflow: hidden is a
-       safety net so a field that's still too long (e.g. a phone number
-       wrapping to 2 lines) clips cleanly at the box edge instead of
-       visibly crossing the divider.
-
-       margin-bottom on .id-card-fields plus the trimmed body/row/footer
-       spacing below reserves a guaranteed gap ahead of that divider,
-       instead of relying on the fixed card height happening to leave
-       just enough slack — that's what was letting the last field row
-       (e.g. Contact) sit flush against or clip into it. */
-    .id-card-body { padding: 16px 16px 4px; overflow: hidden; }
-    .id-card-fields { margin-bottom: 6px; }
-    .id-card-fields div { padding: 1px 0; }
+       into the footer's dashed divider below it, the way it still does
+       without this block. overflow: hidden is a safety net so a field
+       that's still too long (e.g. a phone number wrapping to 2 lines)
+       clips cleanly at the box edge instead of visibly crossing the
+       divider. */
+    .id-card-body { padding: 18px 16px 8px; overflow: hidden; }
+    .id-card-fields div { padding: 2px 0; }
     .id-card-name { margin-bottom: 4px; }
-    .id-card-footer { padding: 6px 16px 10px; margin-top: 2px; }
-    /* Print-only: measured with the actual header logo/flag (42px) and
-       a real principal-signature image (34px) in place — not just
-       placeholder text — the fixed-height front face came up ~8px
-       short of what header + body (6 rows, incl. optional School
-       Code) + footer actually need, which is what let the last field
-       row clip into the footer's divider even after the row-spacing
-       trim above. Reclaiming it from the header and footer (the
-       signature image makes the footer the taller of the two fixed
-       sections) rather than shrinking the fields further, since the
-       fields are already tight. Mirrors the identical fix in
-       server.js's idCardCss. */
-    .id-card-header { padding: 10px 16px; }
-    .id-card-signature img { height: 26px; margin: 0 auto 1px; }
-    .id-card-signature-line { padding-top: 1px; margin-top: 1px; }
 
     /* Print-only trim of the back face's Terms & Conditions block. At
        on-screen size, the 4 terms bullets + heading + return-note run

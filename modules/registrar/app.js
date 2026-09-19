@@ -3,24 +3,105 @@
 // them shows the security intercept instead of opening the tab.
 // TODO: if the recorder/registrar split later covers more tabs (section
 // setup, transfers, template hub, etc.), add their tab IDs here.
-const REGISTRAR_ONLY_TABS = ['recorder-mgmt', 'section-setup', 'placement-wizard', 'documents', 'templates', 'graduation-wizard'];
+const REGISTRAR_ONLY_TABS = [
+  "recorder-mgmt",
+  "section-setup",
+  "placement-wizard",
+  "documents",
+  "templates",
+  "graduation-wizard",
+  "emis-requests",
+];
 
 let currentUser = null;
 
 async function loadCurrentUser() {
-    try {
-        const res = await fetch('http://localhost:3001/api/me', { credentials: 'include' });
-        if (!res.ok) return;
-        currentUser = await res.json();
-        applyRolePermissions();
-        applyProfileChrome();
-        if (currentUser.is_registrar) {
-            loadRegistrarNotifications();
-            setInterval(loadRegistrarNotifications, 60000);
-        }
-    } catch (err) {
-        console.error("Could not load current user:", err);
+  try {
+    const res = await fetch("http://localhost:3001/api/me", {
+      credentials: "include",
+    });
+    if (!res.ok) return;
+    currentUser = await res.json();
+    applyRolePermissions();
+    applyProfileChrome();
+    loadSchoolGradeLevels();
+    loadEaseCandidates();
+    if (currentUser.is_registrar) {
+      loadRegistrarNotifications();
+      setInterval(loadRegistrarNotifications, 60000);
     }
+  } catch (err) {
+    console.error("Could not load current user:", err);
+  }
+}
+
+// --- 0a. Grade Levels this school is actually configured for ---
+// Populates every Grade <select> in the Registrar Portal (New Entrant
+// Registration, External/Manual Transfer, Section Setup) from GET
+// /api/school/grade-levels, instead of a hardcoded Grade 9-12 list —
+// so a school registered with Basic/Core tiers (grades 1-8) can
+// actually be enrolled into, not just Secondary. Fetched once per
+// session and cached; loadCurrentUser() above triggers this on load.
+let SCHOOL_GRADE_LEVELS = [];
+const GRADE_SELECT_CONFIGS = [
+  { id: "reg_grade", placeholder: '<option value="">Select Grade</option>' },
+  { id: "ext_grade", placeholder: '<option value="">Select Grade</option>' },
+  { id: "sec_grade", placeholder: '<option value="">Select Grade</option>' },
+  {
+    id: "student_registry_grade",
+    placeholder:
+      '<option value="" data-i18n="reg_students_filter_all_grades">All Grades</option>',
+  },
+];
+
+async function loadSchoolGradeLevels() {
+  try {
+    const res = await fetch("http://localhost:3001/api/school/grade-levels", {
+      credentials: "include",
+    });
+    if (!res.ok) throw new Error("Could not load grade levels.");
+    const data = await res.json();
+    SCHOOL_GRADE_LEVELS = data.grades || [];
+  } catch (err) {
+    console.error(err);
+    // Fall back to the old Secondary-only range rather than leaving
+    // every Grade picker in the portal completely empty if this
+    // call fails — Secondary is still what most schools run today.
+    SCHOOL_GRADE_LEVELS = [9, 10, 11, 12];
+  }
+  GRADE_SELECT_CONFIGS.forEach(populateGradeSelect);
+}
+
+function populateGradeSelect(config) {
+  const select = document.getElementById(config.id);
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML =
+    config.placeholder +
+    SCHOOL_GRADE_LEVELS.map(
+      (g) => `<option value="${g}">Grade ${g}</option>`,
+    ).join("");
+  if (SCHOOL_GRADE_LEVELS.includes(Number(current))) select.value = current;
+}
+
+// Which stream option(s) a grade should offer, based on this school's
+// tier structure. Basic (1-6) and Core (7-8) aren't actually streamed
+// — mirrors resolveDocumentStream on the server, where those two tiers
+// print their own tier name wherever "Stream" shows up on a document —
+// so each just gets its single tier name locked in as the only option;
+// General (9-10) stays General-only; Preparatory (11-12) is the only
+// real choice, between Natural and Social Science.
+function streamOptionsHtmlForGrade(grade) {
+  const g = Number(grade);
+  if (g >= 1 && g <= 6) return '<option value="Basic">Basic</option>';
+  if (g === 7 || g === 8) return '<option value="Core">Core</option>';
+  if (g === 9 || g === 10) return '<option value="General">General</option>';
+  if (g === 11 || g === 12)
+    return `
+        <option value="Natural Science">Natural Science</option>
+        <option value="Social Science">Social Science</option>
+    `;
+  return '<option value="">Select Stream</option>';
 }
 
 // --- 0b. Ethiopian Calendar (E.C.) — mandatory primary date format ---
@@ -28,182 +109,248 @@ async function loadCurrentUser() {
 // verified against known reference dates (e.g. 11 Sep 2024 = Meskerem 1,
 // 2017 E.C.). Every date shown in this portal leads with E.C., Gregorian
 // in brackets — see formatDateBilingual below.
-const ETHIOPIAN_MONTH_NAMES_EN = ['Meskerem', 'Tikimt', 'Hidar', 'Tahsas', 'Tir', 'Yekatit', 'Megabit', 'Miazia', 'Ginbot', 'Sene', 'Hamle', 'Nehase', 'Pagume'];
-const ETHIOPIAN_MONTH_NAMES_AM = ['መስከረም', 'ጥቅምት', 'ኅዳር', 'ታኅሳስ', 'ጥር', 'የካቲት', 'መጋቢት', 'ሚያዝያ', 'ግንቦት', 'ሰኔ', 'ሐምሌ', 'ነሐሴ', 'ጳጉሜ'];
+const ETHIOPIAN_MONTH_NAMES_EN = [
+  "Meskerem",
+  "Tikimt",
+  "Hidar",
+  "Tahsas",
+  "Tir",
+  "Yekatit",
+  "Megabit",
+  "Miazia",
+  "Ginbot",
+  "Sene",
+  "Hamle",
+  "Nehase",
+  "Pagume",
+];
+const ETHIOPIAN_MONTH_NAMES_AM = [
+  "መስከረም",
+  "ጥቅምት",
+  "ኅዳር",
+  "ታኅሳስ",
+  "ጥር",
+  "የካቲት",
+  "መጋቢት",
+  "ሚያዝያ",
+  "ግንቦት",
+  "ሰኔ",
+  "ሐምሌ",
+  "ነሐሴ",
+  "ጳጉሜ",
+];
 
 function _ethStartDayOfYear(year) {
-    const newYearDay = Math.floor(year / 100) - Math.floor(year / 400) - 4;
-    return ((year - 1) % 4 === 3) ? newYearDay + 1 : newYearDay;
+  const newYearDay = Math.floor(year / 100) - Math.floor(year / 400) - 4;
+  return (year - 1) % 4 === 3 ? newYearDay + 1 : newYearDay;
 }
 
 function gregorianToEthiopian(dateInput) {
-    const d = new Date(dateInput);
-    const year = d.getFullYear(), month = d.getMonth() + 1, date = d.getDate();
+  const d = new Date(dateInput);
+  const year = d.getFullYear(),
+    month = d.getMonth() + 1,
+    date = d.getDate();
 
-    const gregorianMonths = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    const ethiopianMonths = [0, 30, 30, 30, 30, 30, 30, 30, 30, 30, 5, 30, 30, 30, 30];
-    if ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0) gregorianMonths[2] = 29;
+  const gregorianMonths = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  const ethiopianMonths = [
+    0, 30, 30, 30, 30, 30, 30, 30, 30, 30, 5, 30, 30, 30, 30,
+  ];
+  if ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0)
+    gregorianMonths[2] = 29;
 
-    let ethiopianYear = year - 8;
-    if (ethiopianYear % 4 === 3) ethiopianMonths[10] = 6;
+  let ethiopianYear = year - 8;
+  if (ethiopianYear % 4 === 3) ethiopianMonths[10] = 6;
 
-    const newYearDay = _ethStartDayOfYear(year - 8);
+  const newYearDay = _ethStartDayOfYear(year - 8);
 
-    let until = 0;
-    for (let i = 1; i < month; i++) until += gregorianMonths[i];
-    until += date;
+  let until = 0;
+  for (let i = 1; i < month; i++) until += gregorianMonths[i];
+  until += date;
 
-    const tahissas = newYearDay - 3;
-    ethiopianMonths[1] = tahissas;
+  const tahissas = newYearDay - 3;
+  ethiopianMonths[1] = tahissas;
 
-    let m, ethiopianDate;
-    for (m = 1; m < ethiopianMonths.length; m++) {
-        if (until <= ethiopianMonths[m]) {
-            ethiopianDate = (m === 1 || ethiopianMonths[m] === 0) ? until + (30 - tahissas) : until;
-            break;
-        } else {
-            until -= ethiopianMonths[m];
-        }
+  let m, ethiopianDate;
+  for (m = 1; m < ethiopianMonths.length; m++) {
+    if (until <= ethiopianMonths[m]) {
+      ethiopianDate =
+        m === 1 || ethiopianMonths[m] === 0 ? until + (30 - tahissas) : until;
+      break;
+    } else {
+      until -= ethiopianMonths[m];
     }
-    if (m > 10) ethiopianYear += 1;
+  }
+  if (m > 10) ethiopianYear += 1;
 
-    const order = [0, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 1, 2, 3, 4];
-    return { year: ethiopianYear, month: order[m], day: ethiopianDate };
+  const order = [0, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 1, 2, 3, 4];
+  return { year: ethiopianYear, month: order[m], day: ethiopianDate };
 }
 
 // E.C. primary, Gregorian in brackets — e.g. "18 Hamle 2018 E.C. (25 Jul 2026)".
 function formatDateBilingual(dateInput) {
-    if (!dateInput) return '—';
-    const d = new Date(dateInput);
-    if (isNaN(d)) return '—';
-    const eth = gregorianToEthiopian(d);
-    const lang = (typeof getCurrentLang === 'function') ? getCurrentLang() : 'en';
-    const monthName = (lang === 'am' ? ETHIOPIAN_MONTH_NAMES_AM : ETHIOPIAN_MONTH_NAMES_EN)[eth.month - 1];
-    const gregorianStr = d.toLocaleDateString('en-GB', { year: 'numeric', month: 'short', day: 'numeric' });
-    return `${eth.day} ${monthName} ${eth.year} E.C. (${gregorianStr})`;
+  if (!dateInput) return "—";
+  const d = new Date(dateInput);
+  if (isNaN(d)) return "—";
+  const eth = gregorianToEthiopian(d);
+  const lang = typeof getCurrentLang === "function" ? getCurrentLang() : "en";
+  const monthName = (
+    lang === "am" ? ETHIOPIAN_MONTH_NAMES_AM : ETHIOPIAN_MONTH_NAMES_EN
+  )[eth.month - 1];
+  const gregorianStr = d.toLocaleDateString("en-GB", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+  return `${eth.day} ${monthName} ${eth.year} E.C. (${gregorianStr})`;
 }
 
 // Year-only version of formatDateBilingual, for labels where the exact
 // day doesn't matter — e.g. "Enrolled: 2016 E.C. (2023)" on the Student
 // Registry. Same E.C.-primary, Gregorian-in-brackets rule.
 function formatYearBilingual(dateInput) {
-    if (!dateInput) return null;
-    const d = new Date(dateInput);
-    if (isNaN(d)) return null;
-    const eth = gregorianToEthiopian(d);
-    return `${eth.year} E.C. (${d.getFullYear()})`;
+  if (!dateInput) return null;
+  const d = new Date(dateInput);
+  if (isNaN(d)) return null;
+  const eth = gregorianToEthiopian(d);
+  return `${eth.year} E.C. (${d.getFullYear()})`;
 }
 
 // Re-render whatever's currently loaded so dynamic (non-data-i18n) text —
 // list items, dates, alerts built in JS — picks up the new language too.
 // i18n.js calls this automatically after setLang() via window.onSisLangChange.
 window.onSisLangChange = function () {
-    if (!currentUser) return;
-    applyProfileChrome();
-    loadApprovedTransferRequests();
-    loadOutgoingTransfers();
-    loadIncomingTransfers();
-    if (currentUser.is_registrar || currentUser.is_recorder) {
-        loadStudentRegistry();
-    }
-    if (currentUser.is_registrar) {
-        loadSections();
-        loadBulkSectionOptions();
-        loadUnassignedQueue();
-        loadPlacementRegistered();
-        loadPlacementPromoted();
-        loadRecorders();
-        loadIssuanceLog();
-        loadGraduationEligible();
-        loadGraduationHistory();
-    }
+  if (!currentUser) return;
+  applyProfileChrome();
+  loadApprovedTransferRequests();
+  loadOutgoingTransfers();
+  loadIncomingTransfers();
+  if (currentUser.is_registrar || currentUser.is_recorder) {
+    loadStudentRegistry();
+    loadGuardianRegistry();
+  }
+  if (currentUser.is_registrar) {
+    loadSections();
+    loadBulkSectionOptions();
+    loadUnassignedQueue();
+    loadPlacementRegistered();
+    loadPlacementPromoted();
+    loadRecorders();
+    loadIssuanceLog();
+    loadGraduationEligible();
+    loadGraduationHistory();
+    loadEmisRoster();
+    loadEmisRequests();
+  }
 };
 
 function isRecorderOnly() {
-    return !!currentUser && currentUser.role === 'teachers' && currentUser.is_recorder && !currentUser.is_registrar;
+  return (
+    !!currentUser &&
+    currentUser.role === "teachers" &&
+    currentUser.is_recorder &&
+    !currentUser.is_registrar
+  );
 }
 
 function applyRolePermissions() {
-    if (!currentUser) return;
-    // Promotion/Stream is shared ground between Registrar and Recorder
-    // (like Students / New Entry / Information Update), unlike the
-    // Registrar-only tabs below — so it's shown to either role rather
-    // than gated behind currentUser.is_registrar.
-    const promotionNav = document.getElementById('nav-promotion');
-    if (promotionNav) {
-        promotionNav.style.display = (currentUser.is_registrar || currentUser.is_recorder) ? 'block' : 'none';
-    }
-    const mgmtNav = document.getElementById('nav-recorder-mgmt');
-    if (mgmtNav) {
-        mgmtNav.style.display = currentUser.is_registrar ? 'block' : 'none';
-    }
-    const sectionSetupNav = document.getElementById('nav-section-setup');
-    if (sectionSetupNav) {
-        sectionSetupNav.style.display = currentUser.is_registrar ? 'block' : 'none';
-    }
-    const placementNav = document.getElementById('nav-placement-wizard');
-    if (placementNav) {
-        placementNav.style.display = currentUser.is_registrar ? 'block' : 'none';
-    }
-    // Transfer Hub is shared ground — visible to the Registrar and to any
-    // assigned Recorder, unlike the admin-only tabs.
-    const transferNav = document.getElementById('nav-transfer-hub');
-    if (transferNav) {
-        transferNav.style.display = (currentUser.is_registrar || currentUser.is_recorder) ? 'block' : 'none';
-    }
-    const documentsNav = document.getElementById('nav-documents');
-    if (documentsNav) {
-        documentsNav.style.display = currentUser.is_registrar ? 'block' : 'none';
-    }
-    const templatesNav = document.getElementById('nav-templates');
-    if (templatesNav) {
-        templatesNav.style.display = currentUser.is_registrar ? 'block' : 'none';
-    }
-    // Student Registry — shared ground like Transfer Hub: a Recorder
-    // handles day-to-day registration, so they can look students up too,
-    // just read-only (no history/placement actions beyond viewing).
-    const studentsNav = document.getElementById('nav-students');
-    if (studentsNav) {
-        studentsNav.style.display = (currentUser.is_registrar || currentUser.is_recorder) ? 'block' : 'none';
-    }
-    const graduationNav = document.getElementById('nav-graduation-wizard');
-    if (graduationNav) {
-        graduationNav.style.display = currentUser.is_registrar ? 'block' : 'none';
-    }
-    if (currentUser.is_registrar) {
-        loadRecorders();
-        loadEligibleTeachers();
-        loadSections();
-        loadBulkSectionOptions();
-        loadUnassignedQueue();
-        loadPlacementRegistered();
-        loadPlacementPromoted();
-        loadIssuanceLog();
-        loadGraduationEligible();
-        loadGraduationHistory();
-    }
-    if (currentUser.is_registrar || currentUser.is_recorder) {
-        loadApprovedTransferRequests();
-        loadOutgoingTransfers();
-        loadIncomingTransfers();
-        loadDashboardStats();
-        loadAcademicYearOptions();
-        loadStudentRegistry();
-    }
+  if (!currentUser) return;
+  // Promotion/Stream is shared ground between Registrar and Recorder
+  // (like Students / New Entry / Information Update), unlike the
+  // Registrar-only tabs below — so it's shown to either role rather
+  // than gated behind currentUser.is_registrar.
+  const promotionNav = document.getElementById("nav-promotion");
+  if (promotionNav) {
+    promotionNav.style.display =
+      currentUser.is_registrar || currentUser.is_recorder ? "block" : "none";
+  }
+  const mgmtNav = document.getElementById("nav-recorder-mgmt");
+  if (mgmtNav) {
+    mgmtNav.style.display = currentUser.is_registrar ? "block" : "none";
+  }
+  const sectionSetupNav = document.getElementById("nav-section-setup");
+  if (sectionSetupNav) {
+    sectionSetupNav.style.display = currentUser.is_registrar ? "block" : "none";
+  }
+  const placementNav = document.getElementById("nav-placement-wizard");
+  if (placementNav) {
+    placementNav.style.display = currentUser.is_registrar ? "block" : "none";
+  }
+  // Transfer Hub is shared ground — visible to the Registrar and to any
+  // assigned Recorder, unlike the admin-only tabs.
+  const transferNav = document.getElementById("nav-transfer-hub");
+  if (transferNav) {
+    transferNav.style.display =
+      currentUser.is_registrar || currentUser.is_recorder ? "block" : "none";
+  }
+  const documentsNav = document.getElementById("nav-documents");
+  if (documentsNav) {
+    documentsNav.style.display = currentUser.is_registrar ? "block" : "none";
+  }
+  const templatesNav = document.getElementById("nav-templates");
+  if (templatesNav) {
+    templatesNav.style.display = currentUser.is_registrar ? "block" : "none";
+  }
+  // Student Registry — shared ground like Transfer Hub: a Recorder
+  // handles day-to-day registration, so they can look students up too,
+  // just read-only (no history/placement actions beyond viewing).
+  const studentsNav = document.getElementById("nav-students");
+  if (studentsNav) {
+    studentsNav.style.display =
+      currentUser.is_registrar || currentUser.is_recorder ? "block" : "none";
+  }
+  // Guardian/Parent — same shared ground as Students, just below it.
+  const guardiansNav = document.getElementById("nav-guardians");
+  if (guardiansNav) {
+    guardiansNav.style.display =
+      currentUser.is_registrar || currentUser.is_recorder ? "block" : "none";
+  }
+  const graduationNav = document.getElementById("nav-graduation-wizard");
+  if (graduationNav) {
+    graduationNav.style.display = currentUser.is_registrar ? "block" : "none";
+  }
+  // Only a full Registrar can release a school's missing-EMIS list —
+  // same admin-only gating as recorder-mgmt/section-setup/etc. above.
+  const emisRequestsNav = document.getElementById("nav-emis-requests");
+  if (emisRequestsNav) {
+    emisRequestsNav.style.display = currentUser.is_registrar ? "block" : "none";
+  }
+  if (currentUser.is_registrar) {
+    loadRecorders();
+    loadEligibleTeachers();
+    loadSections();
+    loadBulkSectionOptions();
+    loadUnassignedQueue();
+    loadPlacementRegistered();
+    loadPlacementPromoted();
+    loadIssuanceLog();
+    loadGraduationEligible();
+    loadGraduationHistory();
+    loadEmisRoster();
+    loadEmisRequests();
+  }
+  if (currentUser.is_registrar || currentUser.is_recorder) {
+    loadApprovedTransferRequests();
+    loadOutgoingTransfers();
+    loadIncomingTransfers();
+    loadDashboardStats();
+    loadAcademicYearOptions();
+    loadStudentRegistry();
+    loadGuardianRegistry();
+  }
 }
 
 // --- 1. Tab Navigation ---
 function switchTab(tabId) {
-    if (REGISTRAR_ONLY_TABS.includes(tabId) && isRecorderOnly()) {
-        showRecorderIntercept();
-        return;
-    }
-    document.querySelectorAll('.tab-content').forEach(tab => {
-        tab.classList.remove('active');
-    });
-    document.getElementById(tabId).classList.add('active');
-    updateTopbarSectionName(tabId);
-    closeSidebar();
+  if (REGISTRAR_ONLY_TABS.includes(tabId) && isRecorderOnly()) {
+    showRecorderIntercept();
+    return;
+  }
+  document.querySelectorAll(".tab-content").forEach((tab) => {
+    tab.classList.remove("active");
+  });
+  document.getElementById(tabId).classList.add("active");
+  updateTopbarSectionName(tabId);
+  closeSidebar();
 }
 
 // The top bar used to repeat the school name (already shown in the
@@ -214,11 +361,13 @@ function switchTab(tabId) {
 // <span> rather than duplicating i18n keys, so it stays correct
 // automatically whether the label is in English or Amharic.
 function updateTopbarSectionName(tabId) {
-    const topbarLabel = document.getElementById('topbar-school-name');
-    if (!topbarLabel) return;
-    const navBtn = document.querySelector(`.sidebar-nav [data-tab="${tabId}"]`);
-    const label = navBtn ? navBtn.querySelector('span')?.textContent?.trim() : null;
-    topbarLabel.textContent = label || '—';
+  const topbarLabel = document.getElementById("topbar-school-name");
+  if (!topbarLabel) return;
+  const navBtn = document.querySelector(`.sidebar-nav [data-tab="${tabId}"]`);
+  const label = navBtn
+    ? navBtn.querySelector("span")?.textContent?.trim()
+    : null;
+  topbarLabel.textContent = label || "—";
 }
 
 // --- Mobile sidebar drawer: hamburger opens it, tapping the dimmed
@@ -226,35 +375,36 @@ function updateTopbarSectionName(tabId) {
 // No-op on desktop widths since .sidebar-open only has an effect inside
 // the <=900px media query.
 function toggleSidebar() {
-    const container = document.querySelector('.dashboard-container');
-    if (!container) return;
-    const isOpen = container.classList.toggle('sidebar-open');
-    const hamburger = document.querySelector('.sidebar-hamburger');
-    if (hamburger) hamburger.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  const container = document.querySelector(".dashboard-container");
+  if (!container) return;
+  const isOpen = container.classList.toggle("sidebar-open");
+  const hamburger = document.querySelector(".sidebar-hamburger");
+  if (hamburger)
+    hamburger.setAttribute("aria-expanded", isOpen ? "true" : "false");
 }
 
 function closeSidebar() {
-    const container = document.querySelector('.dashboard-container');
-    if (!container) return;
-    container.classList.remove('sidebar-open');
-    const hamburger = document.querySelector('.sidebar-hamburger');
-    if (hamburger) hamburger.setAttribute('aria-expanded', 'false');
+  const container = document.querySelector(".dashboard-container");
+  if (!container) return;
+  container.classList.remove("sidebar-open");
+  const hamburger = document.querySelector(".sidebar-hamburger");
+  if (hamburger) hamburger.setAttribute("aria-expanded", "false");
 }
 
 function showRecorderIntercept() {
-    document.getElementById('recorder-intercept-modal').style.display = 'block';
+  document.getElementById("recorder-intercept-modal").style.display = "block";
 }
 
 function closeRecorderIntercept() {
-    document.getElementById('recorder-intercept-modal').style.display = 'none';
-    // TODO: point this at the real teacher-portal entry route.
-    window.location.href = '/teachers/index.html';
+  document.getElementById("recorder-intercept-modal").style.display = "none";
+  // TODO: point this at the real teacher-portal entry route.
+  window.location.href = "/teachers/index.html";
 }
 
-document.addEventListener('DOMContentLoaded', loadCurrentUser);
-document.addEventListener('DOMContentLoaded', initIconsWithRetry);
-document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeSidebar();
+document.addEventListener("DOMContentLoaded", loadCurrentUser);
+document.addEventListener("DOMContentLoaded", initIconsWithRetry);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeSidebar();
 });
 
 // Icons (including the topbar bell/settings buttons) render blank
@@ -269,17 +419,21 @@ document.addEventListener('keydown', (e) => {
 // path that injects fresh `data-lucide` markup after the initial
 // paint (toasts, dynamically-built lists) can re-run it too.
 function initIconsWithRetry(attemptsLeft = 20) {
-    if (window.lucide) {
-        lucide.createIcons();
-        return;
-    }
-    if (attemptsLeft <= 0) {
-        console.warn('Lucide icons failed to load — sidebar nav icons will not render. Check that cdn.jsdelivr.net is reachable. (The notification bell and settings gear are unaffected — they now render from self-hosted SVG images.)');
-        return;
-    }
-    setTimeout(() => initIconsWithRetry(attemptsLeft - 1), 150);
+  if (window.lucide) {
+    lucide.createIcons();
+    return;
+  }
+  if (attemptsLeft <= 0) {
+    console.warn(
+      "Lucide icons failed to load — sidebar nav icons will not render. Check that cdn.jsdelivr.net is reachable. (The notification bell and settings gear are unaffected — they now render from self-hosted SVG images.)",
+    );
+    return;
+  }
+  setTimeout(() => initIconsWithRetry(attemptsLeft - 1), 150);
 }
-window.refreshIcons = () => { if (window.lucide) lucide.createIcons(); };
+window.refreshIcons = () => {
+  if (window.lucide) lucide.createIcons();
+};
 
 // --- 1c. Event wiring ---
 // Every interactive element that used to carry an inline onclick/onchange
@@ -289,117 +443,165 @@ window.refreshIcons = () => { if (window.lucide) lucide.createIcons(); };
 // them; a handful of elements that don't fit the generic pattern (reading a
 // live variable, a keyboard shortcut, a file input's own element) get their
 // own explicit listener below that.
-document.addEventListener('DOMContentLoaded', () => {
-    // data-tab="X" -> switchTab('X'). Used by every sidebar nav button plus
-    // the "Browse every registered student" button on the dashboard.
-    document.addEventListener('click', (e) => {
-        const el = e.target.closest('[data-tab]');
-        if (el) switchTab(el.dataset.tab);
+document.addEventListener("DOMContentLoaded", () => {
+  // data-tab="X" -> switchTab('X'). Used by every sidebar nav button plus
+  // the "Browse every registered student" button on the dashboard.
+  document.addEventListener("click", (e) => {
+    const el = e.target.closest("[data-tab]");
+    if (el) switchTab(el.dataset.tab);
+  });
+
+  // data-action="fnName" [data-arg="x"] | [data-args='["x","y"]'] -> fnName(x)
+  // / fnName(x, y) / fnName(). Covers every other click-to-run-a-function
+  // button/link/icon, including rows built dynamically via innerHTML
+  // (see escAttr/dataArg/dataArgs helpers used when building those strings).
+  document.addEventListener("click", (e) => {
+    const el = e.target.closest("[data-action]");
+    if (!el) return;
+    const fn = window[el.dataset.action];
+    if (typeof fn !== "function") {
+      console.error(`No handler function named "${el.dataset.action}"`);
+      return;
+    }
+    if ("args" in el.dataset) fn(...JSON.parse(el.dataset.args));
+    else if ("arg" in el.dataset) fn(el.dataset.arg);
+    else fn();
+  });
+
+  // data-onchange="fnName" -> fnName() on change. Covers the grade/stream
+  // selects and the status/grade filters on the student registry.
+  document.addEventListener("change", (e) => {
+    const el = e.target.closest("[data-onchange]");
+    if (!el) return;
+    const fn = window[el.dataset.onchange];
+    if (typeof fn === "function") fn();
+  });
+  // data-onchange-checked="fnName" [data-arg="x"] -> fnName(x, this.checked).
+  // For checkboxes whose handler needs the row's id plus the new state
+  // (e.g. toggling a section active/inactive).
+  document.addEventListener("change", (e) => {
+    const el = e.target.closest("[data-onchange-checked]");
+    if (!el) return;
+    const fn = window[el.dataset.onchangeChecked];
+    if (typeof fn === "function") fn(el.dataset.arg, el.checked);
+  });
+  // data-onchange-self="fnName" -> fnName(this). For the "select all"
+  // graduation checkbox, whose handler needs the checkbox element itself.
+  document.addEventListener("change", (e) => {
+    const el = e.target.closest("[data-onchange-self]");
+    if (!el) return;
+    const fn = window[el.dataset.onchangeSelf];
+    if (typeof fn === "function") fn(el);
+  });
+
+  // data-onblur="fnName" [data-onblur-arg="x"] -> fnName(x, this) when the
+  // field loses focus. Uses 'focusout' because plain 'blur' doesn't bubble,
+  // so delegation on document wouldn't otherwise catch it. Used by the
+  // EMIS ID fields (New Entrant Registration, External Transfer) to
+  // trigger the lookup as soon as the Registrar tabs/clicks away.
+  document.addEventListener("focusout", (e) => {
+    const el = e.target.closest("[data-onblur]");
+    if (!el) return;
+    const fn = window[el.dataset.onblur];
+    if (typeof fn === "function") fn(el.dataset.onblurArg, el);
+  });
+
+  // Student search box: Enter runs the same search as the Search button.
+  document
+    .getElementById("student_registry_search")
+    ?.addEventListener("keyup", (e) => {
+      if (e.key === "Enter") loadStudentRegistry();
+    });
+  // Guardian search box: same Enter-to-search convenience.
+  document
+    .getElementById("guardian_registry_search")
+    ?.addEventListener("keyup", (e) => {
+      if (e.key === "Enter") loadGuardianRegistry();
     });
 
-    // data-action="fnName" [data-arg="x"] | [data-args='["x","y"]'] -> fnName(x)
-    // / fnName(x, y) / fnName(). Covers every other click-to-run-a-function
-    // button/link/icon, including rows built dynamically via innerHTML
-    // (see escAttr/dataArg/dataArgs helpers used when building those strings).
-    document.addEventListener('click', (e) => {
-        const el = e.target.closest('[data-action]');
-        if (!el) return;
-        const fn = window[el.dataset.action];
-        if (typeof fn !== 'function') {
-            console.error(`No handler function named "${el.dataset.action}"`);
-            return;
-        }
-        if ('args' in el.dataset) fn(...JSON.parse(el.dataset.args));
-        else if ('arg' in el.dataset) fn(el.dataset.arg);
-        else fn();
-    });
-
-    // data-onchange="fnName" -> fnName() on change. Covers the grade/stream
-    // selects and the status/grade filters on the student registry.
-    document.addEventListener('change', (e) => {
-        const el = e.target.closest('[data-onchange]');
-        if (!el) return;
-        const fn = window[el.dataset.onchange];
-        if (typeof fn === 'function') fn();
-    });
-    // data-onchange-checked="fnName" [data-arg="x"] -> fnName(x, this.checked).
-    // For checkboxes whose handler needs the row's id plus the new state
-    // (e.g. toggling a section active/inactive).
-    document.addEventListener('change', (e) => {
-        const el = e.target.closest('[data-onchange-checked]');
-        if (!el) return;
-        const fn = window[el.dataset.onchangeChecked];
-        if (typeof fn === 'function') fn(el.dataset.arg, el.checked);
-    });
-    // data-onchange-self="fnName" -> fnName(this). For the "select all"
-    // graduation checkbox, whose handler needs the checkbox element itself.
-    document.addEventListener('change', (e) => {
-        const el = e.target.closest('[data-onchange-self]');
-        if (!el) return;
-        const fn = window[el.dataset.onchangeSelf];
-        if (typeof fn === 'function') fn(el);
-    });
-
-    // Student search box: Enter runs the same search as the Search button.
-    document.getElementById('student_registry_search')
-        ?.addEventListener('keyup', (e) => {
-            if (e.key === 'Enter') loadStudentRegistry();
-        });
-
-    // Profile avatar image + account name: keyboard-activatable
-    // (role="button", tabindex=0) since neither is a real <button>.
-    document.getElementById('topbar-avatar')?.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            openProfileSettings();
-        }
-    });
-    document.getElementById('topbar-account-name')?.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            openProfileSettings();
-        }
-    });
-
-    // Sidebar footer links: prevent the "#" href from jumping the page.
-    document.getElementById('return-to-portal-link')?.addEventListener('click', (e) => {
+  // Profile avatar image + account name: keyboard-activatable
+  // (role="button", tabindex=0) since neither is a real <button>.
+  document.getElementById("topbar-avatar")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openProfileSettings();
+    }
+  });
+  document
+    .getElementById("topbar-account-name")
+    ?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
-        returnToPortal();
-    });
-    document.getElementById('sidebar-logout-link')?.addEventListener('click', (e) => {
-        e.preventDefault();
-        registrarLogout();
+        openProfileSettings();
+      }
     });
 
-    // Documents tab: these three read whichever student is currently loaded
-    // at click time, so they need a live closure rather than a static
-    // data-arg value.
-    document.getElementById('doc-preview-report-card-btn')
-        ?.addEventListener('click', () => previewReportCard(currentDocStudentId));
-    document.getElementById('doc-preview-transcript-btn')
-        ?.addEventListener('click', () => previewTranscript(currentDocStudentId));
-    document.getElementById('doc-download-id-card-btn')
-        ?.addEventListener('click', () => downloadIdCard(currentDocStudentId));
-
-    // Modal backdrops: clicking the dimmed overlay itself (not its content
-    // box) closes the modal.
-    document.getElementById('student-history-modal')?.addEventListener('click', (e) => {
-        if (e.target === e.currentTarget) closeStudentHistory();
+  // Sidebar footer links: prevent the "#" href from jumping the page.
+  document
+    .getElementById("return-to-portal-link")
+    ?.addEventListener("click", (e) => {
+      e.preventDefault();
+      returnToPortal();
     });
-    document.getElementById('profile-settings-modal')?.addEventListener('click', (e) => {
-        if (e.target === e.currentTarget) closeProfileSettings();
-    });
-    document.getElementById('queue-view-modal')?.addEventListener('click', (e) => {
-        if (e.target === e.currentTarget) closeQueueViewModal();
+  document
+    .getElementById("sidebar-logout-link")
+    ?.addEventListener("click", (e) => {
+      e.preventDefault();
+      registrarLogout();
     });
 
-    // Profile settings file inputs: uploading passes the input element
-    // itself, same as the old onchange="fn(this)" did.
-    document.getElementById('settings-avatar-input')?.addEventListener('change', function () {
-        uploadRegistrarAvatar(this);
+  // Documents tab: these three read whichever student is currently loaded
+  // at click time, so they need a live closure rather than a static
+  // data-arg value.
+  document
+    .getElementById("doc-preview-report-card-btn")
+    ?.addEventListener("click", () => previewReportCard(currentDocStudentId));
+  document
+    .getElementById("doc-preview-transcript-btn")
+    ?.addEventListener("click", () => previewTranscript(currentDocStudentId));
+  document
+    .getElementById("doc-download-id-card-btn")
+    ?.addEventListener("click", () => downloadIdCard(currentDocStudentId));
+
+  // Modal backdrops: clicking the dimmed overlay itself (not its content
+  // box) closes the modal.
+  document
+    .getElementById("student-history-modal")
+    ?.addEventListener("click", (e) => {
+      if (e.target === e.currentTarget) closeStudentHistory();
     });
-    document.getElementById('settings-signature-input')?.addEventListener('change', function () {
-        uploadRegistrarSignature(this);
+  document
+    .getElementById("guardian-children-modal")
+    ?.addEventListener("click", (e) => {
+      if (e.target === e.currentTarget) closeGuardianChildren();
+    });
+  document
+    .getElementById("student-guardian-modal")
+    ?.addEventListener("click", (e) => {
+      if (e.target === e.currentTarget) closeStudentGuardian();
+    });
+  document
+    .getElementById("profile-settings-modal")
+    ?.addEventListener("click", (e) => {
+      if (e.target === e.currentTarget) closeProfileSettings();
+    });
+  document
+    .getElementById("queue-view-modal")
+    ?.addEventListener("click", (e) => {
+      if (e.target === e.currentTarget) closeQueueViewModal();
+    });
+
+  // Profile settings file inputs: uploading passes the input element
+  // itself, same as the old onchange="fn(this)" did.
+  document
+    .getElementById("settings-avatar-input")
+    ?.addEventListener("change", function () {
+      uploadRegistrarAvatar(this);
+    });
+  document
+    .getElementById("settings-signature-input")
+    ?.addEventListener("change", function () {
+      uploadRegistrarSignature(this);
     });
 });
 
@@ -410,25 +612,25 @@ document.addEventListener('DOMContentLoaded', () => {
 // to be HTML-attribute-safe first, or a name containing a quote could break
 // out of the attribute or wire up the wrong handler.
 function escAttr(value) {
-    return String(value)
-        .replace(/&/g, '&amp;')
-        .replace(/"/g, '&quot;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 // e.g. `<button ${dataArg('viewStudentHistory', s.student_id)}>` ->
 // data-action="viewStudentHistory" data-arg="NHS2401001"
 function dataArg(action, value) {
-    return `data-action="${escAttr(action)}" data-arg="${escAttr(value)}"`;
+  return `data-action="${escAttr(action)}" data-arg="${escAttr(value)}"`;
 }
 // e.g. `<button ${dataArgs('runPlacement', [b.class_level, b.stream])}>` ->
 // data-action="runPlacement" data-args="[10,&quot;Natural&quot;]"
 function dataArgs(action, values) {
-    return `data-action="${escAttr(action)}" data-args="${escAttr(JSON.stringify(values))}"`;
+  return `data-action="${escAttr(action)}" data-args="${escAttr(JSON.stringify(values))}"`;
 }
 // e.g. `<input type="checkbox" ${dataOnchangeChecked('toggleSectionActive', s.id)} />`
 function dataOnchangeChecked(fnName, arg) {
-    return `data-onchange-checked="${escAttr(fnName)}" data-arg="${escAttr(arg)}"`;
+  return `data-onchange-checked="${escAttr(fnName)}" data-arg="${escAttr(arg)}"`;
 }
 
 // --- 1b. Toasts & Confirm dialogs ---
@@ -436,87 +638,99 @@ function dataOnchangeChecked(fnName, arg) {
 // Promise-based confirm modal, so every call site just swaps the function
 // name (alert -> showAlert) or awaits the result (confirm -> showConfirm).
 function ensureToastContainer() {
-    let container = document.getElementById('toast-container');
-    if (!container) {
-        container = document.createElement('div');
-        container.id = 'toast-container';
-        container.className = 'toast-container';
-        container.setAttribute('aria-live', 'polite');
-        container.setAttribute('aria-atomic', 'true');
-        document.body.appendChild(container);
-    }
-    return container;
+  let container = document.getElementById("toast-container");
+  if (!container) {
+    container = document.createElement("div");
+    container.id = "toast-container";
+    container.className = "toast-container";
+    container.setAttribute("aria-live", "polite");
+    container.setAttribute("aria-atomic", "true");
+    document.body.appendChild(container);
+  }
+  return container;
 }
 
 function showAlert(message, type) {
-    if (!message) return;
-    if (!type) {
-        const lower = String(message).toLowerCase();
-        type = /error|fail|not found|required|invalid|denied|could not|connection|choose|enter a|select a/.test(lower)
-            ? 'error' : 'success';
-    }
-    const container = ensureToastContainer();
-    const toast = document.createElement('div');
-    toast.className = `toast toast-${type}`;
-    toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+  if (!message) return;
+  if (!type) {
+    const lower = String(message).toLowerCase();
+    type =
+      /error|fail|not found|required|invalid|denied|could not|connection|choose|enter a|select a/.test(
+        lower,
+      )
+        ? "error"
+        : "success";
+  }
+  const container = ensureToastContainer();
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${type}`;
+  toast.setAttribute("role", type === "error" ? "alert" : "status");
 
-    const icon = document.createElement('i');
-    icon.className = 'toast-icon';
-    icon.setAttribute('aria-hidden', 'true');
-    icon.setAttribute('data-lucide', type === 'error' ? 'alert-triangle' : 'check-circle-2');
+  const icon = document.createElement("i");
+  icon.className = "toast-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.setAttribute(
+    "data-lucide",
+    type === "error" ? "alert-triangle" : "check-circle-2",
+  );
 
-    const text = document.createElement('span');
-    text.className = 'toast-message';
-    text.textContent = message;
+  const text = document.createElement("span");
+  text.className = "toast-message";
+  text.textContent = message;
 
-    const closeBtn = document.createElement('button');
-    closeBtn.type = 'button';
-    closeBtn.className = 'toast-close';
-    closeBtn.setAttribute('aria-label', t('reg_toast_dismiss'));
-    closeBtn.textContent = '\u00d7';
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.className = "toast-close";
+  closeBtn.setAttribute("aria-label", t("reg_toast_dismiss"));
+  closeBtn.textContent = "\u00d7";
 
-    const remove = () => {
-        toast.classList.add('toast-hide');
-        setTimeout(() => toast.remove(), 200);
-    };
-    closeBtn.addEventListener('click', remove);
+  const remove = () => {
+    toast.classList.add("toast-hide");
+    setTimeout(() => toast.remove(), 200);
+  };
+  closeBtn.addEventListener("click", remove);
 
-    toast.appendChild(icon);
-    toast.appendChild(text);
-    toast.appendChild(closeBtn);
-    container.appendChild(toast);
-    if (window.lucide) lucide.createIcons({ root: toast });
-    setTimeout(remove, 6000);
+  toast.appendChild(icon);
+  toast.appendChild(text);
+  toast.appendChild(closeBtn);
+  container.appendChild(toast);
+  if (window.lucide) lucide.createIcons({ root: toast });
+  setTimeout(remove, 6000);
 }
 
 // Promise-based replacement for confirm() — resolves true/false, so call
 // sites just add `await` in front (they're all inside async functions).
 function showConfirm(message) {
-    return new Promise((resolve) => {
-        const modal = document.getElementById('confirm-modal');
-        if (!modal) { resolve(window.confirm(message)); return; }
-        document.getElementById('confirm-modal-message').textContent = message;
-        modal.style.display = 'flex';
+  return new Promise((resolve) => {
+    const modal = document.getElementById("confirm-modal");
+    if (!modal) {
+      resolve(window.confirm(message));
+      return;
+    }
+    document.getElementById("confirm-modal-message").textContent = message;
+    modal.style.display = "flex";
 
-        const okBtn = document.getElementById('confirm-modal-ok');
-        const cancelBtn = document.getElementById('confirm-modal-cancel');
+    const okBtn = document.getElementById("confirm-modal-ok");
+    const cancelBtn = document.getElementById("confirm-modal-cancel");
 
-        const cleanup = (result) => {
-            modal.style.display = 'none';
-            okBtn.removeEventListener('click', onOk);
-            cancelBtn.removeEventListener('click', onCancel);
-            document.removeEventListener('keydown', onKeydown);
-            resolve(result);
-        };
-        const onOk = () => cleanup(true);
-        const onCancel = () => cleanup(false);
-        const onKeydown = (e) => { if (e.key === 'Escape') cleanup(false); };
+    const cleanup = (result) => {
+      modal.style.display = "none";
+      okBtn.removeEventListener("click", onOk);
+      cancelBtn.removeEventListener("click", onCancel);
+      document.removeEventListener("keydown", onKeydown);
+      resolve(result);
+    };
+    const onOk = () => cleanup(true);
+    const onCancel = () => cleanup(false);
+    const onKeydown = (e) => {
+      if (e.key === "Escape") cleanup(false);
+    };
 
-        okBtn.addEventListener('click', onOk);
-        cancelBtn.addEventListener('click', onCancel);
-        document.addEventListener('keydown', onKeydown);
-        cancelBtn.focus();
-    });
+    okBtn.addEventListener("click", onOk);
+    cancelBtn.addEventListener("click", onCancel);
+    document.addEventListener("keydown", onKeydown);
+    cancelBtn.focus();
+  });
 }
 
 // Promise-based password-confirmation modal — used before any action
@@ -526,311 +740,777 @@ function showConfirm(message) {
 // can be set (from a failed attempt) to show inline under the field the
 // next time this same prompt is reused for a retry.
 function showPasswordPrompt(message) {
-    return new Promise((resolve) => {
-        const modal = document.getElementById('password-confirm-modal');
-        if (!modal) { resolve(window.prompt(message)); return; }
-        document.getElementById('password-confirm-modal-message').textContent = message;
-        const input = document.getElementById('password-confirm-modal-input');
-        const errorEl = document.getElementById('password-confirm-modal-error');
-        input.value = '';
-        errorEl.style.display = 'none';
-        errorEl.textContent = '';
-        modal.style.display = 'flex';
+  return new Promise((resolve) => {
+    const modal = document.getElementById("password-confirm-modal");
+    if (!modal) {
+      resolve(window.prompt(message));
+      return;
+    }
+    document.getElementById("password-confirm-modal-message").textContent =
+      message;
+    const input = document.getElementById("password-confirm-modal-input");
+    const errorEl = document.getElementById("password-confirm-modal-error");
+    input.value = "";
+    errorEl.style.display = "none";
+    errorEl.textContent = "";
+    modal.style.display = "flex";
 
-        const okBtn = document.getElementById('password-confirm-modal-ok');
-        const cancelBtn = document.getElementById('password-confirm-modal-cancel');
+    const okBtn = document.getElementById("password-confirm-modal-ok");
+    const cancelBtn = document.getElementById("password-confirm-modal-cancel");
 
-        const cleanup = (result) => {
-            modal.style.display = 'none';
-            okBtn.removeEventListener('click', onOk);
-            cancelBtn.removeEventListener('click', onCancel);
-            document.removeEventListener('keydown', onKeydown);
-            resolve(result);
-        };
-        const onOk = () => cleanup(input.value);
-        const onCancel = () => cleanup(null);
-        const onKeydown = (e) => {
-            if (e.key === 'Escape') cleanup(null);
-            if (e.key === 'Enter') onOk();
-        };
+    const cleanup = (result) => {
+      modal.style.display = "none";
+      okBtn.removeEventListener("click", onOk);
+      cancelBtn.removeEventListener("click", onCancel);
+      document.removeEventListener("keydown", onKeydown);
+      resolve(result);
+    };
+    const onOk = () => cleanup(input.value);
+    const onCancel = () => cleanup(null);
+    const onKeydown = (e) => {
+      if (e.key === "Escape") cleanup(null);
+      if (e.key === "Enter") onOk();
+    };
 
-        okBtn.addEventListener('click', onOk);
-        cancelBtn.addEventListener('click', onCancel);
-        document.addEventListener('keydown', onKeydown);
-        input.focus();
-    });
+    okBtn.addEventListener("click", onOk);
+    cancelBtn.addEventListener("click", onCancel);
+    document.addEventListener("keydown", onKeydown);
+    input.focus();
+  });
 }
 
-// --- 2. Dynamic Stream Logic (Grade 9-12) ---
+// --- 2. Dynamic Stream Logic (grade-tier aware, see streamOptionsHtmlForGrade above) ---
 function updateStreamOptions() {
-    const grade = document.getElementById('reg_grade').value;
-    const streamSelect = document.getElementById('reg_stream');
-    
-    streamSelect.innerHTML = ''; 
-    
-    if (grade == '9' || grade == '10') {
-        streamSelect.innerHTML = '<option value="General">General</option>';
-    } else if (grade == '11' || grade == '12') {
-        streamSelect.innerHTML = `
-            <option value="Natural Science">Natural Science</option>
-            <option value="Social Science">Social Science</option>
-        `;
-    } else {
-        streamSelect.innerHTML = '<option value="">Select Stream</option>';
-    }
+  const grade = document.getElementById("reg_grade").value;
+  document.getElementById("reg_stream").innerHTML =
+    streamOptionsHtmlForGrade(grade);
+
+  // Grade 7/9 entrants need the admission-number field so their
+  // previous school's EASE (Grade 6/8) result can be checked — see
+  // the matching gate in POST /api/register.
+  const admissionWrap = document.getElementById("reg_ease_admission_wrap");
+  const admissionInput = document.getElementById("reg_ease_admission");
+  const needsAdmission = grade === "7" || grade === "9";
+  if (admissionWrap) admissionWrap.style.display = needsAdmission ? "flex" : "none";
+  if (admissionInput) {
+    admissionInput.required = needsAdmission;
+    if (!needsAdmission) admissionInput.value = "";
+  }
 }
 
 // --- 3. Database Interactions ---
 
 async function submitRegistration() {
-    const btn = document.querySelector('button[data-action="submitRegistration"]');
-    const originalText = btn.innerText;
-    
-    const data = {
-        fayda_number: document.getElementById('reg_fayda').value,
-        phone_number: document.getElementById('reg_phone').value,
-        first_name: document.getElementById('reg_first').value,
-        middle_name: document.getElementById('reg_middle').value,
-        last_name: document.getElementById('reg_last').value,
-        class_level: document.getElementById('reg_grade').value,
-        sex: document.getElementById('reg_sex').value,
-        stream: document.getElementById('reg_stream').value
-    };
+  const btn = document.querySelector(
+    'button[data-action="submitRegistration"]',
+  );
+  const originalText = btn.innerText;
 
-    btn.innerText = "Registering...";
-    btn.disabled = true;
+  const emisEl = document.getElementById("reg_emis");
+  if (emisEl && emisEl.dataset.emisConflict === "true") {
+    return showAlert("Resolve the EMIS ID issue above before registering.");
+  }
 
-    try {
-        const res = await fetch('http://localhost:3001/api/register', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data)
-        });
-        
-        const result = await res.json();
+  const guardianFaydaEl = document.getElementById("reg_guardian_fayda");
+  if (guardianFaydaEl && guardianFaydaEl.dataset.guardianConflict === "true") {
+    return showAlert(
+      "Resolve the guardian Fayda number issue above before registering.",
+    );
+  }
+  const guardianId = guardianFaydaEl
+    ? guardianFaydaEl.dataset.guardianId
+    : null;
+  const guardianFayda = guardianFaydaEl ? guardianFaydaEl.value.trim() : "";
+  const guardianName = document
+    .getElementById("reg_guardian_name")
+    .value.trim();
+  const guardianPhone = document
+    .getElementById("reg_guardian_phone")
+    .value.trim();
+  if (!guardianId && (!guardianName || !guardianPhone || !guardianFayda)) {
+    return showAlert(
+      "Guardian full name, phone number, and Fayda number are required.",
+    );
+  }
+  const guardian = guardianId
+    ? { id: guardianId }
+    : {
+        full_name: guardianName,
+        phone_number: guardianPhone,
+        fayda_number: guardianFayda,
+      };
 
-        if (res.ok) {
-            const successMsg = document.querySelector('#success-modal p');
-            successMsg.innerText = `Student Registered Successfully! ID: ${result.student_id} | Section: Awaiting Placement | PC: ${result.assigned_pc}`;
-            showSuccess('registration');
-            document.getElementById('registration-form').reset();
-            document.getElementById('reg_stream').innerHTML = '<option value="">Select Stream</option>';
-        } else {
-            showAlert("Registration Failed: " + (result.error || "Unknown error"));
-        }
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
-    } finally {
-        btn.innerText = originalText;
-        btn.disabled = false;
+  const admissionEl = document.getElementById("reg_ease_admission");
+  if (
+    admissionEl &&
+    admissionEl.style.display !== "none" &&
+    document.getElementById("reg_ease_admission_wrap")?.style.display !==
+      "none" &&
+    !admissionEl.value.trim()
+  ) {
+    return showAlert(
+      "Enter the admission number to verify the national exam result before registering into this grade.",
+    );
+  }
+
+  const data = {
+    fayda_number: document.getElementById("reg_fayda").value,
+    phone_number: document.getElementById("reg_phone").value,
+    first_name: document.getElementById("reg_first").value,
+    middle_name: document.getElementById("reg_middle").value,
+    last_name: document.getElementById("reg_last").value,
+    class_level: document.getElementById("reg_grade").value,
+    sex: document.getElementById("reg_sex").value,
+    stream: document.getElementById("reg_stream").value,
+    emis_id: emisEl ? emisEl.value.trim() || null : null,
+    admission_number: admissionEl ? admissionEl.value.trim() || null : null,
+    guardian,
+  };
+
+  btn.innerText = "Registering...";
+  btn.disabled = true;
+
+  try {
+    const res = await fetch("http://localhost:3001/api/register", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+
+    const result = await res.json();
+
+    if (res.ok) {
+      const successMsg = document.querySelector("#success-modal p");
+      successMsg.innerText =
+        `Student Registered Successfully! ID: ${result.student_id} | Section: Awaiting Placement | PC: ${result.assigned_pc}` +
+        (result.guardian_parent_code
+          ? ` | Guardian Login ID: ${result.guardian_parent_code}`
+          : "");
+      showSuccess("registration");
+      document.getElementById("registration-form").reset();
+      document.getElementById("reg_stream").innerHTML =
+        '<option value="">Select Stream</option>';
+      document.getElementById("reg_ease_admission_wrap").style.display = "none";
+      clearEmisField("reg");
+      clearGuardianMatch("reg");
+    } else {
+      showAlert("Registration Failed: " + (result.error || "Unknown error"));
     }
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  } finally {
+    btn.innerText = originalText;
+    btn.disabled = false;
+  }
+}
+
+// --- EMIS ID lookup (shared by New Entrant Registration's reg_emis field
+// and Transfer Hub's external/manual ext_emis field) ---
+//
+// Optional field. On blur we check it against the Ministry's EMIS registry
+// (uploaded by the Super Admin) via GET /api/emis/lookup/:emis_id:
+//   - match found, unlinked  -> ask the Registrar to confirm it's the same
+//     student before we treat it as linked.
+//   - not in the registry    -> allowed through as "unverified" (common for
+//     brand-new entrants the Ministry hasn't recorded yet).
+//   - already linked to someone else on this platform -> hard block.
+// el.dataset.emisConflict gates the submit handlers below.
+async function lookupEmisId(prefix, el) {
+  const statusDiv = document.getElementById(`${prefix}_emis_status`);
+  const value = el.value.trim().toUpperCase();
+  el.value = value;
+  delete el.dataset.emisConfirmed;
+
+  if (!value) {
+    el.dataset.emisConflict = "false";
+    if (statusDiv) statusDiv.innerHTML = "";
+    return;
+  }
+
+  if (statusDiv)
+    statusDiv.innerHTML = `<span class="emis-status-checking">Checking EMIS ID...</span>`;
+
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/emis/lookup/${encodeURIComponent(value)}`,
+      {
+        credentials: "include",
+      },
+    );
+    const result = await res.json().catch(() => ({}));
+
+    if (res.status === 200 && result.match) {
+      el.dataset.emisConflict = "false";
+      const m = result.match;
+      if (statusDiv)
+        statusDiv.innerHTML = `
+                <div class="emis-status emis-status-match">
+                    Matches <strong>${escapeHtml(m.student_name || "(name on file)")}</strong>${m.grade ? ` — Grade ${escapeHtml(String(m.grade))}` : ""} in the EMIS registry. Is this the same student?
+                    <div class="emis-status-actions">
+                        <button type="button" class="confirm-btn confirm-btn-small" ${dataArgs("confirmEmisMatch", [prefix])}>Yes, same student</button>
+                        <button type="button" class="confirm-btn confirm-btn-secondary confirm-btn-small" ${dataArgs("clearEmisField", [prefix])}>No, clear it</button>
+                    </div>
+                </div>`;
+    } else if (res.status === 404) {
+      el.dataset.emisConflict = "false";
+      if (statusDiv)
+        statusDiv.innerHTML = `<div class="emis-status emis-status-unverified">Not found in the EMIS registry yet — will be saved as unverified.</div>`;
+    } else if (res.status === 409) {
+      el.dataset.emisConflict = "true";
+      const ex = result.existing_student;
+      if (statusDiv)
+        statusDiv.innerHTML = `<div class="emis-status emis-status-error">Already linked to ${ex ? escapeHtml(ex.name) + " (" + escapeHtml(ex.student_id) + ")" : "another student"}. Double-check the ID before continuing.</div>`;
+    } else {
+      el.dataset.emisConflict = "true";
+      if (statusDiv)
+        statusDiv.innerHTML = `<div class="emis-status emis-status-error">${escapeHtml(result.error || "Invalid EMIS ID.")}</div>`;
+    }
+  } catch (err) {
+    console.error("lookupEmisId error:", err);
+    // Fail open — verification is best-effort, not the source of truth.
+    // The Registrar can still save the ID; Super Admin's reconciliation
+    // job will catch it up once the registry is reachable again.
+    el.dataset.emisConflict = "false";
+    if (statusDiv)
+      statusDiv.innerHTML = `<div class="emis-status emis-status-unverified">Couldn't verify right now — it'll be saved as unverified.</div>`;
+  }
+}
+
+function confirmEmisMatch(prefix) {
+  const el = document.getElementById(`${prefix}_emis`);
+  const statusDiv = document.getElementById(`${prefix}_emis_status`);
+  if (!el) return;
+  el.dataset.emisConfirmed = "true";
+  if (statusDiv)
+    statusDiv.innerHTML = `<div class="emis-status emis-status-match">Confirmed — this EMIS ID will be linked on save.</div>`;
+}
+
+function clearEmisField(prefix) {
+  const el = document.getElementById(`${prefix}_emis`);
+  const statusDiv = document.getElementById(`${prefix}_emis_status`);
+  if (!el) return;
+  el.value = "";
+  delete el.dataset.emisConflict;
+  delete el.dataset.emisConfirmed;
+  if (statusDiv) statusDiv.innerHTML = "";
+  el.focus();
+}
+
+// Small helper — the EMIS status box interpolates a name/ID we don't fully
+// control the source of (Ministry registry data, another student's name),
+// so escape it same as everywhere else we build HTML from server data.
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = String(str);
+  return div.innerHTML;
+}
+
+// --- Guardian/Parent lookup (New Entrant Registration) ---
+//
+// Required field. On blur we check the entered Fayda number against
+// existing guardians via GET /api/guardians/lookup/:fayda_number:
+//   - match found -> ask the Registrar to confirm before linking this
+//     child to that existing guardian (this is the GOOD/expected outcome
+//     for siblings — one guardian, multiple children). Locks the name/
+//     phone fields to the existing record so they can't be edited by
+//     accident.
+//   - no match -> treated as a brand-new guardian; name/phone stay
+//     editable and required.
+// reg_guardian_fayda.dataset.guardianId gates whether submit links to an
+// existing guardian or creates one; .dataset.guardianConflict gates
+// whether submit is blocked at all (bad format only — a match is never a
+// block here).
+async function lookupGuardianFayda(prefix, el) {
+  const statusDiv = document.getElementById(`${prefix}_guardian_status`);
+  const nameEl = document.getElementById(`${prefix}_guardian_name`);
+  const phoneEl = document.getElementById(`${prefix}_guardian_phone`);
+  const value = el.value.trim();
+  el.value = value;
+  delete el.dataset.guardianId;
+
+  if (!value) {
+    el.dataset.guardianConflict = "false";
+    if (statusDiv) statusDiv.innerHTML = "";
+    return;
+  }
+
+  if (statusDiv)
+    statusDiv.innerHTML = `<span class="emis-status-checking">Checking Fayda number...</span>`;
+
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/guardians/lookup/${encodeURIComponent(value)}`,
+      {
+        credentials: "include",
+      },
+    );
+    const result = await res.json().catch(() => ({}));
+
+    if (res.status === 200 && result.guardian) {
+      el.dataset.guardianConflict = "false";
+      const g = result.guardian;
+      if (statusDiv)
+        statusDiv.innerHTML = `
+                <div class="emis-status emis-status-match">
+                    Existing guardian found: <strong>${escapeHtml(g.full_name)}</strong> (${escapeHtml(g.phone_number)}). Link this child to them?
+                    <div class="emis-status-actions">
+                        <button type="button" class="confirm-btn confirm-btn-small" ${dataArgs("confirmGuardianMatch", [prefix, g.id, g.full_name, g.phone_number])}>Yes, same guardian</button>
+                        <button type="button" class="confirm-btn confirm-btn-secondary confirm-btn-small" ${dataArgs("clearGuardianMatch", [prefix])}>No, different person</button>
+                    </div>
+                </div>`;
+    } else if (res.status === 404) {
+      el.dataset.guardianConflict = "false";
+      if (nameEl) {
+        nameEl.disabled = false;
+      }
+      if (phoneEl) {
+        phoneEl.disabled = false;
+      }
+      if (statusDiv)
+        statusDiv.innerHTML = `<div class="emis-status emis-status-unverified">No guardian on file with this Fayda number — will be registered as a new guardian.</div>`;
+    } else {
+      el.dataset.guardianConflict = "true";
+      if (statusDiv)
+        statusDiv.innerHTML = `<div class="emis-status emis-status-error">${escapeHtml(result.error || "Invalid Fayda number.")}</div>`;
+    }
+  } catch (err) {
+    console.error("lookupGuardianFayda error:", err);
+    el.dataset.guardianConflict = "false";
+    if (statusDiv)
+      statusDiv.innerHTML = `<div class="emis-status emis-status-unverified">Couldn't verify right now — will be registered as a new guardian.</div>`;
+  }
+}
+
+function confirmGuardianMatch(prefix, guardianId, fullName, phoneNumber) {
+  const faydaEl = document.getElementById(`${prefix}_guardian_fayda`);
+  const nameEl = document.getElementById(`${prefix}_guardian_name`);
+  const phoneEl = document.getElementById(`${prefix}_guardian_phone`);
+  const statusDiv = document.getElementById(`${prefix}_guardian_status`);
+  if (!faydaEl) return;
+  faydaEl.dataset.guardianId = guardianId;
+  if (nameEl) {
+    nameEl.value = fullName;
+    nameEl.disabled = true;
+  }
+  if (phoneEl) {
+    phoneEl.value = phoneNumber;
+    phoneEl.disabled = true;
+  }
+  if (statusDiv)
+    statusDiv.innerHTML = `<div class="emis-status emis-status-match">Confirmed — this child will be linked to ${escapeHtml(fullName)}.</div>`;
+}
+
+function clearGuardianMatch(prefix) {
+  const faydaEl = document.getElementById(`${prefix}_guardian_fayda`);
+  const nameEl = document.getElementById(`${prefix}_guardian_name`);
+  const phoneEl = document.getElementById(`${prefix}_guardian_phone`);
+  const statusDiv = document.getElementById(`${prefix}_guardian_status`);
+  if (faydaEl) {
+    faydaEl.value = "";
+    delete faydaEl.dataset.guardianId;
+    delete faydaEl.dataset.guardianConflict;
+    faydaEl.focus();
+  }
+  if (nameEl) {
+    nameEl.value = "";
+    nameEl.disabled = false;
+  }
+  if (phoneEl) {
+    phoneEl.value = "";
+    phoneEl.disabled = false;
+  }
+  if (statusDiv) statusDiv.innerHTML = "";
 }
 
 async function fetchStudent() {
-    const id = document.getElementById('search-id').value;
-    if (!id) return showAlert("Please enter an ID!");
+  const id = document.getElementById("search-id").value;
+  if (!id) return showAlert("Please enter an ID!");
 
-    const res = await fetch(`http://localhost:3001/api/student/${id}`, { credentials: 'include' });
+  const res = await fetch(`http://localhost:3001/api/student/${id}`, {
+    credentials: "include",
+  });
+  if (res.ok) {
+    const data = await res.json();
+    document.getElementById("upd_id").value = data.student_id;
+    document.getElementById("upd_first").value = data.first_name;
+    document.getElementById("upd_middle").value = data.middle_name;
+    document.getElementById("upd_last").value = data.last_name;
+    document.getElementById("upd_class").value = data.class_level;
+    document.getElementById("upd_section").value = data.section;
+    document.getElementById("upd_stream").value = data.stream;
+    document.getElementById("upd_phone").value = data.phone_number;
+    document.getElementById("upd_fayda").value = data.fayda_number;
+    document.getElementById("upd_sex").value = data.sex;
+    setUpdateFormLocked(isTerminalStudentStatus(data.status), data.status);
+    renderUpdateGuardianSection(data.guardians || [], data.status);
+  } else {
+    showAlert("Student not found!");
+    document.getElementById("upd-guardian-section").style.display = "none";
+    setUpdateFormLocked(false);
+  }
+}
+
+// Shared with server-side isTerminalStudentStatus (server.js) — a
+// Graduated or any Transferred-* student is "gone" until re-admitted.
+function isTerminalStudentStatus(status) {
+  return (
+    status === "Graduated" || String(status || "").startsWith("Transferred")
+  );
+}
+
+// Locks/unlocks the whole Information Update form: Graduated/Transferred
+// students are frozen — no field edits, no new guardian link — until
+// they're re-admitted via Promotion. The server enforces this too (see
+// PUT /api/update/:id and POST /api/student/:id/guardian); this just
+// keeps the Registrar from filling out a form that's guaranteed to be
+// rejected.
+function setUpdateFormLocked(locked, status) {
+  const banner = document.getElementById("upd-locked-banner");
+  const saveBtn = document.querySelector(
+    '#update-form button[data-action="submitUpdate"]',
+  );
+  [
+    "upd_first",
+    "upd_middle",
+    "upd_last",
+    "upd_class",
+    "upd_section",
+    "upd_stream",
+    "upd_phone",
+    "upd_fayda",
+    "upd_sex",
+  ].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = locked;
+  });
+  if (saveBtn) saveBtn.disabled = locked;
+  if (banner) {
+    banner.style.display = locked ? "block" : "none";
+    banner.textContent = locked
+      ? t("reg_upd_locked_banner", { status: status || "" })
+      : "";
+  }
+}
+
+// Toggles the Information Update guardian panel between "already has a
+// guardian" (read-only list), "no guardian yet" (lookup-and-link form),
+// and "locked" (Graduated/Transferred — no editing either way) depending
+// on what GET /api/student/:id came back with. Called after every
+// fetchStudent() and again after a successful link, so the panel can
+// never show a stale state.
+function renderUpdateGuardianSection(guardians, status) {
+  const section = document.getElementById("upd-guardian-section");
+  const existingBox = document.getElementById("upd-guardian-existing");
+  const addForm = document.getElementById("upd-guardian-add-form");
+  if (!section || !existingBox || !addForm) return;
+
+  section.style.display = "block";
+  const locked = isTerminalStudentStatus(status);
+
+  if (guardians.length > 0) {
+    existingBox.style.display = "block";
+    addForm.style.display = "none";
+    existingBox.innerHTML = guardians
+      .map(
+        (g) => `
+            <div class="emis-status emis-status-match">
+                <strong>${escAttr(g.full_name)}</strong><br>
+                ${escAttr(g.phone_number || "—")} &nbsp;|&nbsp; ${escAttr(g.fayda_number || "—")}
+            </div>
+        `,
+      )
+      .join("");
+  } else if (locked) {
+    // No guardian, but the student is locked — show the note instead
+    // of a form that would only fail server-side.
+    existingBox.style.display = "block";
+    addForm.style.display = "none";
+    existingBox.innerHTML = `<div class="emis-status emis-status-error">${escAttr(t("reg_upd_guardian_locked_note", { status: status || "" }))}</div>`;
+  } else {
+    existingBox.style.display = "none";
+    existingBox.innerHTML = "";
+    addForm.style.display = "block";
+    clearGuardianMatch("upd");
+    document.getElementById("upd_guardian_name").value = "";
+    document.getElementById("upd_guardian_phone").value = "";
+  }
+}
+
+async function submitAddGuardian() {
+  const id = document.getElementById("upd_id").value;
+  if (!id) return showAlert("Search for a student first!");
+
+  const guardianFaydaEl = document.getElementById("upd_guardian_fayda");
+  if (guardianFaydaEl && guardianFaydaEl.dataset.guardianConflict === "true") {
+    return showAlert(
+      "Resolve the guardian Fayda number issue above before linking.",
+    );
+  }
+  const guardianId = guardianFaydaEl
+    ? guardianFaydaEl.dataset.guardianId
+    : null;
+  const guardianFayda = guardianFaydaEl ? guardianFaydaEl.value.trim() : "";
+  const guardianName = document
+    .getElementById("upd_guardian_name")
+    .value.trim();
+  const guardianPhone = document
+    .getElementById("upd_guardian_phone")
+    .value.trim();
+  if (!guardianId && (!guardianName || !guardianPhone || !guardianFayda)) {
+    return showAlert(
+      "Guardian full name, phone number, and Fayda number are required.",
+    );
+  }
+  const guardian = guardianId
+    ? { id: guardianId }
+    : {
+        full_name: guardianName,
+        phone_number: guardianPhone,
+        fayda_number: guardianFayda,
+      };
+
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/student/${id}/guardian`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ guardian }),
+      },
+    );
+    const result = await res.json().catch(() => ({}));
     if (res.ok) {
-        const data = await res.json();
-        document.getElementById('upd_id').value = data.student_id;
-        document.getElementById('upd_first').value = data.first_name;
-        document.getElementById('upd_middle').value = data.middle_name;
-        document.getElementById('upd_last').value = data.last_name;
-        document.getElementById('upd_class').value = data.class_level;
-        document.getElementById('upd_section').value = data.section;
-        document.getElementById('upd_stream').value = data.stream;
-        document.getElementById('upd_phone').value = data.phone_number;
-        document.getElementById('upd_fayda').value = data.fayda_number;
-        document.getElementById('upd_sex').value = data.sex;
+      showAlert(
+        result.guardian_parent_code
+          ? `Guardian linked to student. New guardian login ID: ${result.guardian_parent_code}`
+          : "Guardian linked to student.",
+        "success",
+      );
+      await fetchStudent();
+      loadStudentRegistry();
+      loadGuardianRegistry();
     } else {
-        showAlert("Student not found!");
+      showAlert(
+        "Could not link guardian: " + (result.error || "Unknown error"),
+      );
     }
+  } catch (err) {
+    console.error(err);
+    showAlert("Could not connect to the server.");
+  }
 }
 
 async function submitUpdate() {
-    const id = document.getElementById('upd_id').value;
-    if (!id) return showAlert("Search for a student first!");
-    
-    const data = {
-        first_name: document.getElementById('upd_first').value,
-        middle_name: document.getElementById('upd_middle').value,
-        last_name: document.getElementById('upd_last').value,
-        phone_number: document.getElementById('upd_phone').value,
-        fayda_number: document.getElementById('upd_fayda').value,
-        sex: document.getElementById('upd_sex').value,
-        class_level: document.getElementById('upd_class').value, 
-        stream: document.getElementById('upd_stream').value
-    };
+  const id = document.getElementById("upd_id").value;
+  if (!id) return showAlert("Search for a student first!");
 
-    try {
-        const res = await fetch(`http://localhost:3001/api/update/${id}`, {
-            method: 'PUT',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data)
-        });
+  const data = {
+    first_name: document.getElementById("upd_first").value,
+    middle_name: document.getElementById("upd_middle").value,
+    last_name: document.getElementById("upd_last").value,
+    phone_number: document.getElementById("upd_phone").value,
+    fayda_number: document.getElementById("upd_fayda").value,
+    sex: document.getElementById("upd_sex").value,
+    class_level: document.getElementById("upd_class").value,
+    stream: document.getElementById("upd_stream").value,
+  };
 
-        if (res.ok) {
-            const result = await res.json().catch(() => ({}));
-            const successMsg = document.querySelector('#success-modal p');
-            successMsg.innerText = "Student record updated successfully.";
-            showSuccess('update');
-            // Grade/stream changed here means the server reset this
-            // student's section — flag it so the Registrar knows to run
-            // the Placement Wizard for them, instead of finding out later
-            // when a section-scoped bulk action mysteriously skips them.
-            if (result.section_cleared) {
-                showAlert("Grade/stream changed — this student now awaits placement into a section via the Placement Wizard.", "success");
-            }
-        } else {
-            const raw = await res.text().catch(() => "Unknown error");
-            let message = raw;
-            try { message = JSON.parse(raw).error || raw; } catch (_) { /* plain-text error body */ }
-            showAlert("Update failed: " + message);
-        }
-    } catch (err) {
-        console.error("Fetch Error:", err);
-        showAlert("Could not connect to the server.");
+  try {
+    const res = await fetch(`http://localhost:3001/api/update/${id}`, {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+
+    if (res.ok) {
+      const result = await res.json().catch(() => ({}));
+      const successMsg = document.querySelector("#success-modal p");
+      successMsg.innerText = "Student record updated successfully.";
+      showSuccess("update");
+      // Grade/stream changed here means the server reset this
+      // student's section — flag it so the Registrar knows to run
+      // the Placement Wizard for them, instead of finding out later
+      // when a section-scoped bulk action mysteriously skips them.
+      if (result.section_cleared) {
+        showAlert(
+          "Grade/stream changed — this student now awaits placement into a section via the Placement Wizard.",
+          "success",
+        );
+      }
+    } else {
+      const raw = await res.text().catch(() => "Unknown error");
+      let message = raw;
+      try {
+        message = JSON.parse(raw).error || raw;
+      } catch (_) {
+        /* plain-text error body */
+      }
+      showAlert("Update failed: " + message);
     }
+  } catch (err) {
+    console.error("Fetch Error:", err);
+    showAlert("Could not connect to the server.");
+  }
 }
 
 async function fetchForPromotion() {
-    const id = document.getElementById('promo-id').value.trim();
-    const btn = document.querySelector('button[data-action="fetchForPromotion"]');
-    if (!id) return showAlert("Please enter a Student ID");
+  const id = document.getElementById("promo-id").value.trim();
+  const btn = document.querySelector('button[data-action="fetchForPromotion"]');
+  if (!id) return showAlert("Please enter a Student ID");
 
-    btn.innerText = "Searching...";
-    document.getElementById('promo-form').style.display = 'none';
+  btn.innerText = "Searching...";
+  document.getElementById("promo-form").style.display = "none";
 
-    try {
-        const res = await fetch(`http://localhost:3001/api/student/${id}`, { credentials: 'include' });
-        if (!res.ok) throw new Error("Student not found.");
+  try {
+    const res = await fetch(`http://localhost:3001/api/student/${id}`, {
+      credentials: "include",
+    });
+    if (!res.ok) throw new Error("Student not found.");
 
-        const data = await res.json();
-        const currentGrade = parseInt(data.class_level);
+    const data = await res.json();
+    const currentGrade = parseInt(data.class_level);
 
-        if (isNaN(currentGrade)) throw new Error("Invalid grade level in database.");
+    if (isNaN(currentGrade))
+      throw new Error("Invalid grade level in database.");
 
-        const eligRes = await fetch(`http://localhost:3001/api/registrar/promotion-eligibility/${id}`, { credentials: 'include' });
-        const eligibility = eligRes.ok ? await eligRes.json() : null;
-        window.currentEligibility = eligibility;
+    const eligRes = await fetch(
+      `http://localhost:3001/api/registrar/promotion-eligibility/${id}`,
+      { credentials: "include" },
+    );
+    const eligibility = eligRes.ok ? await eligRes.json() : null;
+    window.currentEligibility = eligibility;
 
-        document.getElementById('promo-form').style.display = 'block';
-        document.getElementById('student-name-display').innerText = `${data.first_name} ${data.last_name}`;
-        document.getElementById('current-grade').innerText = currentGrade;
+    document.getElementById("promo-form").style.display = "block";
+    document.getElementById("student-name-display").innerText =
+      `${data.first_name} ${data.last_name}`;
+    document.getElementById("current-grade").innerText = currentGrade;
 
-        const eligBox = document.getElementById('promo-eligibility');
-        if (eligibility) {
-            const color = eligibility.category === 'Eligible for Promotion' ? '#27ae60'
-                : eligibility.category === 'Detained/Retained' ? '#e74c3c' : '#7f8c8d';
-            eligBox.innerHTML = `
-                <p><strong>Year Average:</strong> ${eligibility.year_average ?? 'N/A'}
-                   &nbsp;&nbsp;<strong>Cutoff:</strong> ${eligibility.cutoff_mark ?? 'Not set'}</p>
+    const eligBox = document.getElementById("promo-eligibility");
+    if (eligibility) {
+      const color =
+        eligibility.category === "Eligible for Promotion"
+          ? "#27ae60"
+          : eligibility.category === "Detained/Retained"
+            ? "#e74c3c"
+            : "#7f8c8d";
+      eligBox.innerHTML = `
+                <p><strong>Year Average:</strong> ${eligibility.year_average ?? "N/A"}
+                   &nbsp;&nbsp;<strong>Cutoff:</strong> ${eligibility.cutoff_mark ?? "Not set"}</p>
                 <p><strong>Category:</strong> <span style="color:${color}; font-weight:bold;">${eligibility.category}</span></p>
             `;
-        } else {
-            eligBox.innerHTML = '<p class="muted">Could not evaluate eligibility.</p>';
-        }
+    } else {
+      eligBox.innerHTML =
+        '<p class="muted">Could not evaluate eligibility.</p>';
+    }
 
-        const newGradeSelect = document.getElementById('new-grade');
-        const streamContainer = document.getElementById('stream-select-container');
-        const streamSelect = document.getElementById('stream-select');
-        const promoteRadio = document.getElementById('action-promote');
-        const retainRadio = document.getElementById('action-retain');
+    const newGradeSelect = document.getElementById("new-grade");
+    const streamContainer = document.getElementById("stream-select-container");
+    const streamSelect = document.getElementById("stream-select");
+    const promoteRadio = document.getElementById("action-promote");
+    const retainRadio = document.getElementById("action-retain");
 
-        newGradeSelect.innerHTML = '';
-        promoteRadio.disabled = false;
-        promoteRadio.checked = false;
-        retainRadio.checked = false;
-        document.getElementById('override-reason-box').style.display = 'none';
-        document.getElementById('override-reason').value = '';
+    newGradeSelect.innerHTML = "";
+    promoteRadio.disabled = false;
+    promoteRadio.checked = false;
+    retainRadio.checked = false;
+    document.getElementById("override-reason-box").style.display = "none";
+    document.getElementById("override-reason").value = "";
 
-        // Reset the locked-outcome UI back to "not locked" before
-        // deciding below — otherwise a leftover state from the
-        // previous student's search would stick around.
-        document.getElementById('promo-decision-choice').style.display = 'block';
-        document.getElementById('promo-locked-outcome').style.display = 'none';
-        document.getElementById('promote-fields').style.display = 'block';
-        window.isLockedToCutoff = false;
+    // Reset the locked-outcome UI back to "not locked" before
+    // deciding below — otherwise a leftover state from the
+    // previous student's search would stick around.
+    document.getElementById("promo-decision-choice").style.display = "block";
+    document.getElementById("promo-locked-outcome").style.display = "none";
+    document.getElementById("promote-fields").style.display = "block";
+    window.isLockedToCutoff = false;
 
-        if (currentGrade >= 12) {
-            newGradeSelect.innerHTML = '<option value="">No higher grade — graduation is handled separately</option>';
-            promoteRadio.disabled = true;
-            retainRadio.checked = true;
-            streamContainer.style.display = 'none';
-        } else {
-            newGradeSelect.innerHTML = `<option value="${currentGrade + 1}">Grade ${currentGrade + 1}</option>`;
+    if (currentGrade >= 12) {
+      newGradeSelect.innerHTML =
+        '<option value="">No higher grade — graduation is handled separately</option>';
+      promoteRadio.disabled = true;
+      retainRadio.checked = true;
+      streamContainer.style.display = "none";
+    } else {
+      newGradeSelect.innerHTML = `<option value="${currentGrade + 1}">Grade ${currentGrade + 1}</option>`;
 
-            // Stream (Natural/Social Science) is only chosen once, at the
-            // Grade 10 to 11 transition — that's the actual streaming
-            // point in this system. An 11 to 12 promotion keeps whatever
-            // stream the student already has; asking again here (and the
-            // server defaulting to 'General' if left blank) used to
-            // silently overwrite it.
-            if (currentGrade === 10) {
-                streamContainer.style.display = 'block';
-                streamSelect.innerHTML = `
+      // Stream (Natural/Social Science) is only chosen once, at the
+      // Grade 10 to 11 transition — that's the actual streaming
+      // point in this system. An 11 to 12 promotion keeps whatever
+      // stream the student already has; asking again here (and the
+      // server defaulting to 'General' if left blank) used to
+      // silently overwrite it.
+      if (currentGrade === 10) {
+        streamContainer.style.display = "block";
+        streamSelect.innerHTML = `
                     <option value="Natural Science">Natural Science</option>
                     <option value="Social Science">Social Science</option>
                 `;
-            } else {
-                streamContainer.style.display = 'none';
-            }
+      } else {
+        streamContainer.style.display = "none";
+      }
 
-            // Grades 9-11 are locked to the Academic VP's cutoff — the
-            // server ignores whatever action is submitted and applies
-            // the cutoff result automatically (PUT /api/promote/:id),
-            // with no override path at all. So instead of letting the
-            // Registrar pick Promote/Retain, hide that choice and show
-            // the computed outcome as read-only. The stream picker
-            // above still applies (a real choice the Registrar makes),
-            // but only matters when the outcome is actually a promotion.
-            window.isLockedToCutoff = true;
-            document.getElementById('promo-decision-choice').style.display = 'none';
-            const lockedBox = document.getElementById('promo-locked-outcome');
-            const lockedText = document.getElementById('locked-outcome-text');
-            lockedBox.style.display = 'block';
+      // Grades 9-11 are locked to the Academic VP's cutoff — the
+      // server ignores whatever action is submitted and applies
+      // the cutoff result automatically (PUT /api/promote/:id),
+      // with no override path at all. So instead of letting the
+      // Registrar pick Promote/Retain, hide that choice and show
+      // the computed outcome as read-only. The stream picker
+      // above still applies (a real choice the Registrar makes),
+      // but only matters when the outcome is actually a promotion.
+      window.isLockedToCutoff = true;
+      document.getElementById("promo-decision-choice").style.display = "none";
+      const lockedBox = document.getElementById("promo-locked-outcome");
+      const lockedText = document.getElementById("locked-outcome-text");
+      lockedBox.style.display = "block";
 
-            if (eligibility && eligibility.category === 'Eligible for Promotion') {
-                lockedText.innerHTML = `<span style="color:#27ae60; font-weight:bold;">Promote to Grade ${currentGrade + 1}</span>`;
-                document.getElementById('promote-fields').style.display = 'block';
-            } else if (eligibility && eligibility.category === 'Detained/Retained') {
-                lockedText.innerHTML = `<span style="color:#e74c3c; font-weight:bold;">Retain in Grade ${currentGrade}</span>`;
-                document.getElementById('promote-fields').style.display = 'none';
-            } else {
-                lockedText.innerHTML = `<span style="color:#7f8c8d; font-weight:bold;">No decision yet — no marks on record</span>`;
-                document.getElementById('promote-fields').style.display = 'none';
-            }
-        }
-        updateOverrideVisibility();
-    } catch (error) {
-        console.error("Promotion Error:", error);
-        showAlert(error.message);
-    } finally {
-        btn.innerText = "Search";
+      if (eligibility && eligibility.category === "Eligible for Promotion") {
+        lockedText.innerHTML = `<span style="color:#27ae60; font-weight:bold;">Promote to Grade ${currentGrade + 1}</span>`;
+        document.getElementById("promote-fields").style.display = "block";
+      } else if (eligibility && eligibility.category === "Detained/Retained") {
+        lockedText.innerHTML = `<span style="color:#e74c3c; font-weight:bold;">Retain in Grade ${currentGrade}</span>`;
+        document.getElementById("promote-fields").style.display = "none";
+      } else {
+        lockedText.innerHTML = `<span style="color:#7f8c8d; font-weight:bold;">No decision yet — no marks on record</span>`;
+        document.getElementById("promote-fields").style.display = "none";
+      }
     }
+    updateOverrideVisibility();
+  } catch (error) {
+    console.error("Promotion Error:", error);
+    showAlert(error.message);
+  } finally {
+    btn.innerText = "Search";
+  }
 }
 
 // Shows the override-reason field only when the chosen action disagrees
 // with the auto-computed category — matches the server's own check, so
 // nobody hits a surprise 400 after already filling out the form.
 function updateOverrideVisibility() {
-    const box = document.getElementById('override-reason-box');
-    if (!box) return;
-    // Grades 9-11 have no override at all (see fetchForPromotion) — the
-    // box never applies there, regardless of what's checked.
-    if (window.isLockedToCutoff) {
-        box.style.display = 'none';
-        return;
-    }
-    const action = document.querySelector('input[name="promo-action"]:checked')?.value;
-    const elig = window.currentEligibility;
-    const expected = elig && elig.category === 'Eligible for Promotion' ? 'promote'
-        : elig && elig.category === 'Detained/Retained' ? 'retain' : null;
-    box.style.display = (expected && action && action !== expected) ? 'block' : 'none';
+  const box = document.getElementById("override-reason-box");
+  if (!box) return;
+  // Grades 9-11 have no override at all (see fetchForPromotion) — the
+  // box never applies there, regardless of what's checked.
+  if (window.isLockedToCutoff) {
+    box.style.display = "none";
+    return;
+  }
+  const action = document.querySelector(
+    'input[name="promo-action"]:checked',
+  )?.value;
+  const elig = window.currentEligibility;
+  const expected =
+    elig && elig.category === "Eligible for Promotion"
+      ? "promote"
+      : elig && elig.category === "Detained/Retained"
+        ? "retain"
+        : null;
+  box.style.display =
+    expected && action && action !== expected ? "block" : "none";
 }
 
 // --- Re-admission (Promote & Stream → Re-admitted) ---
@@ -840,19 +1520,22 @@ function updateOverrideVisibility() {
 // (read-only, shows who they are and why they're eligible) before the
 // separate confirm step actually reactivates the account.
 async function lookupReadmit() {
-    const id = document.getElementById('readmit-id').value.trim();
-    const result = document.getElementById('readmit-result');
-    if (!id) return showAlert("Please enter a Student ID");
-    result.innerHTML = '<p class="muted">Searching...</p>';
+  const id = document.getElementById("readmit-id").value.trim();
+  const result = document.getElementById("readmit-result");
+  if (!id) return showAlert("Please enter a Student ID");
+  result.innerHTML = '<p class="muted">Searching...</p>';
 
-    try {
-        const res = await fetch(`http://localhost:3001/api/registrar/readmit/${id}`, { credentials: 'include' });
-        const data = await res.json();
-        if (!res.ok) {
-            result.innerHTML = `<p class="muted">${data.error || "Could not find this student."}</p>`;
-            return;
-        }
-        result.innerHTML = `
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/readmit/${id}`,
+      { credentials: "include" },
+    );
+    const data = await res.json();
+    if (!res.ok) {
+      result.innerHTML = `<p class="muted">${data.error || "Could not find this student."}</p>`;
+      return;
+    }
+    result.innerHTML = `
             <div class="search-box" style="flex-direction: column; align-items: flex-start;">
                 <p style="margin: 0 0 6px;"><strong>${data.full_name}</strong> (${data.student_id})</p>
                 <p class="muted" style="margin: 0 0 12px;">
@@ -863,133 +1546,167 @@ async function lookupReadmit() {
                 </button>
             </div>
         `;
-        if (window.lucide) lucide.createIcons({ root: result });
-    } catch (err) {
-        console.error(err);
-        result.innerHTML = `<p class="muted">${t("reg_server_error")}</p>`;
-    }
+    if (window.lucide) lucide.createIcons({ root: result });
+  } catch (err) {
+    console.error(err);
+    result.innerHTML = `<p class="muted">${t("reg_server_error")}</p>`;
+  }
 }
 
 async function confirmReadmit(studentId) {
-    const id = studentId || document.getElementById('readmit-id').value.trim();
-    if (!id) return;
-    if (!(await showConfirm(
-        `Re-admit ${id}? Their account unlocks again with the default password, and they'll need to be placed into a current section from the Placement Wizard.`
-    ))) return;
+  const id = studentId || document.getElementById("readmit-id").value.trim();
+  if (!id) return;
+  if (
+    !(await showConfirm(
+      `Re-admit ${id}? Their account unlocks again with the default password, and they'll need to be placed into a current section from the Placement Wizard.`,
+    ))
+  )
+    return;
 
-    try {
-        const res = await fetch(`http://localhost:3001/api/registrar/readmit/${id}`, {
-            method: 'POST',
-            credentials: 'include'
-        });
-        const result = await res.json();
-        if (!res.ok) return showAlert(result.error || "Could not re-admit this student.");
-        showAlert(result.message);
-        document.getElementById('readmit-id').value = '';
-        document.getElementById('readmit-result').innerHTML = '';
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
-    }
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/readmit/${id}`,
+      {
+        method: "POST",
+        credentials: "include",
+      },
+    );
+    const result = await res.json();
+    if (!res.ok)
+      return showAlert(result.error || "Could not re-admit this student.");
+    showAlert(result.message);
+    document.getElementById("readmit-id").value = "";
+    document.getElementById("readmit-result").innerHTML = "";
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 async function autoProcessPromotion() {
-    if (!(await showConfirm(
-        "Auto-promote every eligible Grade 9 and Grade 11 student now? " +
+  if (
+    !(await showConfirm(
+      "Auto-promote every eligible Grade 9 and Grade 11 student now? " +
         "Students below the cutoff are automatically retained instead — " +
-        "this can't be undone from here."
-    ))) return;
+        "this can't be undone from here.",
+    ))
+  )
+    return;
 
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/promotion/auto-process', {
-            method: 'POST',
-            credentials: 'include'
-        });
-        const result = await res.json();
-        if (!res.ok) return showAlert(result.error || "Automatic promotion failed.");
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/promotion/auto-process",
+      {
+        method: "POST",
+        credentials: "include",
+      },
+    );
+    const result = await res.json();
+    if (!res.ok)
+      return showAlert(result.error || "Automatic promotion failed.");
 
-        let summary = result.message;
-        if (result.skipped && result.skipped.length > 0) {
-            summary += `\n\nStill need marks entered:\n` + result.skipped.map(s => s.student_id).join(', ');
-        }
-        showAlert(summary);
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
+    let summary = result.message;
+    if (result.skipped && result.skipped.length > 0) {
+      summary +=
+        `\n\nStill need marks entered:\n` +
+        result.skipped.map((s) => s.student_id).join(", ");
     }
+    showAlert(summary);
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 async function submitPromotion() {
-    const id = document.getElementById('promo-id').value;
+  const id = document.getElementById("promo-id").value;
 
-    let action;
-    if (window.isLockedToCutoff) {
-        // Grades 9-11: nothing for the Registrar to choose — the action
-        // is whatever the cutoff computed. The server re-derives and
-        // enforces this itself either way (PUT /api/promote/:id ignores
-        // whatever action is submitted for these grades), but deriving
-        // it here too means the right fields (new grade/stream) get
-        // sent, and lets us block the click when there's nothing to
-        // decide yet rather than waiting on a server error.
-        const elig = window.currentEligibility;
-        action = elig && elig.category === 'Eligible for Promotion' ? 'promote'
-            : elig && elig.category === 'Detained/Retained' ? 'retain' : null;
-        if (!action) return showAlert("This student has no marks on record yet — a decision can't be made until they do.");
+  let action;
+  if (window.isLockedToCutoff) {
+    // Grades 9-11: nothing for the Registrar to choose — the action
+    // is whatever the cutoff computed. The server re-derives and
+    // enforces this itself either way (PUT /api/promote/:id ignores
+    // whatever action is submitted for these grades), but deriving
+    // it here too means the right fields (new grade/stream) get
+    // sent, and lets us block the click when there's nothing to
+    // decide yet rather than waiting on a server error.
+    const elig = window.currentEligibility;
+    action =
+      elig && elig.category === "Eligible for Promotion"
+        ? "promote"
+        : elig && elig.category === "Detained/Retained"
+          ? "retain"
+          : null;
+    if (!action)
+      return showAlert(
+        "This student has no marks on record yet — a decision can't be made until they do.",
+      );
+  } else {
+    action = document.querySelector(
+      'input[name="promo-action"]:checked',
+    )?.value;
+    if (!action) return showAlert("Choose Promote or Retain.");
+  }
+
+  const streamPickerShown =
+    document.getElementById("stream-select-container").style.display !== "none";
+  const data = {
+    action,
+    class_level:
+      action === "promote"
+        ? document.getElementById("new-grade").value
+        : undefined,
+    stream:
+      action === "promote" && streamPickerShown
+        ? document.getElementById("stream-select").value
+        : undefined,
+    // No override is possible for grades 9-11 (see fetchForPromotion) —
+    // the server ignores it for those anyway, but don't even send it.
+    override_reason: window.isLockedToCutoff
+      ? undefined
+      : document.getElementById("override-reason").value.trim() || undefined,
+  };
+
+  try {
+    const res = await fetch(`http://localhost:3001/api/promote/${id}`, {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    const result = await res.json();
+
+    if (res.ok) {
+      showAlert(result.message);
+      resetPromotionForNextStudent();
     } else {
-        action = document.querySelector('input[name="promo-action"]:checked')?.value;
-        if (!action) return showAlert("Choose Promote or Retain.");
+      showAlert(result.error || "Promotion failed.");
     }
-
-    const streamPickerShown = document.getElementById('stream-select-container').style.display !== 'none';
-    const data = {
-        action,
-        class_level: action === 'promote' ? document.getElementById('new-grade').value : undefined,
-        stream: (action === 'promote' && streamPickerShown) ? document.getElementById('stream-select').value : undefined,
-        // No override is possible for grades 9-11 (see fetchForPromotion) —
-        // the server ignores it for those anyway, but don't even send it.
-        override_reason: window.isLockedToCutoff ? undefined : (document.getElementById('override-reason').value.trim() || undefined)
-    };
-
-    try {
-        const res = await fetch(`http://localhost:3001/api/promote/${id}`, {
-            method: 'PUT',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data)
-        });
-        const result = await res.json();
-
-        if (res.ok) {
-            showAlert(result.message);
-            resetPromotionForNextStudent();
-        } else {
-            showAlert(result.error || "Promotion failed.");
-        }
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
-    }
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 // Clears the Promotion/Stream form back to its just-opened state so the
 // Registrar can immediately search for the next student, without a full
 // page reload (which used to kick them back to the Dashboard tab).
 function resetPromotionForNextStudent() {
-    document.getElementById('promo-id').value = '';
-    document.getElementById('promo-form').style.display = 'none';
-    document.getElementById('action-promote').checked = false;
-    document.getElementById('action-retain').checked = false;
-    document.getElementById('override-reason-box').style.display = 'none';
-    document.getElementById('override-reason').value = '';
-    document.getElementById('promo-decision-choice').style.display = 'block';
-    document.getElementById('promo-locked-outcome').style.display = 'none';
-    window.currentEligibility = null;
-    window.isLockedToCutoff = false;
-    // The Placement Wizard's "recently promoted" list is stale now too —
-    // refresh it if that function is loaded, so the freshly-promoted
-    // student shows up there without the Registrar switching tabs.
-    if (typeof loadPlacementPromoted === 'function') loadPlacementPromoted();
-    document.getElementById('promo-id').focus();
+  document.getElementById("promo-id").value = "";
+  document.getElementById("promo-form").style.display = "none";
+  document.getElementById("action-promote").checked = false;
+  document.getElementById("action-retain").checked = false;
+  document.getElementById("override-reason-box").style.display = "none";
+  document.getElementById("override-reason").value = "";
+  document.getElementById("promo-decision-choice").style.display = "block";
+  document.getElementById("promo-locked-outcome").style.display = "none";
+  window.currentEligibility = null;
+  window.isLockedToCutoff = false;
+  // The Placement Wizard's "recently promoted" list is stale now too —
+  // refresh it if that function is loaded, so the freshly-promoted
+  // student shows up there without the Registrar switching tabs.
+  if (typeof loadPlacementPromoted === "function") loadPlacementPromoted();
+  document.getElementById("promo-id").focus();
 }
 
 // Which form triggered the success modal — set right before showSuccess()
@@ -998,8 +1715,8 @@ function resetPromotionForNextStudent() {
 let successModalContext = null;
 
 function showSuccess(context) {
-    successModalContext = context || null;
-    document.getElementById('success-modal').style.display = 'block';
+  successModalContext = context || null;
+  document.getElementById("success-modal").style.display = "block";
 }
 
 // Used to just location.reload() the whole page here, which is why
@@ -1010,154 +1727,366 @@ function showSuccess(context) {
 // refocuses the form that was actually submitted and leaves the tab
 // exactly where it was.
 function closeSuccess() {
-    document.getElementById('success-modal').style.display = 'none';
-    if (successModalContext === 'registration') {
-        // The form itself was already reset right after the successful
-        // POST (see submitRegistration) — just get the cursor back to
-        // the first field for the next student.
-        document.getElementById('reg_first')?.focus();
-    } else if (successModalContext === 'update') {
-        document.getElementById('update-form')?.reset();
-        document.getElementById('upd_id').value = '';
-        document.getElementById('search-id').value = '';
-        document.getElementById('search-id')?.focus();
+  document.getElementById("success-modal").style.display = "none";
+  if (successModalContext === "registration") {
+    // The form itself was already reset right after the successful
+    // POST (see submitRegistration) — just get the cursor back to
+    // the first field for the next student.
+    document.getElementById("reg_first")?.focus();
+  } else if (successModalContext === "update") {
+    document.getElementById("update-form")?.reset();
+    document.getElementById("upd_id").value = "";
+    document.getElementById("search-id").value = "";
+    document.getElementById("search-id")?.focus();
+  }
+  successModalContext = null;
+}
+
+// --- EMIS Roster (Registrar only) ---
+// Read-only view of every active student at this school and whether
+// their EMIS ID is Verified (matches the Ministry registry the Super
+// Admin uploaded), Unverified (saved without a registry match), or
+// still missing entirely — see GET /api/registrar/emis-roster, the same
+// shape/logic the Super Admin's own EMIS Roster screen reads from. The
+// Registrar can only VIEW this list here; sending a retrieval request
+// for the "missing" students is still something only the Super Admin
+// initiates (POST /api/super/schools/:id/emis-requests) — the request
+// history/approve-reject flow below is the other half of that.
+function emisLinkStatusPill(s) {
+  if (!s.emis_id)
+    return `<span class="status-pill status-unregistered">${t("reg_emis_badge_unlinked")}</span>`;
+  return s.verified
+    ? `<span class="status-pill status-active">${t("reg_emis_badge_verified")}</span>`
+    : `<span class="status-pill status-pending">${t("reg_emis_badge_unverified")}</span>`;
+}
+async function loadEmisRoster() {
+  const summaryEl = document.getElementById("emis-roster-summary");
+  const listEl = document.getElementById("emis-roster-list");
+  if (!summaryEl || !listEl) return;
+  try {
+    const res = await fetch("http://localhost:3001/api/registrar/emis-roster", {
+      credentials: "include",
+    });
+    if (!res.ok) throw new Error("Could not load the EMIS roster.");
+    const data = await res.json();
+
+    summaryEl.innerHTML = `
+      <div class="dashboard-stats-grid">
+        <div class="stat-card">
+          <span class="stat-value">${data.total}</span>
+          <span class="stat-label">${t("reg_emis_card_total")}</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-value">${data.with_emis}</span>
+          <span class="stat-label">${t("reg_emis_card_with")}</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-value">${data.without_emis}</span>
+          <span class="stat-label">${t("reg_emis_card_without")}</span>
+        </div>
+      </div>`;
+
+    if (data.students.length === 0) {
+      listEl.innerHTML = `<p class="muted">${t("reg_emis_roster_empty")}</p>`;
+      return;
     }
-    successModalContext = null;
+    listEl.innerHTML = `
+      <div class="data-table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>${t("reg_col_student_id")}</th>
+              <th>${t("reg_col_name")}</th>
+              <th>${t("reg_col_grade")}</th>
+              <th>${t("reg_th_section")}</th>
+              <th>${t("reg_th_emis_id")}</th>
+              <th>${t("reg_col_status")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.students
+              .map(
+                (s) => `
+              <tr>
+                <td class="data-table-id">${s.student_id}</td>
+                <td>${escapeHtml([s.first_name, s.middle_name, s.last_name].filter(Boolean).join(" "))}</td>
+                <td>${s.class_level}</td>
+                <td>${s.section || "—"}</td>
+                <td>${s.emis_id ? escapeHtml(s.emis_id) : "—"}</td>
+                <td>${emisLinkStatusPill(s)}</td>
+              </tr>`,
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>`;
+  } catch (err) {
+    console.error(err);
+    listEl.innerHTML = `<p class="muted">${t("reg_emis_load_error")}</p>`;
+  }
+}
+
+function emisRequestStatusLabel(status) {
+  if (status === "pending") return t("reg_emis_status_pending");
+  if (status === "approved") return t("reg_emis_status_approved");
+  if (status === "rejected") return t("reg_emis_status_rejected");
+  if (status === "fulfilled") return t("reg_emis_status_fulfilled");
+  return status;
+}
+async function loadEmisRequests() {
+  const listEl = document.getElementById("emis-requests-list");
+  if (!listEl) return;
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/emis-requests",
+      { credentials: "include" },
+    );
+    if (!res.ok) throw new Error("Could not load EMIS requests.");
+    const requests = await res.json();
+
+    const badgeEl = document.getElementById("nav-emis-requests-badge");
+    if (badgeEl) {
+      const pendingCount = requests.filter(
+        (r) => r.status === "pending",
+      ).length;
+      if (pendingCount > 0) {
+        badgeEl.textContent = pendingCount > 9 ? "9+" : String(pendingCount);
+        badgeEl.style.display = "inline-block";
+      } else {
+        badgeEl.style.display = "none";
+      }
+    }
+
+    if (requests.length === 0) {
+      listEl.innerHTML = `<p class="muted">${t("reg_emis_requests_empty")}</p>`;
+      return;
+    }
+
+    listEl.innerHTML = requests
+      .map(
+        (r) => `
+            <div class="search-box" style="flex-direction: column; align-items: flex-start;">
+                <span>
+                    <strong>${t("reg_emis_student_count", { n: r.student_count })}</strong> &nbsp;
+                    <span style="text-transform: capitalize;">${emisRequestStatusLabel(r.status)}</span>
+                    <br><span class="muted" style="font-size: 12px;">${formatDateBilingual(r.created_at)}</span>
+                    ${r.note ? `<br><span class="muted">${t("reg_emis_note_label")}: ${escapeHtml(r.note)}</span>` : ""}
+                    ${r.status === "rejected" && r.rejection_reason ? `<br><span class="muted">${t("reg_emis_reject_reason_label")}: ${escapeHtml(r.rejection_reason)}</span>` : ""}
+                </span>
+                ${
+                  r.status === "pending"
+                    ? `
+                    <div style="margin-top: 8px;">
+                        <button type="button" ${dataArg("approveEmisRequest", r.request_id)}>${t("reg_emis_approve")}</button>
+                        <button type="button" ${dataArg("rejectEmisRequest", r.request_id)} style="background:#e74c3c;">${t("reg_emis_reject")}</button>
+                    </div>`
+                    : ""
+                }
+            </div>
+        `,
+      )
+      .join("");
+  } catch (err) {
+    console.error(err);
+    listEl.innerHTML = `<p class="muted">${t("reg_emis_load_error")}</p>`;
+  }
+}
+
+async function approveEmisRequest(id) {
+  if (!(await showConfirm(t("reg_emis_approve_confirm")))) return;
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/emis-requests/${id}/approve`,
+      {
+        method: "POST",
+        credentials: "include",
+      },
+    );
+    const result = await res.json();
+    if (!res.ok)
+      return showAlert(result.error || "Could not approve the request.");
+    showAlert(result.message);
+    await loadEmisRequests();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
+}
+
+async function rejectEmisRequest(id) {
+  // No dedicated free-text prompt modal exists in this portal yet
+  // (showConfirm is yes/no, showPasswordPrompt is password-only) —
+  // window.prompt is the same fallback showPasswordPrompt itself uses
+  // when its modal is missing, so it's consistent with how this file
+  // already degrades rather than introducing a new modal for one field.
+  const reason = window.prompt(t("reg_emis_reject_reason_prompt"));
+  if (reason === null) return;
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/emis-requests/${id}/reject`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason }),
+      },
+    );
+    const result = await res.json();
+    if (!res.ok)
+      return showAlert(result.error || "Could not reject the request.");
+    showAlert(result.message);
+    await loadEmisRequests();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 // --- 4. Recorder Management (Registrar only) ---
 
 async function loadRecorders() {
-    const listEl = document.getElementById('current-recorders-list');
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/recorders', { credentials: 'include' });
-        if (!res.ok) throw new Error("Could not load recorders.");
-        const { recorders } = await res.json();
+  const listEl = document.getElementById("current-recorders-list");
+  try {
+    const res = await fetch("http://localhost:3001/api/registrar/recorders", {
+      credentials: "include",
+    });
+    if (!res.ok) throw new Error("Could not load recorders.");
+    const { recorders } = await res.json();
 
-        if (recorders.length === 0) {
-            listEl.innerHTML = '<p class="muted">No recorders assigned yet.</p>';
-            return;
-        }
-
-        listEl.innerHTML = recorders.map(r => `
-            <div class="search-box" style="justify-content: space-between; align-items:center;">
-                <span>${r.first_name} ${r.middle_name || ''} ${r.last_name} (${r.teacher_id})</span>
-                <button type="button" ${dataArg('removeRecorder', r.teacher_id)} style="background:#e74c3c;">Remove</button>
-            </div>
-        `).join('');
-
-        // Only 2 active recorders allowed — hide the "add" box once full.
-        document.getElementById('add-recorder-box').style.display = recorders.length >= 2 ? 'none' : 'block';
-    } catch (err) {
-        console.error(err);
-        listEl.innerHTML = '<p class="muted">Could not load recorders.</p>';
+    if (recorders.length === 0) {
+      listEl.innerHTML = '<p class="muted">No recorders assigned yet.</p>';
+      return;
     }
+
+    listEl.innerHTML = recorders
+      .map(
+        (r) => `
+            <div class="search-box" style="justify-content: space-between; align-items:center;">
+                <span>${r.first_name} ${r.middle_name || ""} ${r.last_name} (${r.teacher_id})</span>
+                <button type="button" ${dataArg("removeRecorder", r.teacher_id)} style="background:#e74c3c;">Remove</button>
+            </div>
+        `,
+      )
+      .join("");
+
+    // Only 2 active recorders allowed — hide the "add" box once full.
+    document.getElementById("add-recorder-box").style.display =
+      recorders.length >= 2 ? "none" : "block";
+  } catch (err) {
+    console.error(err);
+    listEl.innerHTML = '<p class="muted">Could not load recorders.</p>';
+  }
 }
 
 async function loadEligibleTeachers() {
-    const select = document.getElementById('eligible-teacher-select');
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/eligible-recorders', { credentials: 'include' });
-        if (!res.ok) throw new Error("Could not load eligible teachers.");
-        const teachers = await res.json();
+  const select = document.getElementById("eligible-teacher-select");
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/eligible-recorders",
+      { credentials: "include" },
+    );
+    if (!res.ok) throw new Error("Could not load eligible teachers.");
+    const teachers = await res.json();
 
-        if (teachers.length === 0) {
-            select.innerHTML = '<option value="">No eligible teachers</option>';
-            return;
-        }
-        select.innerHTML = teachers.map(t =>
-            `<option value="${t.teacher_id}">${t.first_name} ${t.middle_name || ''} ${t.last_name} (${t.teacher_id})</option>`
-        ).join('');
-    } catch (err) {
-        console.error(err);
-        select.innerHTML = '<option value="">Could not load teachers</option>';
+    if (teachers.length === 0) {
+      select.innerHTML = '<option value="">No eligible teachers</option>';
+      return;
     }
+    select.innerHTML = teachers
+      .map(
+        (t) =>
+          `<option value="${t.teacher_id}">${t.first_name} ${t.middle_name || ""} ${t.last_name} (${t.teacher_id})</option>`,
+      )
+      .join("");
+  } catch (err) {
+    console.error(err);
+    select.innerHTML = '<option value="">Could not load teachers</option>';
+  }
 }
 
 async function assignRecorder() {
-    const select = document.getElementById('eligible-teacher-select');
-    const teacher_id = select.value;
-    if (!teacher_id) return showAlert("Choose a teacher first.");
+  const select = document.getElementById("eligible-teacher-select");
+  const teacher_id = select.value;
+  if (!teacher_id) return showAlert("Choose a teacher first.");
 
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/recorders', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ teacher_id })
-        });
-        const result = await res.json();
-        if (!res.ok) return showAlert(result.error || "Could not assign recorder.");
+  try {
+    const res = await fetch("http://localhost:3001/api/registrar/recorders", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ teacher_id }),
+    });
+    const result = await res.json();
+    if (!res.ok) return showAlert(result.error || "Could not assign recorder.");
 
-        await loadRecorders();
-        await loadEligibleTeachers();
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
-    }
+    await loadRecorders();
+    await loadEligibleTeachers();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 async function removeRecorder(teacher_id) {
-    if (!(await showConfirm(t('reg_remove_recorder_confirm')))) return;
-    try {
-        const res = await fetch(`http://localhost:3001/api/registrar/recorders/${teacher_id}`, {
-            method: 'DELETE',
-            credentials: 'include'
-        });
-        const result = await res.json();
-        if (!res.ok) return showAlert(result.error || "Could not remove recorder.");
+  if (!(await showConfirm(t("reg_remove_recorder_confirm")))) return;
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/recorders/${teacher_id}`,
+      {
+        method: "DELETE",
+        credentials: "include",
+      },
+    );
+    const result = await res.json();
+    if (!res.ok) return showAlert(result.error || "Could not remove recorder.");
 
-        await loadRecorders();
-        await loadEligibleTeachers();
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
-    }
+    await loadRecorders();
+    await loadEligibleTeachers();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 // --- 5. Section Setup (Registrar only) ---
 
 function updateSectionSetupStreamOptions() {
-    const grade = document.getElementById('sec_grade').value;
-    const streamSelect = document.getElementById('sec_stream');
-    streamSelect.innerHTML = '';
-    if (grade == '9' || grade == '10') {
-        streamSelect.innerHTML = '<option value="General">General</option>';
-    } else if (grade == '11' || grade == '12') {
-        streamSelect.innerHTML = `
-            <option value="Natural Science">Natural Science</option>
-            <option value="Social Science">Social Science</option>
-        `;
-    } else {
-        streamSelect.innerHTML = '<option value="">Select Stream</option>';
-    }
+  const grade = document.getElementById("sec_grade").value;
+  document.getElementById("sec_stream").innerHTML =
+    streamOptionsHtmlForGrade(grade);
 }
 
 async function loadSections() {
-    const container = document.getElementById('sections-list');
-    if (!container) return;
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/sections', { credentials: 'include' });
-        if (!res.ok) throw new Error("Could not load sections.");
-        const sections = await res.json();
+  const container = document.getElementById("sections-list");
+  if (!container) return;
+  try {
+    const res = await fetch("http://localhost:3001/api/registrar/sections", {
+      credentials: "include",
+    });
+    if (!res.ok) throw new Error("Could not load sections.");
+    const sections = await res.json();
 
-        if (sections.length === 0) {
-            container.innerHTML = '<p class="muted">No sections configured yet.</p>';
-            return;
-        }
+    if (sections.length === 0) {
+      container.innerHTML = '<p class="muted">No sections configured yet.</p>';
+      return;
+    }
 
-        // Group by class_level + stream so the panel reads like the rest
-        // of the app (Grade 9, Grade 11 - Natural Science, etc.).
-        const groups = {};
-        sections.forEach(s => {
-            const key = `Grade ${s.class_level} - ${s.stream}`;
-            if (!groups[key]) groups[key] = [];
-            groups[key].push(s);
-        });
+    // Group by class_level + stream so the panel reads like the rest
+    // of the app (Grade 9, Grade 11 - Natural Science, etc.).
+    const groups = {};
+    sections.forEach((s) => {
+      const key = `Grade ${s.class_level} - ${s.stream}`;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(s);
+    });
 
-        container.innerHTML = Object.entries(groups).map(([label, rows]) => `
+    container.innerHTML = Object.entries(groups)
+      .map(
+        ([label, rows]) => `
             <h4 style="margin-bottom:8px;">${label}</h4>
-            ${rows.map(s => `
+            ${rows
+              .map(
+                (s) => `
                 <div class="search-box" style="justify-content: space-between; align-items:center; flex-wrap:wrap;">
                     <span><strong>${s.section_name}</strong></span>
                     <span class="section-capacity-box">
@@ -1166,29 +2095,33 @@ async function loadSections() {
                             type="number"
                             id="sec-cap-${s.id}"
                             min="1"
-                            value="${s.max_capacity ?? ''}"
+                            value="${s.max_capacity ?? ""}"
                             placeholder="No limit"
                         />
-                        <button type="button" ${dataArgs('updateSectionCapacity', [s.id, `sec-cap-${s.id}`])}>
+                        <button type="button" ${dataArgs("updateSectionCapacity", [s.id, `sec-cap-${s.id}`])}>
                             <i data-lucide="save" aria-hidden="true" style="width:14px; height:14px;"></i>
                             Update
                         </button>
                     </span>
                     <span style="display:flex; align-items:center; gap:10px;">
                         <label style="font-weight:normal; margin:0;">
-                            <input type="checkbox" ${s.is_active ? 'checked' : ''} ${dataOnchangeChecked('toggleSectionActive', s.id)} />
+                            <input type="checkbox" ${s.is_active ? "checked" : ""} ${dataOnchangeChecked("toggleSectionActive", s.id)} />
                             Active
                         </label>
-                        <button type="button" ${dataArg('deleteSection', s.id)} style="background:#e74c3c;">Delete</button>
+                        <button type="button" ${dataArg("deleteSection", s.id)} style="background:#e74c3c;">Delete</button>
                     </span>
                 </div>
-            `).join('')}
-        `).join('');
-        window.refreshIcons();
-    } catch (err) {
-        console.error(err);
-        container.innerHTML = '<p class="muted">Could not load sections.</p>';
-    }
+            `,
+              )
+              .join("")}
+        `,
+      )
+      .join("");
+    window.refreshIcons();
+  } catch (err) {
+    console.error(err);
+    container.innerHTML = '<p class="muted">Could not load sections.</p>';
+  }
 }
 
 // Populates the Documents tab's "Bulk Documents" section picker from
@@ -1198,26 +2131,30 @@ async function loadSections() {
 // can see a section is empty before picking it, rather than only
 // finding out after the bulk download comes back with nothing.
 async function loadBulkSectionOptions() {
-    const select = document.getElementById('bulk-doc-section');
-    if (!select) return;
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/sections', { credentials: 'include' });
-        if (!res.ok) throw new Error("Could not load sections.");
-        const sections = await res.json();
-        const active = sections.filter(s => s.is_active);
-        select.innerHTML = active.length === 0
-            ? '<option value="">No active sections configured</option>'
-            : '<option value="">Select a section…</option>' + active
-                .map(s => {
-                    const count = s.student_count || 0;
-                    const label = `Grade ${s.class_level} — ${s.section_name} (${s.stream}) — ${count} student${count === 1 ? '' : 's'}`;
-                    return `<option value="${s.class_level}|${s.section_name}|${s.stream}" ${count === 0 ? 'disabled' : ''}>${label}${count === 0 ? ' — empty' : ''}</option>`;
-                })
-                .join('');
-    } catch (err) {
-        console.error(err);
-        select.innerHTML = '<option value="">Could not load sections</option>';
-    }
+  const select = document.getElementById("bulk-doc-section");
+  if (!select) return;
+  try {
+    const res = await fetch("http://localhost:3001/api/registrar/sections", {
+      credentials: "include",
+    });
+    if (!res.ok) throw new Error("Could not load sections.");
+    const sections = await res.json();
+    const active = sections.filter((s) => s.is_active);
+    select.innerHTML =
+      active.length === 0
+        ? '<option value="">No active sections configured</option>'
+        : '<option value="">Select a section…</option>' +
+          active
+            .map((s) => {
+              const count = s.student_count || 0;
+              const label = `Grade ${s.class_level} — ${s.section_name} (${s.stream}) — ${count} student${count === 1 ? "" : "s"}`;
+              return `<option value="${s.class_level}|${s.section_name}|${s.stream}" ${count === 0 ? "disabled" : ""}>${label}${count === 0 ? " — empty" : ""}</option>`;
+            })
+            .join("");
+  } catch (err) {
+    console.error(err);
+    select.innerHTML = '<option value="">Could not load sections</option>';
+  }
 }
 
 // window.open()-ing these endpoints directly used to mean a 404 ("no
@@ -1226,109 +2163,130 @@ async function loadBulkSectionOptions() {
 // Fetching first lets a failed request show a normal toast instead, and
 // only opens/downloads a new tab once there's an actual file to show.
 async function downloadBulkDocument(url, fallbackFilename) {
-    try {
-        const res = await fetch(url, { credentials: 'include' });
-        if (!res.ok) {
-            const body = await res.json().catch(() => null);
-            if (body?.pending_placement) {
-                // These students exist but haven't been seated into a
-                // section yet (fresh promotion / info update) — point
-                // straight at the Placement Wizard instead of leaving
-                // the registrar to guess why the bulk export came back
-                // empty.
-                showAlert(body.error, "error");
-                if (confirm(`${body.error}\n\nOpen the Placement Wizard now?`)) {
-                    switchTab('placement-wizard');
-                }
-                return;
-            }
-            showAlert(body?.error || "Could not generate that document.", "error");
-            return;
+  try {
+    const res = await fetch(url, { credentials: "include" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      if (body?.pending_placement) {
+        // These students exist but haven't been seated into a
+        // section yet (fresh promotion / info update) — point
+        // straight at the Placement Wizard instead of leaving
+        // the registrar to guess why the bulk export came back
+        // empty.
+        showAlert(body.error, "error");
+        if (confirm(`${body.error}\n\nOpen the Placement Wizard now?`)) {
+          switchTab("placement-wizard");
         }
-        const blob = await res.blob();
-        const disposition = res.headers.get('Content-Disposition') || '';
-        const match = disposition.match(/filename="?([^"]+)"?/);
-        const filename = match ? match[1] : fallbackFilename;
-
-        const blobUrl = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = blobUrl;
-        link.download = filename;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        URL.revokeObjectURL(blobUrl);
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
+        return;
+      }
+      showAlert(body?.error || "Could not generate that document.", "error");
+      return;
     }
+    const blob = await res.blob();
+    const disposition = res.headers.get("Content-Disposition") || "";
+    const match = disposition.match(/filename="?([^"]+)"?/);
+    const filename = match ? match[1] : fallbackFilename;
+
+    const blobUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = blobUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(blobUrl);
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 function bulkDownloadIdCards() {
-    const val = document.getElementById('bulk-doc-section')?.value;
-    if (!val) { showAlert("Pick a section first.", "error"); return; }
-    const [class_level, section, stream] = val.split('|');
-    const params = new URLSearchParams({ class_level, section, stream });
-    downloadBulkDocument(`http://localhost:3001/api/registrar/documents/id-card/bulk/pdf-zip?${params}`, `ID-Cards-Grade${class_level}-${section}.zip`);
+  const val = document.getElementById("bulk-doc-section")?.value;
+  if (!val) {
+    showAlert("Pick a section first.", "error");
+    return;
+  }
+  const [class_level, section, stream] = val.split("|");
+  const params = new URLSearchParams({ class_level, section, stream });
+  downloadBulkDocument(
+    `http://localhost:3001/api/registrar/documents/id-card/bulk/pdf-zip?${params}`,
+    `ID-Cards-Grade${class_level}-${section}.zip`,
+  );
 }
 
 function bulkDownloadReportCards() {
-    const val = document.getElementById('bulk-doc-section')?.value;
-    if (!val) { showAlert("Pick a section first.", "error"); return; }
-    const [class_level, section, stream] = val.split('|');
-    const params = new URLSearchParams({ class_level, section, stream });
-    downloadBulkDocument(`http://localhost:3001/api/registrar/documents/report-card/bulk/pdf?${params}`, `ReportCards-Grade${class_level}-${section}.pdf`);
+  const val = document.getElementById("bulk-doc-section")?.value;
+  if (!val) {
+    showAlert("Pick a section first.", "error");
+    return;
+  }
+  const [class_level, section, stream] = val.split("|");
+  const params = new URLSearchParams({ class_level, section, stream });
+  downloadBulkDocument(
+    `http://localhost:3001/api/registrar/documents/report-card/bulk/pdf?${params}`,
+    `ReportCards-Grade${class_level}-${section}.pdf`,
+  );
 }
 
 async function addSection() {
-    const class_level = document.getElementById('sec_grade').value;
-    const stream = document.getElementById('sec_stream').value;
-    const section_name = document.getElementById('sec_name').value.trim();
-    const max_capacity = document.getElementById('sec_capacity').value.trim();
+  const class_level = document.getElementById("sec_grade").value;
+  const stream = document.getElementById("sec_stream").value;
+  const section_name = document.getElementById("sec_name").value.trim();
+  const max_capacity = document.getElementById("sec_capacity").value.trim();
 
-    if (!class_level || !stream || !section_name) return showAlert("Grade, stream, and section name are required.");
+  if (!class_level || !stream || !section_name)
+    return showAlert("Grade, stream, and section name are required.");
 
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/sections', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ class_level, stream, section_name, max_capacity: max_capacity || null })
-        });
-        const result = await res.json();
-        if (!res.ok) return showAlert(result.error || "Could not create section.");
+  try {
+    const res = await fetch("http://localhost:3001/api/registrar/sections", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        class_level,
+        stream,
+        section_name,
+        max_capacity: max_capacity || null,
+      }),
+    });
+    const result = await res.json();
+    if (!res.ok) return showAlert(result.error || "Could not create section.");
 
-        document.getElementById('sec_name').value = '';
-        document.getElementById('sec_capacity').value = '';
-        await loadSections();
-        loadBulkSectionOptions();
-        await loadUnassignedQueue();
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
-    }
+    document.getElementById("sec_name").value = "";
+    document.getElementById("sec_capacity").value = "";
+    await loadSections();
+    loadBulkSectionOptions();
+    await loadUnassignedQueue();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 async function toggleSectionActive(id, isActive) {
-    try {
-        const res = await fetch(`http://localhost:3001/api/registrar/sections/${id}`, {
-            method: 'PUT',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ is_active: isActive })
-        });
-        if (!res.ok) {
-            const result = await res.json();
-            showAlert(result.error || "Could not update section.");
-            await loadSections();
-        loadBulkSectionOptions();
-            return;
-        }
-        await loadUnassignedQueue();
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/sections/${id}`,
+      {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_active: isActive }),
+      },
+    );
+    if (!res.ok) {
+      const result = await res.json();
+      showAlert(result.error || "Could not update section.");
+      await loadSections();
+      loadBulkSectionOptions();
+      return;
     }
+    await loadUnassignedQueue();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 // Lets a section's max_capacity be raised (or lowered/cleared) in
@@ -1341,49 +2299,60 @@ async function toggleSectionActive(id, isActive) {
 // used before starting/cancelling a transfer — since raising a class's
 // size is a real capacity decision, not a cosmetic edit.
 async function updateSectionCapacity(id, inputId) {
-    const input = document.getElementById(inputId);
-    const raw = input ? input.value.trim() : '';
-    if (raw && (isNaN(raw) || Number(raw) < 1)) {
-        return showAlert("Enter a valid capacity, or leave it blank for no limit.");
-    }
-    const password = await showPasswordPrompt(t('reg_section_capacity_password_prompt'));
-    if (password === null) return;
-    if (!password) return showAlert("Enter your password to continue.", "error");
+  const input = document.getElementById(inputId);
+  const raw = input ? input.value.trim() : "";
+  if (raw && (isNaN(raw) || Number(raw) < 1)) {
+    return showAlert("Enter a valid capacity, or leave it blank for no limit.");
+  }
+  const password = await showPasswordPrompt(
+    t("reg_section_capacity_password_prompt"),
+  );
+  if (password === null) return;
+  if (!password) return showAlert("Enter your password to continue.", "error");
 
-    try {
-        const res = await fetch(`http://localhost:3001/api/registrar/sections/${id}`, {
-            method: 'PUT',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ max_capacity: raw ? Number(raw) : null, password })
-        });
-        const result = await res.json();
-        if (!res.ok) return showAlert(result.error || "Could not update capacity.");
-        showAlert("Section capacity updated.", "success");
-        await loadSections();
-        loadBulkSectionOptions();
-        await loadUnassignedQueue();
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
-    }
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/sections/${id}`,
+      {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          max_capacity: raw ? Number(raw) : null,
+          password,
+        }),
+      },
+    );
+    const result = await res.json();
+    if (!res.ok) return showAlert(result.error || "Could not update capacity.");
+    showAlert("Section capacity updated.", "success");
+    await loadSections();
+    loadBulkSectionOptions();
+    await loadUnassignedQueue();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 async function deleteSection(id) {
-    if (!(await showConfirm(t('reg_delete_section_confirm')))) return;
-    try {
-        const res = await fetch(`http://localhost:3001/api/registrar/sections/${id}`, {
-            method: 'DELETE',
-            credentials: 'include'
-        });
-        const result = await res.json();
-        if (!res.ok) return showAlert(result.error || "Could not delete section.");
-        await loadSections();
-        loadBulkSectionOptions();
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
-    }
+  if (!(await showConfirm(t("reg_delete_section_confirm")))) return;
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/sections/${id}`,
+      {
+        method: "DELETE",
+        credentials: "include",
+      },
+    );
+    const result = await res.json();
+    if (!res.ok) return showAlert(result.error || "Could not delete section.");
+    await loadSections();
+    loadBulkSectionOptions();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 // --- 6. Automated Section Placement Wizard (Registrar only) ---
@@ -1394,27 +2363,37 @@ async function deleteSection(id) {
 // to the Placement Wizard tab's own list, but the New Entry Registration
 // "View Registered So Far" button (see viewRegisteredQueue below) points
 // this at the queue-view modal instead.
-async function loadPlacementRegistered(containerId = 'placement-registered-list') {
-    const container = document.getElementById(containerId);
-    if (!container) return;
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/placement/registered', { credentials: 'include' });
-        if (!res.ok) throw new Error("Could not load registered students.");
-        const students = await res.json();
-        if (students.length === 0) {
-            container.innerHTML = `<p class="muted">${t('reg_no_registered')}</p>`;
-            return;
-        }
-        container.innerHTML = students.map(s => `
-            <div class="search-box" style="justify-content: space-between; align-items: center;">
-                <span><strong>${s.full_name}</strong> <span class="muted">(${s.student_id})</span> &nbsp; ${t('reg_grade_label')} ${s.class_level} — ${s.stream}</span>
-                <span class="muted" style="font-size: 12px;">${t('reg_enrolled_label')}: ${formatYearBilingual(s.created_at) || '—'}</span>
-            </div>
-        `).join('');
-    } catch (err) {
-        console.error(err);
-        container.innerHTML = '<p class="muted">Could not load registered students.</p>';
+async function loadPlacementRegistered(
+  containerId = "placement-registered-list",
+) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/placement/registered",
+      { credentials: "include" },
+    );
+    if (!res.ok) throw new Error("Could not load registered students.");
+    const students = await res.json();
+    if (students.length === 0) {
+      container.innerHTML = `<p class="muted">${t("reg_no_registered")}</p>`;
+      return;
     }
+    container.innerHTML = students
+      .map(
+        (s) => `
+            <div class="search-box" style="justify-content: space-between; align-items: center;">
+                <span><strong>${s.full_name}</strong> <span class="muted">(${s.student_id})</span> &nbsp; ${t("reg_grade_label")} ${s.class_level} — ${s.stream}</span>
+                <span class="muted" style="font-size: 12px;">${t("reg_enrolled_label")}: ${formatYearBilingual(s.created_at) || "—"}</span>
+            </div>
+        `,
+      )
+      .join("");
+  } catch (err) {
+    console.error(err);
+    container.innerHTML =
+      '<p class="muted">Could not load registered students.</p>';
+  }
 }
 
 // "Promoted students" — recent grade-ups (last 90 days), shown here
@@ -1423,62 +2402,81 @@ async function loadPlacementRegistered(containerId = 'placement-registered-list'
 // Placement Wizard tab's own list, but Promotion/Stream's "View
 // Promoted So Far" button (see viewPromotedQueue below) points this at
 // the queue-view modal instead.
-async function loadPlacementPromoted(containerId = 'placement-promoted-list') {
-    const container = document.getElementById(containerId);
-    if (!container) return;
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/placement/promoted', { credentials: 'include' });
-        if (!res.ok) throw new Error("Could not load promoted students.");
-        const rows = await res.json();
-        if (rows.length === 0) {
-            container.innerHTML = `<p class="muted">${t('reg_no_promoted')}</p>`;
-            return;
-        }
-        container.innerHTML = rows.map(r => `
+async function loadPlacementPromoted(containerId = "placement-promoted-list") {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/placement/promoted",
+      { credentials: "include" },
+    );
+    if (!res.ok) throw new Error("Could not load promoted students.");
+    const rows = await res.json();
+    if (rows.length === 0) {
+      container.innerHTML = `<p class="muted">${t("reg_no_promoted")}</p>`;
+      return;
+    }
+    container.innerHTML = rows
+      .map(
+        (r) => `
             <div class="search-box" style="justify-content: space-between; align-items: center;">
-                <span><strong>${r.full_name}</strong> <span class="muted">(${r.student_id})</span> &nbsp; ${t('reg_grade_label')} ${r.from_class_level} → ${r.to_class_level}${r.section ? ' - ' + r.section : ''}</span>
+                <span><strong>${r.full_name}</strong> <span class="muted">(${r.student_id})</span> &nbsp; ${t("reg_grade_label")} ${r.from_class_level} → ${r.to_class_level}${r.section ? " - " + r.section : ""}</span>
                 <span class="muted" style="font-size: 12px;">${formatDateBilingual(r.decided_at)}</span>
             </div>
-        `).join('');
-    } catch (err) {
-        console.error(err);
-        container.innerHTML = '<p class="muted">Could not load promoted students.</p>';
-    }
+        `,
+      )
+      .join("");
+  } catch (err) {
+    console.error(err);
+    container.innerHTML =
+      '<p class="muted">Could not load promoted students.</p>';
+  }
 }
 
 async function loadUnassignedQueue() {
-    const container = document.getElementById('placement-queue');
-    if (!container) return;
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/unassigned-queue', { credentials: 'include' });
-        if (!res.ok) throw new Error("Could not load the unassigned queue.");
-        const { buckets, total_unassigned } = await res.json();
+  const container = document.getElementById("placement-queue");
+  if (!container) return;
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/unassigned-queue",
+      { credentials: "include" },
+    );
+    if (!res.ok) throw new Error("Could not load the unassigned queue.");
+    const { buckets, total_unassigned } = await res.json();
 
-        document.getElementById('placement-total').innerText = total_unassigned;
+    document.getElementById("placement-total").innerText = total_unassigned;
 
-        if (buckets.length === 0) {
-            container.innerHTML = '<p class="muted">No students waiting for placement.</p>';
-            return;
-        }
+    if (buckets.length === 0) {
+      container.innerHTML =
+        '<p class="muted">No students waiting for placement.</p>';
+      return;
+    }
 
-        container.innerHTML = buckets.map(b => `
+    container.innerHTML = buckets
+      .map(
+        (b) => `
             <div class="search-box" style="flex-direction:column; align-items:stretch;">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                     <span><strong>Grade ${b.class_level} - ${b.stream}</strong> — ${b.students.length} waiting</span>
-                    <button type="button" ${dataArgs('runPlacement', [b.class_level, b.stream])}
-                        ${b.active_sections_configured === 0 ? 'disabled title="No active sections configured for this grade/stream"' : ''}>
+                    <button type="button" ${dataArgs("runPlacement", [b.class_level, b.stream])}
+                        ${b.active_sections_configured === 0 ? 'disabled title="No active sections configured for this grade/stream"' : ""}>
                         Run Placement
                     </button>
                 </div>
-                ${b.active_sections_configured === 0
+                ${
+                  b.active_sections_configured === 0
                     ? '<p class="muted" style="margin:8px 0 0;">No active sections configured for this grade/stream yet — set one up above first.</p>'
-                    : ''}
+                    : ""
+                }
             </div>
-        `).join('');
-    } catch (err) {
-        console.error(err);
-        container.innerHTML = '<p class="muted">Could not load the unassigned queue.</p>';
-    }
+        `,
+      )
+      .join("");
+  } catch (err) {
+    console.error(err);
+    container.innerHTML =
+      '<p class="muted">Could not load the unassigned queue.</p>';
+  }
 }
 
 // --- 6b. "View" preview modal for New Entry Registration / Promotion ---
@@ -1490,92 +2488,291 @@ async function loadUnassignedQueue() {
 // modal's own list container (see the containerId param added above)
 // rather than duplicating that rendering logic.
 function openQueueViewModal(headingKey) {
-    const modal = document.getElementById('queue-view-modal');
-    if (!modal) return;
-    const heading = document.getElementById('queue-view-heading');
-    if (heading) heading.setAttribute('data-i18n', headingKey);
-    applyTranslations();
-    modal.style.display = 'flex';
-    if (window.lucide) lucide.createIcons({ root: modal });
+  const modal = document.getElementById("queue-view-modal");
+  if (!modal) return;
+  const heading = document.getElementById("queue-view-heading");
+  if (heading) heading.setAttribute("data-i18n", headingKey);
+  applyTranslations();
+  modal.style.display = "flex";
+  if (window.lucide) lucide.createIcons({ root: modal });
 }
 
 function viewRegisteredQueue() {
-    openQueueViewModal('reg_placement_registered_heading');
-    loadPlacementRegistered('queue-view-list');
+  openQueueViewModal("reg_placement_registered_heading");
+  loadPlacementRegistered("queue-view-list");
 }
 
 function viewPromotedQueue() {
-    openQueueViewModal('reg_placement_promoted_heading');
-    loadPlacementPromoted('queue-view-list');
+  openQueueViewModal("reg_placement_promoted_heading");
+  loadPlacementPromoted("queue-view-list");
 }
 
 function closeQueueViewModal() {
-    const modal = document.getElementById('queue-view-modal');
-    if (modal) modal.style.display = 'none';
+  const modal = document.getElementById("queue-view-modal");
+  if (modal) modal.style.display = "none";
 }
 
 function goToPlacementWizardFromModal() {
-    closeQueueViewModal();
-    switchTab('placement-wizard');
+  closeQueueViewModal();
+  switchTab("placement-wizard");
+}
+
+// --- 6c. "Retrieve Uploaded List" — students Super Admin pre-loaded via
+// the Student Roster Upload screen, already carrying a class/section/
+// stream, so they skip the Placement Wizard entirely (see
+// pending_roster/assign-id on the server). Each row's section_state
+// (ready/missing/full) comes straight from the server (GET
+// /api/registrar/pending-roster) so the Registrar sees at a glance which
+// rows can actually be assigned right now.
+function openPendingRosterModal() {
+  const modal = document.getElementById("pending-roster-modal");
+  if (!modal) return;
+  modal.style.display = "flex";
+  if (window.lucide) lucide.createIcons({ root: modal });
+  loadPendingRoster();
+}
+
+function closePendingRosterModal() {
+  const modal = document.getElementById("pending-roster-modal");
+  if (modal) modal.style.display = "none";
+}
+
+const PENDING_ROSTER_STATE_LABELS = {
+  ready: { text: "Ready", cls: "status-active" },
+  missing: { text: "Section Not Set Up", cls: "status-unregistered" },
+  full: { text: "Section Full", cls: "status-unregistered" },
+};
+
+// Cached from the last successful GET /api/registrar/pending-roster so
+// assignAllPendingRoster() below knows which pending_ids are actually
+// "ready" right now without re-fetching or re-scraping the rendered
+// list. Refreshed every time loadPendingRoster() runs.
+let PENDING_ROSTER_CACHE = [];
+
+function updatePendingRosterAssignAllButton(rows) {
+  const btn = document.getElementById("pending-roster-assign-all-btn");
+  if (!btn) return;
+  const readyCount = rows.filter((r) => r.section_state === "ready").length;
+  if (readyCount === 0) {
+    btn.style.display = "none";
+    return;
+  }
+  btn.style.display = "";
+  btn.disabled = false;
+  btn.innerText = t("reg_pending_roster_assign_all_btn", { n: readyCount });
+}
+
+async function loadPendingRoster() {
+  const container = document.getElementById("pending-roster-list");
+  if (!container) return;
+  container.innerHTML = '<p class="muted">Loading...</p>';
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/pending-roster",
+      {
+        credentials: "include",
+      },
+    );
+    if (!res.ok) throw new Error("Could not load the uploaded list.");
+    const rows = await res.json();
+    PENDING_ROSTER_CACHE = rows;
+    updatePendingRosterAssignAllButton(rows);
+    if (rows.length === 0) {
+      container.innerHTML =
+        '<tr><td colspan="5" class="muted">No students uploaded by Super Admin are waiting to be assigned an ID.</td></tr>';
+      return;
+    }
+    container.innerHTML = rows
+      .map((r) => {
+        const state =
+          PENDING_ROSTER_STATE_LABELS[r.section_state] ||
+          PENDING_ROSTER_STATE_LABELS.ready;
+        const fullName = [r.first_name, r.middle_name, r.last_name]
+          .filter(Boolean)
+          .join(" ");
+        const canAssign = r.section_state === "ready";
+        return `
+            <tr>
+                <td><strong>${fullName}</strong></td>
+                <td>${r.sex}</td>
+                <td class="data-table-meta">Grade ${r.class_level}-${r.section}${r.stream ? " — " + r.stream : ""}</td>
+                <td><span class="status-pill ${state.cls}">${state.text}</span></td>
+                <td class="data-table-action">
+                    <button type="button" class="confirm-btn"
+                        data-action="assignPendingRosterId" data-arg="${r.pending_id}"
+                        ${canAssign ? "" : 'disabled title="This section needs to be fixed before a student can be assigned to it."'}>
+                        Assign ID
+                    </button>
+                </td>
+            </tr>
+        `;
+      })
+      .join("");
+    if (window.lucide) lucide.createIcons({ root: container });
+  } catch (err) {
+    console.error(err);
+    container.innerHTML =
+      '<tr><td colspan="5" class="muted">Could not load the uploaded list.</td></tr>';
+    PENDING_ROSTER_CACHE = [];
+    updatePendingRosterAssignAllButton([]);
+  }
+}
+
+// Runs assignPendingRosterId's own endpoint once per row currently
+// showing section_state "ready" (see PENDING_ROSTER_CACHE above), one
+// at a time rather than in parallel. Sequential on purpose: capacity is
+// re-checked live inside assign-id itself, so seating students one by
+// one lets a section that fills up mid-run correctly stop the rest
+// (still "ready" in the stale cache) instead of over-seating it.
+async function assignAllPendingRoster() {
+  const btn = document.getElementById("pending-roster-assign-all-btn");
+  const readyIds = PENDING_ROSTER_CACHE.filter(
+    (r) => r.section_state === "ready",
+  ).map((r) => r.pending_id);
+  if (readyIds.length === 0) return;
+
+  if (btn) btn.disabled = true;
+  let assigned = 0;
+  let failed = 0;
+
+  for (let i = 0; i < readyIds.length; i++) {
+    if (btn)
+      btn.innerText = t("reg_pending_roster_assigning_progress", {
+        current: i + 1,
+        total: readyIds.length,
+      });
+    try {
+      const res = await fetch(
+        `http://localhost:3001/api/registrar/pending-roster/${readyIds[i]}/assign-id`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        },
+      );
+      if (res.ok) assigned++;
+      else failed++;
+    } catch (err) {
+      console.error(err);
+      failed++;
+    }
+  }
+
+  showAlert(
+    failed === 0
+      ? `Assigned ${assigned} student${assigned === 1 ? "" : "s"}.`
+      : `Assigned ${assigned}, ${failed} could not be assigned (section may have filled up or changed — check the list below).`,
+    failed === 0 ? "success" : "error",
+  );
+  await loadPendingRoster();
+}
+
+async function assignPendingRosterId(pendingId) {
+  const btn = document.querySelector(
+    `button[data-action="assignPendingRosterId"][data-arg="${pendingId}"]`,
+  );
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = "Assigning...";
+  }
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/pending-roster/${pendingId}/assign-id`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
+    const result = await res.json();
+    if (!res.ok) {
+      showAlert(result.error || "Could not assign student ID.");
+      // Section state may have just changed (e.g. filled up from
+      // another tab) — refresh so the badge/disabled state catches up.
+      await loadPendingRoster();
+      return;
+    }
+    showAlert(
+      `Student registered as ${result.student_id}. Default password: ${result.default_password}`,
+      "success",
+    );
+    await loadPendingRoster();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = "Assign ID";
+    }
+  }
 }
 
 async function runPlacement(class_level, stream) {
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/trigger-placement', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ class_level, stream })
-        });
-        const result = await res.json();
-        if (!res.ok) return showAlert(result.error || "Placement failed.");
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/trigger-placement",
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ class_level, stream }),
+      },
+    );
+    const result = await res.json();
+    if (!res.ok) return showAlert(result.error || "Placement failed.");
 
-        let summary = result.message;
-        if (result.shortfall && result.shortfall.length > 0) {
-            summary += `\n${result.shortfall.length} student(s) couldn't be placed — all active sections are full.`;
-        }
-        showAlert(summary);
-
-        await loadUnassignedQueue();
-        await loadSections();
-        loadBulkSectionOptions();
-        await loadPlacementRegistered();
-        await loadStudentRegistry();
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
+    let summary = result.message;
+    if (result.shortfall && result.shortfall.length > 0) {
+      summary += `\n${result.shortfall.length} student(s) couldn't be placed — all active sections are full.`;
     }
+    showAlert(summary);
+
+    await loadUnassignedQueue();
+    await loadSections();
+    loadBulkSectionOptions();
+    await loadPlacementRegistered();
+    await loadStudentRegistry();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 async function runPlacementAll() {
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/trigger-placement', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({})
-        });
-        const result = await res.json();
-        if (!res.ok) return showAlert(result.error || "Placement failed.");
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/trigger-placement",
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
+    const result = await res.json();
+    if (!res.ok) return showAlert(result.error || "Placement failed.");
 
-        let summary = result.message;
-        if (result.skipped_buckets && result.skipped_buckets.length > 0) {
-            summary += `\n${result.skipped_buckets.length} grade/stream group(s) skipped — no active sections configured.`;
-        }
-        if (result.shortfall && result.shortfall.length > 0) {
-            summary += `\n${result.shortfall.length} student(s) couldn't be placed — all active sections are full.`;
-        }
-        showAlert(summary);
-
-        await loadUnassignedQueue();
-        await loadSections();
-        loadBulkSectionOptions();
-        await loadPlacementRegistered();
-        await loadStudentRegistry();
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
+    let summary = result.message;
+    if (result.skipped_buckets && result.skipped_buckets.length > 0) {
+      summary += `\n${result.skipped_buckets.length} grade/stream group(s) skipped — no active sections configured.`;
     }
+    if (result.shortfall && result.shortfall.length > 0) {
+      summary += `\n${result.shortfall.length} student(s) couldn't be placed — all active sections are full.`;
+    }
+    showAlert(summary);
+
+    await loadUnassignedQueue();
+    await loadSections();
+    loadBulkSectionOptions();
+    await loadPlacementRegistered();
+    await loadStudentRegistry();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 // --- 6b. Student Registry ("Students" nav) ---
 // Every student who's ever been enrolled here, each labeled with when
@@ -1583,15 +2780,15 @@ async function runPlacementAll() {
 // they left, both in E.C. with the Gregorian date in brackets.
 
 function statusPillClass(status) {
-    const s = String(status || '').toLowerCase();
-    if (s === 'active') return 'status-active';
-    if (s === 'pending promotion') return 'status-pending';
-    if (s === 'inactive') return 'status-inactive';
-    if (s === 'unregistered') return 'status-unregistered';
-    if (s === 'graduated') return 'status-graduated';
-    if (s.startsWith('transferred - pending')) return 'status-transferring';
-    if (s.startsWith('transferred')) return 'status-transferred';
-    return '';
+  const s = String(status || "").toLowerCase();
+  if (s === "active") return "status-active";
+  if (s === "pending promotion") return "status-pending";
+  if (s === "inactive") return "status-inactive";
+  if (s === "unregistered") return "status-unregistered";
+  if (s === "graduated") return "status-graduated";
+  if (s.startsWith("transferred - pending")) return "status-transferring";
+  if (s.startsWith("transferred")) return "status-transferred";
+  return "";
 }
 
 // Populates the Academic Year filter dropdown on the Student Registry —
@@ -1599,138 +2796,181 @@ function statusPillClass(status) {
 // rolled over into (see rolloverAcademicYear server-side). Called once
 // on load and again after a language switch.
 async function loadAcademicYearOptions() {
-    const select = document.getElementById('student_registry_academic_year');
-    if (!select) return;
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/academic-years', { credentials: 'include' });
-        if (!res.ok) throw new Error('Could not load academic years');
-        const years = await res.json();
-        const prevValue = select.value;
-        select.innerHTML = years.map(y =>
-            `<option value="${y.is_current ? '' : y.id}">${escAttr(y.label)}${y.is_current ? ' (Current)' : ''}</option>`
-        ).join('');
-        select.value = prevValue || '';
-    } catch (err) {
-        console.error(err);
-        select.innerHTML = '<option value="">Current Year</option>';
-    }
+  const select = document.getElementById("student_registry_academic_year");
+  if (!select) return;
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/academic-years",
+      { credentials: "include" },
+    );
+    if (!res.ok) throw new Error("Could not load academic years");
+    const years = await res.json();
+    const prevValue = select.value;
+    select.innerHTML = years
+      .map(
+        (y) =>
+          `<option value="${y.is_current ? "" : y.id}">${escAttr(y.label)}${y.is_current ? " (Current)" : ""}</option>`,
+      )
+      .join("");
+    select.value = prevValue || "";
+  } catch (err) {
+    console.error(err);
+    select.innerHTML = '<option value="">Current Year</option>';
+  }
 }
 
 async function exportStudentRegistryCsv() {
-    const params = buildStudentRegistryParams();
-    window.open(`http://localhost:3001/api/registrar/students/export.csv?${params.toString()}`, '_blank');
+  const params = buildStudentRegistryParams();
+  window.open(
+    `http://localhost:3001/api/registrar/students/export.csv?${params.toString()}`,
+    "_blank",
+  );
 }
 
 async function exportStudentRegistryPdf() {
-    const params = buildStudentRegistryParams();
-    window.open(`http://localhost:3001/api/registrar/students/export.pdf?${params.toString()}`, '_blank');
+  const params = buildStudentRegistryParams();
+  window.open(
+    `http://localhost:3001/api/registrar/students/export.pdf?${params.toString()}`,
+    "_blank",
+  );
 }
 
 function buildStudentRegistryParams() {
-    const statusFilter = document.getElementById('student_registry_status')?.value || '';
-    const gradeFilter = document.getElementById('student_registry_grade')?.value || '';
-    const q = document.getElementById('student_registry_search')?.value || '';
-    const academicYearId = document.getElementById('student_registry_academic_year')?.value || '';
+  const statusFilter =
+    document.getElementById("student_registry_status")?.value || "";
+  const gradeFilter =
+    document.getElementById("student_registry_grade")?.value || "";
+  const q = document.getElementById("student_registry_search")?.value || "";
+  const academicYearId =
+    document.getElementById("student_registry_academic_year")?.value || "";
 
-    const params = new URLSearchParams();
-    if (statusFilter) params.set('status', statusFilter);
-    if (gradeFilter) params.set('class_level', gradeFilter);
-    if (q.trim()) params.set('q', q.trim());
-    if (academicYearId) params.set('academic_year_id', academicYearId);
-    return params;
+  const params = new URLSearchParams();
+  if (statusFilter) params.set("status", statusFilter);
+  if (gradeFilter) params.set("class_level", gradeFilter);
+  if (q.trim()) params.set("q", q.trim());
+  if (academicYearId) params.set("academic_year_id", academicYearId);
+  return params;
 }
 
 async function loadStudentRegistry() {
-    const container = document.getElementById('student-registry-list');
-    if (!container) return;
-    const params = buildStudentRegistryParams();
+  const container = document.getElementById("student-registry-list");
+  if (!container) return;
+  const params = buildStudentRegistryParams();
 
-    try {
-        const res = await fetch(`http://localhost:3001/api/registrar/students?${params.toString()}`, { credentials: 'include' });
-        if (!res.ok) throw new Error("Could not load the student registry.");
-        const students = await res.json();
-        if (students.length === 0) {
-            container.innerHTML = '<p class="muted">No students match this filter.</p>';
-            return;
-        }
-        container.innerHTML = `
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/students?${params.toString()}`,
+      { credentials: "include" },
+    );
+    if (!res.ok) throw new Error("Could not load the student registry.");
+    const students = await res.json();
+    if (students.length === 0) {
+      container.innerHTML =
+        '<p class="muted">No students match this filter.</p>';
+      return;
+    }
+    container.innerHTML = `
             <div class="data-table-wrap">
                 <table class="data-table">
                     <thead>
                         <tr>
-                            <th>${t('reg_col_student_id')}</th>
-                            <th>${t('reg_col_name')}</th>
-                            <th>${t('reg_col_grade')}</th>
-                            <th>${t('reg_col_status')}</th>
-                            <th>${t('reg_enrolled_label')}</th>
-                            <th>${t('reg_left_label')}</th>
+                            <th>${t("reg_col_student_id")}</th>
+                            <th>${t("reg_col_name")}</th>
+                            <th>${t("reg_col_grade")}</th>
+                            <th>${t("reg_col_status")}</th>
+                            <th>${t("reg_col_guardian")}</th>
+                            <th>${t("reg_enrolled_label")}</th>
+                            <th>${t("reg_left_label")}</th>
                             <th></th>
                         </tr>
                     </thead>
                     <tbody>
-                        ${students.map(s => `
+                        ${students
+                          .map(
+                            (s) => `
                             <tr>
                                 <td class="data-table-id">${s.student_id}</td>
                                 <td>
-                                    <button type="button" class="student-name-link" ${dataArg('viewStudentHistory', s.student_id)}>${s.full_name}</button>
+                                    <button type="button" class="student-name-link" ${dataArg("viewStudentHistory", s.student_id)}>${s.full_name}</button>
                                 </td>
-                                <td>${t('reg_grade_label')} ${s.class_level}${s.section ? '-' + s.section : ''}${s.stream ? ' — ' + s.stream : ''}</td>
-                                <td><span class="status-pill ${statusPillClass(s.status)}">${s.status || '—'}</span></td>
-                                <td class="data-table-meta">${formatYearBilingual(s.enrolled_at) || '—'}</td>
-                                <td class="data-table-meta">${s.left_at ? formatYearBilingual(s.left_at) : '—'}</td>
+                                <td>${t("reg_grade_label")} ${s.class_level}${s.section ? "-" + s.section : ""}${s.stream ? " — " + s.stream : ""}</td>
+                                <td><span class="status-pill ${statusPillClass(s.status)}">${s.status || "—"}</span></td>
+                                <td>${
+                                  s.has_guardian
+                                    ? `<button type="button" class="status-pill status-pill-btn status-has-guardian" ${dataArg("viewStudentGuardian", s.student_id)} title="${escAttr(t("reg_guardian_view_tooltip"))}">${t("reg_guardian_status_yes")}</button>`
+                                    : `<button type="button" class="status-pill status-pill-btn status-no-guardian" ${dataArg("goToLinkGuardian", s.student_id)} title="${escAttr(t("reg_guardian_link_tooltip"))}">${t("reg_guardian_status_no")}</button>`
+                                }</td>
+                                <td class="data-table-meta">${formatYearBilingual(s.enrolled_at) || "—"}</td>
+                                <td class="data-table-meta">${s.left_at ? formatYearBilingual(s.left_at) : "—"}</td>
                                 <td class="data-table-action">
-                                    <button type="button" ${dataArg('viewStudentHistory', s.student_id)}>${t('reg_view_history')}</button>
+                                    <button type="button" ${dataArg("viewStudentHistory", s.student_id)}>${t("reg_view_history")}</button>
                                 </td>
                             </tr>
-                        `).join('')}
+                        `,
+                          )
+                          .join("")}
                     </tbody>
                 </table>
             </div>
         `;
-    } catch (err) {
-        console.error(err);
-        container.innerHTML = '<p class="muted">Could not load the student registry.</p>';
-    }
+  } catch (err) {
+    console.error(err);
+    container.innerHTML =
+      '<p class="muted">Could not load the student registry.</p>';
+  }
 }
 
 // Shared by the Students tab and the Transfer Hub's incoming-code
 // preview — same {chain, grade_summary} shape from
 // getStudentAcademicChain server-side either way.
 function renderStudentHistoryHtml(history) {
-    if (!history || !history.chain || history.chain.length === 0) {
-        return '<p class="muted">No history on record.</p>';
-    }
-    const chainHtml = history.chain.map(stop => `
+  if (!history || !history.chain || history.chain.length === 0) {
+    return '<p class="muted">No history on record.</p>';
+  }
+  const chainHtml = history.chain
+    .map(
+      (stop) => `
         <div style="border-left: 3px solid #3498db; padding: 6px 0 6px 12px; margin-bottom: 8px;">
-            <strong>${stop.school_name || 'Unknown school'}</strong> — ${stop.student_id}
+            <strong>${stop.school_name || "Unknown school"}</strong> — ${stop.student_id}
             <br><span class="muted" style="font-size: 12px;">
-                ${t('reg_enrolled_label')}: ${formatYearBilingual(stop.entered_at) || '—'}
-                ${stop.left_at ? ` &nbsp;|&nbsp; ${t('reg_left_label')}: ${formatYearBilingual(stop.left_at)}` : ''}
+                ${t("reg_enrolled_label")}: ${formatYearBilingual(stop.entered_at) || "—"}
+                ${stop.left_at ? ` &nbsp;|&nbsp; ${t("reg_left_label")}: ${formatYearBilingual(stop.left_at)}` : ""}
             </span>
         </div>
-    `).join('');
+    `,
+    )
+    .join("");
 
-    const gradeRows = (history.grade_summary || []).map(g => `
+  const gradeRows = (history.grade_summary || [])
+    .map(
+      (g) => `
         <tr>
-            <td style="padding:6px; border:1px solid #ddd;">${t('reg_grade_label')} ${g.class_level}</td>
-            <td style="padding:6px; border:1px solid #ddd; text-align:center;">${g.has_academic_record ? t('reg_doc_history_has_record') : t('reg_doc_history_no_record')}</td>
+            <td style="padding:6px; border:1px solid #ddd;">${t("reg_grade_label")} ${g.class_level}</td>
+            <td style="padding:6px; border:1px solid #ddd; text-align:center;">${g.has_academic_record ? t("reg_doc_history_has_record") : t("reg_doc_history_no_record")}</td>
             <td style="padding:6px; border:1px solid #ddd;">${
-                g.documents && g.documents.length > 0
-                    ? g.documents.map(d => `${d.doc_type} (${formatYearBilingual(d.issued_at) || '—'})`).join(', ')
-                    : t('reg_doc_history_not_issued')
+              g.documents && g.documents.length > 0
+                ? g.documents
+                    .map(
+                      (d) =>
+                        `${d.doc_type} (${formatYearBilingual(d.issued_at) || "—"})`,
+                    )
+                    .join(", ")
+                : t("reg_doc_history_not_issued")
             }</td>
         </tr>
-    `).join('');
+    `,
+    )
+    .join("");
 
-    return `
-        <h4 style="margin-top:15px;">${t('reg_transfer_history_heading')}</h4>
+  return `
+        <h4 style="margin-top:15px;">${t("reg_transfer_history_heading")}</h4>
         ${chainHtml}
-        <h4 style="margin-top:15px;">${t('reg_doc_history_heading')}</h4>
+        <h4 style="margin-top:15px;">${t("reg_doc_history_heading")}</h4>
         <table style="width:100%; border-collapse:collapse;">
             <thead><tr style="background:#2c3e50; color:white;">
-                <th style="padding:6px; text-align:left; border:1px solid #ddd;">${t('reg_grade_label')}</th>
-                <th style="padding:6px; border:1px solid #ddd;">${t('reg_doc_history_has_record')} / ${t('reg_doc_history_no_record')}</th>
-                <th style="padding:6px; text-align:left; border:1px solid #ddd;">${t('reg_issuance_log_heading')}</th>
+                <th style="padding:6px; text-align:left; border:1px solid #ddd;">${t("reg_grade_label")}</th>
+                <th style="padding:6px; border:1px solid #ddd;">${t("reg_doc_history_has_record")} / ${t("reg_doc_history_no_record")}</th>
+                <th style="padding:6px; text-align:left; border:1px solid #ddd;">${t("reg_issuance_log_heading")}</th>
             </tr></thead>
             <tbody>${gradeRows}</tbody>
         </table>
@@ -1738,64 +2978,365 @@ function renderStudentHistoryHtml(history) {
 }
 
 async function viewStudentHistory(student_id) {
-    const modal = document.getElementById('student-history-modal');
-    const body = document.getElementById('student-history-body');
-    if (!modal || !body) return;
-    body.innerHTML = '<p class="muted">Loading...</p>';
-    modal.style.display = 'flex';
-    try {
-        const res = await fetch(`http://localhost:3001/api/registrar/students/${encodeURIComponent(student_id)}/history`, { credentials: 'include' });
-        const result = await res.json();
-        if (!res.ok) { body.innerHTML = `<p class="muted">${result.error || "Could not load history."}</p>`; return; }
-        body.innerHTML = renderStudentHistoryHtml(result);
-    } catch (err) {
-        console.error(err);
-        body.innerHTML = '<p class="muted">Server connection error.</p>';
+  const modal = document.getElementById("student-history-modal");
+  const body = document.getElementById("student-history-body");
+  if (!modal || !body) return;
+  body.innerHTML = '<p class="muted">Loading...</p>';
+  modal.style.display = "flex";
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/students/${encodeURIComponent(student_id)}/history`,
+      { credentials: "include" },
+    );
+    const result = await res.json();
+    if (!res.ok) {
+      body.innerHTML = `<p class="muted">${result.error || "Could not load history."}</p>`;
+      return;
     }
+    body.innerHTML = renderStudentHistoryHtml(result);
+  } catch (err) {
+    console.error(err);
+    body.innerHTML = '<p class="muted">Server connection error.</p>';
+  }
 }
 
 function closeStudentHistory() {
-    const modal = document.getElementById('student-history-modal');
-    if (modal) modal.style.display = 'none';
+  const modal = document.getElementById("student-history-modal");
+  if (modal) modal.style.display = "none";
+}
+
+// --- 6b. Guardian/Parent Registry (Registrar + Recorder) ---
+// Every guardian with at least one child at this school, searchable by
+// name/phone/Fayda number — mirrors the Student Registry's search-box
+// pattern above. Drilling into a guardian shows their linked children
+// via GET /api/registrar/guardians/:id/children.
+
+async function loadGuardianRegistry() {
+  const container = document.getElementById("guardian-registry-list");
+  if (!container) return;
+  const q = document.getElementById("guardian_registry_search")?.value || "";
+  const params = new URLSearchParams();
+  if (q.trim()) params.set("q", q.trim());
+
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/guardians?${params.toString()}`,
+      { credentials: "include" },
+    );
+    if (!res.ok) throw new Error("Could not load guardians.");
+    const guardians = await res.json();
+    if (guardians.length === 0) {
+      container.innerHTML = `<p class="muted">${t("reg_no_guardians")}</p>`;
+      return;
+    }
+    container.innerHTML = `
+            <div class="data-table-wrap">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>${t("reg_col_guardian_name")}</th>
+                            <th>${t("reg_col_guardian_login_id") || "Login ID"}</th>
+                            <th>${t("reg_col_guardian_phone")}</th>
+                            <th>${t("reg_col_guardian_fayda")}</th>
+                            <th>${t("reg_col_children_count")}</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${guardians
+                          .map(
+                            (g) => `
+                            <tr>
+                                <td>
+                                    <button type="button" class="student-name-link" ${dataArg("viewGuardianChildren", g.id)}>${g.full_name}</button>
+                                </td>
+                                <td>${g.parent_code || "—"}</td>
+                                <td>${g.phone_number || "—"}</td>
+                                <td>${g.fayda_number || "—"}</td>
+                                <td>${g.children_count}</td>
+                                <td class="data-table-action">
+                                    <button type="button" ${dataArg("viewGuardianChildren", g.id)}>${t("reg_view_children")}</button>
+                                </td>
+                            </tr>
+                        `,
+                          )
+                          .join("")}
+                    </tbody>
+                </table>
+            </div>
+        `;
+  } catch (err) {
+    console.error(err);
+    container.innerHTML = '<p class="muted">Could not load guardians.</p>';
+  }
+}
+
+// Holds the guardian currently open in the "Linked Children" modal, so
+// startEditGuardianDetail/cancelEditGuardianDetail can populate and
+// revert the edit fields without an extra round-trip to the server.
+let currentGuardianDetail = null;
+
+async function viewGuardianChildren(guardian_id) {
+  const modal = document.getElementById("guardian-children-modal");
+  const body = document.getElementById("guardian-children-body");
+  if (!modal || !body) return;
+  body.innerHTML = '<p class="muted">Loading...</p>';
+  modal.style.display = "flex";
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/guardians/${encodeURIComponent(guardian_id)}/children`,
+      { credentials: "include" },
+    );
+    const result = await res.json();
+    if (!res.ok) {
+      body.innerHTML = `<p class="muted">${result.error || "Could not load this guardian's children."}</p>`;
+      return;
+    }
+    const g = result.guardian;
+    currentGuardianDetail = g;
+    const rows = (result.children || [])
+      .map(
+        (c) => `
+            <tr>
+                <td class="data-table-id">${c.student_id}</td>
+                <td>${c.full_name}</td>
+                <td>${t("reg_grade_label")} ${c.class_level}${c.section ? "-" + c.section : ""}${c.stream ? " — " + c.stream : ""}</td>
+                <td><span class="status-pill ${statusPillClass(c.status)}">${c.status || "—"}</span></td>
+            </tr>
+        `,
+      )
+      .join("");
+    body.innerHTML = `
+            <div id="guardian-detail-display" style="display: flex; justify-content: space-between; align-items: flex-start; gap: 10px">
+                <p style="margin: 0"><strong>${escAttr(g.full_name)}</strong><br>
+                <span class="muted">${t("reg_col_guardian_login_id") || "Login ID"}: ${escAttr(g.parent_code || "—")} &nbsp;|&nbsp; ${escAttr(g.phone_number || "—")} &nbsp;|&nbsp; ${escAttr(g.fayda_number || "—")}</span></p>
+                <button type="button" data-action="startEditGuardianDetail">${t("reg_edit_guardian_button")}</button>
+            </div>
+            <div id="guardian-detail-edit" style="display: none">
+                <div class="form-grid">
+                    <input
+                        type="text"
+                        id="editg_fayda"
+                        placeholder="${escAttr(t("reg_guardian_fayda_placeholder"))}"
+                        minlength="16"
+                        maxlength="16"
+                        autocomplete="off"
+                    />
+                    <input
+                        type="text"
+                        id="editg_name"
+                        placeholder="${escAttr(t("reg_guardian_name_placeholder"))}"
+                    />
+                    <input
+                        type="text"
+                        id="editg_phone"
+                        placeholder="${escAttr(t("reg_guardian_phone_placeholder"))}"
+                        minlength="10"
+                        maxlength="10"
+                    />
+                </div>
+                <div style="margin-top: 10px; display: flex; gap: 8px">
+                    <button type="button" data-action="saveGuardianEdit">${t("reg_save_changes")}</button>
+                    <button type="button" class="confirm-btn confirm-btn-secondary" data-action="cancelEditGuardianDetail">${t("reg_confirm_cancel")}</button>
+                </div>
+            </div>
+            <div class="data-table-wrap" style="margin-top: 12px">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>${t("reg_col_student_id")}</th>
+                            <th>${t("reg_col_name")}</th>
+                            <th>${t("reg_col_grade")}</th>
+                            <th>${t("reg_col_status")}</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows || `<tr><td colspan="4" class="muted">${t("reg_no_guardians")}</td></tr>`}</tbody>
+                </table>
+            </div>
+        `;
+  } catch (err) {
+    console.error(err);
+    body.innerHTML = '<p class="muted">Server connection error.</p>';
+  }
+}
+
+// Reveals the editable Fayda/name/phone fields, pre-filled from the
+// guardian currently loaded in the modal — most commonly used to fix a
+// mistyped Fayda number caught after the fact.
+function startEditGuardianDetail() {
+  if (!currentGuardianDetail) return;
+  document.getElementById("guardian-detail-display").style.display = "none";
+  document.getElementById("guardian-detail-edit").style.display = "block";
+  document.getElementById("editg_fayda").value =
+    currentGuardianDetail.fayda_number || "";
+  document.getElementById("editg_name").value =
+    currentGuardianDetail.full_name || "";
+  document.getElementById("editg_phone").value =
+    currentGuardianDetail.phone_number || "";
+}
+
+function cancelEditGuardianDetail() {
+  const display = document.getElementById("guardian-detail-display");
+  const edit = document.getElementById("guardian-detail-edit");
+  if (display) display.style.display = "flex";
+  if (edit) edit.style.display = "none";
+}
+
+// Saving a guardian edit re-authenticates the acting Registrar first —
+// a guardian record can be shared across siblings (and even other
+// schools), so this isn't a one-student cosmetic tweak. Same
+// password-prompt pattern as starting/cancelling a transfer.
+async function saveGuardianEdit() {
+  if (!currentGuardianDetail) return;
+  const full_name = document.getElementById("editg_name").value.trim();
+  const phone_number = document.getElementById("editg_phone").value.trim();
+  const fayda_number = document.getElementById("editg_fayda").value.trim();
+  if (!full_name || !phone_number || !fayda_number) {
+    return showAlert(
+      "Guardian full name, phone number, and Fayda number are required.",
+    );
+  }
+
+  const password = await showPasswordPrompt(
+    t("reg_guardian_edit_password_prompt"),
+  );
+  if (password === null) return;
+  if (!password) return showAlert("Enter your password to continue.", "error");
+
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/guardians/${encodeURIComponent(currentGuardianDetail.id)}`,
+      {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          full_name,
+          phone_number,
+          fayda_number,
+          password,
+        }),
+      },
+    );
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) return showAlert(result.error || "Could not update guardian.");
+
+    showAlert("Guardian updated.", "success");
+    await viewGuardianChildren(currentGuardianDetail.id);
+    loadGuardianRegistry();
+    loadStudentRegistry();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
+}
+
+function closeGuardianChildren() {
+  currentGuardianDetail = null;
+  const modal = document.getElementById("guardian-children-modal");
+  if (modal) modal.style.display = "none";
+}
+
+// Clicking "No Guardian" on the Student Registry jumps straight to
+// Information Update with that student already loaded — the Information
+// Update tab is what actually surfaces the link-a-guardian form (see
+// renderUpdateGuardianSection), so this just does the search for you.
+function goToLinkGuardian(student_id) {
+  switchTab("update-info");
+  const searchInput = document.getElementById("search-id");
+  if (searchInput) searchInput.value = student_id;
+  fetchStudent();
+}
+
+// Clicking "Has Guardian" on the Student Registry shows who that
+// guardian is without leaving the registry — GET /api/student/:id
+// already returns the guardians array (see renderUpdateGuardianSection's
+// data source), so this reuses that same endpoint.
+async function viewStudentGuardian(student_id) {
+  const modal = document.getElementById("student-guardian-modal");
+  const body = document.getElementById("student-guardian-body");
+  if (!modal || !body) return;
+  body.innerHTML = '<p class="muted">Loading...</p>';
+  modal.style.display = "flex";
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/student/${encodeURIComponent(student_id)}`,
+      { credentials: "include" },
+    );
+    const result = await res.json();
+    if (!res.ok) {
+      body.innerHTML = `<p class="muted">${result.error || "Could not load this student's guardian."}</p>`;
+      return;
+    }
+    const guardians = result.guardians || [];
+    if (guardians.length === 0) {
+      body.innerHTML = `<p class="muted">${t("reg_no_guardians")}</p>`;
+      return;
+    }
+    body.innerHTML = guardians
+      .map(
+        (g) => `
+            <div class="emis-status emis-status-match">
+                <strong>${escAttr(g.full_name)}</strong><br>
+                ${escAttr(g.phone_number || "—")} &nbsp;|&nbsp; ${escAttr(g.fayda_number || "—")}
+            </div>
+        `,
+      )
+      .join("");
+  } catch (err) {
+    console.error(err);
+    body.innerHTML = '<p class="muted">Server connection error.</p>';
+  }
+}
+
+function closeStudentGuardian() {
+  const modal = document.getElementById("student-guardian-modal");
+  if (modal) modal.style.display = "none";
 }
 
 // --- 7. Transfer Navigation Hub (Registrar + Recorder) ---
 
 function showTransferPane(which) {
-    document.getElementById('transfer-outgoing-pane').style.display = which === 'outgoing' ? 'block' : 'none';
-    document.getElementById('transfer-incoming-pane').style.display = which === 'incoming' ? 'block' : 'none';
+  document.getElementById("transfer-outgoing-pane").style.display =
+    which === "outgoing" ? "block" : "none";
+  document.getElementById("transfer-incoming-pane").style.display =
+    which === "incoming" ? "block" : "none";
 }
 
 async function startOutgoingTransfer(student_id) {
-    if (!student_id) return;
-    if (!(await showConfirm(t('reg_generate_code_confirm')))) return;
-    const password = await showPasswordPrompt(t('reg_transfer_password_prompt'));
-    if (password === null) return;
-    if (!password) return showAlert("Enter your password to continue.", "error");
+  if (!student_id) return;
+  if (!(await showConfirm(t("reg_generate_code_confirm")))) return;
+  const password = await showPasswordPrompt(t("reg_transfer_password_prompt"));
+  if (password === null) return;
+  if (!password) return showAlert("Enter your password to continue.", "error");
 
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/transfers/outgoing', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ student_id, password })
-        });
-        const result = await res.json();
-        if (!res.ok) return showAlert(result.error || "Could not start the transfer.");
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/transfers/outgoing",
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ student_id, password }),
+      },
+    );
+    const result = await res.json();
+    if (!res.ok)
+      return showAlert(result.error || "Could not start the transfer.");
 
-        document.getElementById('outgoing-code-result').innerHTML = `
+    document.getElementById("outgoing-code-result").innerHTML = `
             <div class="search-box" style="flex-direction: column; align-items: flex-start; background: #eafaf1; border-color: #27ae60;">
                 <strong>Transfer Code — share this with the receiving school:</strong>
                 <div style="font-size: 22px; font-weight: bold; letter-spacing: 1px; margin: 8px 0;">${result.transfer_code}</div>
             </div>
         `;
-        await loadApprovedTransferRequests();
-        await loadOutgoingTransfers();
-        await loadRegistrarNotifications();
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
-    }
+    await loadApprovedTransferRequests();
+    await loadOutgoingTransfers();
+    await loadRegistrarNotifications();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 // Drives the "Approved Transfers Waiting to Clear" list — the only way a
@@ -1804,66 +3345,82 @@ async function startOutgoingTransfer(student_id) {
 // (or directly initiated) the transfer, and the server enforces the same
 // rule independently of this UI.
 async function loadApprovedTransferRequests() {
-    const container = document.getElementById('approved-transfer-requests-list');
-    if (!container) return;
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/transfer-requests/approved', { credentials: 'include' });
-        if (!res.ok) throw new Error("Could not load approved transfer requests.");
-        const requests = await res.json();
+  const container = document.getElementById("approved-transfer-requests-list");
+  if (!container) return;
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/transfer-requests/approved",
+      { credentials: "include" },
+    );
+    if (!res.ok) throw new Error("Could not load approved transfer requests.");
+    const requests = await res.json();
 
-        if (requests.length === 0) {
-            container.innerHTML = `<p class="muted">${t('reg_no_approved_requests')}</p>`;
-            return;
-        }
+    if (requests.length === 0) {
+      container.innerHTML = `<p class="muted">${t("reg_no_approved_requests")}</p>`;
+      return;
+    }
 
-        container.innerHTML = requests.map(reqRow => `
+    container.innerHTML = requests
+      .map(
+        (reqRow) => `
             <div class="search-box" style="justify-content: space-between; align-items: center; flex-wrap: wrap;">
                 <span>
                     <strong>${reqRow.full_name || reqRow.student_id}</strong>
                     <span class="muted">(${reqRow.student_id})</span>
-                    ${reqRow.class_level ? ` &nbsp; ${t('reg_grade_label')} ${reqRow.class_level}${reqRow.section ? '-' + reqRow.section : ''}` : ''}
-                    <span class="chip-principal">${t('reg_principal_initiated')}</span>
-                    ${reqRow.reason ? `<br><span class="muted" style="font-size: 12px;">${reqRow.reason}</span>` : ''}
+                    ${reqRow.class_level ? ` &nbsp; ${t("reg_grade_label")} ${reqRow.class_level}${reqRow.section ? "-" + reqRow.section : ""}` : ""}
+                    <span class="chip-principal">${t("reg_principal_initiated")}</span>
+                    ${reqRow.reason ? `<br><span class="muted" style="font-size: 12px;">${reqRow.reason}</span>` : ""}
                     <br><span class="muted" style="font-size: 12px;">${formatDateBilingual(reqRow.decided_at)}</span>
                 </span>
-                <button type="button" ${dataArg('startOutgoingTransfer', reqRow.student_id)}>${t('reg_generate_code')}</button>
+                <button type="button" ${dataArg("startOutgoingTransfer", reqRow.student_id)}>${t("reg_generate_code")}</button>
             </div>
-        `).join('');
-    } catch (err) {
-        console.error(err);
-        container.innerHTML = '<p class="muted">Could not load approved transfer requests.</p>';
-    }
+        `,
+      )
+      .join("");
+  } catch (err) {
+    console.error(err);
+    container.innerHTML =
+      '<p class="muted">Could not load approved transfer requests.</p>';
+  }
 }
 
 async function loadOutgoingTransfers() {
-    const container = document.getElementById('outgoing-transfers-list');
-    if (!container) return;
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/transfers/outgoing', { credentials: 'include' });
-        if (!res.ok) throw new Error("Could not load outgoing transfers.");
-        const transfers = await res.json();
+  const container = document.getElementById("outgoing-transfers-list");
+  if (!container) return;
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/transfers/outgoing",
+      { credentials: "include" },
+    );
+    if (!res.ok) throw new Error("Could not load outgoing transfers.");
+    const transfers = await res.json();
 
-        if (transfers.length === 0) {
-            container.innerHTML = '<p class="muted">No outgoing transfers yet.</p>';
-            return;
-        }
+    if (transfers.length === 0) {
+      container.innerHTML = '<p class="muted">No outgoing transfers yet.</p>';
+      return;
+    }
 
-        container.innerHTML = transfers.map(row => `
+    container.innerHTML = transfers
+      .map(
+        (row) => `
             <div class="search-box" style="justify-content: space-between; align-items: center; flex-wrap: wrap;">
                 <span>
                     <strong>${row.student_id}</strong> &nbsp; Code: ${row.transfer_code} &nbsp;
                     <span style="text-transform: capitalize;">${outgoingTransferStatusLabel(row.status)}</span>
-                    ${row.principal_request_id ? `<span class="chip-principal">${t('reg_principal_initiated')}</span>` : ''}
-                    ${row.new_student_id ? ` &rarr; ${row.new_student_id}` : ''}
+                    ${row.principal_request_id ? `<span class="chip-principal">${t("reg_principal_initiated")}</span>` : ""}
+                    ${row.new_student_id ? ` &rarr; ${row.new_student_id}` : ""}
                     <br><span class="muted" style="font-size: 12px;">${formatDateBilingual(row.initiated_at)}</span>
                 </span>
-                ${row.status === 'pending' ? `<button type="button" ${dataArg('cancelOutgoingTransfer', row.id)} style="background:#e74c3c;">Cancel</button>` : ''}
+                ${row.status === "pending" ? `<button type="button" ${dataArg("cancelOutgoingTransfer", row.id)} style="background:#e74c3c;">Cancel</button>` : ""}
             </div>
-        `).join('');
-    } catch (err) {
-        console.error(err);
-        container.innerHTML = '<p class="muted">Could not load outgoing transfers.</p>';
-    }
+        `,
+      )
+      .join("");
+  } catch (err) {
+    console.error(err);
+    container.innerHTML =
+      '<p class="muted">Could not load outgoing transfers.</p>';
+  }
 }
 
 // The Registrar is the final step on the sending side — once they've
@@ -1872,172 +3429,214 @@ async function loadOutgoingTransfers() {
 // Registrar still owes an action, so it's relabeled here without
 // touching the underlying 'pending' status string other queries rely on.
 function outgoingTransferStatusLabel(status) {
-    if (status === 'pending') return t('reg_transfer_status_transferred');
-    if (status === 'completed') return t('reg_transfer_status_completed');
-    if (status === 'cancelled') return t('reg_transfer_status_cancelled');
-    return status;
+  if (status === "pending") return t("reg_transfer_status_transferred");
+  if (status === "completed") return t("reg_transfer_status_completed");
+  if (status === "cancelled") return t("reg_transfer_status_cancelled");
+  return status;
 }
 
 async function cancelOutgoingTransfer(id) {
-    if (!(await showConfirm(t('reg_cancel_transfer_confirm')))) return;
-    const password = await showPasswordPrompt(t('reg_transfer_password_prompt'));
-    if (password === null) return;
-    if (!password) return showAlert("Enter your password to continue.", "error");
+  if (!(await showConfirm(t("reg_cancel_transfer_confirm")))) return;
+  const password = await showPasswordPrompt(t("reg_transfer_password_prompt"));
+  if (password === null) return;
+  if (!password) return showAlert("Enter your password to continue.", "error");
 
-    try {
-        const res = await fetch(`http://localhost:3001/api/registrar/transfers/outgoing/${id}/cancel`, {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password })
-        });
-        const result = await res.json();
-        if (!res.ok) return showAlert(result.error || "Could not cancel the transfer.");
-        await loadOutgoingTransfers();
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
-    }
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/transfers/outgoing/${id}/cancel`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      },
+    );
+    const result = await res.json();
+    if (!res.ok)
+      return showAlert(result.error || "Could not cancel the transfer.");
+    await loadOutgoingTransfers();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 async function lookupIncomingTransfer() {
-    const transfer_code = document.getElementById('in_transfer_code').value.trim();
-    if (!transfer_code) return showAlert("Enter a transfer code first.");
-    const preview = document.getElementById('incoming-preview');
+  const transfer_code = document
+    .getElementById("in_transfer_code")
+    .value.trim();
+  if (!transfer_code) return showAlert("Enter a transfer code first.");
+  const preview = document.getElementById("incoming-preview");
 
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/transfers/incoming/lookup', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ transfer_code })
-        });
-        const result = await res.json();
-        if (!res.ok) {
-            preview.innerHTML = `<p class="muted">${result.error || "Could not find that transfer code."}</p>`;
-            return;
-        }
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/transfers/incoming/lookup",
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transfer_code }),
+      },
+    );
+    const result = await res.json();
+    if (!res.ok) {
+      preview.innerHTML = `<p class="muted">${result.error || "Could not find that transfer code."}</p>`;
+      return;
+    }
 
-        const s = result.snapshot;
-        preview.innerHTML = `
+    const s = result.snapshot;
+    preview.innerHTML = `
             <div class="search-box" style="flex-direction: column; align-items: flex-start;">
-                <p><strong>${s.first_name} ${s.middle_name || ''} ${s.last_name}</strong></p>
+                <p><strong>${s.first_name} ${s.middle_name || ""} ${s.last_name}</strong></p>
                 <p>Grade ${s.class_level} — ${s.stream} &nbsp; | &nbsp; ${s.sex}</p>
-                <button type="button" ${dataArg('completeIncomingTransfer', result.transfer_code)}>Confirm Import</button>
+                ${s.emis_id ? `<p>EMIS ID: <strong>${escapeHtml(s.emis_id)}</strong> (carries over automatically)</p>` : `<p class="muted">No EMIS ID on file for this student yet.</p>`}
+                <button type="button" ${dataArg("completeIncomingTransfer", result.transfer_code)}>Confirm Import</button>
                 <div style="width:100%; margin-top:10px;">${renderStudentHistoryHtml(result.history)}</div>
             </div>
         `;
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
-    }
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 async function completeIncomingTransfer(transfer_code) {
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/transfers/incoming/complete', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ transfer_code })
-        });
-        const result = await res.json();
-        if (!res.ok) return showAlert(result.error || "Could not complete the transfer.");
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/transfers/incoming/complete",
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transfer_code }),
+      },
+    );
+    const result = await res.json();
+    if (!res.ok)
+      return showAlert(result.error || "Could not complete the transfer.");
 
-        showAlert(result.message);
-        document.getElementById('in_transfer_code').value = '';
-        document.getElementById('incoming-preview').innerHTML = '';
-        await loadIncomingTransfers();
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
-    }
+    showAlert(result.message);
+    document.getElementById("in_transfer_code").value = "";
+    document.getElementById("incoming-preview").innerHTML = "";
+    await loadIncomingTransfers();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 function toggleExternalTransferForm() {
-    const form = document.getElementById('external-transfer-form');
-    form.style.display = form.style.display === 'none' ? 'block' : 'none';
+  const form = document.getElementById("external-transfer-form");
+  form.style.display = form.style.display === "none" ? "block" : "none";
 }
 
 function updateExternalStreamOptions() {
-    const grade = document.getElementById('ext_grade').value;
-    const streamSelect = document.getElementById('ext_stream');
-    streamSelect.innerHTML = '';
-    if (grade == '9' || grade == '10') {
-        streamSelect.innerHTML = '<option value="General">General</option>';
-    } else if (grade == '11' || grade == '12') {
-        streamSelect.innerHTML = `
-            <option value="Natural Science">Natural Science</option>
-            <option value="Social Science">Social Science</option>
-        `;
-    } else {
-        streamSelect.innerHTML = '<option value="">Select Stream</option>';
-    }
+  const grade = document.getElementById("ext_grade").value;
+  document.getElementById("ext_stream").innerHTML =
+    streamOptionsHtmlForGrade(grade);
 }
 
 async function submitExternalTransfer() {
-    const data = {
-        first_name: document.getElementById('ext_first').value,
-        middle_name: document.getElementById('ext_middle').value,
-        last_name: document.getElementById('ext_last').value,
-        sex: document.getElementById('ext_sex').value,
-        class_level: document.getElementById('ext_grade').value,
-        stream: document.getElementById('ext_stream').value,
-        phone_number: document.getElementById('ext_phone').value,
-        fayda_number: document.getElementById('ext_fayda').value
-    };
-    if (!data.first_name || !data.last_name || !data.sex || !data.class_level || !data.stream) {
-        return showAlert("First name, last name, sex, grade, and stream are required.");
-    }
+  const emisEl = document.getElementById("ext_emis");
+  if (emisEl && emisEl.dataset.emisConflict === "true") {
+    return showAlert(
+      "Resolve the EMIS ID issue above before adding this student.",
+    );
+  }
 
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/transfers/incoming/manual', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data)
-        });
-        const result = await res.json();
-        if (!res.ok) return showAlert(result.error || "Could not add this student.");
+  const data = {
+    first_name: document.getElementById("ext_first").value,
+    middle_name: document.getElementById("ext_middle").value,
+    last_name: document.getElementById("ext_last").value,
+    sex: document.getElementById("ext_sex").value,
+    class_level: document.getElementById("ext_grade").value,
+    stream: document.getElementById("ext_stream").value,
+    phone_number: document.getElementById("ext_phone").value,
+    fayda_number: document.getElementById("ext_fayda").value,
+    emis_id: emisEl ? emisEl.value.trim() || null : null,
+  };
+  if (
+    !data.first_name ||
+    !data.last_name ||
+    !data.sex ||
+    !data.class_level ||
+    !data.stream
+  ) {
+    return showAlert(
+      "First name, last name, sex, grade, and stream are required.",
+    );
+  }
 
-        showAlert(result.message);
-        document.getElementById('external-transfer-form').style.display = 'none';
-        ['ext_first', 'ext_middle', 'ext_last', 'ext_sex', 'ext_grade', 'ext_stream', 'ext_phone', 'ext_fayda'].forEach(id => {
-            document.getElementById(id).value = '';
-        });
-        await loadIncomingTransfers();
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
-    }
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/transfers/incoming/manual",
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      },
+    );
+    const result = await res.json();
+    if (!res.ok)
+      return showAlert(result.error || "Could not add this student.");
+
+    showAlert(result.message);
+    document.getElementById("external-transfer-form").style.display = "none";
+    [
+      "ext_first",
+      "ext_middle",
+      "ext_last",
+      "ext_sex",
+      "ext_grade",
+      "ext_stream",
+      "ext_phone",
+      "ext_fayda",
+    ].forEach((id) => {
+      document.getElementById(id).value = "";
+    });
+    clearEmisField("ext");
+    await loadIncomingTransfers();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 async function loadIncomingTransfers() {
-    const container = document.getElementById('incoming-transfers-list');
-    if (!container) return;
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/transfers/incoming', { credentials: 'include' });
-        if (!res.ok) throw new Error("Could not load incoming transfers.");
-        const transfers = await res.json();
+  const container = document.getElementById("incoming-transfers-list");
+  if (!container) return;
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/transfers/incoming",
+      { credentials: "include" },
+    );
+    if (!res.ok) throw new Error("Could not load incoming transfers.");
+    const transfers = await res.json();
 
-        if (transfers.length === 0) {
-            container.innerHTML = '<p class="muted">No incoming transfers yet.</p>';
-            return;
-        }
+    if (transfers.length === 0) {
+      container.innerHTML = '<p class="muted">No incoming transfers yet.</p>';
+      return;
+    }
 
-        container.innerHTML = transfers.map(t => `
+    container.innerHTML = transfers
+      .map(
+        (t) => `
             <div class="search-box" style="justify-content: space-between; align-items: center;">
                 <span>
                     <strong>${t.new_student_id}</strong>
-                    ${t.is_external ? ' &mdash; External transfer' : ` &mdash; from network (was ${t.student_id})`}
+                    ${t.is_external ? " &mdash; External transfer" : ` &mdash; from network (was ${t.student_id})`}
                     <br><span class="muted" style="font-size: 12px;">${formatDateBilingual(t.completed_at)}</span>
                 </span>
             </div>
-        `).join('');
-    } catch (err) {
-        console.error(err);
-        container.innerHTML = '<p class="muted">Could not load incoming transfers.</p>';
-    }
+        `,
+      )
+      .join("");
+  } catch (err) {
+    console.error(err);
+    container.innerHTML =
+      '<p class="muted">Could not load incoming transfers.</p>';
+  }
 }
 
 // --- 8. Documents (Template Management Hub + Document Issuance Suite) ---
@@ -2045,30 +3644,35 @@ async function loadIncomingTransfers() {
 let currentDocStudentId = null;
 
 async function loadDocumentStudent() {
-    const student_id = document.getElementById('doc_student_id').value.trim();
-    if (!student_id) return showAlert("Enter a Student ID first.");
-    const info = document.getElementById('doc-student-info');
-    const actions = document.getElementById('doc-student-actions');
+  const student_id = document.getElementById("doc_student_id").value.trim();
+  if (!student_id) return showAlert("Enter a Student ID first.");
+  const info = document.getElementById("doc-student-info");
+  const actions = document.getElementById("doc-student-actions");
 
-    try {
-        const res = await fetch(`http://localhost:3001/api/student/${encodeURIComponent(student_id)}`, { credentials: 'include' });
-        const result = await res.json();
-        if (!res.ok) {
-            info.innerHTML = `<p class="muted">${result.error || "Student not found."}</p>`;
-            actions.style.display = 'none';
-            currentDocStudentId = null;
-            return;
-        }
-        const fullName = [result.first_name, result.middle_name, result.last_name].filter(Boolean).join(' ');
-        info.innerHTML = `<div class="search-box"><span><strong>${fullName}</strong> — Grade ${result.class_level}${result.section ? ' - ' + result.section : ' (Awaiting Placement)'}, ${result.stream}</span></div>`;
-        currentDocStudentId = student_id;
-        actions.style.display = 'flex';
-        document.getElementById('doc-report-card-preview').innerHTML = '';
-        await loadDocumentHistory(student_id);
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/student/${encodeURIComponent(student_id)}`,
+      { credentials: "include" },
+    );
+    const result = await res.json();
+    if (!res.ok) {
+      info.innerHTML = `<p class="muted">${result.error || "Student not found."}</p>`;
+      actions.style.display = "none";
+      currentDocStudentId = null;
+      return;
     }
+    const fullName = [result.first_name, result.middle_name, result.last_name]
+      .filter(Boolean)
+      .join(" ");
+    info.innerHTML = `<div class="search-box"><span><strong>${fullName}</strong> — Grade ${result.class_level}${result.section ? " - " + result.section : " (Awaiting Placement)"}, ${result.stream}</span></div>`;
+    currentDocStudentId = student_id;
+    actions.style.display = "flex";
+    document.getElementById("doc-report-card-preview").innerHTML = "";
+    await loadDocumentHistory(student_id);
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 // Grade 9-12 tracker: what's already on record, and what's already been
@@ -2076,36 +3680,63 @@ async function loadDocumentStudent() {
 // the Registrar isn't re-issuing (or missing) something that already
 // exists elsewhere on the platform.
 async function loadDocumentHistory(student_id) {
-    const container = document.getElementById('doc-grade-history');
-    if (!container) return;
-    container.innerHTML = '<p class="muted">Loading...</p>';
-    try {
-        const res = await fetch(`http://localhost:3001/api/registrar/documents/history/${encodeURIComponent(student_id)}`, { credentials: 'include' });
-        const result = await res.json();
-        if (!res.ok) { container.innerHTML = `<p class="muted">${result.error || "Could not load history."}</p>`; return; }
-        container.innerHTML = renderStudentHistoryHtml(result);
-    } catch (err) {
-        console.error(err);
-        container.innerHTML = '<p class="muted">Could not load grade/document history.</p>';
+  const container = document.getElementById("doc-grade-history");
+  if (!container) return;
+  container.innerHTML = '<p class="muted">Loading...</p>';
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/documents/history/${encodeURIComponent(student_id)}`,
+      { credentials: "include" },
+    );
+    const result = await res.json();
+    if (!res.ok) {
+      container.innerHTML = `<p class="muted">${result.error || "Could not load history."}</p>`;
+      return;
     }
+    container.innerHTML = renderStudentHistoryHtml(result);
+  } catch (err) {
+    console.error(err);
+    container.innerHTML =
+      '<p class="muted">Could not load grade/document history.</p>';
+  }
 }
 
 async function previewReportCard(student_id, targetId) {
-    const preview = document.getElementById(targetId || 'doc-report-card-preview');
-    preview.innerHTML = '<p class="muted">Loading...</p>';
-    try {
-        const res = await fetch(`http://localhost:3001/api/registrar/documents/report-card/${encodeURIComponent(student_id)}`, { credentials: 'include' });
-        const result = await res.json();
-        if (!res.ok) { preview.innerHTML = `<p class="muted">${result.error || "Could not load report card."}</p>`; return; }
+  const preview = document.getElementById(
+    targetId || "doc-report-card-preview",
+  );
+  preview.innerHTML = '<p class="muted">Loading...</p>';
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/documents/report-card/${encodeURIComponent(student_id)}`,
+      { credentials: "include" },
+    );
+    const result = await res.json();
+    if (!res.ok) {
+      preview.innerHTML = `<p class="muted">${result.error || "Could not load report card."}</p>`;
+      return;
+    }
 
-        const fullName = [result.student.first_name, result.student.middle_name, result.student.last_name].filter(Boolean).join(' ');
-        const sectionsHtml = result.report.length === 0
-            ? '<p class="muted">No marks pushed for this student yet.</p>'
-            : result.report.map(cl => `
+    const fullName = [
+      result.student.first_name,
+      result.student.middle_name,
+      result.student.last_name,
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const sectionsHtml =
+      result.report.length === 0
+        ? '<p class="muted">No marks pushed for this student yet.</p>'
+        : result.report
+            .map(
+              (cl) => `
                 <h4>Grade ${cl.class_level} — ${cl.section} (${cl.stream})</h4>
-                ${cl.subjects.length === 0 ? `
+                ${
+                  cl.subjects.length === 0
+                    ? `
                 <p class="muted" style="margin-bottom:15px;">No marks synced for Grade ${cl.class_level} yet — a report card can still be generated, but every subject will print blank.</p>
-                ` : `
+                `
+                    : `
                 <table style="width:100%; border-collapse:collapse; margin-bottom:15px;">
                     <thead><tr style="background:#2c3e50; color:white;">
                         <th style="padding:6px; text-align:left; border:1px solid #ddd;">Subject</th>
@@ -2114,67 +3745,142 @@ async function previewReportCard(student_id, targetId) {
                         <th style="padding:6px; border:1px solid #ddd;">Year Avg</th>
                     </tr></thead>
                     <tbody>
-                        ${cl.subjects.map(s => `<tr><td style="padding:6px; border:1px solid #ddd;">${s.subject_name}</td><td style="padding:6px; border:1px solid #ddd; text-align:center;">${s.semester_1 ?? '—'}</td><td style="padding:6px; border:1px solid #ddd; text-align:center;">${s.semester_2 ?? '—'}</td><td style="padding:6px; border:1px solid #ddd; text-align:center;">${s.year_average ?? '—'}</td></tr>`).join('')}
+                        ${cl.subjects.map((s) => `<tr><td style="padding:6px; border:1px solid #ddd;">${s.subject_name}</td><td style="padding:6px; border:1px solid #ddd; text-align:center;">${s.semester_1 ?? "—"}</td><td style="padding:6px; border:1px solid #ddd; text-align:center;">${s.semester_2 ?? "—"}</td><td style="padding:6px; border:1px solid #ddd; text-align:center;">${s.year_average ?? "—"}</td></tr>`).join("")}
                     </tbody>
                 </table>
-                `}
-            `).join('');
+                `
+                }
+            `,
+            )
+            .join("");
 
-        // Lets the Registrar pick which grade's report card to actually
-        // download/print — a student now in Grade 12 might only need
-        // their Grade 9 record reissued, not their most recent one.
-        // Includes the student's CURRENT grade even if no marks have
-        // synced for it yet (see computeReportCardData), so a just-
-        // promoted student's new grade is always an option here, not
-        // just their last fully-synced one. Defaults to the highest
-        // (most recent) grade, matching what downloadReportCard used to
-        // always do before this existed.
-        const selectId = `${targetId || 'doc-report-card-preview'}-grade-select`;
-        const gradePickerHtml = result.report.length === 0 ? '' : `
+    // Lets the Registrar pick which grade's report card to actually
+    // download/print — a student now in Grade 12 might only need
+    // their Grade 9 record reissued, not their most recent one.
+    // Includes the student's CURRENT grade even if no marks have
+    // synced for it yet (see computeReportCardData), so a just-
+    // promoted student's new grade is always an option here, not
+    // just their last fully-synced one. Defaults to the highest
+    // (most recent) grade, matching what downloadReportCard used to
+    // always do before this existed.
+    const selectId = `${targetId || "doc-report-card-preview"}-grade-select`;
+    const gradePickerHtml =
+      result.report.length === 0
+        ? ""
+        : `
                 <div class="grade-download-picker">
                     <label for="${selectId}">Download grade:</label>
                     <select id="${selectId}">
-                        ${result.report.map(cl => `<option value="${cl.class_level}">Grade ${cl.class_level}${cl.subjects.length === 0 ? ' (no marks yet)' : ''}</option>`).join('')}
+                        ${result.report.map((cl) => `<option value="${cl.class_level}">Grade ${cl.class_level}${cl.subjects.length === 0 ? " (no marks yet)" : ""}</option>`).join("")}
                     </select>
                     <p class="muted">Pick any grade this student has a record for — not just their current one.</p>
                 </div>`;
 
-        preview.innerHTML = `
+    preview.innerHTML = `
             <div style="border:1px solid #ddd; border-radius:8px; padding:20px; margin-top:15px; background:#f9f9f9;">
                 <p><strong>${fullName}</strong> (${result.student.student_id})</p>
                 ${sectionsHtml}
                 ${gradePickerHtml}
-                <button type="button" ${dataArgs('downloadReportCard', [student_id, selectId])}>Download PDF</button>
+                <button type="button" ${dataArgs("downloadReportCard", [student_id, selectId])}>Download PDF</button>
                 <p class="muted" style="font-size:12px; margin-top:10px;">${formatDateBilingual(new Date())}</p>
             </div>
         `;
-        // Default the picker to the most recent grade on file.
-        if (result.report.length > 0) {
-            const select = document.getElementById(selectId);
-            if (select) select.value = result.report[result.report.length - 1].class_level;
-        }
-    } catch (err) {
-        console.error(err);
-        preview.innerHTML = '<p class="muted">Server connection error.</p>';
+    // Default the picker to the most recent grade on file.
+    if (result.report.length > 0) {
+      const select = document.getElementById(selectId);
+      if (select)
+        select.value = result.report[result.report.length - 1].class_level;
     }
+  } catch (err) {
+    console.error(err);
+    preview.innerHTML = '<p class="muted">Server connection error.</p>';
+  }
 }
 
 function downloadReportCard(student_id, gradeSelectId) {
-    const gradeSelect = gradeSelectId ? document.getElementById(gradeSelectId) : null;
-    const classLevel = gradeSelect ? gradeSelect.value : '';
-    const params = classLevel ? `?${new URLSearchParams({ class_level: classLevel })}` : '';
-    window.open(`http://localhost:3001/api/registrar/documents/report-card/${encodeURIComponent(student_id)}/pdf${params}`, '_blank');
-    setTimeout(loadIssuanceLog, 1500);
-    setTimeout(() => loadDocumentHistory(student_id), 1500);
+  const gradeSelect = gradeSelectId
+    ? document.getElementById(gradeSelectId)
+    : null;
+  const classLevel = gradeSelect ? gradeSelect.value : "";
+  const params = classLevel
+    ? `?${new URLSearchParams({ class_level: classLevel })}`
+    : "";
+  window.open(
+    `http://localhost:3001/api/registrar/documents/report-card/${encodeURIComponent(student_id)}/pdf${params}`,
+    "_blank",
+  );
+  setTimeout(loadIssuanceLog, 1500);
+  setTimeout(() => loadDocumentHistory(student_id), 1500);
 }
 
-// Documents tab, real student — this both shows the transcript AND
-// logs it as issued in one click (the PDF opens in a new tab since
-// it's the actual issuance action, not just a look).
-function previewTranscript(student_id) {
-    window.open(`http://localhost:3001/api/registrar/documents/transcript/${encodeURIComponent(student_id)}/pdf`, '_blank');
-    setTimeout(loadIssuanceLog, 1500);
-    setTimeout(() => loadDocumentHistory(student_id), 1500);
+// Documents tab, real student — lets the Registrar see which academic
+// years this transcript would include by default (every complete year
+// on file — see /years) and narrow that down BEFORE issuing, the same
+// way previewReportCard above lets them pick a specific grade instead
+// of always the most recent one. Doesn't log an issuance or open a PDF
+// by itself — that only happens once the Registrar hits the button
+// issueTranscript() renders below, since printing/downloading is the
+// actual issuance action, not just looking at what's available.
+async function previewTranscript(student_id) {
+  const preview = document.getElementById("doc-transcript-preview");
+  if (!preview) return;
+  preview.innerHTML = '<p class="muted">Loading...</p>';
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/documents/transcript/${encodeURIComponent(student_id)}/years`,
+      { credentials: "include" },
+    );
+    const result = await res.json();
+    if (!res.ok) {
+      preview.innerHTML = `<p class="muted">${result.error || "Could not load transcript years."}</p>`;
+      return;
+    }
+    if (!result.years || result.years.length === 0) {
+      preview.innerHTML =
+        '<p class="muted">No complete academic year on file yet for this student.</p>';
+      return;
+    }
+    const checkboxesHtml = result.years
+      .map(
+        (y, i) => `
+                <label style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+                    <input type="checkbox" class="transcript-year-check" value="${y.class_level}" checked>
+                    Grade ${y.class_level}${y.ec_year ? ` — ${y.ec_year}` : ""}
+                </label>`,
+      )
+      .join("");
+    preview.innerHTML = `
+            <div style="border:1px solid #ddd; border-radius:8px; padding:20px; margin-top:15px; background:#f9f9f9;">
+                <p class="muted" style="margin-top:0;">Every complete year is checked by default — uncheck any year to leave it off this printed transcript (e.g. a repeated grade, or a shorter record for a specific request).</p>
+                ${checkboxesHtml}
+                <button type="button" style="margin-top:10px;" ${dataArgs("issueTranscript", [student_id])}>Issue / Download Transcript</button>
+            </div>
+        `;
+  } catch (err) {
+    console.error(err);
+    preview.innerHTML = '<p class="muted">Server connection error.</p>';
+  }
+}
+
+// The actual issuance: reads whichever years are still checked in the
+// picker previewTranscript() just rendered and opens the real PDF,
+// narrowed to just those grades via ?class_levels= (see the /pdf
+// route's handling of it) — same "the PDF opens in a new tab since
+// it's the actual issuance action" reasoning previewTranscript used to
+// carry before the year picker existed.
+function issueTranscript(student_id) {
+  const checked = Array.from(
+    document.querySelectorAll(".transcript-year-check:checked"),
+  ).map((el) => el.value);
+  const params = checked.length
+    ? `?${new URLSearchParams({ class_levels: checked.join(",") })}`
+    : "";
+  window.open(
+    `http://localhost:3001/api/registrar/documents/transcript/${encodeURIComponent(student_id)}/pdf${params}`,
+    "_blank",
+  );
+  setTimeout(loadIssuanceLog, 1500);
+  setTimeout(() => loadDocumentHistory(student_id), 1500);
 }
 
 // Templates tab sample — embedded in the page itself (an <iframe> into
@@ -2184,16 +3890,16 @@ function previewTranscript(student_id) {
 // issued report card), unlike the plain-table previewReportCard()
 // used for a real student's quick in-page preview.
 function previewSampleReportCard() {
-    const preview = document.getElementById('doc-report-card-preview-templates');
-    preview.innerHTML = `<iframe src="http://localhost:3001/api/registrar/documents/report-card/SAMPLE-0001/pdf" title="Sample Report Card" style="width:100%; height:80vh; min-height:600px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
+  const preview = document.getElementById("doc-report-card-preview-templates");
+  preview.innerHTML = `<iframe src="http://localhost:3001/api/registrar/documents/report-card/SAMPLE-0001/pdf" title="Sample Report Card" style="width:100%; height:80vh; min-height:600px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
 }
 
 // Templates tab sample — embedded in the page itself (an <iframe> into
 // the same inline-disposition PDF endpoint) rather than opening
 // anything, so it's a look, not a download or a new tab.
 function previewSampleTranscript() {
-    const preview = document.getElementById('doc-report-card-preview-templates');
-    preview.innerHTML = `<iframe src="http://localhost:3001/api/registrar/documents/transcript/SAMPLE-0001/pdf" title="Sample Transcript" style="width:100%; height:80vh; min-height:600px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
+  const preview = document.getElementById("doc-report-card-preview-templates");
+  preview.innerHTML = `<iframe src="http://localhost:3001/api/registrar/documents/transcript/SAMPLE-0001/pdf" title="Sample Transcript" style="width:100%; height:80vh; min-height:600px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
 }
 
 // View-only ID card preview (HTML) — downloadIdCard() below is the
@@ -2201,16 +3907,19 @@ function previewSampleTranscript() {
 // Same front+back design as the student's own "My ID" tab — see
 // buildIdCardHtml in server.js.
 function downloadIdCard(student_id) {
-    window.open(`http://localhost:3001/api/registrar/documents/id-card/${encodeURIComponent(student_id)}/pdf`, '_blank');
-    setTimeout(loadIssuanceLog, 1500);
-    setTimeout(() => loadDocumentHistory(student_id), 1500);
+  window.open(
+    `http://localhost:3001/api/registrar/documents/id-card/${encodeURIComponent(student_id)}/pdf`,
+    "_blank",
+  );
+  setTimeout(loadIssuanceLog, 1500);
+  setTimeout(() => loadDocumentHistory(student_id), 1500);
 }
 
 // Templates tab sample — embedded in the page via <iframe>, same
 // pattern as previewSampleTranscript above.
 function previewSampleIdCard() {
-    const preview = document.getElementById('doc-report-card-preview-templates');
-    preview.innerHTML = `<iframe src="http://localhost:3001/api/registrar/documents/id-card/SAMPLE-0001/preview" title="Sample ID Card" style="width:100%; height:70vh; min-height:560px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
+  const preview = document.getElementById("doc-report-card-preview-templates");
+  preview.innerHTML = `<iframe src="http://localhost:3001/api/registrar/documents/id-card/SAMPLE-0001/preview" title="Sample ID Card" style="width:100%; height:70vh; min-height:560px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
 }
 
 // The design is real and renders server-side from
@@ -2219,146 +3928,432 @@ function previewSampleIdCard() {
 // sample ID has anything to show (the server returns a clear message
 // for any other student_id rather than a fake letter).
 function previewSampleRecommendation() {
-    const preview = document.getElementById('doc-report-card-preview-templates');
-    preview.innerHTML = `<iframe src="http://localhost:3001/api/registrar/documents/recommendation/SAMPLE-0001/preview" title="Sample Recommendation Letter" style="width:100%; height:80vh; min-height:600px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
+  const preview = document.getElementById("doc-report-card-preview-templates");
+  preview.innerHTML = `<iframe src="http://localhost:3001/api/registrar/documents/recommendation/SAMPLE-0001/preview" title="Sample Recommendation Letter" style="width:100%; height:80vh; min-height:600px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
 }
 
 async function loadIssuanceLog() {
-    const container = document.getElementById('issuance-log-list');
-    if (!container) return;
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/documents/issuance-log', { credentials: 'include' });
-        if (!res.ok) throw new Error("Could not load issuance log.");
-        const rows = await res.json();
-        if (rows.length === 0) { container.innerHTML = '<p class="muted">No documents issued yet.</p>'; return; }
+  const container = document.getElementById("issuance-log-list");
+  if (!container) return;
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/documents/issuance-log",
+      { credentials: "include" },
+    );
+    if (!res.ok) throw new Error("Could not load issuance log.");
+    const rows = await res.json();
+    if (rows.length === 0) {
+      container.innerHTML = '<p class="muted">No documents issued yet.</p>';
+      return;
+    }
 
-        const labels = { report_card: 'Report Card', transcript: 'Transcript', id_card: 'ID Card' };
-        container.innerHTML = rows.map(r => `
+    const labels = {
+      report_card: "Report Card",
+      transcript: "Transcript",
+      id_card: "ID Card",
+    };
+    container.innerHTML = rows
+      .map(
+        (r) => `
             <div class="search-box" style="justify-content: space-between; align-items: center;">
                 <span><strong>${r.student_id}</strong> &nbsp; ${labels[r.doc_type] || r.doc_type} &nbsp; Code: ${r.verify_code}</span>
                 <span class="muted" style="font-size: 12px;">${formatDateBilingual(r.issued_at)}</span>
             </div>
-        `).join('');
-    } catch (err) {
-        console.error(err);
-        container.innerHTML = '<p class="muted">Could not load the issuance log.</p>';
-    }
+        `,
+      )
+      .join("");
+  } catch (err) {
+    console.error(err);
+    container.innerHTML =
+      '<p class="muted">Could not load the issuance log.</p>';
+  }
 }
 
 // --- 9. G12 Graduation Wizard ---
 
 async function loadGraduationEligible() {
-    const container = document.getElementById('graduation-eligible-list');
-    if (!container) return;
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/graduation/eligible', { credentials: 'include' });
-        if (!res.ok) throw new Error("Could not load Grade 12 students.");
-        const students = await res.json();
-        if (students.length === 0) { container.innerHTML = '<p class="muted">No Grade 12 students waiting on graduation.</p>'; return; }
+  const container = document.getElementById("graduation-eligible-list");
+  if (!container) return;
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/graduation/eligible",
+      { credentials: "include" },
+    );
+    if (!res.ok) throw new Error("Could not load Grade 12 students.");
+    const students = await res.json();
+    if (students.length === 0) {
+      container.innerHTML =
+        '<p class="muted">No Grade 12 students waiting on graduation.</p>';
+      return;
+    }
 
-        container.innerHTML = `
+    container.innerHTML =
+      `
             <div class="search-box" style="justify-content: flex-start; gap: 10px; background:#eef2f7;">
                 <label style="font-weight: 600; display:flex; align-items:center; gap:10px;">
                     <input type="checkbox" id="grad-select-all" data-onchange-self="toggleSelectAllGraduates" />
                     <span>Select all (${students.length})</span>
                 </label>
             </div>
-        ` + students.map(s => {
-            const fullName = [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' ');
-            const badge = s.category === 'Eligible for Promotion' ? 'color:#27ae60;' : s.category === 'Detained/Retained' ? 'color:#e74c3c;' : 'color:#7f8c8d;';
-            return `
-                <div class="search-box" style="justify-content: space-between; align-items: center;">
+        ` +
+      students
+        .map((s) => {
+          const fullName = [s.first_name, s.middle_name, s.last_name]
+            .filter(Boolean)
+            .join(" ");
+          const badge =
+            s.category === "Eligible for Promotion"
+              ? "color:#27ae60;"
+              : s.category === "Detained/Retained"
+                ? "color:#e74c3c;"
+                : "color:#7f8c8d;";
+          // Grade 12 progression is actually decided by EASE (the
+          // national exam), not the internal average above — the
+          // checkbox+Graduate flow only ever succeeds for a Pass (see
+          // POST /api/registrar/graduation/process); a Fail gets its
+          // own distinct "readmit" (repeat Grade 12) decision instead,
+          // right here rather than a second screen, since this is
+          // already the list of Grade 12 students the Registrar is
+          // working through.
+          const easeColor =
+            s.ease_status === "Pass"
+              ? "#27ae60"
+              : s.ease_status === "Fail"
+                ? "#e74c3c"
+                : "#7f8c8d";
+          const readmitBtn =
+            s.ease_status === "Fail"
+              ? `<button type="button" class="confirm-btn confirm-btn-secondary" data-action="readmitGrade12Fail" data-arg="${s.student_id}">
+                   <span>${t("reg_grade12_readmit_btn")}</span>
+                 </button>`
+              : "";
+          return `
+                <div class="search-box" style="justify-content: space-between; align-items: center; flex-wrap: wrap;">
                     <label style="font-weight: normal; display:flex; align-items:center; gap:10px;">
-                        <input type="checkbox" class="grad-checkbox" value="${s.student_id}" data-onchange="syncGradSelectAllState" />
-                        <span><strong>${fullName}</strong> (${s.student_id}) — Avg: ${s.year_average ?? '—'}</span>
+                        <input type="checkbox" class="grad-checkbox" value="${s.student_id}" data-onchange="syncGradSelectAllState" ${s.ease_status !== "Pass" ? "disabled" : ""} />
+                        <span><strong>${fullName}</strong> (${s.student_id}) — Avg: ${s.year_average ?? "—"}</span>
                     </label>
                     <span style="${badge} font-weight:600;">${s.category}</span>
+                    <span style="color:${easeColor}; font-weight:600;">EASE: ${s.ease_status}</span>
+                    ${readmitBtn}
                 </div>
             `;
-        }).join('');
-    } catch (err) {
-        console.error(err);
-        container.innerHTML = '<p class="muted">Could not load Grade 12 students.</p>';
-    }
+        })
+        .join("");
+  } catch (err) {
+    console.error(err);
+    container.innerHTML =
+      '<p class="muted">Could not load Grade 12 students.</p>';
+  }
+}
+
+// Distinct from the checkbox+batch Graduate flow above — this is the
+// per-student "readmit to repeat Grade 12" decision for a student
+// whose EASE (national exam) result is a Fail, recorded as its own
+// audit action server-side (see POST
+// /api/registrar/graduation/grade12-readmit) rather than folded into
+// either graduation or the ordinary Grade 9-11 retain path.
+async function readmitGrade12Fail(studentId) {
+  if (
+    !confirm(
+      "Record this student as readmitted to repeat Grade 12? This can't be undone from here.",
+    )
+  )
+    return;
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/graduation/grade12-readmit",
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ student_id: studentId }),
+      },
+    );
+    const result = await res.json();
+    if (!res.ok)
+      return showAlert(result.error || "Could not record the readmit decision.");
+    showAlert(result.message);
+    await loadGraduationEligible();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 // Select-all checkbox above the graduation-eligible list: toggles every
 // .grad-checkbox at once, and stays in sync if the person unchecks one
 // student manually afterward.
 function toggleSelectAllGraduates(selectAllBox) {
-    document.querySelectorAll('.grad-checkbox').forEach(cb => { cb.checked = selectAllBox.checked; });
+  document.querySelectorAll(".grad-checkbox").forEach((cb) => {
+    cb.checked = selectAllBox.checked;
+  });
 }
 function syncGradSelectAllState() {
-    const boxes = [...document.querySelectorAll('.grad-checkbox')];
-    const selectAll = document.getElementById('grad-select-all');
-    if (selectAll) selectAll.checked = boxes.length > 0 && boxes.every(cb => cb.checked);
+  const boxes = [...document.querySelectorAll(".grad-checkbox")];
+  const selectAll = document.getElementById("grad-select-all");
+  if (selectAll)
+    selectAll.checked = boxes.length > 0 && boxes.every((cb) => cb.checked);
 }
 
 async function processGraduation() {
-    const checked = [...document.querySelectorAll('.grad-checkbox:checked')].map(cb => cb.value);
-    const batch_tag = document.getElementById('grad_batch_tag').value.trim();
-    const override_reason = document.getElementById('grad_override_reason').value.trim();
+  const checked = [...document.querySelectorAll(".grad-checkbox:checked")].map(
+    (cb) => cb.value,
+  );
+  const batch_tag = document.getElementById("grad_batch_tag").value.trim();
+  const override_reason = document
+    .getElementById("grad_override_reason")
+    .value.trim();
 
-    if (checked.length === 0) return showAlert("Select at least one student.");
-    if (!batch_tag) return showAlert('Enter a batch name (e.g. "Class of 2026").');
+  if (checked.length === 0) return showAlert("Select at least one student.");
+  if (!batch_tag)
+    return showAlert('Enter a batch name (e.g. "Class of 2026").');
 
-    // Graduating a batch locks every student in it out of their account
-    // immediately, so — same as starting/cancelling a transfer — it
-    // requires re-entering the registrar's own password right before it
-    // happens, not just the earlier login session.
-    const password = await showPasswordPrompt(t('reg_graduation_password_prompt'));
-    if (password === null) return;
-    if (!password) return showAlert("Enter your password to continue.", "error");
+  // Graduating a batch locks every student in it out of their account
+  // immediately, so — same as starting/cancelling a transfer — it
+  // requires re-entering the registrar's own password right before it
+  // happens, not just the earlier login session.
+  const password = await showPasswordPrompt(
+    t("reg_graduation_password_prompt"),
+  );
+  if (password === null) return;
+  if (!password) return showAlert("Enter your password to continue.", "error");
 
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/graduation/process', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ student_ids: checked, batch_tag, override_reason, password })
-        });
-        const result = await res.json();
-        if (!res.ok) return showAlert(result.error || "Graduation processing failed.");
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/graduation/process",
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          student_ids: checked,
+          batch_tag,
+          override_reason,
+          password,
+        }),
+      },
+    );
+    const result = await res.json();
+    if (!res.ok)
+      return showAlert(result.error || "Graduation processing failed.");
 
-        let summary = result.message;
-        if (result.skipped && result.skipped.length > 0) {
-            summary += `\n\nSkipped:\n` + result.skipped.map(s => `${s.student_id}: ${s.reason}`).join('\n');
-        }
-        showAlert(summary);
-
-        document.getElementById('grad_batch_tag').value = '';
-        document.getElementById('grad_override_reason').value = '';
-        await loadGraduationEligible();
-        await loadGraduationHistory();
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
+    let summary = result.message;
+    if (result.skipped && result.skipped.length > 0) {
+      summary +=
+        `\n\nSkipped:\n` +
+        result.skipped.map((s) => `${s.student_id}: ${s.reason}`).join("\n");
     }
+    showAlert(summary);
+
+    document.getElementById("grad_batch_tag").value = "";
+    document.getElementById("grad_override_reason").value = "";
+    await loadGraduationEligible();
+    await loadGraduationHistory();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 async function loadGraduationHistory() {
-    const container = document.getElementById('graduation-history-list');
-    if (!container) return;
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/graduation/history', { credentials: 'include' });
-        if (!res.ok) throw new Error("Could not load graduation history.");
-        const rows = await res.json();
-        if (rows.length === 0) { container.innerHTML = '<p class="muted">No graduations recorded yet.</p>'; return; }
+  const container = document.getElementById("graduation-history-list");
+  if (!container) return;
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/graduation/history",
+      { credentials: "include" },
+    );
+    if (!res.ok) throw new Error("Could not load graduation history.");
+    const rows = await res.json();
+    if (rows.length === 0) {
+      container.innerHTML = '<p class="muted">No graduations recorded yet.</p>';
+      return;
+    }
 
-        container.innerHTML = rows.map(r => {
-            const fullName = [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' ');
-            return `
+    container.innerHTML = rows
+      .map((r) => {
+        const fullName = [r.first_name, r.middle_name, r.last_name]
+          .filter(Boolean)
+          .join(" ");
+        return `
                 <div class="search-box" style="justify-content: space-between; align-items: center;">
                     <span><strong>${fullName}</strong> (${r.student_id}) — ${r.batch_tag}</span>
                     <span class="muted" style="font-size: 12px;">${formatDateBilingual(r.graduated_at)}</span>
                 </div>
             `;
-        }).join('');
-    } catch (err) {
-        console.error(err);
-        container.innerHTML = '<p class="muted">Could not load graduation history.</p>';
-    }
+      })
+      .join("");
+  } catch (err) {
+    console.error(err);
+    container.innerHTML =
+      '<p class="muted">Could not load graduation history.</p>';
+  }
 }
+
+// --- EASE Candidates (Grade 6/8/12 national exam) ---
+// Filterable table of this school's own Grade 6/8/12 students; each
+// row's status (Not Marked / Pending Result / Pass / Fail) is resolved
+// live server-side (see GET /api/registrar/ease-candidates), so it
+// reflects a Super Admin result upload immediately without a page
+// reload. Marking is per-row/no batch select — matches the spec.
+async function loadEaseCandidates() {
+  const container = document.getElementById("ease-candidates-list");
+  if (!container) return;
+  const gradeEl = document.getElementById("ease_filter_grade");
+  const sectionEl = document.getElementById("ease_filter_section");
+  const streamEl = document.getElementById("ease_filter_stream");
+  const statusEl = document.getElementById("ease_filter_status");
+  const params = new URLSearchParams();
+  if (gradeEl && gradeEl.value) params.set("class_level", gradeEl.value);
+  if (sectionEl && sectionEl.value.trim())
+    params.set("section", sectionEl.value.trim());
+  if (streamEl && streamEl.value.trim())
+    params.set("stream", streamEl.value.trim());
+  if (statusEl && statusEl.value) params.set("status", statusEl.value);
+
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/ease-candidates?${params.toString()}`,
+      { credentials: "include" },
+    );
+    if (!res.ok) throw new Error("Could not load EASE candidates.");
+    const rows = await res.json();
+    if (rows.length === 0) {
+      container.innerHTML = `<p class="muted">${t("reg_ease_empty")}</p>`;
+      return;
+    }
+    container.innerHTML = `
+      <div class="data-table-wrap"><table class="data-table">
+        <tr>
+          <th>${t("reg_col_name")}</th>
+          <th>${t("reg_ease_grade")}</th>
+          <th>${t("reg_ease_section")}</th>
+          <th>${t("reg_ease_stream")}</th>
+          <th>${t("reg_ease_th_admission")}</th>
+          <th>${t("reg_ease_th_average")}</th>
+          <th>${t("reg_ease_th_percentile")}</th>
+          <th>${t("reg_ease_th_mark")}</th>
+          <th>${t("reg_ease_status")}</th>
+          <th></th>
+        </tr>
+        ${rows
+          .map((s) => {
+            const fullName = [s.first_name, s.middle_name, s.last_name]
+              .filter(Boolean)
+              .join(" ");
+            const statusColor =
+              s.ease_status === "Pass"
+                ? "#27ae60"
+                : s.ease_status === "Fail"
+                  ? "#e74c3c"
+                  : s.ease_status === "Pending Result"
+                    ? "#f39c12"
+                    : "#7f8c8d";
+            const statusLabel =
+              s.ease_status === "Pass"
+                ? t("reg_ease_status_pass")
+                : s.ease_status === "Fail"
+                  ? t("reg_ease_status_fail")
+                  : s.ease_status === "Pending Result"
+                    ? t("reg_ease_status_pending")
+                    : t("reg_ease_status_not_marked");
+            const markCell =
+              s.ease_status === "Not Marked"
+                ? `<input type="text" class="ease-admission-input" id="ease_admission_${s.student_id}" data-i18n-placeholder="reg_ease_f_admission" placeholder="Admission Number" style="width: 140px;" />
+                   <button type="button" class="confirm-btn" data-action="markEaseCandidate" data-arg="${s.student_id}">${t("reg_ease_mark_btn")}</button>`
+                : "";
+            // A resolved Pass/Fail at a school with no next grade to
+            // promote into (see has_next_grade_here from GET
+            // /api/registrar/ease-candidates) means this student is
+            // leaving regardless of which way the exam went — offer the
+            // Graduated/Outgoing action instead of leaving them to sit
+            // here with nowhere to go. Grade 12 (has_next_grade_here is
+            // null there) keeps using the existing graduation/readmit
+            // screens, not this button.
+            const actionCell =
+              (s.ease_status === "Pass" || s.ease_status === "Fail") &&
+              s.has_next_grade_here === false
+                ? `<button type="button" class="confirm-btn confirm-btn-secondary" data-action="markEaseOutgoing" data-arg="${s.student_id}">${t("reg_ease_outgoing_btn")}</button>`
+                : "";
+            return `
+          <tr>
+            <td>${fullName} <span class="muted">(${s.student_id})</span></td>
+            <td>${s.class_level}</td>
+            <td>${s.section || "—"}</td>
+            <td>${s.stream || "—"}</td>
+            <td>${s.admission_number || "—"}</td>
+            <td>${s.average ?? "—"}</td>
+            <td>${s.percentile ?? "—"}</td>
+            <td>${s.mark ?? "—"}</td>
+            <td><span style="color:${statusColor}; font-weight:600;">${statusLabel}</span></td>
+            <td>${markCell}${actionCell}</td>
+          </tr>`;
+          })
+          .join("")}
+      </table></div>`;
+  } catch (err) {
+    console.error(err);
+    container.innerHTML = `<p class="muted">${t("reg_ease_load_error")}</p>`;
+  }
+}
+
+async function markEaseCandidate(studentId) {
+  const input = document.getElementById(`ease_admission_${studentId}`);
+  const admission_number = input ? input.value.trim() : "";
+  if (!admission_number) return showAlert(t("reg_ease_admission_required"));
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/ease-candidates/${studentId}`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ admission_number }),
+      },
+    );
+    const result = await res.json();
+    if (!res.ok)
+      return showAlert(result.error || "Could not mark this student.");
+    await loadEaseCandidates();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
+}
+
+// Marks a Grade 6/8 EASE candidate Graduated/Outgoing when their own
+// school doesn't offer the next grade — locks their account (they can
+// no longer log in) the same way Graduated/Transferred students already
+// are elsewhere in this app. If they end up re-enrolling here later,
+// undo this from the Re-admission screen (it already accepts any
+// Transferred-* status) — there's deliberately no separate "undo"
+// button on this screen, so re-admission always goes through the one
+// screen built for it.
+async function markEaseOutgoing(studentId) {
+  const confirmed = await showConfirm(t("reg_ease_outgoing_confirm"));
+  if (!confirmed) return;
+  try {
+    const res = await fetch(
+      `http://localhost:3001/api/registrar/ease-candidates/${studentId}/outgoing`,
+      {
+        method: "POST",
+        credentials: "include",
+      },
+    );
+    const result = await res.json();
+    if (!res.ok)
+      return showAlert(
+        result.error || "Could not mark this student Graduated/Outgoing.",
+      );
+    showAlert(result.message, "success");
+    await loadEaseCandidates();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
+}
+
 // --- 10. Notification bell (document requests + transfer requests from
 // the Principal) ---
 // Mirrors the teacher portal's notification bell in script.js — same
@@ -2377,35 +4372,42 @@ async function loadGraduationHistory() {
 //   </div>
 
 async function loadRegistrarNotifications() {
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/notifications', { credentials: 'include' });
-        if (!res.ok) throw new Error("Could not load notifications.");
-        renderRegistrarNotifications(await res.json());
-    } catch (err) {
-        console.error("Notifications load error:", err);
-    }
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/notifications",
+      { credentials: "include" },
+    );
+    if (!res.ok) throw new Error("Could not load notifications.");
+    renderRegistrarNotifications(await res.json());
+  } catch (err) {
+    console.error("Notifications load error:", err);
+  }
 }
 
 function renderRegistrarNotifications(items) {
-    const badge = document.getElementById('notif-badge');
-    const list = document.getElementById('notification-list');
-    if (badge) badge.style.display = items.length > 0 ? 'inline-block' : 'none';
-    if (badge) badge.textContent = items.length > 9 ? '9+' : String(items.length);
+  const badge = document.getElementById("notif-badge");
+  const list = document.getElementById("notification-list");
+  if (badge) badge.style.display = items.length > 0 ? "inline-block" : "none";
+  if (badge) badge.textContent = items.length > 9 ? "9+" : String(items.length);
 
-    if (list) {
-        if (items.length === 0) {
-            list.innerHTML = '<p class="notif-empty">No new notifications</p>';
-        } else {
-            list.innerHTML = items.map(item => `
-                <div class="notif-item" ${dataArgs('handleRegistrarNotificationClick', [item.type, item.student_id])}>
+  if (list) {
+    if (items.length === 0) {
+      list.innerHTML = '<p class="notif-empty">No new notifications</p>';
+    } else {
+      list.innerHTML = items
+        .map(
+          (item) => `
+                <div class="notif-item" ${dataArgs("handleRegistrarNotificationClick", [item.type, item.student_id])}>
                     <strong>${item.text}</strong>
                     <span class="muted" style="font-size:11px;">${formatDateBilingual(item.at)}</span>
                 </div>
-            `).join('');
-        }
+            `,
+        )
+        .join("");
     }
+  }
 
-    updateNavNotificationBadges(items);
+  updateNavNotificationBadges(items);
 }
 
 // Mirrors the same "something's waiting for you" count onto the sidebar
@@ -2413,50 +4415,52 @@ function renderRegistrarNotifications(items) {
 // handleRegistrarNotificationClick below for the same type -> tab
 // mapping), so it's visible even with the bell panel closed.
 function updateNavNotificationBadges(items) {
-    const counts = {};
-    items.forEach(item => { counts[item.type] = (counts[item.type] || 0) + 1; });
+  const counts = {};
+  items.forEach((item) => {
+    counts[item.type] = (counts[item.type] || 0) + 1;
+  });
 
-    const setBadge = (id, count) => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        if (count > 0) {
-            el.textContent = count > 9 ? '9+' : String(count);
-            el.style.display = 'inline-block';
-        } else {
-            el.style.display = 'none';
-        }
-    };
-    setBadge('nav-transfer-hub-badge', counts.transfer_request || 0);
-    setBadge('nav-documents-badge', counts.document_request || 0);
+  const setBadge = (id, count) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (count > 0) {
+      el.textContent = count > 9 ? "9+" : String(count);
+      el.style.display = "inline-block";
+    } else {
+      el.style.display = "none";
+    }
+  };
+  setBadge("nav-transfer-hub-badge", counts.transfer_request || 0);
+  setBadge("nav-documents-badge", counts.document_request || 0);
 }
 
 // Clicking a notification jumps straight to the tab where it's actioned
 // — the Documents tab for a document request, the Transfer Hub for a
 // transfer ready to clear — rather than just closing the panel.
 function handleRegistrarNotificationClick(type, student_id) {
-    document.getElementById('notification-panel').style.display = 'none';
-    if (type === 'document_request') {
-        switchTab('documents');
-        // NOTE: couldn't confirm the exact search-input ID on the
-        // Documents tab (that markup lives in the registrar module's
-        // index.html, which wasn't available) — wire this up to
-        // prefill student_id once you send me that file.
-    } else if (type === 'transfer_request') {
-        switchTab('transfer-hub'); // NOTE: confirm this matches the actual tab-content id once you send the HTML
-    }
+  document.getElementById("notification-panel").style.display = "none";
+  if (type === "document_request") {
+    switchTab("documents");
+    // NOTE: couldn't confirm the exact search-input ID on the
+    // Documents tab (that markup lives in the registrar module's
+    // index.html, which wasn't available) — wire this up to
+    // prefill student_id once you send me that file.
+  } else if (type === "transfer_request") {
+    switchTab("transfer-hub"); // NOTE: confirm this matches the actual tab-content id once you send the HTML
+  }
 }
 
 window.toggleNotificationPanel = () => {
-    const panel = document.getElementById('notification-panel');
-    if (!panel) return;
-    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  const panel = document.getElementById("notification-panel");
+  if (!panel) return;
+  panel.style.display = panel.style.display === "none" ? "block" : "none";
 };
 
-document.addEventListener('click', (event) => {
-    if (!event.target.closest('.notification-wrapper')) {
-        const panel = document.getElementById('notification-panel');
-        if (panel) panel.style.display = 'none';
-    }
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".notification-wrapper")) {
+    const panel = document.getElementById("notification-panel");
+    if (panel) panel.style.display = "none";
+  }
 });
 
 // --- 11. Sidebar/topbar chrome: per-tenant logo/school name, role
@@ -2466,67 +4470,74 @@ document.addEventListener('click', (event) => {
 // /api/me, same fields the teacher portal's chrome already uses. The
 // school logo itself is Principal-controlled (POST /api/school/logo on
 // their side) — this just displays whatever they've set.
-// Mirrors server.js's buildSchoolDisplayName exactly: "Newland" +
-// "SECONDARY SCHOOL" -> "NEWLAND SECONDARY SCHOOL". school_level isn't
-// implied by school_name alone (two schools can share a name at
-// different levels), so the sidebar/topbar need both fields, not just
-// school_name.
+// Mirrors server.js's buildSchoolDisplayName exactly: just the name
+// Super Admin gave the school, nothing appended — no longer combined
+// with school_level (e.g. "Newland" no longer becomes "NEWLAND
+// SECONDARY SCHOOL" in the sidebar/topbar). schoolLevel is kept as a
+// parameter only so applyProfileChrome below doesn't need touching.
 function buildSchoolDisplayName(schoolName, schoolLevel) {
-    return [schoolName, schoolLevel].filter(Boolean).join(' ').toUpperCase() || '—';
+  return (schoolName || "").toUpperCase().trim() || "—";
 }
 
 function applyProfileChrome() {
-    if (!currentUser) return;
+  if (!currentUser) return;
 
-    const displayName = buildSchoolDisplayName(currentUser.school_name, currentUser.school_level);
+  const displayName = buildSchoolDisplayName(
+    currentUser.school_name,
+    currentUser.school_level,
+  );
 
-    const schoolName = document.getElementById('sidebar-school-name');
-    if (schoolName) schoolName.textContent = displayName;
+  const schoolName = document.getElementById("sidebar-school-name");
+  if (schoolName) schoolName.textContent = displayName;
 
-    // Note: #topbar-school-name no longer shows the school name (that's
-    // covered by #sidebar-school-name in the sidebar header already). It
-    // now shows whichever sidebar section is active — see
-    // updateTopbarSectionName, called from switchTab and again below for
-    // whichever tab is active at load time.
-    const activeTab = document.querySelector('.tab-content.active');
-    updateTopbarSectionName(activeTab ? activeTab.id : 'dashboard');
+  // Note: #topbar-school-name no longer shows the school name (that's
+  // covered by #sidebar-school-name in the sidebar header already). It
+  // now shows whichever sidebar section is active — see
+  // updateTopbarSectionName, called from switchTab and again below for
+  // whichever tab is active at load time.
+  const activeTab = document.querySelector(".tab-content.active");
+  updateTopbarSectionName(activeTab ? activeTab.id : "dashboard");
 
-    const moeChip = document.getElementById('topbar-moe-code');
-    if (moeChip) {
-        if (currentUser.moe_school_code) {
-            moeChip.textContent = `${t('reg_moe_code_label')}: ${currentUser.moe_school_code}`;
-            moeChip.hidden = false;
-        } else {
-            moeChip.hidden = true;
-        }
+  const moeChip = document.getElementById("topbar-moe-code");
+  if (moeChip) {
+    if (currentUser.moe_school_code) {
+      moeChip.textContent = `${t("reg_moe_code_label")}: ${currentUser.moe_school_code}`;
+      moeChip.hidden = false;
+    } else {
+      moeChip.hidden = true;
     }
+  }
 
-    const roleBadge = document.getElementById('sidebar-role-badge');
-    if (roleBadge) {
-        roleBadge.textContent = currentUser.is_registrar ? 'Registrar' : currentUser.is_recorder ? 'Recorder' : '—';
+  const roleBadge = document.getElementById("sidebar-role-badge");
+  if (roleBadge) {
+    roleBadge.textContent = currentUser.is_registrar
+      ? "Registrar"
+      : currentUser.is_recorder
+        ? "Recorder"
+        : "—";
+  }
+
+  const accountName = document.getElementById("topbar-account-name");
+  if (accountName) {
+    if (currentUser.admin_full_name) {
+      accountName.textContent = currentUser.admin_full_name;
+      accountName.hidden = false;
+    } else {
+      accountName.hidden = true;
     }
+  }
 
-    const accountName = document.getElementById('topbar-account-name');
-    if (accountName) {
-        if (currentUser.admin_full_name) {
-            accountName.textContent = currentUser.admin_full_name;
-            accountName.hidden = false;
-        } else {
-            accountName.hidden = true;
-        }
+  const avatar = document.getElementById("topbar-avatar");
+  if (avatar) {
+    if (currentUser.avatar_url) {
+      avatar.src = currentUser.avatar_url;
+      avatar.style.display = "block";
+    } else {
+      avatar.style.display = "none";
     }
+  }
 
-    const avatar = document.getElementById('topbar-avatar');
-    if (avatar) {
-        if (currentUser.avatar_url) {
-            avatar.src = currentUser.avatar_url;
-            avatar.style.display = 'block';
-        } else {
-            avatar.style.display = 'none';
-        }
-    }
-
-    loadCurrentSemesterChip();
+  loadCurrentSemesterChip();
 }
 
 // Current semester chip in the top bar — reads the same /api/term/current
@@ -2537,42 +4548,48 @@ function applyProfileChrome() {
 // formatted as "2018 E.C. (2025/26 GC)" by getCurrentAcademicYearLabel()
 // server-side — into its own chip right next to it.
 async function loadCurrentSemesterChip() {
-    const chip = document.getElementById('topbar-semester');
-    const yearChip = document.getElementById('topbar-academic-year');
-    if (!chip && !yearChip) return;
-    try {
-        const res = await fetch('http://localhost:3001/api/term/current', { credentials: 'include' });
-        if (!res.ok) throw new Error('Could not load current term.');
-        const data = await res.json();
+  const chip = document.getElementById("topbar-semester");
+  const yearChip = document.getElementById("topbar-academic-year");
+  if (!chip && !yearChip) return;
+  try {
+    const res = await fetch("http://localhost:3001/api/term/current", {
+      credentials: "include",
+    });
+    if (!res.ok) throw new Error("Could not load current term.");
+    const data = await res.json();
 
-        if (chip) {
-            const match = /\d+/.exec(data.current_term || '');
-            if (match) {
-                const isOpen = data.semester_status !== 'closed';
-                chip.textContent = `${t('reg_semester_label', { n: match[0] })} — ${isOpen ? t('reg_status_open') : t('reg_status_closed')}`;
-                chip.classList.remove('topbar-chip-accent', 'topbar-chip-open', 'topbar-chip-closed');
-                chip.classList.add(isOpen ? 'topbar-chip-open' : 'topbar-chip-closed');
-                chip.hidden = false;
-            } else {
-                chip.hidden = true;
-            }
-        }
-
-        if (yearChip) {
-            if (data.academic_year) {
-                yearChip.textContent = data.academic_year;
-                yearChip.hidden = false;
-            } else {
-                yearChip.hidden = true;
-            }
-        }
-
-        updateGraduationWizardLock(data.current_term, data.semester_status);
-    } catch (err) {
-        console.error(err);
-        if (chip) chip.hidden = true;
-        if (yearChip) yearChip.hidden = true;
+    if (chip) {
+      const match = /\d+/.exec(data.current_term || "");
+      if (match) {
+        const isOpen = data.semester_status !== "closed";
+        chip.textContent = `${t("reg_semester_label", { n: match[0] })} — ${isOpen ? t("reg_status_open") : t("reg_status_closed")}`;
+        chip.classList.remove(
+          "topbar-chip-accent",
+          "topbar-chip-open",
+          "topbar-chip-closed",
+        );
+        chip.classList.add(isOpen ? "topbar-chip-open" : "topbar-chip-closed");
+        chip.hidden = false;
+      } else {
+        chip.hidden = true;
+      }
     }
+
+    if (yearChip) {
+      if (data.academic_year) {
+        yearChip.textContent = data.academic_year;
+        yearChip.hidden = false;
+      } else {
+        yearChip.hidden = true;
+      }
+    }
+
+    updateGraduationWizardLock(data.current_term, data.semester_status);
+  } catch (err) {
+    console.error(err);
+    if (chip) chip.hidden = true;
+    if (yearChip) yearChip.hidden = true;
+  }
 }
 
 // The Graduation Wizard only makes sense once Semester 2 is over — while
@@ -2584,27 +4601,33 @@ async function loadCurrentSemesterChip() {
 // Academic VP closes Semester 2 without needing a page reload.
 let semester2Closed = false;
 function updateGraduationWizardLock(current_term, semester_status) {
-    semester2Closed = current_term === 'Semester 2' && semester_status === 'closed';
-    const banner = document.getElementById('graduation-locked-banner');
-    const body = document.getElementById('graduation-wizard-body');
-    if (banner) banner.style.display = semester2Closed ? 'none' : 'flex';
-    if (body) body.style.display = semester2Closed ? '' : 'none';
+  semester2Closed =
+    current_term === "Semester 2" && semester_status === "closed";
+  const banner = document.getElementById("graduation-locked-banner");
+  const body = document.getElementById("graduation-wizard-body");
+  if (banner) banner.style.display = semester2Closed ? "none" : "flex";
+  if (body) body.style.display = semester2Closed ? "" : "none";
 }
 
 // --- 12. Dashboard tab ---
 async function loadDashboardStats() {
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/dashboard', { credentials: 'include' });
-        if (!res.ok) throw new Error("Could not load dashboard stats.");
-        const stats = await res.json();
-        const set = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
-        set('stat-total-students', stats.total_students);
-        set('stat-male', stats.male);
-        set('stat-female', stats.female);
-        set('stat-total-transfers', stats.total_transfers);
-    } catch (err) {
-        console.error(err);
-    }
+  try {
+    const res = await fetch("http://localhost:3001/api/registrar/dashboard", {
+      credentials: "include",
+    });
+    if (!res.ok) throw new Error("Could not load dashboard stats.");
+    const stats = await res.json();
+    const set = (id, value) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value;
+    };
+    set("stat-total-students", stats.total_students);
+    set("stat-male", stats.male);
+    set("stat-female", stats.female);
+    set("stat-total-transfers", stats.total_transfers);
+  } catch (err) {
+    console.error(err);
+  }
 }
 
 // --- 13. Profile Settings modal: avatar + Registrar signature ---
@@ -2613,91 +4636,111 @@ async function loadDashboardStats() {
 // two go on different documents. Both go through Principal approval,
 // same as the homeroom teacher's own signature/ID-photo requests.
 function openProfileSettings() {
-    const modal = document.getElementById('profile-settings-modal');
-    if (!modal) return;
-    modal.style.display = 'flex';
+  const modal = document.getElementById("profile-settings-modal");
+  if (!modal) return;
+  modal.style.display = "flex";
 
-    const avatarPreview = document.getElementById('settings-avatar-preview');
-    if (avatarPreview) avatarPreview.src = (currentUser && currentUser.avatar_url) || '';
+  const avatarPreview = document.getElementById("settings-avatar-preview");
+  if (avatarPreview)
+    avatarPreview.src = (currentUser && currentUser.avatar_url) || "";
 
-    const avatarFilename = document.getElementById('settings-avatar-filename');
-    if (avatarFilename) avatarFilename.textContent = t('reg_no_file_chosen');
-    const signatureFilename = document.getElementById('settings-signature-filename');
-    if (signatureFilename) signatureFilename.textContent = t('reg_no_file_chosen');
+  const avatarFilename = document.getElementById("settings-avatar-filename");
+  if (avatarFilename) avatarFilename.textContent = t("reg_no_file_chosen");
+  const signatureFilename = document.getElementById(
+    "settings-signature-filename",
+  );
+  if (signatureFilename)
+    signatureFilename.textContent = t("reg_no_file_chosen");
 
-    loadRegistrarSignatureStatus();
+  loadRegistrarSignatureStatus();
 }
 
 function closeProfileSettings() {
-    const modal = document.getElementById('profile-settings-modal');
-    if (modal) modal.style.display = 'none';
+  const modal = document.getElementById("profile-settings-modal");
+  if (modal) modal.style.display = "none";
 }
 
 async function loadRegistrarSignatureStatus() {
-    const preview = document.getElementById('settings-signature-preview');
-    const status = document.getElementById('settings-signature-status');
-    if (!status) return;
-    try {
-        const res = await fetch('http://localhost:3001/api/teacher/document-status', { credentials: 'include' });
-        if (!res.ok) throw new Error("Could not load signature status.");
-        const data = await res.json();
-        if (data.registrar_signature_url && preview) {
-            preview.src = data.registrar_signature_url;
-            preview.style.display = 'block';
-        }
-        if (data.registrar_signature_request && data.registrar_signature_request.status === 'pending') {
-            status.textContent = 'Pending Principal approval.';
-        } else if (data.registrar_signature_url) {
-            status.textContent = 'Approved and in use.';
-        } else {
-            status.textContent = 'No signature on file yet.';
-        }
-    } catch (err) {
-        console.error(err);
-        status.textContent = 'Could not load status.';
+  const preview = document.getElementById("settings-signature-preview");
+  const status = document.getElementById("settings-signature-status");
+  if (!status) return;
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/teacher/document-status",
+      { credentials: "include" },
+    );
+    if (!res.ok) throw new Error("Could not load signature status.");
+    const data = await res.json();
+    if (data.registrar_signature_url && preview) {
+      preview.src = data.registrar_signature_url;
+      preview.style.display = "block";
     }
+    if (
+      data.registrar_signature_request &&
+      data.registrar_signature_request.status === "pending"
+    ) {
+      status.textContent = "Pending Principal approval.";
+    } else if (data.registrar_signature_url) {
+      status.textContent = "Approved and in use.";
+    } else {
+      status.textContent = "No signature on file yet.";
+    }
+  } catch (err) {
+    console.error(err);
+    status.textContent = "Could not load status.";
+  }
 }
 
 async function uploadRegistrarAvatar(input) {
-    if (!input.files || input.files.length === 0) return;
-    const avatarFilename = document.getElementById('settings-avatar-filename');
-    if (avatarFilename) avatarFilename.textContent = input.files[0].name;
-    const formData = new FormData();
-    formData.append('avatar', input.files[0]);
-    try {
-        const res = await fetch('http://localhost:3001/api/teacher/update-avatar', {
-            method: 'POST', credentials: 'include', body: formData
-        });
-        const data = await res.json();
-        if (!res.ok) return showAlert(data.error || "Could not upload profile picture.");
-        if (currentUser) currentUser.avatar_url = data.new_avatar_url;
-        applyProfileChrome();
-        const preview = document.getElementById('settings-avatar-preview');
-        if (preview) preview.src = data.new_avatar_url;
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
-    }
+  if (!input.files || input.files.length === 0) return;
+  const avatarFilename = document.getElementById("settings-avatar-filename");
+  if (avatarFilename) avatarFilename.textContent = input.files[0].name;
+  const formData = new FormData();
+  formData.append("avatar", input.files[0]);
+  try {
+    const res = await fetch("http://localhost:3001/api/teacher/update-avatar", {
+      method: "POST",
+      credentials: "include",
+      body: formData,
+    });
+    const data = await res.json();
+    if (!res.ok)
+      return showAlert(data.error || "Could not upload profile picture.");
+    if (currentUser) currentUser.avatar_url = data.new_avatar_url;
+    applyProfileChrome();
+    const preview = document.getElementById("settings-avatar-preview");
+    if (preview) preview.src = data.new_avatar_url;
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 async function uploadRegistrarSignature(input) {
-    if (!input.files || input.files.length === 0) return;
-    const signatureFilename = document.getElementById('settings-signature-filename');
-    if (signatureFilename) signatureFilename.textContent = input.files[0].name;
-    const formData = new FormData();
-    formData.append('signature', input.files[0]);
-    try {
-        const res = await fetch('http://localhost:3001/api/registrar/upload-signature', {
-            method: 'POST', credentials: 'include', body: formData
-        });
-        const data = await res.json();
-        if (!res.ok) return showAlert(data.error || "Could not submit signature.");
-        showAlert(t('reg_signature_submitted'));
-        loadRegistrarSignatureStatus();
-    } catch (err) {
-        console.error(err);
-        showAlert(t("reg_server_error"));
-    }
+  if (!input.files || input.files.length === 0) return;
+  const signatureFilename = document.getElementById(
+    "settings-signature-filename",
+  );
+  if (signatureFilename) signatureFilename.textContent = input.files[0].name;
+  const formData = new FormData();
+  formData.append("signature", input.files[0]);
+  try {
+    const res = await fetch(
+      "http://localhost:3001/api/registrar/upload-signature",
+      {
+        method: "POST",
+        credentials: "include",
+        body: formData,
+      },
+    );
+    const data = await res.json();
+    if (!res.ok) return showAlert(data.error || "Could not submit signature.");
+    showAlert(t("reg_signature_submitted"));
+    loadRegistrarSignatureStatus();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
 }
 
 // --- 14. Sidebar footer: Return to Portal + Logout ---
@@ -2705,14 +4748,17 @@ async function uploadRegistrarSignature(input) {
 // confirm the real teacher-portal entry route, so this uses the same
 // placeholder path. Update both together if that route is different.
 function returnToPortal() {
-    window.location.href = '/teachers/index.html';
+  window.location.href = "/teachers/index.html";
 }
 
 async function registrarLogout() {
-    try {
-        await fetch('http://localhost:3001/api/logout', { method: 'POST', credentials: 'include' });
-    } catch (err) {
-        console.error(err);
-    }
-    window.location.href = '/login.html';
+  try {
+    await fetch("http://localhost:3001/api/logout", {
+      method: "POST",
+      credentials: "include",
+    });
+  } catch (err) {
+    console.error(err);
+  }
+  window.location.href = "/login.html";
 }
