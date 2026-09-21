@@ -24,7 +24,7 @@ body {
     height: 100vh;
     overflow: hidden;
     overscroll-behavior: none;
-    background-color: #f8fafc;
+    background-color: #f3f6f4;
 }
 
 /* Media is fluid by default — an embedded image/video/iframe/svg can
@@ -38,7 +38,7 @@ img, video, iframe, svg { max-width: 100%; height: auto; }
 .tab-content h1 {
     font-size: 1.5rem;
     font-weight: 700;
-    color: #1e3a8a;
+    color: #14532d;
     margin-bottom: 6px;
 }
 .tab-content p.muted { margin-bottom: 20px; }
@@ -64,8 +64,8 @@ img, video, iframe, svg { max-width: 100%; height: auto; }
    anything that should stay fixed into .sidebar-header / .sidebar-footer. */
 #sidebar {
     width: 250px;
-    background-color: #1e3a8a;
-    background-image: linear-gradient(180deg, #0f1f45 0%, #1e3a8a 45%, #142c66 100%);
+    background-color: #14532d;
+    background-image: linear-gradient(180deg, #0b3320 0%, #14532d 45%, #0b3320 100%);
     color: white;
     flex-shrink: 0;
     display: flex;
@@ -134,7 +134,7 @@ img, video, iframe, svg { max-width: 100%; height: auto; }
 .nav-group-label:first-child { padding-top: 2px; }
 
 #sidebar button:hover { background: rgba(255,255,255,0.1); color: #ffffff; border-left-color: rgba(255,255,255,0.4); }
-#sidebar button.active { background: rgba(37, 99, 235, 0.55); color: #ffffff; border-left-color: #60a5fa; font-weight: 600; }
+#sidebar button.active { background: rgba(28, 107, 63, 0.55); color: #ffffff; border-left-color: #c9a15a; font-weight: 600; }
 
 /* Red pending-action badge reused from the bell icon, repositioned to
    sit at the corner of a nav button (Transfer Hub, Documents) instead
@@ -208,7 +208,7 @@ img, video, iframe, svg { max-width: 100%; height: auto; }
 .top-bar {
     position: sticky; top: 0; z-index: 1000;
     display: flex; justify-content: space-between; align-items: center;
-    background: linear-gradient(135deg, #142c66 0%, #1e3a8a 100%);
+    background: linear-gradient(135deg, #0b3320 0%, #14532d 100%);
     /* #content has left/right padding (see rule below) so the bar can sit
        flush against the page edges even though it lives inside a padded
        scroll container: cancel that padding out with a matching negative
@@ -255,7 +255,7 @@ img, video, iframe, svg { max-width: 100%; height: auto; }
     display: none;
     position: fixed;
     inset: 0;
-    background: rgba(15, 23, 42, 0.5);
+    background: rgba(15, 26, 20, 0.5);
     z-index: 1900;
     opacity: 0;
     pointer-events: none;
@@ -288,14 +288,14 @@ img, video, iframe, svg { max-width: 100%; height: auto; }
 .notification-panel {
     position: absolute; top: calc(100% + 8px); right: 0;
     width: 300px; max-width: calc(100vw - 24px); max-height: 360px; overflow-y: auto;
-    background: white; border: 1px solid #e2e8f0; border-radius: 10px;
+    background: white; border: 1px solid #dde5e0; border-radius: 10px;
     box-shadow: 0 10px 25px rgba(0,0,0,0.12); z-index: 1100;
 }
-.notification-panel-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-bottom: 1px solid #e2e8f0; font-size: 0.9rem; }
-.notif-item { padding: 10px 14px; border-bottom: 1px solid #f1f5f9; font-size: 0.82rem; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
-.notif-item:hover { background: #f8fafc; }
+.notification-panel-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-bottom: 1px solid #dde5e0; font-size: 0.9rem; }
+.notif-item { padding: 10px 14px; border-bottom: 1px solid #eef3f0; font-size: 0.82rem; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
+.notif-item:hover { background: #f3f6f4; }
 .notif-item strong { font-weight: 600; }
-.notif-empty { padding: 14px; font-size: 0.85rem; color: #64748b; text-align: center; }
+.notif-empty { padding: 14px; font-size: 0.85rem; color: #66786d; text-align: center; }
 
 /* 4. Main Content: Takes remaining width — same padding as the
    teacher portal's .main-content.
@@ -319,7 +319,7 @@ img, video, iframe, svg { max-width: 100%; height: auto; }
 .tab-content { display: none; background: white; padding: 25px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-top: 20px; }
 .tab-content.active { display: block; }
 
-.search-box { background: #f8f9fa; padding: 20px; border: 1px solid #e9ecef; border-radius: 8px; display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 25px; }
+.search-box { background: #f8f9fa; padding: 20px; border: 1px solid #e6ece8; border-radius: 8px; display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 25px; }
 /* Default sizing for search-box fields: flexible but with a sane floor so
    they don't get crushed to unusable widths when several sit in one row
    (e.g. Section Setup's grade + stream + section + capacity + button). */
@@ -329,7 +329,7 @@ img, video, iframe, svg { max-width: 100%; height: auto; }
 
 .form-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 15px; }
 
-input[type="text"], select { padding: 10px 15px; border: 1px solid #ced4da; border-radius: 5px; width: 100%; }
+input[type="text"], select { padding: 10px 15px; border: 1px solid #cdd6d0; border-radius: 5px; width: 100%; }
 
 /* Dropdown/filter selects: replace the bare OS-default control with a
    consistent look across the portal — custom chevron, breathing room for
@@ -345,26 +345,26 @@ select {
     background-position: right 12px center;
     background-size: 16px;
     padding-right: 36px;
-    color: #1e293b;
+    color: #1f2a24;
     cursor: pointer;
     transition: border-color 0.15s, box-shadow 0.15s;
 }
-select:hover { border-color: #94a3b8; }
-select:focus { outline: none; border-color: #1e3a8a; box-shadow: 0 0 0 3px rgba(30, 58, 138, 0.12); }
-select:disabled { background-color: #f1f5f9; color: #94a3b8; cursor: not-allowed; }
+select:hover { border-color: #93a49a; }
+select:focus { outline: none; border-color: #14532d; box-shadow: 0 0 0 3px rgba(20, 83, 45, 0.12); }
+select:disabled { background-color: #eef3f0; color: #93a49a; cursor: not-allowed; }
 
 /* Checkboxes (Role Permissions-style pickers, filter panels, etc.)
    otherwise render with the browser's own default appearance instead of
    this portal's blue accent — accent-color re-themes the native control
    without rebuilding it from scratch. */
 input[type="checkbox"] {
-    accent-color: #1e3a8a;
+    accent-color: #14532d;
     width: 17px;
     height: 17px;
     cursor: pointer;
     vertical-align: middle;
 }
-input[type="checkbox"]:focus-visible { outline: 2px solid #1e3a8a; outline-offset: 2px; }
+input[type="checkbox"]:focus-visible { outline: 2px solid #14532d; outline-offset: 2px; }
 
 /* File inputs (Student Roster Upload, EMIS mapped-ID upload, profile
    picture/signature upload, etc.) otherwise render as the browser's
@@ -376,29 +376,29 @@ input[type="checkbox"]:focus-visible { outline: 2px solid #1e3a8a; outline-offse
 input[type="file"] {
     width: 100%;
     padding: 8px 10px;
-    border: 1px solid #ced4da;
+    border: 1px solid #cdd6d0;
     border-radius: 5px;
     background-color: #ffffff;
-    color: #475569;
+    color: #4a5b51;
     cursor: pointer;
 }
-input[type="file"]:focus-visible { outline: none; border-color: #1e3a8a; box-shadow: 0 0 0 3px rgba(30, 58, 138, 0.12); }
+input[type="file"]:focus-visible { outline: none; border-color: #14532d; box-shadow: 0 0 0 3px rgba(20, 83, 45, 0.12); }
 input[type="file"]::file-selector-button {
     padding: 8px 14px;
     margin-right: 12px;
     border: none;
     border-radius: 5px;
-    background-color: #1e3a8a;
+    background-color: #14532d;
     color: #ffffff;
     font-weight: 600;
     font-size: 0.85rem;
     cursor: pointer;
     transition: background-color 0.15s;
 }
-input[type="file"]::file-selector-button:hover { background-color: #142c66; }
+input[type="file"]::file-selector-button:hover { background-color: #0b3320; }
 
-button { padding: 10px 20px; background-color: #1e3a8a; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; }
-button:hover { background-color: #142c66; }
+button { padding: 10px 20px; background-color: #14532d; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; }
+button:hover { background-color: #0b3320; }
 /* Add this to your registrar.css file */
 
 #promo-form {
@@ -411,7 +411,7 @@ button:hover { background-color: #142c66; }
 
 #promo-form h3 {
     margin-bottom: 15px;
-    color: #2c3e50;
+    color: #1f2a24;
 }
 
 #promo-form p {
@@ -437,7 +437,7 @@ button:hover { background-color: #142c66; }
 #promo-form button {
     margin-top: 20px;
     padding: 10px 20px;
-    background-color: #3498db;
+    background-color: #2f8a57;
     color: white;
     border: none;
     border-radius: 4px;
@@ -466,15 +466,15 @@ button:hover { background-color: #142c66; }
 }
 .stat-card {
     background: #f8f9fa;
-    border: 1px solid #e9ecef;
+    border: 1px solid #e6ece8;
     border-radius: 8px;
     padding: 20px;
     display: flex;
     flex-direction: column;
     gap: 6px;
 }
-.stat-value { font-size: 2rem; font-weight: 800; color: #1e3a8a; }
-.stat-label { font-size: 0.85rem; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.03em; }
+.stat-value { font-size: 2rem; font-weight: 800; color: #14532d; }
+.stat-label { font-size: 0.85rem; font-weight: 600; color: #66786d; text-transform: uppercase; letter-spacing: 0.03em; }
 
 /* --- Top bar avatar (opens Profile Settings) --- */
 .topbar-account {
@@ -508,7 +508,7 @@ button:hover { background-color: #142c66; }
 /* --- Profile Settings modal --- */
 .modal-overlay {
     position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(15, 23, 42, 0.55);
+    background: rgba(15, 26, 20, 0.55);
     z-index: 1200;
     display: flex; align-items: center; justify-content: center;
 }
@@ -532,20 +532,20 @@ button:hover { background-color: #142c66; }
 }
 .modal-close-btn {
     position: absolute; top: 14px; right: 14px;
-    background: transparent; color: #64748b;
+    background: transparent; color: #66786d;
     width: 28px; height: 28px; padding: 0;
     border-radius: 6px; font-size: 1.2rem; line-height: 1;
 }
-.modal-close-btn:hover { background: #f1f5f9; }
-.profile-settings-section { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e9ecef; }
+.modal-close-btn:hover { background: #eef3f0; }
+.profile-settings-section { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e6ece8; }
 .profile-settings-section:first-of-type { margin-top: 10px; padding-top: 0; border-top: none; }
-.profile-settings-section h3 { margin-bottom: 8px; color: #2c3e50; }
+.profile-settings-section h3 { margin-bottom: 8px; color: #1f2a24; }
 .settings-avatar-preview, .settings-signature-preview {
     display: block;
     max-width: 140px;
     max-height: 140px;
     border-radius: 8px;
-    border: 1px solid #e2e8f0;
+    border: 1px solid #dde5e0;
     object-fit: contain;
     background: #f8f9fa;
     margin-bottom: 10px;
@@ -560,7 +560,7 @@ button:hover { background-color: #142c66; }
     width: 1px;
     height: 1px;
     overflow: hidden;
-    background: #1e3a8a;
+    background: #14532d;
     color: #fff;
     padding: 10px 16px;
     border-radius: 0 0 8px 0;
@@ -584,7 +584,7 @@ input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
 [tabindex]:focus-visible {
-    outline: 2px solid #2563eb;
+    outline: 2px solid #1c6b3f;
     outline-offset: 2px;
 }
 #sidebar button:focus-visible,
@@ -635,8 +635,8 @@ textarea:focus-visible,
     white-space: nowrap;
 }
 .topbar-chip-accent {
-    background: rgba(96, 165, 250, 0.28);
-    border-color: rgba(96, 165, 250, 0.5);
+    background: rgba(201, 161, 90, 0.28);
+    border-color: rgba(201, 161, 90, 0.5);
 }
 /* Semester status chip: green while Academic VP has the semester open,
    red once they've closed it — same chip, just re-colored/re-labeled
@@ -675,7 +675,7 @@ textarea:focus-visible,
     transition: background 0.15s, color 0.15s;
 }
 .lang-switch-btn:hover { background: rgba(255, 255, 255, 0.16); color: #fff; }
-.lang-switch-btn.lang-switch-active { background: rgba(255, 255, 255, 0.94); color: #142c66; }
+.lang-switch-btn.lang-switch-active { background: rgba(255, 255, 255, 0.94); color: #0b3320; }
 
 /* =========================================================================
    8. Toasts — replace native alert() with a non-blocking, styled,
@@ -699,12 +699,12 @@ textarea:focus-visible,
     align-items: flex-start;
     gap: 10px;
     background: #ffffff;
-    border-left: 4px solid #1e3a8a;
+    border-left: 4px solid #14532d;
     border-radius: 8px;
     box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
     padding: 12px 14px;
     font-size: 0.88rem;
-    color: #1f2937;
+    color: #1f2a24;
     animation: toast-in 0.18s ease-out;
 }
 .toast-error { border-left-color: #dc2626; }
@@ -714,7 +714,7 @@ textarea:focus-visible,
 .toast-close {
     background: transparent;
     border: none;
-    color: #94a3b8;
+    color: #93a49a;
     font-size: 1.1rem;
     line-height: 1;
     padding: 0;
@@ -724,7 +724,7 @@ textarea:focus-visible,
     cursor: pointer;
     border-radius: 4px;
 }
-.toast-close:hover { background: #f1f5f9; color: #475569; }
+.toast-close:hover { background: #eef3f0; color: #4a5b51; }
 .toast-hide { animation: toast-out 0.18s ease-in forwards; }
 @keyframes toast-in {
     from { opacity: 0; transform: translateX(16px); }
@@ -743,7 +743,7 @@ textarea:focus-visible,
    9. Confirm modal — replaces native confirm() for destructive actions.
    ========================================================================= */
 .confirm-box { max-width: 380px; padding: 26px; }
-.confirm-message { margin: 0 0 20px; color: #1f2937; font-size: 0.95rem; line-height: 1.5; }
+.confirm-message { margin: 0 0 20px; color: #1f2a24; font-size: 0.95rem; line-height: 1.5; }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 10px; }
 .confirm-btn {
     padding: 9px 18px;
@@ -757,8 +757,8 @@ textarea:focus-visible,
     gap: 6px;
 }
 .confirm-btn .lucide { width: 16px; height: 16px; }
-.confirm-btn-secondary { background: #f1f5f9; color: #334155; border-color: #e2e8f0; }
-.confirm-btn-secondary:hover { background: #e2e8f0; }
+.confirm-btn-secondary { background: #eef3f0; color: #33443a; border-color: #dde5e0; }
+.confirm-btn-secondary:hover { background: #dde5e0; }
 .confirm-btn-danger { background: #dc2626; color: #fff; }
 .confirm-btn-danger:hover { background: #b91c1c; }
 
@@ -779,7 +779,7 @@ textarea:focus-visible,
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    background: #1e3a8a;
+    background: #14532d;
     color: #fff;
     padding: 9px 16px;
     border-radius: 6px;
@@ -788,8 +788,8 @@ textarea:focus-visible,
     cursor: pointer;
     transition: background 0.15s;
 }
-.file-upload-btn:hover { background: #142c66; }
-.file-upload-filename { font-size: 0.82rem; color: #64748b; word-break: break-all; }
+.file-upload-btn:hover { background: #0b3320; }
+.file-upload-filename { font-size: 0.82rem; color: #66786d; word-break: break-all; }
 
 /* =========================================================================
    11. Responsiveness
@@ -870,9 +870,9 @@ textarea:focus-visible,
     font-weight: 700;
     letter-spacing: 0.02em;
     text-transform: uppercase;
-    color: #1e3a8a;
-    background: #dbeafe;
-    border: 1px solid #bfdbfe;
+    color: #14532d;
+    background: #d5e9dc;
+    border: 1px solid #bcdcc8;
     border-radius: 999px;
     padding: 2px 9px;
     margin-left: 6px;
@@ -931,8 +931,8 @@ textarea:focus-visible,
     align-items: center;
     gap: 10px;
     background: #f8f9fa;
-    color: #1e3a8a;
-    border: 1px solid #e2e8f0;
+    color: #14532d;
+    border: 1px solid #dde5e0;
     border-radius: 10px;
     padding: 22px 14px;
     font-size: 0.88rem;
@@ -945,9 +945,9 @@ textarea:focus-visible,
     width: 34px;
     height: 34px;
     stroke-width: 1.6px;
-    color: #1e3a8a;
+    color: #14532d;
 }
-.template-card:hover { background: #eaf0fd; border-color: #93b4f0; transform: translateY(-2px); }
+.template-card:hover { background: #e2f1ec; border-color: #a8d0b6; transform: translateY(-2px); }
 
 @media (max-width: 520px) {
     .template-grid { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
@@ -979,7 +979,7 @@ textarea:focus-visible,
    "View History" button opens. */
 .data-table-wrap {
     overflow-x: auto;
-    border: 1px solid #e2e8f0;
+    border: 1px solid #dde5e0;
     border-radius: 8px;
 }
 table.data-table {
@@ -990,42 +990,42 @@ table.data-table {
 }
 table.data-table thead th {
     text-align: left;
-    background: #f1f5fb;
-    color: #1e3a8a;
+    background: #f0f5f2;
+    color: #14532d;
     font-size: 0.74rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
     padding: 12px 16px;
-    border-bottom: 2px solid #dbe3f3;
+    border-bottom: 2px solid #d9e2dc;
     white-space: nowrap;
 }
 table.data-table tbody td {
     padding: 12px 16px;
-    border-bottom: 1px solid #edf1f7;
+    border-bottom: 1px solid #edf2ee;
     vertical-align: middle;
-    color: #2d3748;
+    color: #2c3b32;
 }
 table.data-table tbody tr:last-child td { border-bottom: none; }
-table.data-table tbody tr:hover { background: #f8fafc; }
+table.data-table tbody tr:hover { background: #f3f6f4; }
 table.data-table td.data-table-id {
     font-family: 'Courier New', Consolas, monospace;
     font-weight: 700;
-    color: #1e3a8a;
+    color: #14532d;
     white-space: nowrap;
 }
 table.data-table .student-name-link {
     background: none;
     border: none;
     padding: 0;
-    color: #1e3a8a;
+    color: #14532d;
     font-weight: 600;
     font-size: inherit;
     text-align: left;
     cursor: pointer;
     text-decoration: none;
 }
-table.data-table .student-name-link:hover { text-decoration: underline; color: #142c66; }
+table.data-table .student-name-link:hover { text-decoration: underline; color: #0b3320; }
 table.data-table td.data-table-meta { color: #7f8c8d; font-size: 0.82rem; white-space: nowrap; }
 table.data-table td.data-table-action { text-align: right; white-space: nowrap; }
 table.data-table td.data-table-action button { padding: 7px 14px; font-size: 0.82rem; }
@@ -1040,11 +1040,11 @@ table.data-table td.data-table-action button { padding: 7px 14px; font-size: 0.8
 }
 .status-pill.status-active { background: #e3f7e8; color: #1c7a3e; }
 .status-pill.status-pending { background: #fef3d6; color: #92650a; }
-.status-pill.status-inactive { background: #f1f5f9; color: #475569; }
+.status-pill.status-inactive { background: #eef3f0; color: #4a5b51; }
 .status-pill.status-unregistered { background: #fde2e2; color: #b91c1c; }
-.status-pill.status-graduated { background: #e6ecfb; color: #1e3a8a; }
+.status-pill.status-graduated { background: #e0eee5; color: #14532d; }
 .status-pill.status-transferring { background: #fde8d9; color: #b0480a; }
-.status-pill.status-transferred { background: #eceff3; color: #52606d; }
+.status-pill.status-transferred { background: #ecf1ed; color: #52645a; }
 /* Guardian on file / not on file — Student Registry "Guardian" column,
    and reused for the Guardian/Parent nav's linked-children table. */
 .status-pill.status-has-guardian { background: #e3f7e8; color: #1c7a3e; }
@@ -1072,7 +1072,7 @@ table.data-table td.data-table-action button { padding: 7px 14px; font-size: 0.8
 .emis-status .emis-status-match,
 .emis-status.emis-status-match { background: #e3f7e8; color: #1c7a3e; padding: 8px 10px; border-radius: 6px; }
 .emis-status .emis-status-unverified,
-.emis-status.emis-status-unverified { background: #f1f5f9; color: #475569; padding: 8px 10px; border-radius: 6px; }
+.emis-status.emis-status-unverified { background: #eef3f0; color: #4a5b51; padding: 8px 10px; border-radius: 6px; }
 .emis-status .emis-status-error,
 .emis-status.emis-status-error { background: #fde2e2; color: #b91c1c; padding: 8px 10px; border-radius: 6px; }
 .emis-status-actions { margin-top: 6px; display: flex; gap: 8px; }
@@ -1106,15 +1106,15 @@ table.data-table td.data-table-action button { padding: 7px 14px; font-size: 0.8
     align-items: center;
     gap: 12px;
     flex-wrap: wrap;
-    background: #eef2ff;
-    border: 1px solid #c7d2fe;
+    background: #e6f2ea;
+    border: 1px solid #bcdcc8;
     border-radius: 8px;
     padding: 14px 16px;
     margin-bottom: 16px;
 }
 .grade-download-picker label {
     font-weight: 700;
-    color: #1e3a8a;
+    color: #14532d;
     font-size: 0.9rem;
     white-space: nowrap;
 }
@@ -1129,18 +1129,18 @@ table.data-table td.data-table-action button { padding: 7px 14px; font-size: 0.8
     background-position: right 10px center;
     background-size: 16px;
     padding: 8px 34px 8px 12px;
-    border: 1px solid #a5b4fc;
+    border: 1px solid #b7d4c0;
     border-radius: 6px;
     font-weight: 600;
-    color: #1e3a8a;
+    color: #14532d;
     cursor: pointer;
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
-.grade-download-picker select:hover { border-color: #6366f1; }
+.grade-download-picker select:hover { border-color: #2f8a57; }
 .grade-download-picker select:focus-visible {
     outline: none;
-    border-color: #4338ca;
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+    border-color: #14532d;
+    box-shadow: 0 0 0 3px rgba(47, 138, 87, 0.25);
 }
 .grade-download-picker .muted { font-size: 0.8rem; margin: 0; }
 
@@ -1153,15 +1153,15 @@ table.data-table td.data-table-action button { padding: 7px 14px; font-size: 0.8
     display: flex;
     align-items: center;
     gap: 8px;
-    background: #f8fafc;
-    border: 1px solid #dbe3ee;
+    background: #f3f6f4;
+    border: 1px solid #d9e2dc;
     border-radius: 6px;
     padding: 6px 10px 6px 12px;
 }
 .section-capacity-box label {
     font-size: 0.78rem;
     font-weight: 700;
-    color: #475569;
+    color: #4a5b51;
     text-transform: uppercase;
     letter-spacing: 0.02em;
     white-space: nowrap;
@@ -1169,15 +1169,15 @@ table.data-table td.data-table-action button { padding: 7px 14px; font-size: 0.8
 .section-capacity-box input[type="number"] {
     width: 90px;
     padding: 6px 8px;
-    border: 1px solid #cbd5e1;
+    border: 1px solid #c5d0c9;
     border-radius: 5px;
     text-align: center;
     font-weight: 600;
 }
 .section-capacity-box input[type="number"]:focus-visible {
     outline: none;
-    border-color: #4338ca;
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+    border-color: #14532d;
+    box-shadow: 0 0 0 3px rgba(47, 138, 87, 0.2);
 }
 .section-capacity-box button {
     padding: 6px 14px;

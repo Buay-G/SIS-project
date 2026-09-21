@@ -1,5 +1,5 @@
 // CONFIG
-const API_BASE = 'http://localhost:3001';
+const API_BASE = '';
 
 // Every request needs credentials: 'include' so the httpOnly auth cookie
 // set at login is actually sent along. Routing every call through this
@@ -58,6 +58,7 @@ window.onSisLangChange = () => {
     if (lastTodaysClasses) renderDashboardTodaysClasses(lastTodaysClasses);
     if (lastStudentPerformance) renderDashboardStudentPerformance(lastStudentPerformance);
     if (lastSemesterStatus) renderSemesterStatusBadge(lastSemesterStatus);
+    if (typeof subState !== 'undefined' && subState.data) renderSubscriptionPage();
     if (lastMyClassRoster) renderMyClassRoster(lastMyClassRoster);
     if (lastLeaderboardData) renderLeaderboard(lastLeaderboardData);
     if (conductData && conductData.length > 0) {
@@ -69,7 +70,17 @@ window.onSisLangChange = () => {
 async function checkAuthAndInit() {
     try {
         const res = await apiFetch(`${API_BASE}/api/me`);
-        if (!res.ok) { window.location.href = '/login.html'; return false; }
+        if (!res.ok) {
+            // Subscription Fee: a frozen account gets 403 SUBSCRIPTION_FROZEN. guard.js shows
+            // the "account frozen" notice for it; sending the person to login here would
+            // wipe that notice, so stop quietly instead.
+            if (res.status === 403) {
+                const frozenBody = await res.clone().json().catch(() => ({}));
+                if (frozenBody && frozenBody.code === 'SUBSCRIPTION_FROZEN') return false;
+            }
+            window.location.href = '/login.html';
+            return false;
+        }
         const data = await res.json();
 
         if (data.role !== 'teachers') {
@@ -335,6 +346,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupMyClassScannerInput();
     setupStaticEventListeners();
     setupDynamicActionDelegation();
+    initSubscriptionFee();
 
     // Fetch notifications on load, then poll every 60 seconds
     loadNotifications();
@@ -392,12 +404,12 @@ function renderPerformanceChart(data) {
                 {
                     label: 'Semester 1',
                     data: s1Values,
-                    backgroundColor: '#1e3a8a'
+                    backgroundColor: '#14532d'
                 },
                 {
                     label: data.semester_2_started ? 'Semester 2' : 'Semester 2 (not started)',
                     data: s2Values,
-                    backgroundColor: data.semester_2_started ? '#60a5fa' : '#cbd5e1'
+                    backgroundColor: data.semester_2_started ? '#c9a15a' : '#c5d0c9'
                 }
             ]
         },
@@ -448,7 +460,8 @@ async function loadDashboardTextbookSummary() {
         const data = await res.json();
 
         if (!res.ok) {
-            container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${data.error || 'Could not load textbook data.'}</p>`;
+            container.innerHTML = `<p style="color:#66786d; font-size:0.85rem;">${data.error || 'Could not load textbook data.'}</p>`;
+            if (window.PortalUI) PortalUI.upgradeError(container, () => loadDashboardTextbookSummary());
             return;
         }
 
@@ -456,7 +469,7 @@ async function loadDashboardTextbookSummary() {
         renderDashboardTextbookSummary(data);
     } catch (err) {
         console.error("Dashboard textbook summary load error:", err);
-        container.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not connect to server.</p>';
+        container.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Could not connect to server.</p>';
     }
 }
 let lastDashboardTextbookData = null;
@@ -481,7 +494,8 @@ async function loadDashboardTodaysClasses() {
         renderDashboardTodaysClasses(data);
     } catch (err) {
         console.error("Today's classes load error:", err);
-        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('dashboard_could_not_load_timetable') : "Could not load today's schedule."}</p>`;
+        container.innerHTML = `<p style="color:#66786d; font-size:0.85rem;">${typeof t === 'function' ? t('dashboard_could_not_load_timetable') : "Could not load today's schedule."}</p>`;
+        if (window.PortalUI) PortalUI.upgradeError(container, () => loadDashboardTodaysClasses());
     }
 }
 
@@ -512,7 +526,7 @@ function renderDashboardTodaysClasses(rows) {
         .sort((a, b) => a.start_time.localeCompare(b.start_time));
 
     if (todays.length === 0) {
-        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('dashboard_no_classes_today') : 'No classes scheduled today.'}</p>`;
+        container.innerHTML = `<p style="color:#66786d; font-size:0.85rem;">${typeof t === 'function' ? t('dashboard_no_classes_today') : 'No classes scheduled today.'}</p>`;
         return;
     }
 
@@ -617,7 +631,7 @@ let myClassSearchTerm = '';
 async function loadMyClassRoster() {
     const container = document.getElementById('myclass-roster');
     if (!container) return;
-    container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('loading_text') : 'Loading…'}</p>`;
+    container.innerHTML = `<p style="color:#66786d; font-size:0.85rem;">${typeof t === 'function' ? t('loading_text') : 'Loading…'}</p>`;
     try {
         const res = await apiFetch(`${API_BASE}/api/homeroom/attendance-today`);
         const data = await res.json();
@@ -626,7 +640,8 @@ async function loadMyClassRoster() {
         renderMyClassRoster(data);
     } catch (err) {
         console.error("My Class roster load error:", err);
-        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('myclass_could_not_load') : 'Could not load your class roster.'}</p>`;
+        container.innerHTML = `<p style="color:#66786d; font-size:0.85rem;">${typeof t === 'function' ? t('myclass_could_not_load') : 'Could not load your class roster.'}</p>`;
+        if (window.PortalUI) PortalUI.upgradeError(container, () => loadMyClassRoster());
     }
 }
 
@@ -858,18 +873,18 @@ window.loadLateMarksIncompleteStudents = async () => {
     if (!container) return;
 
     if (!subject_id) {
-        container.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Select a subject above to see incomplete students.</p>';
+        container.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Select a subject above to see incomplete students.</p>';
         return;
     }
 
-    container.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Loading…</p>';
+    container.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Loading…</p>';
     try {
         const res = await apiFetch(`${API_BASE}/api/homeroom/late-marks-requests/incomplete-students?term=${encodeURIComponent(lateMarksSelectedTerm)}&subject_id=${subject_id}`);
         const data = await res.json().catch(() => ([]));
         if (!res.ok) throw new Error(data.error || 'Could not load incomplete students');
 
         if (!data.length) {
-            container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">No incomplete students for ${escapeHtml(lateMarksSelectedTerm)} in this subject — nothing left to enter.</p>`;
+            container.innerHTML = `<p style="color:#66786d; font-size:0.85rem;">No incomplete students for ${escapeHtml(lateMarksSelectedTerm)} in this subject — nothing left to enter.</p>`;
             return;
         }
 
@@ -880,7 +895,7 @@ window.loadLateMarksIncompleteStudents = async () => {
         container.innerHTML = data.map(s => {
             const fullName = [s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' ');
             return `
-            <div class="search-group" style="flex-wrap: wrap; align-items: center; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #e2e8f0;">
+            <div class="search-group" style="flex-wrap: wrap; align-items: center; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #dde5e0;">
                 <span style="min-width: 180px; font-size: 0.85rem;"><strong>${escapeHtml(s.student_id)}</strong> — ${escapeHtml(fullName)}</span>
                 <select class="form-input late-marks-type-select" data-student-id="${escapeHtml(s.student_id)}" data-action="update-late-marks-score-limits" style="max-width: 170px">
                     ${typeOptions}
@@ -894,6 +909,7 @@ window.loadLateMarksIncompleteStudents = async () => {
         container.querySelectorAll('.late-marks-type-select').forEach(sel => updateLateMarksScoreLimits(sel));
     } catch (err) {
         container.innerHTML = `<p style="color:#dc2626; font-size:0.85rem;">${escapeHtml(err.message || 'Could not load incomplete students.')}</p>`;
+        if (window.PortalUI) PortalUI.upgradeError(container, () => loadLateMarksIncompleteStudents());
     }
 };
 
@@ -999,11 +1015,11 @@ function renderMyClassRoster(data) {
         : roster;
 
     if (roster.length === 0) {
-        container.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">No students in your homeroom section yet.</p>';
+        container.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">No students in your homeroom section yet.</p>';
         return;
     }
     if (visible.length === 0) {
-        container.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">No students match your search.</p>';
+        container.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">No students match your search.</p>';
         return;
     }
 
@@ -1038,7 +1054,8 @@ async function loadLeaderboard() {
         renderLeaderboard(data);
     } catch (err) {
         console.error("Leaderboard load error:", err);
-        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('leaderboard_could_not_load') : 'Could not load the leaderboard.'}</p>`;
+        container.innerHTML = `<p style="color:#66786d; font-size:0.85rem;">${typeof t === 'function' ? t('leaderboard_could_not_load') : 'Could not load the leaderboard.'}</p>`;
+        if (window.PortalUI) PortalUI.upgradeError(container, () => loadLeaderboard());
         if (note) note.textContent = '';
     }
 }
@@ -1059,7 +1076,7 @@ function renderLeaderboard(data) {
     }
 
     if (!data.students || data.students.length === 0) {
-        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('leaderboard_no_data') : 'No ranked marks yet for your section — rankings appear once a subject teacher pushes scores for this term.'}</p>`;
+        container.innerHTML = `<p style="color:#66786d; font-size:0.85rem;">${typeof t === 'function' ? t('leaderboard_no_data') : 'No ranked marks yet for your section — rankings appear once a subject teacher pushes scores for this term.'}</p>`;
         return;
     }
 
@@ -1087,7 +1104,7 @@ function renderLeaderboard(data) {
                 </tbody>
             </table>
         </div>
-        <p style="font-size:0.8rem; color:#64748b; margin-top:10px;">${(typeof t === 'function' ? t('leaderboard_class_size') : 'Out of {n} ranked students').replace('{n}', data.class_size)}</p>
+        <p style="font-size:0.8rem; color:#66786d; margin-top:10px;">${(typeof t === 'function' ? t('leaderboard_class_size') : 'Out of {n} ranked students').replace('{n}', data.class_size)}</p>
     `;
 }
 
@@ -1275,7 +1292,8 @@ async function loadDashboardStudentPerformance() {
         renderDashboardStudentPerformance(data);
     } catch (err) {
         console.error("Student performance load error:", err);
-        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('perf_could_not_load') : 'Could not load student performance.'}</p>`;
+        container.innerHTML = `<p style="color:#66786d; font-size:0.85rem;">${typeof t === 'function' ? t('perf_could_not_load') : 'Could not load student performance.'}</p>`;
+        if (window.PortalUI) PortalUI.upgradeError(container, () => loadDashboardStudentPerformance());
     }
 }
 
@@ -1285,7 +1303,7 @@ function renderDashboardStudentPerformance(data) {
     const students = (data && data.students) || [];
 
     if (students.length === 0) {
-        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('perf_no_students') : 'No students assigned yet.'}</p>`;
+        container.innerHTML = `<p style="color:#66786d; font-size:0.85rem;">${typeof t === 'function' ? t('perf_no_students') : 'No students assigned yet.'}</p>`;
         return;
     }
 
@@ -1317,7 +1335,8 @@ async function loadDashboardHistory() {
         renderDashboardHistory(data);
     } catch (err) {
         console.error("History load error:", err);
-        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('history_could_not_load') : 'Could not load your history.'}</p>`;
+        container.innerHTML = `<p style="color:#66786d; font-size:0.85rem;">${typeof t === 'function' ? t('history_could_not_load') : 'Could not load your history.'}</p>`;
+        if (window.PortalUI) PortalUI.upgradeError(container, () => loadDashboardHistory());
     }
 }
 
@@ -1341,7 +1360,7 @@ function renderDashboardHistory(rows) {
     if (!container) return;
 
     if (!rows || rows.length === 0) {
-        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('history_no_records') : 'Nothing on file yet — this fills in once a school year closes.'}</p>`;
+        container.innerHTML = `<p style="color:#66786d; font-size:0.85rem;">${typeof t === 'function' ? t('history_no_records') : 'Nothing on file yet — this fills in once a school year closes.'}</p>`;
         return;
     }
 
@@ -1373,7 +1392,7 @@ function renderDashboardTextbookSummary(data) {
     if (!container) return;
 
     if (data.total_slots === 0) {
-        container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('textbook_no_setup') : 'No students or subjects set up yet for your section.'}</p>`;
+        container.innerHTML = `<p style="color:#66786d; font-size:0.85rem;">${typeof t === 'function' ? t('textbook_no_setup') : 'No students or subjects set up yet for your section.'}</p>`;
         return;
     }
 
@@ -1410,7 +1429,7 @@ function renderDashboardTextbookSummary(data) {
 
     const dotHtml = dots.map(status => `<span class="textbook-dot textbook-dot-${status}"></span>`).join('');
     const cappedNote = data.total_slots > MAX_DOTS
-        ? `<p style="font-size:0.75rem; color:#64748b; margin-top:4px;">${(typeof t === 'function' ? t('textbook_sample_note') : 'Showing a proportional sample — {total} total slots.').replace('{total}', data.total_slots)}</p>`
+        ? `<p style="font-size:0.75rem; color:#66786d; margin-top:4px;">${(typeof t === 'function' ? t('textbook_sample_note') : 'Showing a proportional sample — {total} total slots.').replace('{total}', data.total_slots)}</p>`
         : '';
 
     const resolvedNote = typeof t === 'function'
@@ -1454,7 +1473,8 @@ async function loadConductStatus() {
     } catch (err) {
         console.error("Conduct status load error:", err);
         const list = document.getElementById('conduct-list');
-        if (list) list.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not load conduct status.</p>';
+        if (list) list.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Could not load conduct status.</p>';
+        if (window.PortalUI) PortalUI.upgradeError(list, () => loadConductStatus());
     }
 }
 
@@ -1551,7 +1571,7 @@ function renderConductList(data) {
     if (!list) return;
 
     if (!Array.isArray(data) || data.length === 0) {
-        list.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">No section assignments found.</p>';
+        list.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">No section assignments found.</p>';
         return;
     }
 
@@ -1595,7 +1615,8 @@ async function loadPushStatus() {
     } catch (err) {
         console.error("Push status load error:", err);
         const list = document.getElementById('push-list');
-        if (list) list.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not load push status.</p>';
+        if (list) list.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Could not load push status.</p>';
+        if (window.PortalUI) PortalUI.upgradeError(list, () => loadPushStatus());
     }
 }
 
@@ -1604,7 +1625,7 @@ function renderPushList(data) {
     if (!list) return;
 
     if (!Array.isArray(data) || data.length === 0) {
-        list.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">No section assignments found.</p>';
+        list.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">No section assignments found.</p>';
         return;
     }
 
@@ -1734,14 +1755,14 @@ window.loadHomeroomStudentReport = async () => {
         const report = await res.json();
 
         if (!Array.isArray(report) || report.length === 0) {
-            output.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">No pushed reports found for this student yet.</p>';
+            output.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">No pushed reports found for this student yet.</p>';
             return;
         }
 
         const rows = report.flatMap(grade => {
             const headerRow = `
             <tr>
-                <td colspan="4" style="font-weight:600; background:#f1f5f9;">
+                <td colspan="4" style="font-weight:600; background:#eef3f0;">
                     Grade ${grade.class_level} — Section ${grade.section}
                 </td>
             </tr>`;
@@ -1762,7 +1783,8 @@ window.loadHomeroomStudentReport = async () => {
             </table>`;
     } catch (err) {
         console.error("Student report load error:", err);
-        output.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not load report.</p>';
+        output.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Could not load report.</p>';
+        if (window.PortalUI) PortalUI.upgradeError(output, () => loadHomeroomStudentReport());
     }
 };
 
@@ -1780,11 +1802,11 @@ window.loadHomeroomSectionReport = async () => {
         lastSectionReport = data;
 
         if (!data.students || data.students.length === 0) {
-            output.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">No students found for this section.</p>';
+            output.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">No students found for this section.</p>';
             return;
         }
         if (data.subject_columns.length === 0) {
-            output.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">No subjects have been pushed for this section yet.</p>';
+            output.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">No subjects have been pushed for this section yet.</p>';
             return;
         }
 
@@ -1820,11 +1842,11 @@ window.loadHomeroomSectionReport = async () => {
                     <button class="btn-primary" data-action="export-section-report-csv" style="width:auto; padding:8px 16px;">Export CSV</button>
                     ${notifyBtn.replace('margin-bottom:12px; margin-left:8px;', '')}
                 </div>
-                <button type="button" data-action="close-homeroom-section-report" style="width:auto; padding:8px 16px; background:#f1f5f9; color:#334155; border:1px solid #cbd5e1; border-radius:6px; cursor:pointer; font-size:0.85rem;">
+                <button type="button" data-action="close-homeroom-section-report" style="width:auto; padding:8px 16px; background:#eef3f0; color:#33443a; border:1px solid #c5d0c9; border-radius:6px; cursor:pointer; font-size:0.85rem;">
                     &times; Close
                 </button>
             </div>
-            ${locked ? '<p style="font-size:0.8rem; color:#64748b; margin-bottom:12px;">This term\'s report has already been pushed to the Academic VP — status is locked.</p>' : ''}
+            ${locked ? '<p style="font-size:0.8rem; color:#66786d; margin-bottom:12px;">This term\'s report has already been pushed to the Academic VP — status is locked.</p>' : ''}
             <div class="section-report-table-scroll">
                 <table id="progress-table">
                     <thead>
@@ -1836,7 +1858,8 @@ window.loadHomeroomSectionReport = async () => {
             </div>`;
     } catch (err) {
         console.error("Section report load error:", err);
-        output.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not load section report.</p>';
+        output.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Could not load section report.</p>';
+        if (window.PortalUI) PortalUI.upgradeError(output, () => loadHomeroomSectionReport());
     }
 };
 
@@ -1978,7 +2001,7 @@ function renderPhotoRequests(requests) {
     if (!list) return;
 
     if (!Array.isArray(requests) || requests.length === 0) {
-        list.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">No pending photo requests.</p>';
+        list.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">No pending photo requests.</p>';
         return;
     }
 
@@ -2015,8 +2038,8 @@ function renderPhotoRequests(requests) {
 async function loadActionCenterRequests() {
     const photoList = document.getElementById('photo-requests-list');
     const absenceList = document.getElementById('absence-requests-list');
-    if (photoList) photoList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Loading…</p>';
-    if (absenceList) absenceList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Loading…</p>';
+    if (photoList) photoList.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Loading…</p>';
+    if (absenceList) absenceList.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Loading…</p>';
 
     try {
         const [photoRes, absenceRes] = await Promise.all([
@@ -2031,8 +2054,10 @@ async function loadActionCenterRequests() {
         updateActionCenterBadge(photoRequests.length + absenceRequests.length);
     } catch (err) {
         console.error("loadActionCenterRequests error:", err);
-        if (photoList) photoList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not load requests.</p>';
-        if (absenceList) absenceList.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not load requests.</p>';
+        if (photoList) photoList.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Could not load requests.</p>';
+        if (window.PortalUI) PortalUI.upgradeError(photoList, () => loadActionCenterRequests());
+        if (absenceList) absenceList.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Could not load requests.</p>';
+        if (window.PortalUI) PortalUI.upgradeError(absenceList, () => loadActionCenterRequests());
     }
 }
 
@@ -2047,7 +2072,7 @@ function renderAbsenceRequests(requests) {
     if (!list) return;
 
     if (!Array.isArray(requests) || requests.length === 0) {
-        list.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${typeof t === 'function' ? t('absence_no_requests') : 'No pending absence requests.'}</p>`;
+        list.innerHTML = `<p style="color:#66786d; font-size:0.85rem;">${typeof t === 'function' ? t('absence_no_requests') : 'No pending absence requests.'}</p>`;
         return;
     }
 
@@ -2202,7 +2227,7 @@ window.uploadStudentPhoto = async () => {
     formData.append('student_id', studentId);
     formData.append('photo', file);
 
-    if (status) status.innerHTML = '<span style="color:#64748b;">Uploading…</span>';
+    if (status) status.innerHTML = '<span style="color:#66786d;">Uploading…</span>';
 
     try {
         const res = await apiFetch(`${API_BASE}/api/homeroom/upload-student-photo`, {
@@ -2261,7 +2286,7 @@ async function loadTextbooksGrid() {
     // table in place keeps the container's scroll position where it was,
     // instead of blanking it out and snapping back to the top.
     if (!textbookData) {
-        output.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Loading...</p>';
+        output.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Loading...</p>';
     }
     setupTextbookSearch();
 
@@ -2276,7 +2301,8 @@ async function loadTextbooksGrid() {
             // transient failure here shouldn't wipe out a working table the
             // teacher can still read and act on.
             if (!textbookData) {
-                output.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${data.error || 'Could not load textbook data.'}</p>`;
+                output.innerHTML = `<p style="color:#66786d; font-size:0.85rem;">${data.error || 'Could not load textbook data.'}</p>`;
+                if (window.PortalUI) PortalUI.upgradeError(output, () => loadTextbooksGrid());
             } else {
                 console.error("Textbook refresh failed, keeping previous data visible:", data.error);
             }
@@ -2288,7 +2314,7 @@ async function loadTextbooksGrid() {
     } catch (err) {
         console.error("Textbooks load error:", err);
         if (!textbookData) {
-            output.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not connect to server.</p>';
+            output.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Could not connect to server.</p>';
         }
     }
 }
@@ -2298,7 +2324,7 @@ function renderTextbooksGrid(data) {
     if (!output) return;
 
     if (!data.students || data.students.length === 0) {
-        output.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">No students found in your section.</p>';
+        output.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">No students found in your section.</p>';
         return;
     }
 
@@ -2464,14 +2490,15 @@ async function loadTextbookPushStatus() {
         const data = await res.json();
 
         if (!res.ok) {
-            container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${data.error || 'Could not load push status.'}</p>`;
+            container.innerHTML = `<p style="color:#66786d; font-size:0.85rem;">${data.error || 'Could not load push status.'}</p>`;
+            if (window.PortalUI) PortalUI.upgradeError(container, () => loadTextbookPushStatus());
             return;
         }
 
         renderTextbookPushStatus(data);
     } catch (err) {
         console.error("Textbook push-status load error:", err);
-        container.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not connect to server.</p>';
+        container.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Could not connect to server.</p>';
     }
 }
 
@@ -2485,7 +2512,7 @@ function renderTextbookPushStatus(data) {
                 <span class="push-status push-status-locked">
                     &#128274; Pushed to Admin VP on ${new Date(data.pushed_at).toLocaleDateString()}
                 </span>
-                <p style="font-size:0.85rem; color:#64748b; margin-top:8px;">
+                <p style="font-size:0.85rem; color:#66786d; margin-top:8px;">
                     ${data.returned_count} returned, ${data.lost_count} lost, ${data.outstanding_count} outstanding out of ${data.total_slots} total at the time of push.
                 </p>
             </div>`;
@@ -2499,9 +2526,9 @@ function renderTextbookPushStatus(data) {
         <div class="conduct-card">
             <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px;">
                 <strong>${data.percent_resolved}% resolved</strong>
-                <span style="font-size:0.85rem; color:#64748b;">${data.returned_count} returned · ${data.lost_count} lost · ${data.outstanding_count} outstanding</span>
+                <span style="font-size:0.85rem; color:#66786d;">${data.returned_count} returned · ${data.lost_count} lost · ${data.outstanding_count} outstanding</span>
             </div>
-            <div style="background:#e2e8f0; border-radius:6px; height:8px; overflow:hidden; margin-bottom:12px;">
+            <div style="background:#dde5e0; border-radius:6px; height:8px; overflow:hidden; margin-bottom:12px;">
                 <div style="background:${barColor}; height:100%; width:${Math.min(data.percent_resolved, 100)}%;"></div>
             </div>
             <button class="btn-primary push-btn" data-action="push-textbook-report">
@@ -2583,14 +2610,15 @@ async function loadMarksPushStatus() {
         const data = await res.json();
 
         if (!res.ok) {
-            container.innerHTML = `<p style="color:#64748b; font-size:0.85rem;">${data.error || 'Could not load marks push status.'}</p>`;
+            container.innerHTML = `<p style="color:#66786d; font-size:0.85rem;">${data.error || 'Could not load marks push status.'}</p>`;
+            if (window.PortalUI) PortalUI.upgradeError(container, () => loadMarksPushStatus());
             return;
         }
 
         renderMarksPushStatus(data);
     } catch (err) {
         console.error("Marks push-status load error:", err);
-        container.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not connect to server.</p>';
+        container.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Could not connect to server.</p>';
     }
 }
 
@@ -2604,7 +2632,7 @@ function renderMarksPushStatus(data) {
                 <span class="push-status push-status-locked">
                     &#128274; Pushed to Academic VP on ${new Date(data.pushed_at).toLocaleDateString()}
                 </span>
-                <p style="font-size:0.85rem; color:#64748b; margin-top:8px;">
+                <p style="font-size:0.85rem; color:#66786d; margin-top:8px;">
                     All ${data.total_subjects} subject(s) were included for ${data.term}.
                 </p>
             </div>`;
@@ -2618,9 +2646,9 @@ function renderMarksPushStatus(data) {
         <div class="conduct-card">
             <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px;">
                 <strong>${data.pushed_subjects} of ${data.total_subjects} subjects pushed</strong>
-                <span style="font-size:0.85rem; color:#64748b;">${data.percent_pushed}%</span>
+                <span style="font-size:0.85rem; color:#66786d;">${data.percent_pushed}%</span>
             </div>
-            <div style="background:#e2e8f0; border-radius:6px; height:8px; overflow:hidden; margin-bottom:12px;">
+            <div style="background:#dde5e0; border-radius:6px; height:8px; overflow:hidden; margin-bottom:12px;">
                 <div style="background:${barColor}; height:100%; width:${Math.min(data.percent_pushed, 100)}%;"></div>
             </div>
             <button class="btn-primary push-btn" data-action="push-marks-report" ${!meetsThreshold ? 'disabled' : ''}>
@@ -2827,7 +2855,7 @@ async function loadContactThreads() {
         const threads = await res.json();
 
         if (threads.length === 0) {
-            list.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">No messages sent yet.</p>';
+            list.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">No messages sent yet.</p>';
             return;
         }
 
@@ -2841,7 +2869,8 @@ async function loadContactThreads() {
             </div>`).join('');
     } catch (err) {
         console.error("Load contact threads error:", err);
-        list.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not load messages.</p>';
+        list.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Could not load messages.</p>';
+        if (window.PortalUI) PortalUI.upgradeError(list, () => loadContactThreads());
     }
 }
 
@@ -2854,7 +2883,7 @@ window.openContactThread = async (thread_id) => {
     if (!detail || !content) return;
 
     detail.style.display = 'block';
-    content.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Loading...</p>';
+    content.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Loading...</p>';
 
     try {
         const res = await apiFetch(`${API_BASE}/api/contact/thread/${thread_id}?teacher_id=${CURRENT_TEACHER_ID}`);
@@ -2869,18 +2898,19 @@ window.openContactThread = async (thread_id) => {
 
         content.innerHTML = `
             <h3>${escapeHtml(thread.subject)}</h3>
-            <p style="font-size:0.85rem; color:#64748b;">${escapeHtml(thread.category)} → ${escapeHtml(thread.recipient_role)}${thread.cc_roles && thread.cc_roles.length ? ` <span style="color:#94a3b8;">(cc: ${thread.cc_roles.map(escapeHtml).join(', ')})</span>` : ''}</p>
+            <p style="font-size:0.85rem; color:#66786d;">${escapeHtml(thread.category)} → ${escapeHtml(thread.recipient_role)}${thread.cc_roles && thread.cc_roles.length ? ` <span style="color:#93a49a;">(cc: ${thread.cc_roles.map(escapeHtml).join(', ')})</span>` : ''}</p>
             <div class="contact-thread-messages">${messagesHtml}</div>
             <textarea id="contact-reply-body" class="form-input" rows="3" placeholder="Write a reply..."></textarea>
             <div style="display:flex; gap:10px;">
                 <button class="btn-primary" data-action="send-contact-reply" style="width:auto; padding:10px 20px;">Reply</button>
-                <button class="btn-primary" data-action="toggle-contact-status" data-status="${thread.status === 'Open' ? 'Resolved' : 'Open'}" style="width:auto; padding:10px 20px; background:#64748b;">
+                <button class="btn-primary" data-action="toggle-contact-status" data-status="${thread.status === 'Open' ? 'Resolved' : 'Open'}" style="width:auto; padding:10px 20px; background:#66786d;">
                     Mark as ${thread.status === 'Open' ? 'Resolved' : 'Open'}
                 </button>
             </div>`;
     } catch (err) {
         console.error("Open contact thread error:", err);
-        content.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Could not load this conversation.</p>';
+        content.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Could not load this conversation.</p>';
+        if (window.PortalUI) PortalUI.upgradeError(content, null);
     }
 };
 
@@ -2993,6 +3023,7 @@ function setupNavigation() {
                 if (target === 'actioncenter') loadActionCenterRequests();
                 if (target === 'upload') { loadGradeSheetSections(); loadSubjectEntryRequestUI(); loadLateMarksRequestUI(); }
                 if (target === 'profile') loadTeacherDocumentStatus();
+                if (target === 'subscription') startSubscriptionPolling(); else stopSubscriptionPolling();
             } else {
                 console.warn(`No page found for data-page="${target}". Did you forget to add <section id="page-${target}">?`);
             }
@@ -3852,6 +3883,8 @@ function setupDynamicActionDelegation() {
         'submit-late-mark': (el) => window.submitLateMark(el.dataset.studentId, Number(el.dataset.subjectId), el),
         'mark-my-class-present': (el) => window.markMyClassPresent(el.dataset.studentId),
         'undo-my-class-present': (el) => window.undoMyClassPresent(el.dataset.studentId),
+        'sub-mark-paid': (el) => window.markSubscriptionPaid(el.dataset.studentId, el.dataset.studentName),
+        'sub-undo-paid': (el) => window.undoSubscriptionPaid(el.dataset.studentId, el.dataset.studentName),
         'push-report': (el) => window.pushReport({
             subject_id: Number(el.dataset.subjectId),
             class_level: el.dataset.classLevel,
@@ -4290,7 +4323,7 @@ window.searchStudent = async () => {
         // 3. Authorized: Proceed to show info
         window.currentStudentStream = student.stream;
         display.innerHTML = `
-            <div class="student-info-card" style="padding:10px; background:#e2e8f0; border-radius:8px; margin:10px 0;">
+            <div class="student-info-card" style="padding:10px; background:#dde5e0; border-radius:8px; margin:10px 0;">
                 <strong>Name:</strong> ${escapeHtml([student.first_name, student.middle_name, student.last_name].filter(Boolean).join(' '))}<br>
                 <strong>Grade:</strong> ${student.class_level} | <strong>Section:</strong> ${student.section}
             </div>`;
@@ -4678,7 +4711,7 @@ window.onGradeSheetSectionChange = async () => {
     const actions = document.getElementById('gradesheet-actions');
 
     subjectSelect.innerHTML = '<option value="">Select subject…</option>';
-    container.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Select a section and subject above to begin.</p>';
+    container.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Select a section and subject above to begin.</p>';
     actions.style.display = 'none';
 
     const idx = select.value;
@@ -4709,7 +4742,7 @@ window.onGradeSheetSubjectChange = async () => {
     }
 
     const { class_level, section, stream } = gradeSheetSections[idx];
-    container.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">Loading students…</p>';
+    container.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">Loading students…</p>';
 
     try {
         const res = await apiFetch(`${API_BASE}/api/teacher/my-students?class_level=${encodeURIComponent(class_level)}&section=${encodeURIComponent(section)}&stream=${encodeURIComponent(stream)}`);
@@ -4719,6 +4752,7 @@ window.onGradeSheetSubjectChange = async () => {
     } catch (err) {
         console.error("Error loading students for grade sheet:", err);
         container.innerHTML = '<p style="color:#b91c1c; font-size:0.85rem;">Could not load students for this section.</p>';
+        if (window.PortalUI) PortalUI.upgradeError(container, () => onGradeSheetSubjectChange());
     }
 };
 
@@ -4727,7 +4761,7 @@ function renderGradeSheetTable(students) {
     if (!container) return;
 
     if (!students.length) {
-        container.innerHTML = '<p style="color:#64748b; font-size:0.85rem;">No students found in this section.</p>';
+        container.innerHTML = '<p style="color:#66786d; font-size:0.85rem;">No students found in this section.</p>';
         return;
     }
 
@@ -4751,7 +4785,7 @@ function renderGradeSheetTable(students) {
         }).join('');
         return `
             <tr data-search-text="${escapeHtml((fullName + ' ' + s.student_id).toLowerCase())}" data-row-student-id="${escapeHtml(s.student_id)}">
-                <td><strong>${escapeHtml(s.student_id)}</strong><br><span style="color:#64748b;">${escapeHtml(fullName)}</span></td>
+                <td><strong>${escapeHtml(s.student_id)}</strong><br><span style="color:#66786d;">${escapeHtml(fullName)}</span></td>
                 ${cells}
                 <td>
                     <button type="button" class="btn-primary gradesheet-row-save-btn" data-action="save-gradesheet-row" data-student-id="${escapeHtml(s.student_id)}">Save</button>
@@ -4846,3 +4880,511 @@ window.saveGradeSheetRow = async (studentId, btn) => {
         showAlertModal(`${failCount} score(s) could not be saved. First error: ${firstError}`);
     }
 };
+
+// ============================================================================
+// SUBSCRIPTION FEE (Homeroom Teacher only)
+// The monthly student fee for the teacher's OWN class: who has paid, and a
+// Mark paid / Undo button for each student. Which month it is, the fee, and
+// which class this teacher may touch are all decided by the server — this page
+// only shows what the server sends and asks the server to record a payment.
+// Hiding the sidebar item is a convenience, not the security: the routes
+// (/api/subscription/student/...) refuse anyone who isn't the class's
+// Homeroom Teacher or Class Monitor.
+// ============================================================================
+const SUB_REFRESH_MS = 15000;
+const SUB_FROZEN_CODE = 'SUBSCRIPTION_FROZEN';
+const subState = {
+    data: null,      // last roster from the server
+    sig: '',         // fingerprint of it, so an unchanged poll doesn't redraw
+    filter: 'all',
+    search: '',
+    busy: new Set(), // student IDs with a save in flight
+    seq: 0,          // request counter: stops a slow, older response overwriting a newer one
+    applied: 0,
+    updatedAt: null,
+    loadError: false
+};
+let subPollTimer = null;
+let subPollActive = false;
+let subPollGen = 0;
+
+function subMoney(n) {
+    return Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
+
+async function subReadBody(res) {
+    try { return await res.clone().json(); } catch (e) { return {}; }
+}
+
+function subPageVisible() {
+    const page = document.getElementById('page-subscription');
+    return !!page && page.style.display !== 'none';
+}
+
+// The sidebar item appears only when Subscription is on for this school AND
+// this teacher is a homeroom teacher (the server's own answer, not a guess).
+async function loadSubscriptionNav() {
+    const nav = document.getElementById('nav-subscription');
+    if (!nav) return;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/subscription/status`);
+        if (!res.ok) throw new Error('status ' + res.status);
+        const s = await res.json();
+        const show = !!(s && s.enabled && s.capabilities && s.capabilities.student_collection);
+        nav.style.display = show ? 'block' : 'none';
+    } catch (err) {
+        // Frozen (guard.js shows the notice), signed out, or the server is
+        // unreachable: leave the item hidden rather than guess.
+        nav.style.display = 'none';
+    }
+}
+
+// --- polling: one chain of timeouts, never two, never after leaving ---------
+function stopSubscriptionPolling() {
+    subPollActive = false;
+    subPollGen++;
+    if (subPollTimer !== null) clearTimeout(subPollTimer);
+    subPollTimer = null;
+}
+
+function startSubscriptionPolling() {
+    stopSubscriptionPolling(); // a second start restarts the chain instead of adding one
+    subPollActive = true;
+    const gen = ++subPollGen;
+    const loop = async () => {
+        if (!subPollActive || gen !== subPollGen) return;
+        // Left the page some way that bypassed the nav handler (e.g. the
+        // profile dropdown or a notification): stop instead of polling unseen.
+        if (!subPageVisible()) { stopSubscriptionPolling(); return; }
+        if (!document.hidden) await loadSubscriptionClass();
+        if (!subPollActive || gen !== subPollGen) return;
+        subPollTimer = setTimeout(loop, SUB_REFRESH_MS);
+    };
+    loop();
+}
+
+async function loadSubscriptionClass() {
+    const gen = subPollGen;
+    const seq = ++subState.seq;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/subscription/student/class-roster`);
+        if (gen !== subPollGen || !subPollActive) return;
+        if (res.status === 401) {
+            stopSubscriptionPolling();
+            window.location.href = '/login.html';
+            return;
+        }
+        if (!res.ok) {
+            const body = await subReadBody(res);
+            if (gen !== subPollGen || !subPollActive) return;
+            if (res.status === 403) {
+                stopSubscriptionPolling();
+                // A frozen account: guard.js already shows the notice — don't
+                // paint anything over it or bounce to login.
+                if (body.code === SUB_FROZEN_CODE) return;
+                subShowNoAccess(body.code);
+                return;
+            }
+            throw new Error(body.error || ('Server responded with ' + res.status));
+        }
+        const data = await res.json();
+        if (gen !== subPollGen || !subPollActive) return;
+        if (seq < subState.applied) return; // an older response arriving late
+        subState.applied = seq;
+        subState.loadError = false;
+        subApplyData(data);
+    } catch (err) {
+        console.error('Subscription roster load error:', err);
+        if (gen !== subPollGen || !subPollActive) return;
+        subState.loadError = true;
+        subRenderStatusLine();
+        if (!subState.data) subRenderListMessage(subT('sub_class_load_error'));
+    }
+}
+
+function subT(key, params) {
+    return typeof t === 'function' ? t(key, params) : key;
+}
+
+function subApplyData(data) {
+    const sig = JSON.stringify([data.period, data.billable, data.fee, data.class, data.summary, data.students]);
+    const changed = sig !== subState.sig;
+    subState.data = data;
+    subState.sig = sig;
+    subState.updatedAt = data.server_time ? new Date(data.server_time) : new Date();
+    const body = document.getElementById('sub-body');
+    const none = document.getElementById('sub-no-access');
+    if (body) body.style.display = 'block';
+    if (none) none.style.display = 'none';
+    if (changed) renderSubscriptionPage(); else subRenderStatusLine();
+}
+
+function subShowNoAccess(code) {
+    const nav = document.getElementById('nav-subscription');
+    if (nav) nav.style.display = 'none';
+    subState.data = null;
+    subState.sig = '';
+    const body = document.getElementById('sub-body');
+    const none = document.getElementById('sub-no-access');
+    if (body) body.style.display = 'none';
+    if (none) {
+        none.textContent = subT(code === 'SUBSCRIPTION_OFF' ? 'sub_not_available' : 'sub_class_no_access');
+        none.style.display = 'block';
+    }
+}
+
+function subNotice(kind, text) {
+    const el = document.getElementById('sub-notice');
+    if (!el) return;
+    el.className = 'sub-notice' + (kind ? ' sub-notice-' + kind : '');
+    el.textContent = text || '';
+    el.style.display = text ? 'block' : 'none';
+}
+
+function subRenderStatusLine() {
+    const el = document.getElementById('sub-updated');
+    if (!el) return;
+    if (subState.loadError) { el.textContent = subT('sub_class_load_error'); return; }
+    if (!subState.updatedAt) { el.textContent = ''; return; }
+    el.textContent = subT('sub_live_updated', {
+        time: subState.updatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    });
+}
+
+function subRenderListMessage(text) {
+    const box = document.getElementById('sub-list');
+    if (box) box.innerHTML = `<p class="sub-empty">${escapeHtml(text)}</p>`;
+}
+
+function renderSubscriptionPage() {
+    const d = subState.data;
+    if (!d) return;
+    const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    const birr = subT('sub_birr');
+
+    setText('sub-month', `${subT('sub_month_' + d.period.ec_month)} ${d.period.ec_year} ${subT('sub_ec')}`);
+    setText('sub-fee', `${subMoney(d.fee)} ${birr}`);
+    const c = d.class;
+    setText('sub-class', c.stream && typeof formatGradeSectionStream === 'function'
+        ? formatGradeSectionStream(c.class_level, c.section, c.stream)
+        : `${subT('sub_th_class')} ${c.class_label}`);
+
+    const banner = document.getElementById('sub-banner');
+    if (banner) {
+        // Pagume isn't billed; and without a student fee there is nothing to record.
+        const msg = !d.billable ? subT('sub_pagume_closed') : (!(d.fee > 0) ? subT('sub_no_fee_set') : '');
+        banner.textContent = msg;
+        banner.style.display = msg ? 'block' : 'none';
+    }
+
+    const s = d.summary;
+    setText('sub-tile-collected', `${subMoney(s.collected)} ${birr}`);
+    setText('sub-tile-expected', subT('sub_tile_of_expected', { expected: subMoney(s.expected) }));
+    setText('sub-tile-paid', subT('sub_tile_count', { paid: s.paid, total: s.total }));
+    setText('sub-tile-unpaid', String(s.unpaid));
+
+    subRenderList();
+    subRenderStatusLine();
+}
+
+function subRenderList() {
+    const d = subState.data;
+    const box = document.getElementById('sub-list');
+    if (!box || !d) return;
+
+    if (d.students.length === 0) { subRenderListMessage(subT('sub_no_students')); return; }
+
+    let rows = d.students;
+    if (subState.filter === 'paid') rows = rows.filter(s => s.paid);
+    else if (subState.filter === 'unpaid') rows = rows.filter(s => !s.paid);
+    const term = subState.search;
+    if (term) rows = rows.filter(s => s.name.toLowerCase().includes(term) || String(s.student_id).toLowerCase().includes(term));
+    if (rows.length === 0) { subRenderListMessage(subT('sub_no_people')); return; }
+
+    const birr = subT('sub_birr');
+    const canPay = d.billable && d.fee > 0;
+    box.innerHTML = `
+        <div class="list-table-scroll">
+            <table class="student-table sub-table">
+                <thead>
+                    <tr>
+                        <th>${escapeHtml(subT('sub_th_name'))}</th>
+                        <th>${escapeHtml(subT('sub_th_id'))}</th>
+                        <th>${escapeHtml(subT('sub_th_amount'))}</th>
+                        <th>${escapeHtml(subT('sub_th_status'))}</th>
+                        <th>${escapeHtml(subT('sub_th_action'))}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows.map(s => {
+                        const id = escapeHtml(String(s.student_id));
+                        const name = escapeHtml(s.name);
+                        const busy = subState.busy.has(s.student_id);
+                        const tag = s.is_class_monitor ? `<span class="sub-tag">${escapeHtml(subT('sub_role_class_monitor'))}</span>` : '';
+                        const button = s.paid
+                            ? `<button type="button" class="sub-action-btn sub-undo" data-action="sub-undo-paid" data-student-id="${id}" data-student-name="${name}" ${busy || !d.billable ? 'disabled' : ''}>${escapeHtml(subT(busy ? 'sub_saving' : 'sub_undo'))}</button>`
+                            : `<button type="button" class="sub-action-btn sub-mark" data-action="sub-mark-paid" data-student-id="${id}" data-student-name="${name}" ${busy || !canPay ? 'disabled' : ''}>${escapeHtml(subT(busy ? 'sub_saving' : 'sub_mark_paid'))}</button>`;
+                        return `
+                    <tr class="${s.paid ? 'sub-row-paid' : ''}" data-student-id="${id}">
+                        <td>${name} ${tag}</td>
+                        <td>${id}</td>
+                        <td>${escapeHtml(subMoney(s.amount))} ${escapeHtml(birr)}</td>
+                        <td><span class="sub-badge ${s.paid ? 'sub-badge-paid' : 'sub-badge-unpaid'}">${escapeHtml(subT(s.paid ? 'sub_status_paid' : 'sub_status_unpaid'))}</span></td>
+                        <td>${button}</td>
+                    </tr>`;
+                    }).join('')}
+                </tbody>
+            </table>
+        </div>`;
+}
+
+async function subSetPaid(studentId, studentName, paid) {
+    if (subState.busy.has(studentId)) return;
+    if (!paid) {
+        const confirmed = await showConfirmModal(subT('sub_undo_confirm', { name: studentName }), subT('sub_undo_title'));
+        if (!confirmed) return;
+    }
+    subState.busy.add(studentId);
+    subRenderList();
+    try {
+        const res = await apiFetch(`${API_BASE}/api/subscription/student/${encodeURIComponent(studentId)}/paid`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paid })
+        });
+        const body = await subReadBody(res);
+        if (res.ok) {
+            subNotice('ok', subT(body.already ? 'sub_already_paid_toast' : (paid ? 'sub_marked_paid_toast' : 'sub_marked_unpaid_toast'), { name: studentName }));
+        } else if (res.status === 403 && body.code === SUB_FROZEN_CODE) {
+            stopSubscriptionPolling(); // guard.js shows the frozen notice
+            return;
+        } else if (res.status === 403 && body.code === 'SUBSCRIPTION_OFF') {
+            stopSubscriptionPolling();
+            subShowNoAccess(body.code);
+            return;
+        } else if (res.status === 409 && body.code === 'SUBSCRIPTION_PAGUME') {
+            subNotice('error', subT('sub_pagume_closed'));
+        } else {
+            subNotice('error', subT('sub_action_error'));
+        }
+    } catch (err) {
+        console.error('Subscription mark error:', err);
+        subNotice('error', subT('sub_action_error'));
+    } finally {
+        subState.busy.delete(studentId);
+    }
+    // Whatever happened, show what the server now says (this also puts right a
+    // list that was stale, e.g. a student who has since left the class).
+    if (subPollActive) await loadSubscriptionClass(); else subRenderList();
+}
+
+window.markSubscriptionPaid = (studentId, studentName) => subSetPaid(studentId, studentName, true);
+window.undoSubscriptionPaid = (studentId, studentName) => subSetPaid(studentId, studentName, false);
+
+function initSubscriptionFee() {
+    const search = document.getElementById('sub-search');
+    if (search) search.addEventListener('input', () => {
+        subState.search = search.value.trim().toLowerCase();
+        subRenderList();
+    });
+    const filter = document.getElementById('sub-filter');
+    if (filter) filter.addEventListener('change', () => {
+        subState.filter = filter.value;
+        subRenderList();
+    });
+    const refresh = document.getElementById('sub-refresh-btn');
+    if (refresh) refresh.addEventListener('click', () => { if (subPollActive) startSubscriptionPolling(); });
+
+    // The page can be left without touching the sidebar (profile dropdown,
+    // notification links), so watch the page itself: hidden means stop.
+    const page = document.getElementById('page-subscription');
+    if (page && typeof MutationObserver === 'function') {
+        new MutationObserver(() => { if (subPollActive && !subPageVisible()) stopSubscriptionPolling(); })
+            .observe(page, { attributes: true, attributeFilter: ['style', 'class'] });
+    }
+    // Coming back to a background tab: refresh now instead of waiting up to 15 s.
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && subPollActive && subPageVisible()) startSubscriptionPolling();
+    });
+    window.addEventListener('pagehide', stopSubscriptionPolling);
+
+    loadSubscriptionNav();
+}
+
+// ============================================================================
+// CLASS MONITORS card (Action Center — Homeroom Teacher only)
+// Lets the homeroom teacher assign a Class Monitor from their own section, or
+// remove one, using two routes on the server:
+//   GET  /api/homeroom/class-monitors              (the teacher's own section)
+//   POST /api/homeroom/class-monitors/:studentId   ({ is_class_monitor })
+// Only REGISTERED (Active) students are ever listed or can be made a monitor:
+// at year-end every student is 'Unregistered' but still carries last year's
+// class, so listing by class alone would show last year's students.
+// The SERVER decides which students belong to this teacher's section and
+// refuses anyone else, so nothing here is a security boundary — the card only
+// shows what the server returns and asks the server to make the change.
+// Self-contained: it needs only apiFetch, API_BASE, escapeHtml, showConfirmModal
+// and t() from the rest of the portal, and loads itself when the Action Center
+// page is opened.
+// ============================================================================
+const CM_FROZEN_CODE = 'SUBSCRIPTION_FROZEN';
+const cmState = { students: [], loaded: false, busy: false, seq: 0 };
+
+function cmT(key, params) {
+    return typeof t === 'function' ? t(key, params) : key;
+}
+
+function cmFullName(s) {
+    return `${s.first_name || ''} ${s.last_name || ''}`.trim() || String(s.student_id);
+}
+
+function cmNotice(kind, text) {
+    const el = document.getElementById('cm-status');
+    if (!el) return;
+    el.className = 'cm-status' + (kind ? ' cm-status-' + kind : '');
+    el.textContent = text || '';
+    el.style.display = text ? 'block' : 'none';
+}
+
+async function cmReadBody(res) {
+    try { return await res.clone().json(); } catch (e) { return {}; }
+}
+
+function cmPageVisible() {
+    const page = document.getElementById('page-actioncenter');
+    return !!page && page.style.display !== 'none';
+}
+
+async function loadClassMonitorCard() {
+    const seq = ++cmState.seq;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/class-monitors`);
+        if (seq !== cmState.seq) return; // a newer load has started
+        if (!res.ok) {
+            const body = await cmReadBody(res);
+            // A frozen account: guard.js shows its own notice — paint nothing over it.
+            if (res.status === 403 && body.code === CM_FROZEN_CODE) return;
+            throw new Error(body.error || ('Server responded with ' + res.status));
+        }
+        const data = await res.json();
+        if (seq !== cmState.seq) return;
+        cmState.students = data && Array.isArray(data.students) ? data.students : [];
+        cmState.loaded = true;
+        renderClassMonitorCard();
+    } catch (err) {
+        console.error('Class Monitor card load error:', err);
+        if (seq !== cmState.seq) return;
+        const cur = document.getElementById('cm-current');
+        if (cur && !cmState.loaded) cur.innerHTML = `<p class="cm-empty">${escapeHtml(cmT('cm_load_error'))}</p>`;
+    }
+}
+
+function renderClassMonitorCard() {
+    if (!cmState.loaded) return;
+    const cur = document.getElementById('cm-current');
+    const sel = document.getElementById('cm-student-select');
+    const btn = document.getElementById('cm-assign-btn');
+    if (!cur || !sel || !btn) return;
+
+    const students = cmState.students;
+    const monitors = students.filter(s => s.is_class_monitor);
+    const others = students.filter(s => !s.is_class_monitor);
+
+    if (students.length === 0) {
+        cur.innerHTML = `<p class="cm-empty">${escapeHtml(cmT('cm_no_registered'))}</p>`;
+    } else if (monitors.length === 0) {
+        cur.innerHTML = `<p class="cm-empty">${escapeHtml(cmT('cm_none'))}</p>`;
+    } else {
+        cur.innerHTML = `<ul class="cm-list">${monitors.map(s => `
+            <li class="cm-item">
+                <span class="cm-item-who">
+                    <span class="cm-item-name">${escapeHtml(cmFullName(s))}</span>
+                    <span class="cm-item-id">${escapeHtml(String(s.student_id))}</span>
+                </span>
+                <button type="button" class="cm-remove-btn" data-cm-remove="${escapeHtml(String(s.student_id))}" data-cm-name="${escapeHtml(cmFullName(s))}" ${cmState.busy ? 'disabled' : ''}>${escapeHtml(cmT('cm_remove_btn'))}</button>
+            </li>`).join('')}</ul>`;
+    }
+
+    // Keep the teacher's pick across a redraw (e.g. a language switch), if that student is still eligible.
+    const previous = sel.value;
+    sel.innerHTML = `<option value="">${escapeHtml(cmT('cm_select_placeholder'))}</option>` +
+        others.map(s => `<option value="${escapeHtml(String(s.student_id))}">${escapeHtml(cmFullName(s))} (${escapeHtml(String(s.student_id))})</option>`).join('');
+    if (previous && others.some(s => String(s.student_id) === previous)) sel.value = previous;
+    sel.disabled = cmState.busy || others.length === 0;
+    btn.disabled = cmState.busy || others.length === 0;
+}
+
+async function cmSetMonitor(studentId, isMonitor) {
+    if (cmState.busy) return;
+    const student = cmState.students.find(s => String(s.student_id) === String(studentId));
+    const name = student ? cmFullName(student) : String(studentId);
+
+    if (!isMonitor) {
+        const ok = await showConfirmModal(cmT('cm_remove_confirm', { name }), cmT('cm_remove_title'));
+        if (!ok) return;
+    }
+    cmState.busy = true;
+    renderClassMonitorCard();
+    try {
+        const res = await apiFetch(`${API_BASE}/api/homeroom/class-monitors/${encodeURIComponent(studentId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ is_class_monitor: isMonitor })
+        });
+        const body = await cmReadBody(res);
+        if (res.ok) {
+            cmNotice('ok', cmT(isMonitor ? 'cm_assigned_toast' : 'cm_removed_toast', { name }));
+        } else if (res.status === 403 && body.code === CM_FROZEN_CODE) {
+            return; // guard.js shows the frozen notice; nothing to add
+        } else if (res.status === 409 && body.code === 'STUDENT_NOT_ACTIVE') {
+            cmNotice('error', cmT('cm_not_registered'));
+        } else {
+            cmNotice('error', cmT('cm_action_error'));
+        }
+    } catch (err) {
+        console.error('Class Monitor update error:', err);
+        cmNotice('error', cmT('cm_action_error'));
+    } finally {
+        cmState.busy = false;
+    }
+    // Always show what the server now says (this also corrects a stale list).
+    await loadClassMonitorCard();
+    renderClassMonitorCard();
+}
+
+function initClassMonitorCard() {
+    const card = document.getElementById('class-monitor-card');
+    if (!card) return;
+
+    card.addEventListener('click', (e) => {
+        const remove = e.target.closest('[data-cm-remove]');
+        if (remove) { cmSetMonitor(remove.dataset.cmRemove, false); return; }
+        if (e.target.closest('#cm-assign-btn')) {
+            const sel = document.getElementById('cm-student-select');
+            if (!sel || !sel.value) { cmNotice('error', cmT('cm_choose_first')); return; }
+            cmSetMonitor(sel.value, true);
+        }
+    });
+
+    // Load each time the Action Center is opened (however it was opened).
+    const page = document.getElementById('page-actioncenter');
+    let wasVisible = cmPageVisible();
+    if (wasVisible) loadClassMonitorCard();
+    if (page && typeof MutationObserver === 'function') {
+        new MutationObserver(() => {
+            const now = cmPageVisible();
+            if (now && !wasVisible) { cmNotice('', ''); loadClassMonitorCard(); }
+            wasVisible = now;
+        }).observe(page, { attributes: true, attributeFilter: ['style', 'class'] });
+    }
+
+    // Redraw in the new language when the teacher switches EN <-> አማ.
+    const previousLangHook = window.onSisLangChange;
+    window.onSisLangChange = function () {
+        if (typeof previousLangHook === 'function') previousLangHook.apply(this, arguments);
+        renderClassMonitorCard();
+    };
+}
+
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initClassMonitorCard);
+else initClassMonitorCard();

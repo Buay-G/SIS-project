@@ -17,7 +17,7 @@ let currentUser = null;
 
 async function loadCurrentUser() {
   try {
-    const res = await fetch("http://localhost:3001/api/me", {
+    const res = await fetch("/api/me", {
       credentials: "include",
     });
     if (!res.ok) return;
@@ -56,7 +56,7 @@ const GRADE_SELECT_CONFIGS = [
 
 async function loadSchoolGradeLevels() {
   try {
-    const res = await fetch("http://localhost:3001/api/school/grade-levels", {
+    const res = await fetch("/api/school/grade-levels", {
       credentials: "include",
     });
     if (!res.ok) throw new Error("Could not load grade levels.");
@@ -871,7 +871,7 @@ async function submitRegistration() {
   btn.disabled = true;
 
   try {
-    const res = await fetch("http://localhost:3001/api/register", {
+    const res = await fetch("/api/register", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -934,7 +934,7 @@ async function lookupEmisId(prefix, el) {
 
   try {
     const res = await fetch(
-      `http://localhost:3001/api/emis/lookup/${encodeURIComponent(value)}`,
+      `/api/emis/lookup/${encodeURIComponent(value)}`,
       {
         credentials: "include",
       },
@@ -1041,7 +1041,7 @@ async function lookupGuardianFayda(prefix, el) {
 
   try {
     const res = await fetch(
-      `http://localhost:3001/api/guardians/lookup/${encodeURIComponent(value)}`,
+      `/api/guardians/lookup/${encodeURIComponent(value)}`,
       {
         credentials: "include",
       },
@@ -1128,7 +1128,7 @@ async function fetchStudent() {
   const id = document.getElementById("search-id").value;
   if (!id) return showAlert("Please enter an ID!");
 
-  const res = await fetch(`http://localhost:3001/api/student/${id}`, {
+  const res = await fetch(`/api/student/${id}`, {
     credentials: "include",
   });
   if (res.ok) {
@@ -1273,7 +1273,7 @@ async function submitAddGuardian() {
 
   try {
     const res = await fetch(
-      `http://localhost:3001/api/student/${id}/guardian`,
+      `/api/student/${id}/guardian`,
       {
         method: "POST",
         credentials: "include",
@@ -1319,7 +1319,7 @@ async function submitUpdate() {
   };
 
   try {
-    const res = await fetch(`http://localhost:3001/api/update/${id}`, {
+    const res = await fetch(`/api/update/${id}`, {
       method: "PUT",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -1366,7 +1366,7 @@ async function fetchForPromotion() {
   document.getElementById("promo-form").style.display = "none";
 
   try {
-    const res = await fetch(`http://localhost:3001/api/student/${id}`, {
+    const res = await fetch(`/api/student/${id}`, {
       credentials: "include",
     });
     if (!res.ok) throw new Error("Student not found.");
@@ -1378,7 +1378,7 @@ async function fetchForPromotion() {
       throw new Error("Invalid grade level in database.");
 
     const eligRes = await fetch(
-      `http://localhost:3001/api/registrar/promotion-eligibility/${id}`,
+      `/api/registrar/promotion-eligibility/${id}`,
       { credentials: "include" },
     );
     const eligibility = eligRes.ok ? await eligRes.json() : null;
@@ -1527,7 +1527,7 @@ async function lookupReadmit() {
 
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/readmit/${id}`,
+      `/api/registrar/readmit/${id}`,
       { credentials: "include" },
     );
     const data = await res.json();
@@ -1565,7 +1565,7 @@ async function confirmReadmit(studentId) {
 
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/readmit/${id}`,
+      `/api/registrar/readmit/${id}`,
       {
         method: "POST",
         credentials: "include",
@@ -1595,7 +1595,7 @@ async function autoProcessPromotion() {
 
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/promotion/auto-process",
+      "/api/registrar/promotion/auto-process",
       {
         method: "POST",
         credentials: "include",
@@ -1668,7 +1668,7 @@ async function submitPromotion() {
   };
 
   try {
-    const res = await fetch(`http://localhost:3001/api/promote/${id}`, {
+    const res = await fetch(`/api/promote/${id}`, {
       method: "PUT",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -1764,7 +1764,7 @@ async function loadEmisRoster() {
   const listEl = document.getElementById("emis-roster-list");
   if (!summaryEl || !listEl) return;
   try {
-    const res = await fetch("http://localhost:3001/api/registrar/emis-roster", {
+    const res = await fetch("/api/registrar/emis-roster", {
       credentials: "include",
     });
     if (!res.ok) throw new Error("Could not load the EMIS roster.");
@@ -1838,7 +1838,7 @@ async function loadEmisRequests() {
   if (!listEl) return;
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/emis-requests",
+      "/api/registrar/emis-requests",
       { credentials: "include" },
     );
     if (!res.ok) throw new Error("Could not load EMIS requests.");
@@ -1896,7 +1896,7 @@ async function approveEmisRequest(id) {
   if (!(await showConfirm(t("reg_emis_approve_confirm")))) return;
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/emis-requests/${id}/approve`,
+      `/api/registrar/emis-requests/${id}/approve`,
       {
         method: "POST",
         credentials: "include",
@@ -1923,7 +1923,7 @@ async function rejectEmisRequest(id) {
   if (reason === null) return;
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/emis-requests/${id}/reject`,
+      `/api/registrar/emis-requests/${id}/reject`,
       {
         method: "POST",
         credentials: "include",
@@ -1947,7 +1947,7 @@ async function rejectEmisRequest(id) {
 async function loadRecorders() {
   const listEl = document.getElementById("current-recorders-list");
   try {
-    const res = await fetch("http://localhost:3001/api/registrar/recorders", {
+    const res = await fetch("/api/registrar/recorders", {
       credentials: "include",
     });
     if (!res.ok) throw new Error("Could not load recorders.");
@@ -1975,6 +1975,7 @@ async function loadRecorders() {
   } catch (err) {
     console.error(err);
     listEl.innerHTML = '<p class="muted">Could not load recorders.</p>';
+    if (window.PortalUI) PortalUI.upgradeError(listEl, () => loadRecorders());
   }
 }
 
@@ -1982,7 +1983,7 @@ async function loadEligibleTeachers() {
   const select = document.getElementById("eligible-teacher-select");
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/eligible-recorders",
+      "/api/registrar/eligible-recorders",
       { credentials: "include" },
     );
     if (!res.ok) throw new Error("Could not load eligible teachers.");
@@ -2010,7 +2011,7 @@ async function assignRecorder() {
   if (!teacher_id) return showAlert("Choose a teacher first.");
 
   try {
-    const res = await fetch("http://localhost:3001/api/registrar/recorders", {
+    const res = await fetch("/api/registrar/recorders", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -2031,7 +2032,7 @@ async function removeRecorder(teacher_id) {
   if (!(await showConfirm(t("reg_remove_recorder_confirm")))) return;
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/recorders/${teacher_id}`,
+      `/api/registrar/recorders/${teacher_id}`,
       {
         method: "DELETE",
         credentials: "include",
@@ -2060,7 +2061,7 @@ async function loadSections() {
   const container = document.getElementById("sections-list");
   if (!container) return;
   try {
-    const res = await fetch("http://localhost:3001/api/registrar/sections", {
+    const res = await fetch("/api/registrar/sections", {
       credentials: "include",
     });
     if (!res.ok) throw new Error("Could not load sections.");
@@ -2121,6 +2122,7 @@ async function loadSections() {
   } catch (err) {
     console.error(err);
     container.innerHTML = '<p class="muted">Could not load sections.</p>';
+    if (window.PortalUI) PortalUI.upgradeError(container, () => loadSections());
   }
 }
 
@@ -2134,7 +2136,7 @@ async function loadBulkSectionOptions() {
   const select = document.getElementById("bulk-doc-section");
   if (!select) return;
   try {
-    const res = await fetch("http://localhost:3001/api/registrar/sections", {
+    const res = await fetch("/api/registrar/sections", {
       credentials: "include",
     });
     if (!res.ok) throw new Error("Could not load sections.");
@@ -2210,7 +2212,7 @@ function bulkDownloadIdCards() {
   const [class_level, section, stream] = val.split("|");
   const params = new URLSearchParams({ class_level, section, stream });
   downloadBulkDocument(
-    `http://localhost:3001/api/registrar/documents/id-card/bulk/pdf-zip?${params}`,
+    `/api/registrar/documents/id-card/bulk/pdf-zip?${params}`,
     `ID-Cards-Grade${class_level}-${section}.zip`,
   );
 }
@@ -2224,7 +2226,7 @@ function bulkDownloadReportCards() {
   const [class_level, section, stream] = val.split("|");
   const params = new URLSearchParams({ class_level, section, stream });
   downloadBulkDocument(
-    `http://localhost:3001/api/registrar/documents/report-card/bulk/pdf?${params}`,
+    `/api/registrar/documents/report-card/bulk/pdf?${params}`,
     `ReportCards-Grade${class_level}-${section}.pdf`,
   );
 }
@@ -2239,7 +2241,7 @@ async function addSection() {
     return showAlert("Grade, stream, and section name are required.");
 
   try {
-    const res = await fetch("http://localhost:3001/api/registrar/sections", {
+    const res = await fetch("/api/registrar/sections", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -2267,7 +2269,7 @@ async function addSection() {
 async function toggleSectionActive(id, isActive) {
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/sections/${id}`,
+      `/api/registrar/sections/${id}`,
       {
         method: "PUT",
         credentials: "include",
@@ -2312,7 +2314,7 @@ async function updateSectionCapacity(id, inputId) {
 
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/sections/${id}`,
+      `/api/registrar/sections/${id}`,
       {
         method: "PUT",
         credentials: "include",
@@ -2339,7 +2341,7 @@ async function deleteSection(id) {
   if (!(await showConfirm(t("reg_delete_section_confirm")))) return;
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/sections/${id}`,
+      `/api/registrar/sections/${id}`,
       {
         method: "DELETE",
         credentials: "include",
@@ -2370,7 +2372,7 @@ async function loadPlacementRegistered(
   if (!container) return;
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/placement/registered",
+      "/api/registrar/placement/registered",
       { credentials: "include" },
     );
     if (!res.ok) throw new Error("Could not load registered students.");
@@ -2407,7 +2409,7 @@ async function loadPlacementPromoted(containerId = "placement-promoted-list") {
   if (!container) return;
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/placement/promoted",
+      "/api/registrar/placement/promoted",
       { credentials: "include" },
     );
     if (!res.ok) throw new Error("Could not load promoted students.");
@@ -2438,7 +2440,7 @@ async function loadUnassignedQueue() {
   if (!container) return;
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/unassigned-queue",
+      "/api/registrar/unassigned-queue",
       { credentials: "include" },
     );
     if (!res.ok) throw new Error("Could not load the unassigned queue.");
@@ -2568,7 +2570,7 @@ async function loadPendingRoster() {
   container.innerHTML = '<p class="muted">Loading...</p>';
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/pending-roster",
+      "/api/registrar/pending-roster",
       {
         credentials: "include",
       },
@@ -2643,7 +2645,7 @@ async function assignAllPendingRoster() {
       });
     try {
       const res = await fetch(
-        `http://localhost:3001/api/registrar/pending-roster/${readyIds[i]}/assign-id`,
+        `/api/registrar/pending-roster/${readyIds[i]}/assign-id`,
         {
           method: "POST",
           credentials: "include",
@@ -2678,7 +2680,7 @@ async function assignPendingRosterId(pendingId) {
   }
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/pending-roster/${pendingId}/assign-id`,
+      `/api/registrar/pending-roster/${pendingId}/assign-id`,
       {
         method: "POST",
         credentials: "include",
@@ -2713,7 +2715,7 @@ async function assignPendingRosterId(pendingId) {
 async function runPlacement(class_level, stream) {
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/trigger-placement",
+      "/api/registrar/trigger-placement",
       {
         method: "POST",
         credentials: "include",
@@ -2744,7 +2746,7 @@ async function runPlacement(class_level, stream) {
 async function runPlacementAll() {
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/trigger-placement",
+      "/api/registrar/trigger-placement",
       {
         method: "POST",
         credentials: "include",
@@ -2800,7 +2802,7 @@ async function loadAcademicYearOptions() {
   if (!select) return;
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/academic-years",
+      "/api/registrar/academic-years",
       { credentials: "include" },
     );
     if (!res.ok) throw new Error("Could not load academic years");
@@ -2822,7 +2824,7 @@ async function loadAcademicYearOptions() {
 async function exportStudentRegistryCsv() {
   const params = buildStudentRegistryParams();
   window.open(
-    `http://localhost:3001/api/registrar/students/export.csv?${params.toString()}`,
+    `/api/registrar/students/export.csv?${params.toString()}`,
     "_blank",
   );
 }
@@ -2830,7 +2832,7 @@ async function exportStudentRegistryCsv() {
 async function exportStudentRegistryPdf() {
   const params = buildStudentRegistryParams();
   window.open(
-    `http://localhost:3001/api/registrar/students/export.pdf?${params.toString()}`,
+    `/api/registrar/students/export.pdf?${params.toString()}`,
     "_blank",
   );
 }
@@ -2859,7 +2861,7 @@ async function loadStudentRegistry() {
 
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/students?${params.toString()}`,
+      `/api/registrar/students?${params.toString()}`,
       { credentials: "include" },
     );
     if (!res.ok) throw new Error("Could not load the student registry.");
@@ -2930,7 +2932,7 @@ function renderStudentHistoryHtml(history) {
   const chainHtml = history.chain
     .map(
       (stop) => `
-        <div style="border-left: 3px solid #3498db; padding: 6px 0 6px 12px; margin-bottom: 8px;">
+        <div style="border-left: 3px solid #2f8a57; padding: 6px 0 6px 12px; margin-bottom: 8px;">
             <strong>${stop.school_name || "Unknown school"}</strong> — ${stop.student_id}
             <br><span class="muted" style="font-size: 12px;">
                 ${t("reg_enrolled_label")}: ${formatYearBilingual(stop.entered_at) || "—"}
@@ -2967,7 +2969,7 @@ function renderStudentHistoryHtml(history) {
         ${chainHtml}
         <h4 style="margin-top:15px;">${t("reg_doc_history_heading")}</h4>
         <table style="width:100%; border-collapse:collapse;">
-            <thead><tr style="background:#2c3e50; color:white;">
+            <thead><tr style="background:#1f2a24; color:white;">
                 <th style="padding:6px; text-align:left; border:1px solid #ddd;">${t("reg_grade_label")}</th>
                 <th style="padding:6px; border:1px solid #ddd;">${t("reg_doc_history_has_record")} / ${t("reg_doc_history_no_record")}</th>
                 <th style="padding:6px; text-align:left; border:1px solid #ddd;">${t("reg_issuance_log_heading")}</th>
@@ -2985,12 +2987,13 @@ async function viewStudentHistory(student_id) {
   modal.style.display = "flex";
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/students/${encodeURIComponent(student_id)}/history`,
+      `/api/registrar/students/${encodeURIComponent(student_id)}/history`,
       { credentials: "include" },
     );
     const result = await res.json();
     if (!res.ok) {
       body.innerHTML = `<p class="muted">${result.error || "Could not load history."}</p>`;
+      if (window.PortalUI) PortalUI.upgradeError(body, null);
       return;
     }
     body.innerHTML = renderStudentHistoryHtml(result);
@@ -3020,7 +3023,7 @@ async function loadGuardianRegistry() {
 
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/guardians?${params.toString()}`,
+      `/api/registrar/guardians?${params.toString()}`,
       { credentials: "include" },
     );
     if (!res.ok) throw new Error("Could not load guardians.");
@@ -3068,6 +3071,7 @@ async function loadGuardianRegistry() {
   } catch (err) {
     console.error(err);
     container.innerHTML = '<p class="muted">Could not load guardians.</p>';
+    if (window.PortalUI) PortalUI.upgradeError(container, () => loadGuardianRegistry());
   }
 }
 
@@ -3084,12 +3088,13 @@ async function viewGuardianChildren(guardian_id) {
   modal.style.display = "flex";
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/guardians/${encodeURIComponent(guardian_id)}/children`,
+      `/api/registrar/guardians/${encodeURIComponent(guardian_id)}/children`,
       { credentials: "include" },
     );
     const result = await res.json();
     if (!res.ok) {
       body.innerHTML = `<p class="muted">${result.error || "Could not load this guardian's children."}</p>`;
+      if (window.PortalUI) PortalUI.upgradeError(body, null);
       return;
     }
     const g = result.guardian;
@@ -3205,7 +3210,7 @@ async function saveGuardianEdit() {
 
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/guardians/${encodeURIComponent(currentGuardianDetail.id)}`,
+      `/api/registrar/guardians/${encodeURIComponent(currentGuardianDetail.id)}`,
       {
         method: "PUT",
         credentials: "include",
@@ -3260,12 +3265,13 @@ async function viewStudentGuardian(student_id) {
   modal.style.display = "flex";
   try {
     const res = await fetch(
-      `http://localhost:3001/api/student/${encodeURIComponent(student_id)}`,
+      `/api/student/${encodeURIComponent(student_id)}`,
       { credentials: "include" },
     );
     const result = await res.json();
     if (!res.ok) {
       body.innerHTML = `<p class="muted">${result.error || "Could not load this student's guardian."}</p>`;
+      if (window.PortalUI) PortalUI.upgradeError(body, null);
       return;
     }
     const guardians = result.guardians || [];
@@ -3312,7 +3318,7 @@ async function startOutgoingTransfer(student_id) {
 
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/transfers/outgoing",
+      "/api/registrar/transfers/outgoing",
       {
         method: "POST",
         credentials: "include",
@@ -3349,7 +3355,7 @@ async function loadApprovedTransferRequests() {
   if (!container) return;
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/transfer-requests/approved",
+      "/api/registrar/transfer-requests/approved",
       { credentials: "include" },
     );
     if (!res.ok) throw new Error("Could not load approved transfer requests.");
@@ -3389,7 +3395,7 @@ async function loadOutgoingTransfers() {
   if (!container) return;
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/transfers/outgoing",
+      "/api/registrar/transfers/outgoing",
       { credentials: "include" },
     );
     if (!res.ok) throw new Error("Could not load outgoing transfers.");
@@ -3443,7 +3449,7 @@ async function cancelOutgoingTransfer(id) {
 
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/transfers/outgoing/${id}/cancel`,
+      `/api/registrar/transfers/outgoing/${id}/cancel`,
       {
         method: "POST",
         credentials: "include",
@@ -3470,7 +3476,7 @@ async function lookupIncomingTransfer() {
 
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/transfers/incoming/lookup",
+      "/api/registrar/transfers/incoming/lookup",
       {
         method: "POST",
         credentials: "include",
@@ -3503,7 +3509,7 @@ async function lookupIncomingTransfer() {
 async function completeIncomingTransfer(transfer_code) {
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/transfers/incoming/complete",
+      "/api/registrar/transfers/incoming/complete",
       {
         method: "POST",
         credentials: "include",
@@ -3569,7 +3575,7 @@ async function submitExternalTransfer() {
 
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/transfers/incoming/manual",
+      "/api/registrar/transfers/incoming/manual",
       {
         method: "POST",
         credentials: "include",
@@ -3608,7 +3614,7 @@ async function loadIncomingTransfers() {
   if (!container) return;
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/transfers/incoming",
+      "/api/registrar/transfers/incoming",
       { credentials: "include" },
     );
     if (!res.ok) throw new Error("Could not load incoming transfers.");
@@ -3651,7 +3657,7 @@ async function loadDocumentStudent() {
 
   try {
     const res = await fetch(
-      `http://localhost:3001/api/student/${encodeURIComponent(student_id)}`,
+      `/api/student/${encodeURIComponent(student_id)}`,
       { credentials: "include" },
     );
     const result = await res.json();
@@ -3685,12 +3691,13 @@ async function loadDocumentHistory(student_id) {
   container.innerHTML = '<p class="muted">Loading...</p>';
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/documents/history/${encodeURIComponent(student_id)}`,
+      `/api/registrar/documents/history/${encodeURIComponent(student_id)}`,
       { credentials: "include" },
     );
     const result = await res.json();
     if (!res.ok) {
       container.innerHTML = `<p class="muted">${result.error || "Could not load history."}</p>`;
+      if (window.PortalUI) PortalUI.upgradeError(container, null);
       return;
     }
     container.innerHTML = renderStudentHistoryHtml(result);
@@ -3708,12 +3715,13 @@ async function previewReportCard(student_id, targetId) {
   preview.innerHTML = '<p class="muted">Loading...</p>';
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/documents/report-card/${encodeURIComponent(student_id)}`,
+      `/api/registrar/documents/report-card/${encodeURIComponent(student_id)}`,
       { credentials: "include" },
     );
     const result = await res.json();
     if (!res.ok) {
       preview.innerHTML = `<p class="muted">${result.error || "Could not load report card."}</p>`;
+      if (window.PortalUI) PortalUI.upgradeError(preview, null);
       return;
     }
 
@@ -3738,7 +3746,7 @@ async function previewReportCard(student_id, targetId) {
                 `
                     : `
                 <table style="width:100%; border-collapse:collapse; margin-bottom:15px;">
-                    <thead><tr style="background:#2c3e50; color:white;">
+                    <thead><tr style="background:#1f2a24; color:white;">
                         <th style="padding:6px; text-align:left; border:1px solid #ddd;">Subject</th>
                         <th style="padding:6px; border:1px solid #ddd;">S1</th>
                         <th style="padding:6px; border:1px solid #ddd;">S2</th>
@@ -3806,7 +3814,7 @@ function downloadReportCard(student_id, gradeSelectId) {
     ? `?${new URLSearchParams({ class_level: classLevel })}`
     : "";
   window.open(
-    `http://localhost:3001/api/registrar/documents/report-card/${encodeURIComponent(student_id)}/pdf${params}`,
+    `/api/registrar/documents/report-card/${encodeURIComponent(student_id)}/pdf${params}`,
     "_blank",
   );
   setTimeout(loadIssuanceLog, 1500);
@@ -3827,12 +3835,13 @@ async function previewTranscript(student_id) {
   preview.innerHTML = '<p class="muted">Loading...</p>';
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/documents/transcript/${encodeURIComponent(student_id)}/years`,
+      `/api/registrar/documents/transcript/${encodeURIComponent(student_id)}/years`,
       { credentials: "include" },
     );
     const result = await res.json();
     if (!res.ok) {
       preview.innerHTML = `<p class="muted">${result.error || "Could not load transcript years."}</p>`;
+      if (window.PortalUI) PortalUI.upgradeError(preview, null);
       return;
     }
     if (!result.years || result.years.length === 0) {
@@ -3876,7 +3885,7 @@ function issueTranscript(student_id) {
     ? `?${new URLSearchParams({ class_levels: checked.join(",") })}`
     : "";
   window.open(
-    `http://localhost:3001/api/registrar/documents/transcript/${encodeURIComponent(student_id)}/pdf${params}`,
+    `/api/registrar/documents/transcript/${encodeURIComponent(student_id)}/pdf${params}`,
     "_blank",
   );
   setTimeout(loadIssuanceLog, 1500);
@@ -3891,7 +3900,7 @@ function issueTranscript(student_id) {
 // used for a real student's quick in-page preview.
 function previewSampleReportCard() {
   const preview = document.getElementById("doc-report-card-preview-templates");
-  preview.innerHTML = `<iframe src="http://localhost:3001/api/registrar/documents/report-card/SAMPLE-0001/pdf" title="Sample Report Card" style="width:100%; height:80vh; min-height:600px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
+  preview.innerHTML = `<iframe src="/api/registrar/documents/report-card/SAMPLE-0001/pdf" title="Sample Report Card" style="width:100%; height:80vh; min-height:600px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
 }
 
 // Templates tab sample — embedded in the page itself (an <iframe> into
@@ -3899,7 +3908,7 @@ function previewSampleReportCard() {
 // anything, so it's a look, not a download or a new tab.
 function previewSampleTranscript() {
   const preview = document.getElementById("doc-report-card-preview-templates");
-  preview.innerHTML = `<iframe src="http://localhost:3001/api/registrar/documents/transcript/SAMPLE-0001/pdf" title="Sample Transcript" style="width:100%; height:80vh; min-height:600px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
+  preview.innerHTML = `<iframe src="/api/registrar/documents/transcript/SAMPLE-0001/pdf" title="Sample Transcript" style="width:100%; height:80vh; min-height:600px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
 }
 
 // View-only ID card preview (HTML) — downloadIdCard() below is the
@@ -3908,7 +3917,7 @@ function previewSampleTranscript() {
 // buildIdCardHtml in server.js.
 function downloadIdCard(student_id) {
   window.open(
-    `http://localhost:3001/api/registrar/documents/id-card/${encodeURIComponent(student_id)}/pdf`,
+    `/api/registrar/documents/id-card/${encodeURIComponent(student_id)}/pdf`,
     "_blank",
   );
   setTimeout(loadIssuanceLog, 1500);
@@ -3919,7 +3928,7 @@ function downloadIdCard(student_id) {
 // pattern as previewSampleTranscript above.
 function previewSampleIdCard() {
   const preview = document.getElementById("doc-report-card-preview-templates");
-  preview.innerHTML = `<iframe src="http://localhost:3001/api/registrar/documents/id-card/SAMPLE-0001/preview" title="Sample ID Card" style="width:100%; height:70vh; min-height:560px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
+  preview.innerHTML = `<iframe src="/api/registrar/documents/id-card/SAMPLE-0001/preview" title="Sample ID Card" style="width:100%; height:70vh; min-height:560px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
 }
 
 // The design is real and renders server-side from
@@ -3929,7 +3938,7 @@ function previewSampleIdCard() {
 // for any other student_id rather than a fake letter).
 function previewSampleRecommendation() {
   const preview = document.getElementById("doc-report-card-preview-templates");
-  preview.innerHTML = `<iframe src="http://localhost:3001/api/registrar/documents/recommendation/SAMPLE-0001/preview" title="Sample Recommendation Letter" style="width:100%; height:80vh; min-height:600px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
+  preview.innerHTML = `<iframe src="/api/registrar/documents/recommendation/SAMPLE-0001/preview" title="Sample Recommendation Letter" style="width:100%; height:80vh; min-height:600px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
 }
 
 async function loadIssuanceLog() {
@@ -3937,7 +3946,7 @@ async function loadIssuanceLog() {
   if (!container) return;
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/documents/issuance-log",
+      "/api/registrar/documents/issuance-log",
       { credentials: "include" },
     );
     if (!res.ok) throw new Error("Could not load issuance log.");
@@ -3976,7 +3985,7 @@ async function loadGraduationEligible() {
   if (!container) return;
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/graduation/eligible",
+      "/api/registrar/graduation/eligible",
       { credentials: "include" },
     );
     if (!res.ok) throw new Error("Could not load Grade 12 students.");
@@ -3989,7 +3998,7 @@ async function loadGraduationEligible() {
 
     container.innerHTML =
       `
-            <div class="search-box" style="justify-content: flex-start; gap: 10px; background:#eef2f7;">
+            <div class="search-box" style="justify-content: flex-start; gap: 10px; background:#edf2ee;">
                 <label style="font-weight: 600; display:flex; align-items:center; gap:10px;">
                     <input type="checkbox" id="grad-select-all" data-onchange-self="toggleSelectAllGraduates" />
                     <span>Select all (${students.length})</span>
@@ -4062,7 +4071,7 @@ async function readmitGrade12Fail(studentId) {
     return;
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/graduation/grade12-readmit",
+      "/api/registrar/graduation/grade12-readmit",
       {
         method: "POST",
         credentials: "include",
@@ -4121,7 +4130,7 @@ async function processGraduation() {
 
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/graduation/process",
+      "/api/registrar/graduation/process",
       {
         method: "POST",
         credentials: "include",
@@ -4161,7 +4170,7 @@ async function loadGraduationHistory() {
   if (!container) return;
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/graduation/history",
+      "/api/registrar/graduation/history",
       { credentials: "include" },
     );
     if (!res.ok) throw new Error("Could not load graduation history.");
@@ -4214,7 +4223,7 @@ async function loadEaseCandidates() {
 
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/ease-candidates?${params.toString()}`,
+      `/api/registrar/ease-candidates?${params.toString()}`,
       { credentials: "include" },
     );
     if (!res.ok) throw new Error("Could not load EASE candidates.");
@@ -4304,7 +4313,7 @@ async function markEaseCandidate(studentId) {
   if (!admission_number) return showAlert(t("reg_ease_admission_required"));
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/ease-candidates/${studentId}`,
+      `/api/registrar/ease-candidates/${studentId}`,
       {
         method: "POST",
         credentials: "include",
@@ -4335,7 +4344,7 @@ async function markEaseOutgoing(studentId) {
   if (!confirmed) return;
   try {
     const res = await fetch(
-      `http://localhost:3001/api/registrar/ease-candidates/${studentId}/outgoing`,
+      `/api/registrar/ease-candidates/${studentId}/outgoing`,
       {
         method: "POST",
         credentials: "include",
@@ -4374,7 +4383,7 @@ async function markEaseOutgoing(studentId) {
 async function loadRegistrarNotifications() {
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/notifications",
+      "/api/registrar/notifications",
       { credentials: "include" },
     );
     if (!res.ok) throw new Error("Could not load notifications.");
@@ -4552,7 +4561,7 @@ async function loadCurrentSemesterChip() {
   const yearChip = document.getElementById("topbar-academic-year");
   if (!chip && !yearChip) return;
   try {
-    const res = await fetch("http://localhost:3001/api/term/current", {
+    const res = await fetch("/api/term/current", {
       credentials: "include",
     });
     if (!res.ok) throw new Error("Could not load current term.");
@@ -4612,7 +4621,7 @@ function updateGraduationWizardLock(current_term, semester_status) {
 // --- 12. Dashboard tab ---
 async function loadDashboardStats() {
   try {
-    const res = await fetch("http://localhost:3001/api/registrar/dashboard", {
+    const res = await fetch("/api/registrar/dashboard", {
       credentials: "include",
     });
     if (!res.ok) throw new Error("Could not load dashboard stats.");
@@ -4666,7 +4675,7 @@ async function loadRegistrarSignatureStatus() {
   if (!status) return;
   try {
     const res = await fetch(
-      "http://localhost:3001/api/teacher/document-status",
+      "/api/teacher/document-status",
       { credentials: "include" },
     );
     if (!res.ok) throw new Error("Could not load signature status.");
@@ -4698,7 +4707,7 @@ async function uploadRegistrarAvatar(input) {
   const formData = new FormData();
   formData.append("avatar", input.files[0]);
   try {
-    const res = await fetch("http://localhost:3001/api/teacher/update-avatar", {
+    const res = await fetch("/api/teacher/update-avatar", {
       method: "POST",
       credentials: "include",
       body: formData,
@@ -4726,7 +4735,7 @@ async function uploadRegistrarSignature(input) {
   formData.append("signature", input.files[0]);
   try {
     const res = await fetch(
-      "http://localhost:3001/api/registrar/upload-signature",
+      "/api/registrar/upload-signature",
       {
         method: "POST",
         credentials: "include",
@@ -4753,7 +4762,7 @@ function returnToPortal() {
 
 async function registrarLogout() {
   try {
-    await fetch("http://localhost:3001/api/logout", {
+    await fetch("/api/logout", {
       method: "POST",
       credentials: "include",
     });

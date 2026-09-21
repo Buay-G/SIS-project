@@ -19,8 +19,11 @@
     ></script>
     <script src="/assets/js/guard.js"></script>
     <script src="/assets/js/i18n.js"></script>
+    <meta name="theme-color" content="#0b3320" />
+    <link rel="stylesheet" href="/assets/css/portal-ui.css" />
+    <script src="/assets/js/portal-ui.js"></script>
   </head>
-  <body>
+  <body data-portal="teachers">
     <div class="dashboard-container">
       <nav class="sidebar" id="sidebar" aria-label="Main navigation">
         <h2 class="logo">
@@ -183,6 +186,30 @@
                 />
               </svg>
               <span data-i18n="nav_textbooks">Textbooks</span>
+            </a>
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="subscription"
+              id="nav-subscription"
+              style="display: none"
+            >
+              <svg
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <rect x="2" y="5" width="20" height="14" rx="2" />
+                <line x1="2" y1="10" x2="22" y2="10" />
+                <line x1="6" y1="15" x2="10" y2="15" />
+              </svg>
+              <span data-i18n="sub_nav_fee">Subscription Fee</span>
             </a>
           </li>
 
@@ -519,7 +546,7 @@
             <div class="widget">
               <h3 data-i18n="widget_my_performance">My Performance</h3>
               <p
-                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                style="font-size: 0.85rem; color: #66786d; margin-bottom: 12px"
                 data-i18n="widget_my_performance_desc"
               >
                 Your grading completion and marks-entry activity by subject,
@@ -535,7 +562,7 @@
                 Assessment &amp; Exam Conduct
               </h3>
               <p
-                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                style="font-size: 0.85rem; color: #66786d; margin-bottom: 12px"
                 data-i18n="widget_conduct_desc"
               >
                 Auto-tracked from entered marks. A box ticks once at least 50%
@@ -567,7 +594,7 @@
                 Textbook Distribution
               </h3>
               <p
-                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                style="font-size: 0.85rem; color: #66786d; margin-bottom: 12px"
               >
                 <span data-i18n="widget_textbook_issued_to"
                   >How many textbooks you've issued to</span
@@ -582,7 +609,7 @@
             <div class="widget" id="dashboard-eth-cal-widget">
               <h3 data-i18n="sa_eth_cal_widget_title">Ethiopian Calendar</h3>
               <p
-                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                style="font-size: 0.85rem; color: #66786d; margin-bottom: 12px"
                 data-i18n="sa_eth_cal_widget_desc"
               >
                 Today's date and upcoming school holidays.
@@ -602,13 +629,13 @@
             <div class="widget">
               <h3 data-i18n="dashboard_todays_classes">Today's Classes</h3>
               <p
-                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                style="font-size: 0.85rem; color: #66786d; margin-bottom: 12px"
                 data-i18n="dashboard_todays_classes_desc"
               >
                 Your scheduled periods for today, in order.
               </p>
               <div id="dashboard-todays-classes">
-                <p style="color: #64748b; font-size: 0.85rem">Loading…</p>
+                <p style="color: #66786d; font-size: 0.85rem">Loading…</p>
               </div>
             </div>
             <div class="widget">
@@ -616,26 +643,26 @@
                 Student Performance
               </h3>
               <p
-                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                style="font-size: 0.85rem; color: #66786d; margin-bottom: 12px"
                 data-i18n="widget_student_performance_desc"
               >
                 How each of your students is doing in your subject(s) this term.
               </p>
               <div id="dashboard-student-performance">
-                <p style="color: #64748b; font-size: 0.85rem">Loading…</p>
+                <p style="color: #66786d; font-size: 0.85rem">Loading…</p>
               </div>
             </div>
             <div class="widget" id="dashboard-history-widget">
               <h3 data-i18n="widget_history_heading">History</h3>
               <p
-                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                style="font-size: 0.85rem; color: #66786d; margin-bottom: 12px"
                 data-i18n="widget_history_desc"
               >
                 Every subject, homeroom, and Recorder role you've held at this
                 school, by academic year.
               </p>
               <div id="dashboard-history-list">
-                <p style="color: #64748b; font-size: 0.85rem">Loading…</p>
+                <p style="color: #66786d; font-size: 0.85rem">Loading…</p>
               </div>
             </div>
           </div>
@@ -782,7 +809,7 @@
                   />
                   <div
                     id="score-input-hint"
-                    style="font-size: 0.78rem; color: #64748b; margin: 4px 0 0"
+                    style="font-size: 0.78rem; color: #66786d; margin: 4px 0 0"
                   ></div>
                   <button
                     type="button"
@@ -798,7 +825,7 @@
 
           <div class="widget" style="margin-top: 24px">
             <h3>Section Grade Sheet</h3>
-            <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px">
+            <p style="font-size: 0.85rem; color: #66786d; margin-bottom: 12px">
               Enter marks for a whole section at once — pick a section and
               subject below, then fill in scores directly in the table. Only
               cells you change get saved.
@@ -839,7 +866,7 @@
             </div>
 
             <div id="gradesheet-container">
-              <p style="color: #64748b; font-size: 0.85rem">
+              <p style="color: #66786d; font-size: 0.85rem">
                 Select a section and subject above to begin.
               </p>
             </div>
@@ -853,7 +880,7 @@
                 gap: 12px;
               "
             >
-              <span style="font-size: 0.85rem; color: #64748b"
+              <span style="font-size: 0.85rem; color: #66786d"
                 >Use the <strong>Save</strong> button in each row to save that
                 student's scores.</span
               >
@@ -865,7 +892,7 @@
             <h3 data-i18n="subject_request_heading">
               Request Access to Another Subject
             </h3>
-            <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 14px">
+            <p style="font-size: 0.85rem; color: #66786d; margin-bottom: 14px">
               <span data-i18n="subject_request_desc"
                 >If a subject teacher for your section is unavailable, you can
                 ask the Academic VP for temporary access to enter marks for that
@@ -897,7 +924,7 @@
             </div>
             <div
               id="subject-request-status-note"
-              style="font-size: 0.8rem; color: #64748b; margin-top: 8px"
+              style="font-size: 0.8rem; color: #66786d; margin-top: 8px"
             ></div>
             <div id="subject-request-list" style="margin-top: 16px"></div>
           </div>
@@ -906,7 +933,7 @@
             <h3 data-i18n="late_marks_heading">
               Last Semester Mark Entry Request
             </h3>
-            <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 14px">
+            <p style="font-size: 0.85rem; color: #66786d; margin-bottom: 14px">
               <span data-i18n="late_marks_desc"
                 >Once a semester is closed, use this to ask the Academic VP for
                 permission to go back and enter marks for students who are still
@@ -932,7 +959,7 @@
             </div>
             <div
               id="late-marks-status-note"
-              style="font-size: 0.8rem; color: #64748b; margin-top: 8px"
+              style="font-size: 0.8rem; color: #66786d; margin-top: 8px"
             ></div>
             <div id="late-marks-request-list" style="margin-top: 16px"></div>
 
@@ -941,7 +968,7 @@
               style="
                 display: none;
                 margin-top: 20px;
-                border-top: 1px solid #e2e8f0;
+                border-top: 1px solid #dde5e0;
                 padding-top: 16px;
               "
             >
@@ -960,7 +987,7 @@
                 style="
                   display: inline-flex;
                   margin-bottom: 14px;
-                  border: 1px solid #cbd5e1;
+                  border: 1px solid #c5d0c9;
                   border-radius: 8px;
                   overflow: hidden;
                 "
@@ -1000,7 +1027,7 @@
               </div>
 
               <div id="late-marks-students-container">
-                <p style="color: #64748b; font-size: 0.85rem">
+                <p style="color: #66786d; font-size: 0.85rem">
                   Select a subject above to see incomplete students.
                 </p>
               </div>
@@ -1097,7 +1124,7 @@
         >
           <div class="myclass-frozen-header">
             <h2 data-i18n="myclass_heading">My Class</h2>
-            <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 16px">
+            <p style="font-size: 0.85rem; color: #66786d; margin-bottom: 16px">
               <span data-i18n="myclass_desc_prefix"
                 >Today's attendance for</span
               >
@@ -1167,7 +1194,7 @@
             <div id="myclass-roster-scroll" class="myclass-roster-scroll">
               <div id="myclass-roster">
                 <p
-                  style="color: #64748b; font-size: 0.85rem"
+                  style="color: #66786d; font-size: 0.85rem"
                   data-i18n="loading_text"
                 >
                   Loading…
@@ -1184,7 +1211,7 @@
         >
           <div class="widget">
             <h2 data-i18n="leaderboard_heading">Leaderboard</h2>
-            <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 16px">
+            <p style="font-size: 0.85rem; color: #66786d; margin-bottom: 16px">
               <span data-i18n="leaderboard_desc_prefix"
                 >Student rank order for</span
               >
@@ -1192,15 +1219,118 @@
             </p>
             <div
               id="leaderboard-basis-note"
-              style="font-size: 0.85rem; color: #64748b; margin-bottom: 14px"
+              style="font-size: 0.85rem; color: #66786d; margin-bottom: 14px"
             ></div>
             <div id="leaderboard-list">
               <p
-                style="color: #64748b; font-size: 0.85rem"
+                style="color: #66786d; font-size: 0.85rem"
                 data-i18n="loading_text"
               >
                 Loading…
               </p>
+            </div>
+          </div>
+        </section>
+
+        <section
+          id="page-subscription"
+          class="page-content sub-page"
+          style="display: none"
+        >
+          <div class="widget">
+            <h2 data-i18n="sub_nav_fee">Subscription Fee</h2>
+            <p class="sub-page-sub" data-i18n="sub_class_page_sub">
+              Mark students as paid when they hand you their fee. Your class
+              list updates live.
+            </p>
+
+            <p id="sub-no-access" class="sub-empty" style="display: none"></p>
+
+            <div id="sub-body">
+              <div
+                id="sub-notice"
+                class="sub-notice"
+                role="status"
+                aria-live="polite"
+                style="display: none"
+              ></div>
+              <div id="sub-banner" class="sub-banner" style="display: none"></div>
+
+              <div class="sub-meta">
+                <div>
+                  <span class="sub-meta-label" data-i18n="sub_billing_month"
+                    >Billing month</span
+                  >
+                  <strong id="sub-month">—</strong>
+                </div>
+                <div>
+                  <span class="sub-meta-label" data-i18n="sub_fee_student"
+                    >Student fee</span
+                  >
+                  <strong id="sub-fee">—</strong>
+                </div>
+                <div>
+                  <span class="sub-meta-label" data-i18n="sub_th_class"
+                    >Class</span
+                  >
+                  <strong id="sub-class">—</strong>
+                </div>
+              </div>
+
+              <div class="metrics-grid sub-metrics">
+                <div class="metric-card">
+                  <h4 data-i18n="sub_tile_collected">Collected</h4>
+                  <p class="count" id="sub-tile-collected">0</p>
+                  <p class="sub-tile-note" id="sub-tile-expected"></p>
+                </div>
+                <div class="metric-card">
+                  <h4 data-i18n="sub_tile_students">Students paid</h4>
+                  <p class="count" id="sub-tile-paid">0</p>
+                </div>
+                <div class="metric-card">
+                  <h4 data-i18n="sub_status_unpaid">Unpaid</h4>
+                  <p class="count" id="sub-tile-unpaid">0</p>
+                </div>
+              </div>
+
+              <h3 class="sub-list-title" data-i18n="sub_class_students_title">
+                Students in your class
+              </h3>
+              <div class="sub-toolbar">
+                <label for="sub-search" class="sr-only" data-i18n="sub_search"
+                  >Search name or ID</label
+                >
+                <input
+                  type="text"
+                  id="sub-search"
+                  class="form-input"
+                  data-i18n-placeholder="sub_search"
+                  placeholder="Search name or ID"
+                  autocomplete="off"
+                />
+                <select
+                  id="sub-filter"
+                  class="form-input"
+                  data-i18n-aria="sub_th_status"
+                  aria-label="Status"
+                >
+                  <option value="all" data-i18n="sub_f_all">All</option>
+                  <option value="unpaid" data-i18n="sub_f_unpaid">Unpaid</option>
+                  <option value="paid" data-i18n="sub_f_paid">Paid</option>
+                </select>
+                <button
+                  type="button"
+                  id="sub-refresh-btn"
+                  class="btn-primary sub-refresh-btn"
+                  data-i18n="sub_refresh"
+                >
+                  Refresh
+                </button>
+              </div>
+              <p id="sub-updated" class="sub-updated"></p>
+              <div id="sub-list">
+                <p class="sub-empty" data-i18n="loading_text">Loading…</p>
+              </div>
             </div>
           </div>
         </section>
@@ -1221,7 +1351,7 @@
               </button>
             </div>
             <p
-              style="font-size: 0.85rem; color: #64748b; margin-bottom: 10px"
+              style="font-size: 0.85rem; color: #66786d; margin-bottom: 10px"
               data-i18n="myclass_scan_instructions"
             >
               Point a student's ID card at the camera.
@@ -1238,7 +1368,7 @@
           <div class="idcard-page-intro">
             <h2 data-i18n="idcard_heading">My ID Card</h2>
             <p
-              style="font-size: 0.85rem; color: #64748b; margin-bottom: 20px"
+              style="font-size: 0.85rem; color: #66786d; margin-bottom: 20px"
               data-i18n="idcard_desc"
             >
               Present this alongside a physical copy if required by school
@@ -1424,7 +1554,7 @@
         >
           <h2 data-i18n="nav_action_center">Action Center</h2>
           <p
-            style="font-size: 0.85rem; color: #64748b; margin-bottom: 20px"
+            style="font-size: 0.85rem; color: #66786d; margin-bottom: 20px"
             data-i18n="action_center_desc"
           >
             Things your homeroom students need from you: photo approvals, direct
@@ -1435,14 +1565,14 @@
             <div class="widget">
               <h3 data-i18n="action_center_photo_requests">Photo Requests</h3>
               <p
-                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                style="font-size: 0.85rem; color: #66786d; margin-bottom: 12px"
                 data-i18n="action_center_photo_requests_desc"
               >
                 Students who submitted a new photo for their ID card — review
                 and approve or reject.
               </p>
               <div id="photo-requests-list">
-                <p style="color: #64748b; font-size: 0.85rem">Loading…</p>
+                <p style="color: #66786d; font-size: 0.85rem">Loading…</p>
               </div>
             </div>
 
@@ -1451,7 +1581,7 @@
                 Absence Requests
               </h3>
               <p
-                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                style="font-size: 0.85rem; color: #66786d; margin-bottom: 12px"
                 data-i18n="action_center_absence_requests_desc"
               >
                 Students in your homeroom section asking to be excused — approve
@@ -1459,7 +1589,7 @@
                 can approve.
               </p>
               <div id="absence-requests-list">
-                <p style="color: #64748b; font-size: 0.85rem">Loading…</p>
+                <p style="color: #66786d; font-size: 0.85rem">Loading…</p>
               </div>
             </div>
 
@@ -1468,7 +1598,7 @@
                 Upload Photo for a Student
               </h3>
               <p
-                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                style="font-size: 0.85rem; color: #66786d; margin-bottom: 12px"
                 data-i18n="action_center_upload_photo_desc"
               >
                 If a student can't get a usable photo themselves, upload one
@@ -1505,7 +1635,7 @@
                 </button>
                 <span
                   id="upload-photo-file-name"
-                  style="margin-left: 4px; font-size: 0.85rem; color: #64748b"
+                  style="margin-left: 4px; font-size: 0.85rem; color: #66786d"
                   >No file chosen</span
                 >
                 <input
@@ -1530,7 +1660,7 @@
             <div class="widget">
               <h3 data-i18n="homeroom_reset_heading">Reset Student Password</h3>
               <p
-                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                style="font-size: 0.85rem; color: #66786d; margin-bottom: 12px"
                 data-i18n="homeroom_reset_desc"
               >
                 If a student in your homeroom section forgets their password,
@@ -1561,6 +1691,58 @@
                 </button>
               </div>
               <div id="homeroom-reset-status" style="font-size: 0.85rem"></div>
+            </div>
+
+            <div class="widget" id="class-monitor-card">
+              <h3 data-i18n="cm_heading">Class Monitors</h3>
+              <p
+                style="font-size: 0.85rem; color: #66786d; margin-bottom: 12px"
+                data-i18n="cm_desc"
+              >
+                Class Monitors help you run your class: they check in classmates
+                for attendance and collect the monthly Subscription Fee. Having
+                two is recommended.
+              </p>
+              <div
+                id="cm-status"
+                class="cm-status"
+                role="status"
+                aria-live="polite"
+                style="display: none"
+              ></div>
+
+              <h4 class="cm-sub-heading" data-i18n="cm_current">
+                Current Class Monitors
+              </h4>
+              <div id="cm-current">
+                <p class="cm-empty" data-i18n="loading_text">Loading…</p>
+              </div>
+
+              <div class="search-group cm-assign-row">
+                <label
+                  for="cm-student-select"
+                  class="sr-only"
+                  data-i18n="cm_select_label"
+                  >Student to assign as Class Monitor</label
+                >
+                <select id="cm-student-select" class="form-input" disabled>
+                  <option value="" data-i18n="cm_select_placeholder">
+                    Select a student
+                  </option>
+                </select>
+                <button
+                  type="button"
+                  class="btn-primary"
+                  id="cm-assign-btn"
+                  data-i18n="cm_assign_btn"
+                  disabled
+                >
+                  Assign
+                </button>
+              </div>
+              <p class="cm-note" data-i18n="cm_next_login_note">
+                Changes take full effect the next time the student logs in.
+              </p>
             </div>
           </div>
         </section>
@@ -1831,7 +2013,7 @@
 
           <div class="widget" style="margin-bottom: 24px">
             <h3>Request Absence</h3>
-            <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px">
+            <p style="font-size: 0.85rem; color: #66786d; margin-bottom: 12px">
               Sent to the <strong>Admin Vice Principal</strong> for approval.
               The <strong>Academic Vice Principal</strong> and
               <strong>Principal</strong> are automatically tagged so they're
@@ -1929,7 +2111,7 @@
 
           <div class="widget" style="margin-top: 24px">
             <h3>Notify Students</h3>
-            <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 14px">
+            <p style="font-size: 0.85rem; color: #66786d; margin-bottom: 14px">
               Send a notification to students in your sections who haven't
               completed a specific assessment.
             </p>
@@ -1980,14 +2162,14 @@
             </button>
             <div
               id="notif-student-preview"
-              style="margin-top: 10px; font-size: 0.82rem; color: #64748b"
+              style="margin-top: 10px; font-size: 0.82rem; color: #66786d"
             ></div>
           </div>
         </section>
 
         <section id="page-textbooks" class="page-content" style="display: none">
           <h2>Textbook Distribution</h2>
-          <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 15px">
+          <p style="font-size: 0.85rem; color: #66786d; margin-bottom: 15px">
             Issue and track textbooks for your homeroom section. Each student
             gets one book per subject; mark it returned once they bring it back,
             or lost if it won't be coming back. Deciding any penalty for a lost
@@ -2019,7 +2201,7 @@
             <div class="widget">
               <h3>Push to Homeroom</h3>
               <p
-                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                style="font-size: 0.85rem; color: #66786d; margin-bottom: 12px"
               >
                 Once you push a subject's report for a section and term, it
                 locks — no further marks can be entered for it.
@@ -2030,7 +2212,7 @@
             <div class="widget" id="homeroom-widget" style="display: none">
               <h3>My Homeroom Reports</h3>
               <p
-                style="font-size: 0.85rem; color: #64748b; margin-bottom: 12px"
+                style="font-size: 0.85rem; color: #66786d; margin-bottom: 12px"
               >
                 You are the homeroom teacher for
                 <strong id="homeroom-section-label"></strong>.
@@ -2067,14 +2249,14 @@
                 style="
                   margin-top: 20px;
                   padding-top: 20px;
-                  border-top: 1px solid #e2e8f0;
+                  border-top: 1px solid #dde5e0;
                 "
               >
                 <h4 style="margin-bottom: 6px">Push Marks to Academic VP</h4>
                 <p
                   style="
                     font-size: 0.85rem;
-                    color: #64748b;
+                    color: #66786d;
                     margin-bottom: 12px;
                   "
                 >
@@ -2107,14 +2289,14 @@
       "
     >
       <div class="success-modal-box">
-        <div style="color: #2563eb; font-size: 44px" aria-hidden="true">✔</div>
+        <div style="color: #1c6b3f; font-size: 44px" aria-hidden="true">✔</div>
         <h2 id="success-modal-title">Success!</h2>
         <p id="success-modal-message">The mark has been saved successfully.</p>
         <button
           id="success-modal-close-btn"
           style="
             padding: 10px 20px;
-            background: #2563eb;
+            background: #1c6b3f;
             color: white;
             border: none;
             border-radius: 6px;
@@ -2174,7 +2356,7 @@
     >
       <div class="confirm-modal-box" style="max-width: 480px">
         <h3 id="help-modal-title">Help &amp; Support</h3>
-        <p style="font-size: 0.85rem; color: #64748b; margin-bottom: 16px">
+        <p style="font-size: 0.85rem; color: #66786d; margin-bottom: 16px">
           Send a message to the system support team.
         </p>
         <label for="help-subject" class="sr-only"

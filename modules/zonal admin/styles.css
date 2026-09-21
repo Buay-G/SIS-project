@@ -310,7 +310,7 @@ input[type="checkbox"]{
   flex:1;border-radius:12px;padding:14px 16px;border:1px solid var(--border);
 }
 .gender-chip.total{background:var(--teal-bg);}
-.gender-chip.male{background:#eaf1fb;}
+.gender-chip.male{background:#e2f1ec;}
 .gender-chip.female{background:#fbeaf3;}
 .gender-chip .n{font-size:22px;font-weight:800;}
 .gender-chip .l{font-size:11px;text-transform:uppercase;color:var(--text-dim);font-weight:700;}
@@ -942,7 +942,7 @@ tr:hover td{background:#fafcfb;}
 .idcard-signature-line {
     width: 65%;
     margin: 0 auto 6px;
-    border-top: 1px solid #94a3b8;
+    border-top: 1px solid #93a49a;
 }
 .idcard-signature-label {
     font-size: 0.66rem;

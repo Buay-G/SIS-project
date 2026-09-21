@@ -1,0 +1,199 @@
+/* ==========================================================================
+   portal-ui.css  -  shared look & feel for every portal (green + gold).
+   Load it AFTER a portal's own stylesheet:
+     <link rel="stylesheet" href="/assets/css/portal-ui.css">
+   Rules that only apply to one portal are scoped with body[data-portal="..."].
+   Change the brand colors once, in :root below.
+   ========================================================================== */
+
+/* ---- Fonts (self-hosted, so they work on slow / offline-ish school networks) ---- */
+@font-face{font-family:"Public Sans";font-style:normal;font-weight:400;font-display:swap;src:url(/assets/fonts/public-sans-latin-400-normal.woff2) format("woff2");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+2000-206F,U+2074,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:"Public Sans";font-style:normal;font-weight:500;font-display:swap;src:url(/assets/fonts/public-sans-latin-500-normal.woff2) format("woff2");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+2000-206F,U+2074,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:"Public Sans";font-style:normal;font-weight:600;font-display:swap;src:url(/assets/fonts/public-sans-latin-600-normal.woff2) format("woff2");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+2000-206F,U+2074,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:"Public Sans";font-style:normal;font-weight:700;font-display:swap;src:url(/assets/fonts/public-sans-latin-700-normal.woff2) format("woff2");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+2000-206F,U+2074,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+/* Amharic: one Ethiopic font on every device, loaded only when Ethiopic text is on screen */
+@font-face{font-family:"Noto Sans Ethiopic";font-style:normal;font-weight:100 500;font-display:swap;src:url(/assets/fonts/noto-sans-ethiopic-ethiopic-400-normal.woff2) format("woff2");unicode-range:U+1200-139F,U+2D80-2DDF,U+AB00-AB2F}
+@font-face{font-family:"Noto Sans Ethiopic";font-style:normal;font-weight:600 900;font-display:swap;src:url(/assets/fonts/noto-sans-ethiopic-ethiopic-700-normal.woff2) format("woff2");unicode-range:U+1200-139F,U+2D80-2DDF,U+AB00-AB2F}
+
+/* ---- Design tokens ---- */
+:root{
+  --pu-font:"Public Sans","Noto Sans Ethiopic","Nyala","Abyssinica SIL","Segoe UI",system-ui,-apple-system,"Roboto",sans-serif;
+  --pu-green-950:#0b3320; --pu-green-900:#0f3d24; --pu-green-800:#14532d; --pu-green-700:#1c6b3f; --pu-green-600:#2f8a57;
+  --pu-green-100:#d5e9dc; --pu-green-50:#e8f3ec;
+  --pu-gold:#c9a15a; --pu-gold-dark:#a97f38; --pu-gold-soft:#f6ecd6; --pu-on-gold:#22321f;
+  --pu-ink:#1f2a24; --pu-muted:#5b6d62; --pu-line:#dde5e0; --pu-bg:#f3f6f4; --pu-surface:#ffffff;
+  --pu-danger:#b91c1c; --pu-danger-bg:#fee2e2; --pu-warn:#b45309; --pu-warn-bg:#fef3c7; --pu-ok:#15803d; --pu-ok-bg:#dcfce7;
+  --pu-radius:12px; --pu-radius-sm:8px;
+  --pu-shadow:0 1px 2px rgba(15,26,20,.05),0 2px 8px rgba(15,26,20,.06);
+  --pu-tab-h:62px;
+}
+body.dark-theme{ --pu-ink:#e6efe9; --pu-muted:#9db0a4; --pu-line:#2b3d33; --pu-bg:#0f1a14; --pu-surface:#16241c; --pu-green-50:#173325; --pu-green-100:#1d4030; }
+
+/* ---- Base ---- */
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+body,button,input,select,textarea{font-family:var(--pu-font)}
+body{line-height:1.55;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+:focus-visible{outline:3px solid var(--pu-gold);outline-offset:2px}
+.sidebar :focus-visible,.pu-tabbar :focus-visible{outline-color:#fff}
+*{scrollbar-width:thin;scrollbar-color:rgba(20,83,45,.35) transparent}
+.sidebar,.sidebar *{scrollbar-color:rgba(255,255,255,.3) transparent}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(20,83,45,.28);border-radius:8px}
+::-webkit-scrollbar-thumb:hover{background:rgba(20,83,45,.5)}
+::-webkit-scrollbar-button{display:none;width:0;height:0}
+.sidebar ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.28)}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+
+/* ---- Sidebar: one icon slot so every label lines up; gold "you are here" pill ---- */
+.sidebar .nav-link>svg,.sidebar .nav-link>.nav-icon{width:18px;height:18px;flex:0 0 18px}
+.sidebar .nav-section-title,.sidebar .nav-group-label,.sidebar .nav-section-label{color:rgba(255,255,255,.66)}
+:is([data-portal="teachers"],[data-portal="students"],[data-portal="guardians"]) .sidebar .nav-link{border-left:0;border-radius:9px}
+:is([data-portal="teachers"],[data-portal="students"],[data-portal="guardians"]) .sidebar .nav-link:hover{background:rgba(255,255,255,.09);color:#fff}
+:is([data-portal="teachers"],[data-portal="students"],[data-portal="guardians"]) .sidebar .nav-link.active{background:var(--pu-gold);color:var(--pu-on-gold);font-weight:700}
+[data-portal="registrar"] #sidebar button.active{background:var(--pu-gold);color:var(--pu-on-gold);font-weight:700;border-left-color:transparent}
+
+/* ---- Header icons: real icons instead of emoji ---- */
+:is([data-portal="teachers"],[data-portal="students"],[data-portal="guardians"]) :is(.settings-btn,.help-btn,.notification-btn){font-size:0!important;line-height:0;color:#fff;position:relative}
+:is([data-portal="teachers"],[data-portal="students"],[data-portal="guardians"]) :is(.settings-btn,.help-btn,.notification-btn)::before{content:"";display:block;width:19px;height:19px;background:currentColor;-webkit-mask:var(--pu-ic) center/contain no-repeat;mask:var(--pu-ic) center/contain no-repeat}
+:is([data-portal="teachers"],[data-portal="students"],[data-portal="guardians"]) .settings-btn{--pu-ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Ccircle%20cx%3D%2712%27%20cy%3D%2712%27%20r%3D%273%27/%3E%3Cpath%20d%3D%27M19.4%2015a1.65%201.65%200%200%200%20.33%201.82l.06.06a2%202%200%200%201-2.83%202.83l-.06-.06a1.65%201.65%200%200%200-1.82-.33%201.65%201.65%200%200%200-1%201.51V21a2%202%200%200%201-4%200v-.09A1.65%201.65%200%200%200%209%2019.4a1.65%201.65%200%200%200-1.82.33l-.06.06a2%202%200%200%201-2.83-2.83l.06-.06a1.65%201.65%200%200%200%20.33-1.82%201.65%201.65%200%200%200-1.51-1H3a2%202%200%200%201%200-4h.09A1.65%201.65%200%200%200%204.6%209a1.65%201.65%200%200%200-.33-1.82l-.06-.06a2%202%200%200%201%202.83-2.83l.06.06a1.65%201.65%200%200%200%201.82.33H9a1.65%201.65%200%200%200%201-1.51V3a2%202%200%200%201%204%200v.09a1.65%201.65%200%200%200%201%201.51%201.65%201.65%200%200%200%201.82-.33l.06-.06a2%202%200%200%201%202.83%202.83l-.06.06a1.65%201.65%200%200%200-.33%201.82V9a1.65%201.65%200%200%200%201.51%201H21a2%202%200%200%201%200%204h-.09a1.65%201.65%200%200%200-1.51%201z%27/%3E%3C/svg%3E")}
+:is([data-portal="teachers"],[data-portal="students"],[data-portal="guardians"]) .help-btn{--pu-ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Ccircle%20cx%3D%2712%27%20cy%3D%2712%27%20r%3D%2710%27/%3E%3Cpath%20d%3D%27M9.09%209a3%203%200%200%201%205.83%201c0%202-3%203-3%203%27/%3E%3Cline%20x1%3D%2712%27%20y1%3D%2717%27%20x2%3D%2712.01%27%20y2%3D%2717%27/%3E%3C/svg%3E")}
+:is([data-portal="teachers"],[data-portal="students"],[data-portal="guardians"]) .notification-btn{--pu-ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27black%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M18%208A6%206%200%200%200%206%208c0%207-3%209-3%209h18s-3-2-3-9%27/%3E%3Cpath%20d%3D%27M13.73%2021a2%202%200%200%201-3.46%200%27/%3E%3C/svg%3E")}
+:is([data-portal="teachers"],[data-portal="students"],[data-portal="guardians"]) .notif-badge{font-size:.66rem!important;line-height:1}
+.pu-chips{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.pu-mobile-only{display:none!important}
+
+/* ---- Content spacing & cards ---- */
+:is([data-portal="teachers"],[data-portal="students"],[data-portal="guardians"]) .dashboard-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));align-items:start;gap:18px}
+[data-portal="teachers"] .page-content{margin-top:0;padding:0 0 28px}
+[data-portal="teachers"] .top-bar{margin-bottom:22px}
+:is([data-portal="teachers"],[data-portal="students"],[data-portal="guardians"]) .widget{border-radius:var(--pu-radius);padding:20px}
+[data-portal="teachers"] .widget h3{border-bottom:0;padding-bottom:0;margin-bottom:8px;font-size:1.05rem}
+[data-portal="teachers"] #conduct-list{max-height:none!important;overflow:visible!important}
+/* Student "Quick Summary": three compact stat tiles instead of a plain list */
+[data-portal="students"] #dashboard-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:10px}
+[data-portal="students"] #dashboard-summary .summary-stat{flex-direction:column;align-items:flex-start;justify-content:flex-start;gap:2px;border:1px solid var(--pu-line);border-bottom:1px solid var(--pu-line);border-radius:10px;padding:12px;background:var(--pu-green-50)}
+[data-portal="students"] #dashboard-summary .summary-num{font-size:1.5rem;line-height:1.1}
+[data-portal="students"] #dashboard-summary .muted{font-size:.78rem;line-height:1.3}
+
+/* ---- Loading / empty / error states ---- */
+.pu-state{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;padding:20px 12px;color:var(--pu-muted);font-size:.9rem;line-height:1.45}
+.pu-state-icon{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;background:var(--pu-green-50);color:var(--pu-green-700)}
+.pu-state.is-error .pu-state-icon{background:var(--pu-danger-bg);color:var(--pu-danger)}
+.pu-state-text{color:var(--pu-ink);font-weight:600;max-width:34ch}
+.pu-state-hint{font-size:.74rem;color:var(--pu-muted);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;word-break:break-all}
+.pu-retry{display:inline-flex;align-items:center;gap:6px;margin-top:2px;padding:8px 16px;border:1px solid var(--pu-green-700);border-radius:999px;background:transparent;color:var(--pu-green-700);font:600 .85rem var(--pu-font);cursor:pointer;transition:background .15s,color .15s}
+.pu-retry:hover{background:var(--pu-green-700);color:#fff}
+body.dark-theme .pu-retry{color:#bcdcc8;border-color:#3f7a58}
+.pu-skeleton{display:block;border-radius:8px;min-height:14px;background:linear-gradient(90deg,var(--pu-green-50) 25%,var(--pu-line) 37%,var(--pu-green-50) 63%);background-size:400% 100%;animation:pu-shimmer 1.4s ease infinite}
+@keyframes pu-shimmer{0%{background-position:100% 50%}100%{background-position:0 50%}}
+
+/* ---- Phones & small tablets: one-row header, full-width content, bottom tab bar ---- */
+.pu-tabbar{display:none}
+@media (max-width:900px){
+  .pu-mobile-only{display:flex!important}
+  /* teachers */
+  [data-portal="teachers"] .top-bar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"toggle title actions" "chips chips chips";align-items:center;gap:8px 10px;padding:8px 12px;min-height:56px;margin-bottom:12px}
+  [data-portal="teachers"] .topbar-left{display:contents}
+  [data-portal="teachers"] .sidebar-toggle-btn{grid-area:toggle}
+  [data-portal="teachers"] .page-title{grid-area:title;font-size:1.05rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  [data-portal="teachers"] .user-actions{grid-area:actions;gap:6px}
+  [data-portal="teachers"] .pu-chips{grid-area:chips;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;padding-bottom:2px}
+  [data-portal="teachers"] .pu-chips::-webkit-scrollbar{display:none}
+  [data-portal="teachers"] .pu-chips>*{flex:0 0 auto}
+  [data-portal="teachers"] .topbar-break{display:none}
+  [data-portal="teachers"] .pu-chips:empty{display:none}
+  [data-portal="teachers"] .page-content{padding:0 0 24px}
+  /* students & guardians */
+  :is([data-portal="students"],[data-portal="guardians"]) .top-bar{padding:8px 12px;gap:6px;margin-bottom:12px}
+  :is([data-portal="students"],[data-portal="guardians"]) .topbar-row-main{flex-wrap:nowrap;gap:8px}
+  :is([data-portal="students"],[data-portal="guardians"]) .topbar-left{min-width:0;flex:1 1 auto}
+  :is([data-portal="students"],[data-portal="guardians"]) .page-title{font-size:1rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  :is([data-portal="students"],[data-portal="guardians"]) .topbar-row-tags{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;gap:6px}
+  :is([data-portal="students"],[data-portal="guardians"]) .topbar-row-tags::-webkit-scrollbar{display:none}
+  :is([data-portal="students"],[data-portal="guardians"]) .topbar-row-tags>*{flex:0 0 auto}
+  :is([data-portal="students"],[data-portal="guardians"]) .topbar-row-tags:not(:has(>:not([style*="display: none"]):not([style*="display:none"]))){display:none}
+  :is([data-portal="teachers"],[data-portal="students"],[data-portal="guardians"]) :is(.settings-btn,.help-btn){display:none}
+  :is([data-portal="students"],[data-portal="guardians"]) .nav-account-text,[data-portal="teachers"] #nav-greeting,[data-portal="teachers"] #nav-greeting-name{display:none}
+  :is([data-portal="students"],[data-portal="guardians"]) .page-content{padding-left:0;padding-right:0}
+  /* bottom tab bar */
+  .pu-tabbar{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:900;background:var(--pu-green-950);border-top:1px solid rgba(255,255,255,.12);box-shadow:0 -6px 18px rgba(0,0,0,.18);height:calc(var(--pu-tab-h) + env(safe-area-inset-bottom,0px));padding-bottom:env(safe-area-inset-bottom,0px)}
+  .pu-tab{position:relative;flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:6px 2px;background:none;border:0;color:rgba(255,255,255,.72);font:600 .68rem/1.15 var(--pu-font);cursor:pointer;-webkit-tap-highlight-color:transparent}
+  .pu-tab svg{width:22px;height:22px;flex:0 0 22px}
+  .pu-tab span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pu-tab.is-active{color:var(--pu-gold)}
+  .pu-tab.is-active::before{content:"";position:absolute;top:0;left:28%;right:28%;height:3px;border-radius:0 0 3px 3px;background:var(--pu-gold)}
+  body.has-tabbar :is(.page-content,.main-content){scroll-padding-bottom:calc(var(--pu-tab-h) + 16px)}
+  body.has-tabbar[data-portal="teachers"] .page-content{padding-bottom:calc(var(--pu-tab-h) + env(safe-area-inset-bottom,0px) + 20px)}
+  body.has-tabbar:is([data-portal="students"],[data-portal="guardians"],[data-portal="school-admin"]) .main-content{padding-bottom:calc(var(--pu-tab-h) + env(safe-area-inset-bottom,0px) + 20px)}
+}
+@media print{.pu-tabbar{display:none!important}}
+.pu-tab[hidden]{display:none}
+/* JS shows some menu items with display:block, which breaks the icon/label alignment - keep them flex */
+:is([data-portal="teachers"],[data-portal="students"],[data-portal="guardians"]) .sidebar .nav-link:not([style*="display: none"]):not([style*="display:none"]){display:flex!important;align-items:center}
+@media (max-width:900px){.pu-tab span{white-space:normal;text-align:center;line-height:1.12;max-height:2.3em;overflow:hidden;overflow-wrap:anywhere}}
+.pu-retry{white-space:nowrap}
+@media (max-width:900px){
+  :is([data-portal="students"],[data-portal="guardians"]) .topbar-row-main{flex-direction:row;align-items:center}
+  :is([data-portal="students"],[data-portal="guardians"]) .topbar-right{justify-content:flex-end;flex:0 0 auto}
+  :is([data-portal="students"],[data-portal="guardians"]) .topbar-left{gap:8px}
+}
+
+/* ==========================================================================
+   Round 2: school admin, registrar, zonal admin, super admin, hub on phones
+   ========================================================================== */
+
+/* The closed menu drawer sits just off-screen; its shadow must not bleed onto the page */
+@media (max-width:980px){
+  .sidebar,#sidebar{box-shadow:none}
+  .sidebar.open,.sidebar.sidebar-open,.sidebar-open .sidebar,.sidebar-open #sidebar{box-shadow:0 0 40px rgba(0,0,0,.3)}
+}
+
+@media (max-width:900px){
+  /* ---- School admin: one-row header ---- */
+  [data-portal="school-admin"] .top-bar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"toggle title actions" "chips chips chips";align-items:center;gap:8px 10px;padding:8px 12px;min-height:56px}
+  [data-portal="school-admin"] :is(.top-bar-titlegroup,.top-bar-title-row){display:contents}
+  [data-portal="school-admin"] #sidebar-toggle{grid-area:toggle}
+  [data-portal="school-admin"] .page-title-text{grid-area:title;margin:0;font-size:1.05rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  [data-portal="school-admin"] .top-bar-right{grid-area:actions;gap:6px;flex-wrap:nowrap;margin:0}
+  [data-portal="school-admin"] .topbar-profile-text{display:none}
+  [data-portal="school-admin"] .topbar-school-meta{grid-area:chips;display:flex;flex-wrap:nowrap;gap:6px;overflow-x:auto;scrollbar-width:none;margin:0}
+  [data-portal="school-admin"] .topbar-school-meta::-webkit-scrollbar{display:none}
+  [data-portal="school-admin"] .topbar-school-meta>*{flex:0 0 auto}
+
+  /* ---- Registrar: one-row header ---- */
+  [data-portal="registrar"] .top-bar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"toggle title actions" "chips chips chips";align-items:center;gap:8px 10px;padding:8px 12px;height:auto;min-height:56px}
+  [data-portal="registrar"] .top-bar-left{display:contents}
+  [data-portal="registrar"] .sidebar-hamburger{grid-area:toggle}
+  [data-portal="registrar"] .topbar-school-name{grid-area:title;font-size:1rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  [data-portal="registrar"] .user-actions{grid-area:actions;gap:6px;flex-wrap:nowrap}
+  [data-portal="registrar"] .pu-chips{grid-area:chips;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
+  [data-portal="registrar"] .pu-chips::-webkit-scrollbar{display:none}
+  [data-portal="registrar"] .pu-chips>*{flex:0 0 auto}
+  [data-portal="registrar"] :is(.topbar-account-name,.settings-btn){display:none}
+  body.has-tabbar[data-portal="registrar"] :is(.main-content,.page-content,.content-area){padding-bottom:calc(var(--pu-tab-h) + env(safe-area-inset-bottom,0px) + 20px)}
+  body.has-tabbar:is([data-portal="zonal-admin"],[data-portal="super-admin"]) .content{padding-bottom:calc(var(--pu-tab-h) + env(safe-area-inset-bottom,0px) + 24px)}
+}
+
+/* ---- Zonal admin & super admin: compact header, and nothing may be wider than the screen ---- */
+@media (max-width:720px){
+  :is([data-portal="zonal-admin"],[data-portal="super-admin"]) .topbar{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px 10px;padding:8px 12px}
+  :is([data-portal="zonal-admin"],[data-portal="super-admin"]) .topbar-left{display:contents}
+  :is([data-portal="zonal-admin"],[data-portal="super-admin"]) .topbar-title-row{grid-column:1;grid-row:1;min-width:0}
+  :is([data-portal="zonal-admin"],[data-portal="super-admin"]) .topbar-title-row h1{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;font-size:1.05rem}
+  :is([data-portal="zonal-admin"],[data-portal="super-admin"]) .topbar-right{grid-column:2;grid-row:1;flex-wrap:nowrap;justify-content:flex-end;gap:8px}
+  :is([data-portal="zonal-admin"],[data-portal="super-admin"]) .topbar-right .who{margin-left:0}
+  :is([data-portal="zonal-admin"],[data-portal="super-admin"]) .who>div{display:none}
+  :is([data-portal="zonal-admin"],[data-portal="super-admin"]) .lang-toggle button{padding-left:9px;padding-right:9px}
+  :is([data-portal="zonal-admin"],[data-portal="super-admin"]) .badges{grid-column:1/-1;grid-row:2;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;margin:0}
+  :is([data-portal="zonal-admin"],[data-portal="super-admin"]) .badges::-webkit-scrollbar{display:none}
+  :is([data-portal="zonal-admin"],[data-portal="super-admin"]) .badges>*{flex:0 0 auto}
+  :is([data-portal="zonal-admin"],[data-portal="super-admin"]) .main{overflow-x:clip}
+  :is([data-portal="zonal-admin"],[data-portal="super-admin"]) :is(.main,.content,.panel,.card,.welcome,.table-wrap){min-width:0;max-width:100%}
+  :is([data-portal="zonal-admin"],[data-portal="super-admin"]) .cards{grid-template-columns:repeat(2,minmax(0,1fr))}
+  :is([data-portal="zonal-admin"],[data-portal="super-admin"]) .card>div:not(.icon){min-width:0;overflow-wrap:break-word}
+  :is([data-portal="zonal-admin"],[data-portal="super-admin"]) .table-wrap{overflow-x:auto}
+}
+@media (max-width:480px){
+  :is([data-portal="zonal-admin"],[data-portal="super-admin"]) .cards{grid-template-columns:minmax(0,1fr)}
+}

@@ -505,7 +505,7 @@ async function loadChildMarks(studentId) {
         el.innerHTML = `
             <table style="width:100%; border-collapse:collapse;">
                 <thead>
-                    <tr style="text-align:left; border-bottom:2px solid var(--border, #e2e8f0);">
+                    <tr style="text-align:left; border-bottom:2px solid var(--border, #dde5e0);">
                         <th style="padding:8px;">${t('guardian_marks_term')}</th>
                         <th style="padding:8px;">${t('guardian_marks_subject')}</th>
                         <th style="padding:8px;">${t('guardian_marks_type')}</th>
@@ -514,7 +514,7 @@ async function loadChildMarks(studentId) {
                 </thead>
                 <tbody>
                     ${marks.map(m => `
-                        <tr style="border-bottom:1px solid var(--border, #eef1f5);">
+                        <tr style="border-bottom:1px solid var(--border, #edf2ee);">
                             <td style="padding:8px;">${escapeHtml(m.term)}</td>
                             <td style="padding:8px;">${escapeHtml(m.subject_name)}</td>
                             <td style="padding:8px;">${escapeHtml(m.type)}</td>
@@ -548,7 +548,7 @@ function renderChildAttendance(data) {
     const el = document.getElementById('child-attendance-output');
     if (!el || !data.days.length) return;
 
-    const statusColor = { present: '#16a34a', absent: '#dc2626', excused: '#3b82f6', weekend: '#d1d5db', holiday: '#eab308', future: '#f3f4f6', not_started: '#f3f4f6', semester_closed: '#e5e7eb' };
+    const statusColor = { present: '#16a34a', absent: '#dc2626', excused: '#3b82f6', weekend: '#cdd6d0', holiday: '#eab308', future: '#f3f4f6', not_started: '#f3f4f6', semester_closed: '#e0e7e2' };
     const statusLabel = {
         present: t('guardian_attendance_present'),
         absent: t('guardian_attendance_absent'),
@@ -589,7 +589,7 @@ function renderChildAttendance(data) {
             <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#dc2626;margin-right:4px;"></span>${statusLabel.absent}</span>
             <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#3b82f6;margin-right:4px;"></span>${statusLabel.excused}</span>
             <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#eab308;margin-right:4px;"></span>${statusLabel.holiday}</span>
-            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#d1d5db;margin-right:4px;"></span>${statusLabel.weekend}</span>
+            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#cdd6d0;margin-right:4px;"></span>${statusLabel.weekend}</span>
         </div>`;
 }
 

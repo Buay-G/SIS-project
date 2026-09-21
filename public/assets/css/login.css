@@ -1,12 +1,12 @@
 /* ===== Design tokens ===== */
 :root {
-    --navy: #16204a;
+    --navy: #0b3320;
     --mint: #b9f2dc;
-    --panel-blue-top: #cfe0f7;
-    --panel-blue-bottom: #6f93d8;
+    --panel-blue-top: #c5e0d1;
+    --panel-blue-bottom: #8fbf9f;
     --gold: #f6cf5c;
     --gold-hover: #f0c23d;
-    --ink: #1c2a52;
+    --ink: #0f3d24;
     --white: #ffffff;
     --font: 'Poppins', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
@@ -21,7 +21,7 @@ body {
     font-family: var(--font);
     color: var(--white);
     background:
-        linear-gradient(100deg, rgba(10,14,30,0.15) 0%, rgba(10,14,30,0.55) 70%, rgba(10,14,30,0.85) 100%),
+        linear-gradient(100deg, rgba(13, 16, 14,0.15) 0%, rgba(13, 16, 14,0.55) 70%, rgba(13, 16, 14,0.85) 100%),
         url('/assets/images/lgbackground.png') center center / cover no-repeat fixed;
     min-height: 100vh;
     min-height: 100dvh;
@@ -311,7 +311,7 @@ button:active {
        the card — much easier to read than text over the photo. */
     body {
         background:
-            linear-gradient(180deg, #f9e9db 0%, #eef1f8 22%, #eef1f8 78%, #f3e3d4 100%);
+            linear-gradient(180deg, #f9e9db 0%, #edf2ee 22%, #edf2ee 78%, #f3e3d4 100%);
         background-attachment: scroll;
     }
 

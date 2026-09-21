@@ -11,8 +11,11 @@
          renders codes (ID cards); this reads them via the device
          camera. -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+    <meta name="theme-color" content="#0b3320" />
+    <link rel="stylesheet" href="/assets/css/portal-ui.css" />
+    <script src="/assets/js/portal-ui.js"></script>
   </head>
-  <body>
+  <body data-portal="school-admin">
     <div class="dashboard-container">
       <!-- ============ SIDEBAR ============ -->
       <nav class="sidebar" id="sidebar" aria-label="Main navigation">
@@ -811,6 +814,66 @@
           </li>
           <li
             class="nav-section-label"
+            data-titles="Admin VP,Principal"
+            data-sub-section
+            data-i18n="sa_nav_section_billing"
+          >
+            Billing
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="subscription-fee"
+              data-titles="Admin VP"
+              data-sub-cap="staff_collection"
+            >
+              <span class="nav-icon"
+                ><svg
+                  class="lucide-icon"
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1" />
+                  <path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4" /></svg></span
+              ><span data-i18n="sa_nav_sub_fee">Subscription Fee</span></a
+            >
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="send-report"
+              data-titles="Principal"
+              data-sub-cap="report"
+            >
+              <span class="nav-icon"
+                ><svg
+                  class="lucide-icon"
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" />
+                  <path d="m21.854 2.147-10.94 10.939" /></svg></span
+              ><span data-i18n="sa_nav_sub_report">Send Report</span></a
+            >
+          </li>
+          <li
+            class="nav-section-label"
             data-titles="Principal,Admin VP,Academic VP"
             data-i18n="sa_nav_section_external"
           >
@@ -1365,6 +1428,25 @@
               <tbody id="sa-teacher-absence-tbody"></tbody>
             </table>
           </div>
+        </section>
+
+        <!-- ===================== SUBSCRIPTION FEE (Admin VP) ===================== -->
+        <section class="page-content" id="page-subscription-fee">
+          <h2 data-i18n="sa_nav_sub_fee">Subscription Fee</h2>
+          <p class="page-subtitle" data-i18n="sub_fee_page_sub">
+            Collect the monthly fee from staff, and watch what your school has
+            collected so far.
+          </p>
+          <div id="sub-fee-root"></div>
+        </section>
+
+        <!-- ===================== SEND REPORT (Principal) ===================== -->
+        <section class="page-content" id="page-send-report">
+          <h2 data-i18n="sa_nav_sub_report">Send Report</h2>
+          <p class="page-subtitle" data-i18n="sub_report_page_sub">
+            Check this month's totals, then send the report to the Super Admin.
+          </p>
+          <div id="sub-report-root"></div>
         </section>
 
         <!-- ===================== ESCALATED STUDENT ABSENCES (Academic VP) ===================== -->
@@ -3121,6 +3203,7 @@
 
     <div id="sa-toast-container"></div>
 
+    <script src="/assets/js/guard.js"></script>
     <script src="/assets/js/i18n.js"></script>
     <script src="/assets/js/ethiopian-calendar.js"></script>
     <script src="script.js"></script>

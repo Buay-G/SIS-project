@@ -4,7 +4,7 @@
 // based on the logged-in title; Principal sees everything.
 // ==========================================================
 
-const API_BASE = 'http://localhost:3001';
+const API_BASE = '';
 let CURRENT_TITLE = null;
 let STUDENTS_ON_LEAVE_CACHE = [];
 let CURRENT_ADMIN = null;
@@ -38,7 +38,16 @@ async function handleJsonResponse(res, successMsg) {
 async function checkAuthAndInit() {
     try {
         const res = await apiFetch(`${API_BASE}/api/me`);
-        if (!res.ok) { window.location.href = '/login.html'; return; }
+        if (!res.ok) {
+            // A frozen account (Subscription Fee unpaid) gets the notice
+            // that guard.js shows, not a bounce to the login page.
+            if (res.status === 403) {
+                const body = await res.clone().json().catch(() => ({}));
+                if (body && body.code === 'SUBSCRIPTION_FROZEN') return;
+            }
+            window.location.href = '/login.html';
+            return;
+        }
         const data = await res.json();
         if (data.role !== 'school_admins') { window.location.href = '/login.html'; return; }
 
@@ -70,12 +79,15 @@ async function checkAuthAndInit() {
         document.getElementById('topbar-moe-code').textContent = data.moe_school_code ? t('sa_topbar_moe', { code: data.moe_school_code }) : t('sa_topbar_moe_unknown');
 
         // The sidebar badge starts as plain "SA" text (see index.html) —
-        // once the zone this school belongs to has a logo on file
-        // (uploaded by a super admin via /api/super/zones/:zone_id/logo),
-        // that image replaces it here instead.
+        // once this school has its own logo on file (uploaded by a super
+        // admin via /api/super/schools/:id/logo) that image replaces it
+        // here. A school with no logo of its own falls back to its
+        // zone's logo (/api/super/zones/:zone_id/logo). /api/me resolves
+        // that priority server-side as display_logo_url.
         const logoBadge = document.getElementById('sa-logo-badge');
-        if (logoBadge && data.zone_logo_url) {
-            logoBadge.innerHTML = `<img src="${API_BASE}${data.zone_logo_url}" alt="" />`;
+        const badgeLogoUrl = data.display_logo_url || data.logo_url || data.zone_logo_url;
+        if (logoBadge && badgeLogoUrl) {
+            logoBadge.innerHTML = `<img src="${API_BASE}${badgeLogoUrl}" alt="" />`;
         }
 
         // Name-based initials (e.g. "Abebe Kebede" -> "AK") when we have a
@@ -99,6 +111,7 @@ async function checkAuthAndInit() {
 
         renderTopbarAcademicYear();
         filterNavByTitle(CURRENT_TITLE);
+        applySubscriptionNav();
         loadDashboard();
         loadTopbarSemester();
         refreshUnreadMessagesBadge();
@@ -300,7 +313,10 @@ function navigateToPage(page) {
 function filterNavByTitle(title) {
     document.querySelectorAll('#sa-nav-menu [data-titles]').forEach(el => {
         const allowed = el.getAttribute('data-titles').split(',').map(s => s.trim());
-        el.style.display = allowed.includes(title) ? '' : 'none';
+        // Subscription Fee items stay hidden until applySubscriptionNav()
+        // confirms the school's subscription is on for this account.
+        const subGated = el.hasAttribute('data-sub-cap') || el.hasAttribute('data-sub-section');
+        el.style.display = (allowed.includes(title) && !subGated) ? '' : 'none';
     });
 }
 
@@ -337,6 +353,8 @@ document.addEventListener('DOMContentLoaded', () => {
             // camera is running would otherwise leave the device's
             // camera light on in the background.
             if (page !== 'teachers') stopTeacherQrScanner();
+            // The Admin VP's live page stops refreshing once they leave it.
+            if (page !== 'subscription-fee') stopSubscriptionPolling();
 
             const loaders = {
                 dashboard: loadDashboard,
@@ -363,7 +381,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 students: loadStudents,
                 messages: () => switchMessageBox('inbox'),
                 profile: loadDocumentStatus,
-                'id-card': loadAdminIdCard
+                'id-card': loadAdminIdCard,
+                'subscription-fee': loadSubscriptionFee,
+                'send-report': loadSendReportPage
             };
             if (loaders[page]) loaders[page]();
 
@@ -514,7 +534,8 @@ window.onSisLangChange = () => {
             'document-approvals': loadDocumentApprovals, recognition: loadRecognition,
             'class-leaderboard': loadClassLeaderboard, students: loadStudents,
             messages: () => (CURRENT_MESSAGE_BOX === 'teachers' ? loadContactThreads() : loadMessages(CURRENT_MESSAGE_BOX || 'inbox')),
-            'id-card': () => (adminIdCardData ? renderAdminIdCard(adminIdCardData) : loadAdminIdCard())
+            'id-card': () => (adminIdCardData ? renderAdminIdCard(adminIdCardData) : loadAdminIdCard()),
+            'subscription-fee': loadSubscriptionFee, 'send-report': loadSendReportPage
         };
         if (loaders[page]) loaders[page]();
     }
@@ -724,6 +745,9 @@ async function loadDashboard() {
 // color — it uses stroke="currentColor" so it always matches whatever
 // text color its container (e.g. .stat-icon) is styled with.
 const LUCIDE_PATHS = {
+    wallet: '<path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/>',
+    banknote: '<rect width="20" height="12" x="2" y="6" rx="2"/><circle cx="12" cy="12" r="2"/><path d="M6 12h.01M18 12h.01"/>',
+    copy: '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
     users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/>',
     lock: '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
     eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>',
@@ -4461,6 +4485,356 @@ function printIdCard() {
     window.print();
 }
 
+// ==========================================================
+// SUBSCRIPTION FEE
+//   Admin VP  — collects the monthly staff fee (marks each staff member
+//               paid, themselves included), watches the school's live
+//               totals, and sees the bank account to deposit into.
+//   Principal — checks the month's totals and sends the report to the
+//               Super Admin (button + password).
+// Both pages only exist while Super Admin has Subscription switched on
+// for this school: applySubscriptionNav() hides them otherwise, and the
+// server refuses the routes regardless.
+// ==========================================================
+let SUBSCRIPTION_STATUS = null;
+let SUB_POLL_TIMER = null;
+let SUB_LOAD_TOKEN = 0; // only the most recent page load may start the live refresh
+let SUB_OVERVIEW = null;
+let SUB_REPORT = null;
+let SUB_STAFF_FILTER = { status: 'all', q: '' };
+const SUB_BUSY = new Set();
+const SUB_POLL_MS = 15000; // how often the Admin VP's page refreshes itself
+
+function subMoney(n) {
+    return `${Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${t('sub_birr')}`;
+}
+function subPeriodLabel(p) {
+    return `${t('sub_month_' + p.ec_month)} ${p.ec_year} ${t('sub_ec')}`;
+}
+function subRoleLabel(p) {
+    if (p.role_code === 'school_admin') return p.title || t('sub_role_school_admin');
+    return t('sub_role_' + p.role_code);
+}
+
+// Shows the Subscription Fee / Send Report sidebar items only when the
+// school's subscription is on AND this account is allowed to use them.
+// (Both start hidden — see filterNavByTitle — so nothing flashes.)
+async function applySubscriptionNav() {
+    let status = null;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/subscription/status`);
+        if (res.ok) status = await res.json();
+    } catch { /* leave the feature hidden */ }
+    SUBSCRIPTION_STATUS = status;
+    const caps = status && status.enabled ? status.capabilities : {};
+    let anyVisible = false;
+    document.querySelectorAll('#sa-nav-menu [data-sub-cap]').forEach(el => {
+        const on = !!caps[el.getAttribute('data-sub-cap')];
+        el.style.display = on ? '' : 'none';
+        if (on) anyVisible = true;
+    });
+    document.querySelectorAll('#sa-nav-menu [data-sub-section]').forEach(el => {
+        el.style.display = anyVisible ? '' : 'none';
+    });
+}
+
+function stopSubscriptionPolling() {
+    SUB_LOAD_TOKEN++; // also cancels any load still in flight
+    if (SUB_POLL_TIMER) { clearInterval(SUB_POLL_TIMER); SUB_POLL_TIMER = null; }
+}
+
+// The account the school deposits into — shown on both pages.
+function subBankWidgetHtml(settings) {
+    const has = !!(settings && settings.bank_account_number);
+    return `
+        <h3>${lucideIcon('banknote', 18)} ${t('sub_bank_title')}</h3>
+        <div class="sub-kv"><span>${t('sub_f_bank_name')}</span><span>${escapeHtml(settings.bank_name || '—')}</span></div>
+        <div class="sub-kv"><span>${t('sub_f_account_name')}</span><span>${escapeHtml(settings.bank_account_name || '—')}</span></div>
+        <div class="sub-kv"><span>${t('sub_f_account_number')}</span><span></span></div>
+        <div class="sub-account-row">
+            <span class="sub-account-number">${escapeHtml(settings.bank_account_number || '—')}</span>
+            ${has ? `<button class="btn btn-sm btn-ghost" ${actionAttrs('copySubscriptionAccount', [settings.bank_account_number])}>${lucideIcon('copy', 14)} ${t('sub_copy')}</button>` : ''}
+        </div>
+        <p class="form-hint">${t('sub_bank_deposit_hint')}</p>`;
+}
+
+async function copySubscriptionAccount(number) {
+    try {
+        await navigator.clipboard.writeText(String(number));
+    } catch {
+        // Older browsers / non-secure pages: fall back to a hidden textarea.
+        const ta = document.createElement('textarea');
+        ta.value = String(number);
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); } catch { /* nothing more to try */ }
+        ta.remove();
+    }
+    showToast(t('sub_copied'), 'success');
+}
+
+function subTilesHtml(sm) {
+    const fullyPaid = sm.total_expected > 0 && sm.total_collected >= sm.total_expected;
+    return [
+        statCard(lucideIcon('wallet'), t('sub_tile_collected'), subMoney(sm.total_collected), fullyPaid ? 'success' : '', null,
+            `<span class="stat-sub-item">${t('sub_tile_of_expected', { expected: subMoney(sm.total_expected) })}</span>`),
+        statCard(lucideIcon('users'), t('sub_tile_students'), t('sub_tile_count', { paid: sm.students.paid, total: sm.students.total }), '', null,
+            `<span class="stat-sub-item">${subMoney(sm.students.collected)}</span>`),
+        statCard(lucideIcon('users'), t('sub_tile_staff'), t('sub_tile_count', { paid: sm.staff.paid, total: sm.staff.total }), '', null,
+            `<span class="stat-sub-item">${subMoney(sm.staff.collected)}</span>`)
+    ].join('');
+}
+
+function subClassRowsHtml(byClass) {
+    if (!byClass.length) return `<tr><td colspan="4">${t('sa_no_data')}</td></tr>`;
+    return byClass.map(c => `
+        <tr>
+            <td>${escapeHtml(c.class_label)}</td>
+            <td>${c.total}</td>
+            <td>${c.paid}</td>
+            <td class="sub-num">${subMoney(c.collected)}</td>
+        </tr>`).join('');
+}
+
+// ---------- Admin VP: Subscription Fee page ----------
+function subFeeSkeletonHtml() {
+    return `
+        <div class="sub-month-line">
+            <span class="sub-month-chip" id="sub-month-chip">—</span>
+            <span class="sub-month-hint">${t('sub_month_due')}</span>
+        </div>
+        <div class="sub-note" id="sub-pagume-note" style="display:none;">${t('sub_pagume_closed')}</div>
+        <div class="stat-row" id="sub-tiles"></div>
+        <div class="sub-grid">
+            <div class="widget" id="sub-bank-widget"></div>
+            <div class="widget" id="sub-fees-widget"></div>
+        </div>
+        <div class="widget" style="margin-bottom:18px;">
+            <h3>${t('sub_by_class')}</h3>
+            <div class="data-table-wrap"><table class="data-table">
+                <thead><tr><th>${t('sub_th_class')}</th><th>${t('sub_th_students')}</th><th>${t('sub_th_paid')}</th><th>${t('sub_th_collected')}</th></tr></thead>
+                <tbody id="sub-class-tbody"></tbody>
+            </table></div>
+        </div>
+        <div class="widget">
+            <h3>${t('sub_staff_title')}</h3>
+            <p class="form-hint">${t('sub_staff_hint')}</p>
+            <div class="sub-toolbar">
+                <input type="search" class="form-control" id="sub-staff-search" placeholder="${escapeHtml(t('sub_search'))}" aria-label="${escapeHtml(t('sub_search'))}" />
+                <select class="form-control" id="sub-staff-status" aria-label="${escapeHtml(t('sub_th_status'))}">
+                    <option value="all">${t('sub_f_all')}</option>
+                    <option value="unpaid">${t('sub_f_unpaid')}</option>
+                    <option value="paid">${t('sub_f_paid')}</option>
+                </select>
+            </div>
+            <div class="data-table-wrap"><table class="data-table">
+                <thead><tr>
+                    <th>${t('sub_th_name')}</th><th>${t('sub_th_id')}</th><th>${t('sub_th_role')}</th>
+                    <th>${t('sub_th_amount')}</th><th>${t('sub_th_status')}</th><th>${t('sa_col_action')}</th>
+                </tr></thead>
+                <tbody id="sub-staff-tbody"></tbody>
+            </table></div>
+        </div>
+        <div class="sub-updated" id="sub-updated" aria-live="polite"></div>`;
+}
+
+async function loadSubscriptionFee() {
+    stopSubscriptionPolling();
+    // If this page is opened twice in quick succession, both loads run;
+    // the token makes sure only the newest one starts a refresh timer
+    // (otherwise the older timer would be orphaned and poll forever).
+    const token = ++SUB_LOAD_TOKEN;
+    const root = document.getElementById('sub-fee-root');
+    root.innerHTML = `<div class="widget-loading">${t('sa_loading')}</div>`;
+    SUB_OVERVIEW = null;
+    const ok = await refreshSubscriptionFee(true);
+    if (!ok || token !== SUB_LOAD_TOKEN) return;
+    // Live updates: while this page is open and the tab is visible, pull
+    // fresh numbers so money the Class Monitors / Homerooms mark shows up
+    // here without anyone pressing refresh.
+    const timer = setInterval(() => {
+        const page = document.getElementById('page-subscription-fee');
+        if (!page || !page.classList.contains('active')) {
+            clearInterval(timer);
+            if (SUB_POLL_TIMER === timer) SUB_POLL_TIMER = null;
+            return;
+        }
+        if (document.hidden) return;
+        refreshSubscriptionFee(false);
+    }, SUB_POLL_MS);
+    SUB_POLL_TIMER = timer;
+}
+
+// initial=true builds the page; later calls only refresh the numbers, so
+// whatever the Admin VP typed in the search box or scrolled to stays put.
+async function refreshSubscriptionFee(initial) {
+    const root = document.getElementById('sub-fee-root');
+    let res;
+    try { res = await apiFetch(`${API_BASE}/api/subscription/admin-vp/overview`); }
+    catch { if (initial) root.innerHTML = `<div class="widget-empty">${t('sa_load_error')}</div>`; return false; }
+    if (!res.ok) {
+        if (initial) {
+            const data = await res.json().catch(() => ({}));
+            root.innerHTML = `<div class="widget-empty">${escapeHtml(data.code === 'SUBSCRIPTION_OFF' ? t('sub_not_available') : (data.error || t('sa_load_error')))}</div>`;
+        }
+        return false;
+    }
+    SUB_OVERVIEW = await res.json();
+    if (initial) {
+        root.innerHTML = subFeeSkeletonHtml();
+        SUB_STAFF_FILTER = { status: 'all', q: '' };
+        document.getElementById('sub-staff-search').addEventListener('input', (e) => { SUB_STAFF_FILTER.q = e.target.value; renderSubStaffRows(); });
+        document.getElementById('sub-staff-status').addEventListener('change', (e) => { SUB_STAFF_FILTER.status = e.target.value; renderSubStaffRows(); });
+    }
+    fillSubscriptionFee();
+    return true;
+}
+
+function fillSubscriptionFee() {
+    const d = SUB_OVERVIEW;
+    if (!d || !document.getElementById('sub-tiles')) return;
+    document.getElementById('sub-month-chip').textContent = subPeriodLabel(d.period);
+    document.getElementById('sub-pagume-note').style.display = d.billable ? 'none' : '';
+    document.getElementById('sub-tiles').innerHTML = subTilesHtml(d.summary);
+    document.getElementById('sub-bank-widget').innerHTML = subBankWidgetHtml(d.settings);
+    document.getElementById('sub-fees-widget').innerHTML = `
+        <h3>${lucideIcon('wallet', 18)} ${t('sub_fees_title')}</h3>
+        <div class="sub-kv"><span>${t('sub_fee_student')}</span><span class="sub-num">${subMoney(d.settings.student_fee)}</span></div>
+        <div class="sub-kv"><span>${t('sub_fee_staff')}</span><span class="sub-num">${subMoney(d.settings.staff_fee)}</span></div>
+        <p class="form-hint">${t('sub_month_due')}</p>`;
+    document.getElementById('sub-class-tbody').innerHTML = subClassRowsHtml(d.by_class);
+    renderSubStaffRows();
+    document.getElementById('sub-updated').textContent = t('sub_live_updated', {
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    });
+}
+
+function renderSubStaffRows() {
+    const d = SUB_OVERVIEW;
+    const tbody = document.getElementById('sub-staff-tbody');
+    if (!d || !tbody) return;
+    const q = SUB_STAFF_FILTER.q.trim().toLowerCase();
+    const rows = d.staff
+        .filter(p => {
+            if (SUB_STAFF_FILTER.status === 'paid' && !p.paid) return false;
+            if (SUB_STAFF_FILTER.status === 'unpaid' && p.paid) return false;
+            return !q || p.name.toLowerCase().includes(q) || p.person_id.toLowerCase().includes(q);
+        })
+        .sort((a, b) => a.name.localeCompare(b.name));
+    if (rows.length === 0) { tbody.innerHTML = `<tr><td colspan="6">${t('sub_no_staff')}</td></tr>`; return; }
+    const me = CURRENT_ADMIN && CURRENT_ADMIN.user_id;
+    tbody.innerHTML = rows.map(p => {
+        const busy = SUB_BUSY.has(p.person_id) || !d.billable;
+        const action = p.paid
+            ? `<button class="btn btn-sm btn-ghost" ${busy ? 'disabled' : ''} ${actionAttrs('setStaffPaid', [p.person_id, false])}>${t('sub_undo')}</button>`
+            : `<button class="btn btn-sm btn-success" ${busy ? 'disabled' : ''} ${actionAttrs('setStaffPaid', [p.person_id, true])}>${t('sub_mark_paid')}</button>`;
+        return `
+        <tr>
+            <td>${escapeHtml(p.name)}${p.person_id === me ? ` <span class="badge badge-none sub-you">${t('sub_you')}</span>` : ''}</td>
+            <td>${escapeHtml(p.person_id)}</td>
+            <td>${escapeHtml(subRoleLabel(p))}${p.class_label ? ` (${escapeHtml(p.class_label)})` : ''}</td>
+            <td class="sub-num">${subMoney(p.amount)}</td>
+            <td>${p.paid ? `<span class="badge badge-approved">${t('sub_status_paid')}</span>` : `<span class="badge badge-pending">${t('sub_status_unpaid')}</span>`}${p.frozen ? ` <span class="badge badge-rejected">${t('sub_status_frozen')}</span>` : ''}</td>
+            <td>${action}</td>
+        </tr>`;
+    }).join('');
+}
+
+// Marking = "this person handed me the money". Undo is for fixing a
+// mistake and asks first, since it takes a payment back off the books.
+async function setStaffPaid(personId, paid) {
+    if (SUB_BUSY.has(personId)) return;
+    const row = SUB_OVERVIEW && SUB_OVERVIEW.staff.find(p => p.person_id === personId);
+    if (!row) return;
+    if (!paid) {
+        const ok = await showConfirmModal(t('sub_undo_confirm', { name: row.name }), { danger: true, confirmLabel: t('sub_undo') });
+        if (!ok) return;
+    }
+    SUB_BUSY.add(personId);
+    renderSubStaffRows();
+    try {
+        const res = await apiFetch(`${API_BASE}/api/subscription/staff/${encodeURIComponent(personId)}/paid`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paid })
+        });
+        const data = await handleJsonResponse(res);
+        if (data) showToast(t(paid ? 'sub_marked_paid_toast' : 'sub_marked_unpaid_toast', { name: row.name }), 'success');
+    } finally {
+        SUB_BUSY.delete(personId);
+        await refreshSubscriptionFee(false);
+    }
+}
+
+// ---------- Principal: Send Report page ----------
+async function loadSendReportPage() {
+    const root = document.getElementById('sub-report-root');
+    root.innerHTML = `<div class="widget-loading">${t('sa_loading')}</div>`;
+    let res;
+    try { res = await apiFetch(`${API_BASE}/api/subscription/principal/report`); }
+    catch { root.innerHTML = `<div class="widget-empty">${t('sa_load_error')}</div>`; return; }
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        root.innerHTML = `<div class="widget-empty">${escapeHtml(data.code === 'SUBSCRIPTION_OFF' ? t('sub_not_available') : (data.error || t('sa_load_error')))}</div>`;
+        return;
+    }
+    SUB_REPORT = await res.json();
+    renderSendReportPage();
+}
+
+function renderSendReportPage() {
+    const d = SUB_REPORT;
+    const root = document.getElementById('sub-report-root');
+    if (!d || !root) return;
+    const sent = d.reports_sent;
+    const statusHtml = sent.length === 0
+        ? `<span class="badge badge-pending">${t('sub_report_status_none')}</span>`
+        : `<span class="badge badge-approved">${t('sub_report_status_sent', { date: formatEthDateTime(sent[0].sent_at) })}</span>`;
+    root.innerHTML = `
+        <div class="sub-month-line">
+            <span class="sub-month-chip">${subPeriodLabel(d.period)}</span>
+            <span class="sub-month-hint">${t('sub_month_due')}</span>
+        </div>
+        ${d.billable ? '' : `<div class="sub-note">${t('sub_pagume_closed')}</div>`}
+        <div class="stat-row">${subTilesHtml(d.summary)}</div>
+        <div class="sub-grid">
+            <div class="widget">${subBankWidgetHtml(d.settings)}</div>
+            <div class="widget sub-send-box">
+                <h3>${lucideIcon('send', 18)} ${t('sa_nav_sub_report')}</h3>
+                <p>${statusHtml}</p>
+                <p class="form-hint">${t('sub_report_deposit_first')}</p>
+                <button class="btn btn-primary" id="sub-send-report-btn" ${d.billable ? '' : 'disabled'} ${actionAttrs('sendSubscriptionReport')}>
+                    ${lucideIcon('send', 16)} ${t(sent.length ? 'sub_send_updated' : 'sub_send_report')}
+                </button>
+            </div>
+        </div>
+        <div class="widget">
+            <h3>${t('sub_by_class')}</h3>
+            <div class="data-table-wrap"><table class="data-table">
+                <thead><tr><th>${t('sub_th_class')}</th><th>${t('sub_th_students')}</th><th>${t('sub_th_paid')}</th><th>${t('sub_th_collected')}</th></tr></thead>
+                <tbody>${subClassRowsHtml(d.by_class)}</tbody>
+            </table></div>
+        </div>`;
+}
+
+// The password is sent WITH the report and checked by the server in the
+// same request, so it can't be skipped by calling the route directly.
+async function sendSubscriptionReport() {
+    const password = await showPasswordPromptModal(t('sub_send_password_prompt'));
+    if (!password) return;
+    const btn = document.getElementById('sub-send-report-btn');
+    if (btn) btn.disabled = true;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/subscription/principal/send-report`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password })
+        });
+        if (res.status === 401) { showToast(t('sa_incorrect_password'), 'error'); return; }
+        const data = await handleJsonResponse(res, t('sub_report_sent_toast'));
+        if (data) await loadSendReportPage();
+    } finally {
+        const again = document.getElementById('sub-send-report-btn');
+        if (again && SUB_REPORT && SUB_REPORT.billable) again.disabled = false;
+    }
+}
+
 // ---------- Delegated click dispatch for data-action elements ----------
 // Central lookup from the string in data-action (set by actionAttrs, or
 // hand-written on static buttons in index.html) to the real function.
@@ -4481,7 +4855,8 @@ const ACTION_HANDLERS = {
     openTransferredDownloadFormatModal, openGraduationDownloadFormatModal,
     downloadStudentRosterCsv, downloadStudentRosterPdf, downloadTeacherRosterCsv, downloadTeacherRosterPdf,
     downloadTransferredCsv, downloadTransferredPdf, downloadGraduationCsv, downloadGraduationPdf,
-    previewIdPhoto
+    previewIdPhoto,
+    setStaffPaid, copySubscriptionAccount, sendSubscriptionReport
 };
 
 document.addEventListener('click', (e) => {

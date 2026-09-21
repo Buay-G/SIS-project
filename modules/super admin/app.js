@@ -302,6 +302,7 @@ let CURRENT_USER_SUPER_PERMISSIONS = null;
 const NAV_PERMISSION_MAP = {
   sa_nav_schools: "manage_schools",
   sa_nav_schools_archive: "manage_schools",
+  sa_nav_subscriptions: "manage_schools",
   sa_nav_zonal_admins: "manage_zonal_admins",
   sa_nav_subjects: "manage_subject_dictionary",
   sa_nav_roster: "manage_roster",
@@ -344,6 +345,10 @@ function getNavSuper() {
         ["sa_nav_emis_roster", "link-2"],
         ["sa_nav_ease_candidates", "clipboard-check"],
       ],
+    },
+    {
+      sec: "sa_sec_billing",
+      items: [["sa_nav_subscriptions", "wallet"]],
     },
     { sec: "sa_sec_account", items: [["sa_nav_account", "user-circle"]] },
   ];
@@ -1050,18 +1055,46 @@ function tierBadges(tiers) {
       .join(" ") || "—"
   );
 }
+// Government/Public vs Private — see schools.school_type.
+function schoolTypeBadge(type) {
+  if (type === "PRIVATE")
+    return `<span class="badge">${t("sa_school_type_private")}</span>`;
+  if (type === "PUBLIC")
+    return `<span class="badge">${t("sa_school_type_public")}</span>`;
+  return "—";
+}
+// Small logo shown beside a school's name, or a "No logo" badge so a
+// school still missing its own logo is easy to spot.
+function schoolLogoThumbHTML(s) {
+  return s.logo_url
+    ? `<img src="${s.logo_url}" alt="" style="height:28px;width:28px;object-fit:contain;border-radius:6px;background:#fff;border:1px solid var(--border,#ddd);vertical-align:middle;margin-right:8px;">`
+    : `<span class="badge" style="margin-right:8px;">${t("sa_school_logo_none_badge")}</span>`;
+}
+// Client-side pre-check for a school logo file (the server re-checks
+// everything, including the real file format): PNG/JPG (or a phone's
+// HEIC, which the server converts), max 2 MB.
+const SCHOOL_LOGO_MAX_BYTES = 2 * 1024 * 1024;
+function isValidLogoFile(file) {
+  const okType =
+    /^image\/(png|jpeg|heic|heif)$/i.test(file.type) ||
+    /\.(png|jpe?g|heic|heif)$/i.test(file.name);
+  return okType && file.size <= SCHOOL_LOGO_MAX_BYTES;
+}
 async function loadAndRenderSchools() {
   try {
-    const [schools, regions] = await Promise.all([
+    const [schools, regions, subs] = await Promise.all([
       apiGet("/api/super/schools"),
       apiGet("/api/super/lookup/regions"),
+      // Subscription info is an add-on: if it can't load, the Schools
+      // screen still works and the column just shows a dash.
+      apiGet("/api/super/subscriptions").catch(() => null),
     ]);
-    renderSchoolsPanel(schools, regions);
+    renderSchoolsPanel(schools, regions, subs ? subs.schools : null);
   } catch (err) {
     document.getElementById("content").innerHTML = errorPanel(err);
   }
 }
-function renderSchoolsPanel(schools, regions) {
+function renderSchoolsPanel(schools, regions, subscriptions) {
   // Keyed by id so the Edit button's click handler can look up the full
   // row (educational_levels etc.) without re-parsing table cells — same
   // adminsByAdminId pattern the Zonal Admin edit button uses above.
@@ -1069,17 +1102,23 @@ function renderSchoolsPanel(schools, regions) {
   schools.forEach((s) => {
     schoolsById[s.id] = s;
   });
+  const subById = {};
+  (subscriptions || []).forEach((x) => {
+    subById[x.id] = x;
+  });
   const rows = schools.length
     ? schools
         .map(
           (s) => `
     <tr data-id="${s.id}">
-      <td>${s.school_name}</td>
+      <td>${schoolLogoThumbHTML(s)}${s.school_name}</td>
+      <td>${schoolTypeBadge(s.school_type)}</td>
       <td>${eduLevelBadges(s.educational_levels)}</td>
       <td>${tierBadges(s.grade_tiers)}</td>
       <td>${s.school_prefix || "—"}</td>
       <td>${s.zone_name || "—"}</td>
       <td>${s.region_name || "—"}</td>
+      ${subscriptionCellHTML(s, subById[s.id])}
       <td>
         <button class="btn ghost sm school-edit"><i data-lucide="pencil"></i> ${t("za_edit")}</button>
         <button class="btn danger sm school-delete"><i data-lucide="trash-2"></i> ${t("za_delete")}</button>
@@ -1087,7 +1126,7 @@ function renderSchoolsPanel(schools, regions) {
     </tr>`,
         )
         .join("")
-    : `<tr><td colspan="7" class="hint">${t("sa_schools_empty")}</td></tr>`;
+    : `<tr><td colspan="9" class="hint">${t("sa_schools_empty")}</td></tr>`;
   const regionOpts = regions
     .map((r) => `<option value="${r.region_id}">${r.region_name}</option>`)
     .join("");
@@ -1110,6 +1149,20 @@ function renderSchoolsPanel(schools, regions) {
       <div class="form-field">
         <label for="sc_name">${t("za_f_school_name")}</label>
         <input type="text" id="sc_name" placeholder="e.g. Newland">
+      </div>
+      <div class="form-field">
+        <label for="sc_type">${t("sa_f_school_type")}</label>
+        <select id="sc_type">
+          <option value="">${t("sa_pick_school_type")}</option>
+          <option value="PUBLIC">${t("sa_school_type_public")}</option>
+          <option value="PRIVATE">${t("sa_school_type_private")}</option>
+        </select>
+        <p class="hint">${t("sa_school_type_hint")}</p>
+      </div>
+      <div class="form-field">
+        <label for="sc_logo">${t("sa_f_school_logo")}</label>
+        <input type="file" id="sc_logo" accept="image/png,image/jpeg,image/heic">
+        <p class="hint">${t("sa_school_logo_hint")}</p>
       </div>
       <div class="form-field" id="sc_level_wrap">
         <label>${t("sa_f_educational_level")}</label>
@@ -1154,7 +1207,7 @@ function renderSchoolsPanel(schools, regions) {
   <div class="panel">
     <h3><i data-lucide="building-2"></i> ${t("sa_all_schools")}</h3>
     <div class="table-wrap"><table>
-      <tr><th>${t("sa_th_school")}</th><th>${t("sa_th_educational_level")}</th><th>${t("sa_th_grade_tiers")}</th><th>${t("za_th_prefix")}</th><th>${t("sa_th_zone")}</th><th>${t("za_th_region")}</th><th>${t("za_th_actions")}</th></tr>
+      <tr><th>${t("sa_th_school")}</th><th>${t("sa_th_school_type")}</th><th>${t("sa_th_educational_level")}</th><th>${t("sa_th_grade_tiers")}</th><th>${t("za_th_prefix")}</th><th>${t("sa_th_zone")}</th><th>${t("za_th_region")}</th><th>${t("sub_th_subscription")}</th><th>${t("za_th_actions")}</th></tr>
       ${rows}
     </table></div>
   </div>`;
@@ -1252,6 +1305,7 @@ function renderSchoolsPanel(schools, regions) {
     const checkedLevels = getCheckedLevels();
     const body = {
       school_name: nameEl.value.trim(),
+      school_type: document.getElementById("sc_type").value,
       educational_levels: checkedLevels,
       moe_school_code: document.getElementById("sc_moe").value.trim() || null,
       region_id: regionEl.value || null,
@@ -1272,11 +1326,39 @@ function renderSchoolsPanel(schools, regions) {
       setErrorMsg(formMsg, t("za_setup_required"));
       return;
     }
+    if (!body.school_type) {
+      setErrorMsg(formMsg, t("sa_school_type_required"));
+      return;
+    }
+    const logoFile = document.getElementById("sc_logo").files[0];
+    if (logoFile && !isValidLogoFile(logoFile)) {
+      setErrorMsg(formMsg, t("sa_school_logo_bad_file"));
+      return;
+    }
     if (!(await showPasswordConfirm(t("za_pwconfirm_setup_school")))) return;
     try {
       const result = await apiPost("/api/super/schools", body);
-      setSuccessMsg(formMsg, result.message);
-      loadAndRenderSchools();
+      let msg = result.message;
+      let logoFailed = false;
+      // The school exists from here on. If only the logo fails, say so
+      // clearly — the school is NOT re-created, the logo can be added
+      // afterwards from the school's Edit button.
+      if (logoFile) {
+        try {
+          const formData = new FormData();
+          formData.append("logo", logoFile);
+          await apiUpload(
+            `/api/super/schools/${result.school_id}/logo`,
+            formData,
+          );
+        } catch (logoErr) {
+          logoFailed = true;
+          msg = t("sa_school_logo_upload_failed", { msg: logoErr.message });
+        }
+      }
+      await loadAndRenderSchools();
+      const freshMsg = document.getElementById("schoolFormMsg");
+      if (freshMsg) (logoFailed ? setErrorMsg : setSuccessMsg)(freshMsg, msg);
     } catch (err) {
       setErrorMsg(formMsg, err.message);
     }
@@ -1294,6 +1376,7 @@ function renderSchoolsPanel(schools, regions) {
       openSchoolDeleteModal(schoolsById[schoolId]);
     });
   });
+  wireSubscriptionControls(schoolsById, subById);
 }
 
 // Delete button on the Schools screen — three distinct outcomes, since
@@ -1404,6 +1487,23 @@ function openSchoolEditModal(school) {
         <input type="text" id="schoolEditName" value="${school.school_name.replace(/"/g, "&quot;")}">
       </div>
       <div class="form-field">
+        <label for="schoolEditType">${t("sa_f_school_type")}</label>
+        <select id="schoolEditType">
+          <option value="PUBLIC" ${school.school_type === "PUBLIC" ? "selected" : ""}>${t("sa_school_type_public")}</option>
+          <option value="PRIVATE" ${school.school_type === "PRIVATE" ? "selected" : ""}>${t("sa_school_type_private")}</option>
+        </select>
+        <p class="hint">${t("sa_school_type_change_hint")}</p>
+      </div>
+      <div class="form-field">
+        <label for="schoolEditLogo">${t("sa_f_school_logo")}</label>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+          ${schoolLogoThumbHTML(school)}
+          ${school.logo_url ? `<button type="button" class="btn ghost sm" id="schoolEditRemoveLogo">${t("sa_school_logo_remove")}</button>` : ""}
+        </div>
+        <input type="file" id="schoolEditLogo" accept="image/png,image/jpeg,image/heic">
+        <p class="hint">${t("sa_school_logo_hint")}</p>
+      </div>
+      <div class="form-field">
         <label>${t("sa_f_educational_level")}</label>
         <div class="checklist">${levelChecksHtml}</div>
         <p class="hint">${t("sa_edit_school_hint")}</p>
@@ -1443,6 +1543,23 @@ function openSchoolEditModal(school) {
     if (e.target === backdrop) close();
   });
   backdrop.querySelector("#schoolEditCancel").addEventListener("click", close);
+  const removeLogoBtn = backdrop.querySelector("#schoolEditRemoveLogo");
+  if (removeLogoBtn) {
+    removeLogoBtn.addEventListener("click", async () => {
+      close();
+      if (!(await showPasswordConfirm(t("sa_pwconfirm_school_change")))) return;
+      try {
+        await apiDelete(`/api/super/schools/${school.id}/logo`);
+        loadAndRenderSchools();
+        setSuccessMsg(
+          document.getElementById("schoolFormMsg"),
+          t("sa_school_logo_removed"),
+        );
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  }
   backdrop
     .querySelector("#schoolEditSave")
     .addEventListener("click", async () => {
@@ -1459,11 +1576,20 @@ function openSchoolEditModal(school) {
         errEl.style.display = "block";
         return;
       }
-      if (addLevels.length === 0 && !isRename) {
-        errEl.textContent = t("sa_edit_school_pick_new_level");
+      const newType = backdrop.querySelector("#schoolEditType").value;
+      const typeChanged = newType !== school.school_type;
+      const logoFile = backdrop.querySelector("#schoolEditLogo").files[0];
+      if (addLevels.length === 0 && !isRename && !typeChanged && !logoFile) {
+        errEl.textContent = t("sa_edit_school_nothing_changed");
         errEl.style.display = "block";
         return;
       }
+      if (logoFile && !isValidLogoFile(logoFile)) {
+        errEl.textContent = t("sa_school_logo_bad_file");
+        errEl.style.display = "block";
+        return;
+      }
+      const hasFieldChanges = addLevels.length > 0 || isRename || typeChanged;
       const body = {
         add_educational_levels:
           addLevels.length > 0 ? addLevels : undefined,
@@ -1473,15 +1599,33 @@ function openSchoolEditModal(school) {
             ).map((c) => c.value)
           : undefined,
         school_name: isRename ? newName : undefined,
+        school_type: typeChanged ? newType : undefined,
       };
       close();
-      if (!(await showPasswordConfirm(t("sa_pwconfirm_edit_school")))) return;
+      if (!(await showPasswordConfirm(t("sa_pwconfirm_school_change")))) return;
       try {
-        const result = await apiPut(`/api/super/schools/${school.id}`, body);
+        const messages = [];
+        if (hasFieldChanges) {
+          const result = await apiPut(`/api/super/schools/${school.id}`, body);
+          messages.push(result.message);
+        }
+        if (logoFile) {
+          const formData = new FormData();
+          formData.append("logo", logoFile);
+          await apiUpload(`/api/super/schools/${school.id}/logo`, formData);
+          messages.push(t("sa_school_logo_updated"));
+        }
         loadAndRenderSchools();
-        setSuccessMsg(document.getElementById("schoolFormMsg"), result.message);
+        setSuccessMsg(
+          document.getElementById("schoolFormMsg"),
+          messages.join(" "),
+        );
       } catch (err) {
         alert(err.message);
+        // Part of the save may already have gone through (e.g. the
+        // fields saved but the logo was rejected) — refresh so the
+        // table shows what is actually stored.
+        loadAndRenderSchools();
       }
     });
 }
@@ -3091,6 +3235,798 @@ function renderAccountSettingsPanel() {
   };
 }
 
+/* ==================================================================
+   Subscription Fee — Super Admin side.
+   - Schools screen: a Subscription column with an on/off toggle and a
+     "Set up" button (fees + bank account) on every school.
+   - Subscriptions screen: money collected per school for one EC month,
+     each school's paid/unpaid list, freeze/unfreeze, and the reports
+     schools have sent.
+   Everything here talks to /api/super/subscriptions* (see server.js).
+   Writes are gated by showPasswordConfirm like everything else in
+   this portal. Names come from the database, so every one is passed
+   through subEsc() before it goes into HTML.
+   ================================================================== */
+const SUB_BANK_SUGGESTIONS = [
+  "Commercial Bank of Ethiopia",
+  "Awash Bank",
+  "Dashen Bank",
+  "Bank of Abyssinia",
+  "Wegagen Bank",
+  "Nib International Bank",
+  "Hibret Bank",
+  "Cooperative Bank of Oromia",
+  "Abay Bank",
+  "Zemen Bank",
+  "Amhara Bank",
+  "Enat Bank",
+];
+const SUB_ROW_CAP = 1000;
+
+// Which school's report is open, for which EC month. ec_year/ec_month
+// stay null until the server tells us the current one.
+let SUB_VIEW = { ec_year: null, ec_month: null, schoolId: null };
+let SUB_DETAIL = null;
+let SUB_SELECTED = new Set();
+let SUB_TAB = "students";
+let SUB_FILTER = { status: "unpaid", cls: "", q: "" };
+
+function subEsc(v) {
+  return String(v ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+function subMoney(n) {
+  return `${Number(n || 0).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })} ${t("sub_birr")}`;
+}
+function subPeriodLabel(year, month) {
+  return `${t("sub_month_" + month)} ${year} ${t("sub_ec")}`;
+}
+function subRoleLabel(p) {
+  if (p.role_code === "school_admin") return p.title || t("sub_role_school_admin");
+  return t("sub_role_" + p.role_code);
+}
+function subFmtDate(d) {
+  const x = new Date(d);
+  return isNaN(x)
+    ? "—"
+    : x.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+function subFmtDateTime(d) {
+  const x = new Date(d);
+  return isNaN(x)
+    ? "—"
+    : x.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
+}
+// Reload whichever of the two screens is showing after a write.
+function subRefreshCurrentPage() {
+  if (activePage === "sa_nav_schools") return loadAndRenderSchools();
+  if (activePage === "sa_nav_subscriptions") return loadAndRenderSubscriptions();
+}
+
+/* ---------------- Schools screen: the Subscription column ------------ */
+function subscriptionCellHTML(school, sub) {
+  if (!sub) return `<td>—</td>`;
+  const name = subEsc(school.school_name);
+  return `<td>
+    <div class="sub-cell">
+      <label class="switch">
+        <input type="checkbox" class="sub-toggle" ${sub.is_enabled ? "checked" : ""} aria-label="${t("sub_toggle_aria", { name })}">
+        <span class="switch-track"></span>
+      </label>
+      <button class="btn ghost sm sub-setup"><i data-lucide="settings-2"></i> ${t("sub_setup")}</button>
+    </div>
+    ${
+      sub.is_enabled
+        ? `<div class="sub-cell-fees">${t("sub_fees_short", { student: subEsc(sub.student_fee), staff: subEsc(sub.staff_fee) })}</div>`
+        : ""
+    }
+  </td>`;
+}
+
+function wireSubscriptionControls(schoolsById, subById) {
+  document.querySelectorAll(".sub-toggle").forEach((box) => {
+    box.addEventListener("change", async () => {
+      const wantOn = box.checked;
+      // Stay where it was until the server agrees — the re-render after
+      // a successful save is what actually flips it.
+      box.checked = !wantOn;
+      const id = box.closest("tr").dataset.id;
+      const school = schoolsById[id];
+      const sub = subById[id];
+      if (!school || !sub) return;
+      const name = subEsc(school.school_name);
+      if (wantOn) {
+        if (!sub.is_setup_complete) {
+          openSubscriptionSetupModal(school, sub, { enableOnSave: true });
+          return;
+        }
+        if (!(await showPasswordConfirm(t("sub_pwconfirm_on", { name })))) return;
+      } else {
+        const sure = await showConfirm(t("sub_confirm_off", { name }), {
+          title: t("sub_confirm_off_title"),
+          confirmText: t("sub_turn_off"),
+        });
+        if (!sure) return;
+        if (!(await showPasswordConfirm(t("sub_pwconfirm_off", { name })))) return;
+      }
+      box.disabled = true;
+      try {
+        const result = await apiPut(`/api/super/subscriptions/${id}`, { is_enabled: wantOn });
+        await loadAndRenderSchools();
+        setSuccessMsg(document.getElementById("schoolFormMsg"), subEsc(result.message));
+      } catch (err) {
+        box.disabled = false;
+        alert(err.message);
+      }
+    });
+  });
+  document.querySelectorAll(".sub-setup").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.closest("tr").dataset.id;
+      openSubscriptionSetupModal(schoolsById[id], subById[id]);
+    });
+  });
+}
+
+/* ---------------- Setup modal: fees + bank account ------------------- */
+function openSubscriptionSetupModal(school, sub, { enableOnSave = false } = {}) {
+  const s = sub || {};
+  const feeVal = (n) => (Number(n) > 0 ? subEsc(n) : "");
+  const backdrop = document.createElement("div");
+  backdrop.className = "confirm-modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="confirm-modal form-modal sub-modal" role="dialog" aria-modal="true" aria-labelledby="subSetupTitle">
+      <div class="confirm-modal-icon"><i data-lucide="wallet"></i></div>
+      <h3 class="confirm-modal-title" id="subSetupTitle">${t("sub_setup_title")} — ${subEsc(school.school_name)}</h3>
+      <div class="form-grid">
+        <div class="form-field">
+          <label for="subStudentFee">${t("sub_f_student_fee")}</label>
+          <input type="number" id="subStudentFee" min="0" step="0.01" inputmode="decimal" value="${feeVal(s.student_fee)}">
+        </div>
+        <div class="form-field">
+          <label for="subStaffFee">${t("sub_f_staff_fee")}</label>
+          <input type="number" id="subStaffFee" min="0" step="0.01" inputmode="decimal" value="${feeVal(s.staff_fee)}">
+        </div>
+      </div>
+      <p class="hint">${t("sub_fee_hint")}</p>
+      <div class="form-field" style="margin-top:14px;">
+        <label for="subBankName">${t("sub_f_bank_name")}</label>
+        <input type="text" id="subBankName" list="subBankList" maxlength="100" autocomplete="off" value="${subEsc(s.bank_name)}">
+        <datalist id="subBankList">${SUB_BANK_SUGGESTIONS.map((b) => `<option value="${subEsc(b)}"></option>`).join("")}</datalist>
+      </div>
+      <div class="form-grid">
+        <div class="form-field">
+          <label for="subAccountName">${t("sub_f_account_name")}</label>
+          <input type="text" id="subAccountName" maxlength="150" autocomplete="off" value="${subEsc(s.bank_account_name)}">
+        </div>
+        <div class="form-field">
+          <label for="subAccountNumber">${t("sub_f_account_number")}</label>
+          <input type="text" id="subAccountNumber" maxlength="50" autocomplete="off" inputmode="numeric" value="${subEsc(s.bank_account_number)}">
+        </div>
+      </div>
+      <p class="hint">${t("sub_bank_hint")}</p>
+      <label class="checklist-row" style="margin-top:10px;">
+        <input type="checkbox" id="subEnable" ${enableOnSave || s.is_enabled ? "checked" : ""}> ${t("sub_f_enable")}
+      </label>
+      <p class="confirm-modal-error" id="subSetupError" role="alert" style="display:none;margin-top:10px;"></p>
+      <div class="confirm-modal-actions" style="margin-top:16px;">
+        <button class="btn ghost" id="subSetupCancel">${t("za_cancel")}</button>
+        <button class="btn primary" id="subSetupSave">${t("za_save")}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(backdrop);
+  if (window.lucide) lucide.createIcons();
+  const $ = (id) => backdrop.querySelector("#" + id);
+  const close = () => backdrop.remove();
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) close();
+  });
+  $("subSetupCancel").addEventListener("click", close);
+  $("subSetupSave").addEventListener("click", async () => {
+    const errEl = $("subSetupError");
+    const fail = (msg) => {
+      errEl.textContent = msg;
+      errEl.style.display = "block";
+    };
+    const num = (id) => {
+      const raw = $(id).value.trim();
+      return raw === "" ? 0 : Number(raw);
+    };
+    const studentFee = num("subStudentFee");
+    const staffFee = num("subStaffFee");
+    if (![studentFee, staffFee].every((n) => Number.isFinite(n) && n >= 0)) {
+      return fail(t("sub_fee_invalid"));
+    }
+    const accountNumber = $("subAccountNumber").value.trim();
+    const enable = $("subEnable").checked;
+    if (enable && !((studentFee > 0 || staffFee > 0) && accountNumber)) {
+      return fail(t("sub_setup_needed"));
+    }
+    const body = {
+      student_fee: studentFee,
+      staff_fee: staffFee,
+      bank_name: $("subBankName").value.trim(),
+      bank_account_name: $("subAccountName").value.trim(),
+      bank_account_number: accountNumber,
+      is_enabled: enable,
+    };
+    close();
+    if (!(await showPasswordConfirm(t("sub_pwconfirm_save", { name: subEsc(school.school_name) })))) return;
+    try {
+      const result = await apiPut(`/api/super/subscriptions/${school.id}`, body);
+      await subRefreshCurrentPage();
+      const msgEl = document.getElementById("schoolFormMsg");
+      if (msgEl) setSuccessMsg(msgEl, subEsc(result.message));
+    } catch (err) {
+      alert(err.message);
+    }
+  });
+  $("subStudentFee").focus();
+}
+
+/* ---------------- Subscriptions screen ------------------------------- */
+function subscriptionsSkeletonHTML() {
+  return `<div class="panel"><h3><i data-lucide="wallet"></i> ${t("sa_nav_subscriptions")}</h3><p class="hint">${t("za_loading")}</p></div>`;
+}
+
+async function loadAndRenderSubscriptions() {
+  const content = document.getElementById("content");
+  try {
+    const [overview, reports] = await Promise.all([
+      apiGet(
+        "/api/super/subscriptions",
+        SUB_VIEW.ec_year ? { ec_year: SUB_VIEW.ec_year, ec_month: SUB_VIEW.ec_month } : undefined,
+      ),
+      apiGet("/api/super/subscription-reports"),
+    ]);
+    // Navigated away while this was loading — don't paint over that page.
+    if (activePage !== "sa_nav_subscriptions") return;
+    SUB_VIEW.ec_year = overview.period.ec_year;
+    SUB_VIEW.ec_month = overview.period.ec_month;
+    if (!overview.schools.some((s) => s.id === SUB_VIEW.schoolId && s.is_enabled)) {
+      SUB_VIEW.schoolId = null;
+    }
+    renderSubscriptionsPanel(overview, reports);
+    if (SUB_VIEW.schoolId) await loadSubscriptionDetail();
+  } catch (err) {
+    if (activePage === "sa_nav_subscriptions") content.innerHTML = errorPanel(err);
+  }
+}
+
+function subCardHTML(icon, label, value, subrow, alertStyle) {
+  return `<div class="card ${alertStyle ? "alert" : ""}">
+    <div class="icon"><i data-lucide="${icon}"></i></div>
+    <div><div class="label">${label}</div><div class="value">${value}</div><div class="subrow">${subrow}</div></div>
+  </div>`;
+}
+
+function renderSubscriptionsPanel(overview, reports) {
+  const P = overview.period;
+  const periodLabel = subPeriodLabel(P.ec_year, P.ec_month);
+  const enabled = overview.schools.filter((s) => s.is_enabled);
+  const offCount = overview.schools.length - enabled.length;
+  const collected = enabled.reduce((a, s) => a + s.collected, 0);
+  const frozen = enabled.reduce((a, s) => a + s.frozen_count, 0);
+  const toReview = reports.filter((r) => !r.reviewed_at).length;
+  const subById = {};
+  enabled.forEach((s) => {
+    subById[s.id] = s;
+  });
+
+  const curYear = overview.current_period.ec_year;
+  const years = Array.from(new Set([curYear - 2, curYear - 1, curYear, P.ec_year])).sort((a, b) => a - b);
+  const monthOpts = Array.from({ length: 12 }, (_, i) => {
+    const m = i + 1;
+    return `<option value="${m}" ${m === P.ec_month ? "selected" : ""}>${t("sub_month_" + m)}</option>`;
+  }).join("");
+  const yearOpts = years
+    .map((y) => `<option value="${y}" ${y === P.ec_year ? "selected" : ""}>${y}</option>`)
+    .join("");
+
+  const schoolRows = enabled.length
+    ? enabled
+        .map(
+          (s) => `
+    <tr data-id="${s.id}">
+      <td>${subEsc(s.school_name)}<div class="hint" style="margin:2px 0 0;">${subEsc(s.zone_name || "—")}, ${subEsc(s.region_name || "—")}</div></td>
+      <td class="sub-num">${subMoney(s.student_fee)} / ${subMoney(s.staff_fee)}</td>
+      <td>${s.paid_count}</td>
+      <td class="sub-num">${subMoney(s.collected)}</td>
+      <td>${s.frozen_count ? `<span class="pill bad">${s.frozen_count}</span>` : "—"}</td>
+      <td>${
+        s.report_sent_at
+          ? `<span class="pill ok">${t("sub_report_sent", { date: subEsc(subFmtDate(s.report_sent_at)) })}</span>`
+          : `<span class="pill warn">${t("sub_report_not_sent")}</span>`
+      }</td>
+      <td>
+        <button class="btn primary sm sub-open"><i data-lucide="clipboard-list"></i> ${t("sub_open")}</button>
+        <button class="btn ghost sm sub-edit"><i data-lucide="settings-2"></i> ${t("sub_edit_setup")}</button>
+      </td>
+    </tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="7" class="hint">${t("sub_none_on")}</td></tr>`;
+
+  const reportRows = reports.length
+    ? reports
+        .map(
+          (r) => `
+    <tr>
+      <td>${subEsc(r.school_name)}</td>
+      <td>${subPeriodLabel(r.ec_year, r.ec_month)}</td>
+      <td class="sub-num">${subMoney(r.total_collected)}</td>
+      <td>${r.students_paid} / ${r.students_paid + r.students_unpaid}</td>
+      <td>${r.staff_paid} / ${r.staff_paid + r.staff_unpaid}</td>
+      <td>${subEsc(r.sent_by_name || r.sent_by)}</td>
+      <td>${subFmtDateTime(r.sent_at)}</td>
+      <td>${r.reviewed_at ? `<span class="pill ok">${t("sub_status_reviewed")}</span>` : `<span class="pill warn">${t("sub_status_new")}</span>`}</td>
+      <td><button class="btn ghost sm sub-report-view" data-id="${r.report_id}">${t("sub_view")}</button></td>
+    </tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="9" class="hint">${t("sub_reports_empty")}</td></tr>`;
+
+  document.getElementById("content").innerHTML = `
+  <div class="cards">
+    ${subCardHTML("building-2", t("sub_card_schools_on"), enabled.length, t("sub_card_schools_of", { total: overview.schools.length }))}
+    ${subCardHTML("banknote", t("sub_card_collected", { period: periodLabel }), subMoney(collected), "&nbsp;")}
+    ${subCardHTML("clipboard-check", t("sub_card_reports"), toReview, t("sub_card_reports_sub"), toReview > 0)}
+    ${subCardHTML("lock", t("sub_card_frozen"), frozen, t("sub_card_frozen_sub"))}
+  </div>
+
+  <div class="panel">
+    <div class="sub-toolbar">
+      <h3><i data-lucide="wallet"></i> ${t("sub_schools_panel")}</h3>
+      <span class="sub-spacer"></span>
+      <label for="subMonthSel" class="sr-only-label">${t("sub_billing_month")}</label>
+      <select id="subMonthSel">${monthOpts}</select>
+      <select id="subYearSel" aria-label="${t("sub_billing_month")}">${yearOpts}</select>
+      <button class="btn ghost sm" id="subThisMonth">${t("sub_this_month")}</button>
+    </div>
+    ${
+      overview.current_period.billable
+        ? ""
+        : `<div class="alert-box info" style="margin-bottom:12px;"><div class="icon"><i data-lucide="calendar-days"></i></div><div class="body">${t("sub_pagume_note", { period: periodLabel })}</div></div>`
+    }
+    <div class="table-wrap"><table>
+      <tr><th>${t("sa_th_school")}</th><th>${t("sub_th_fees")}</th><th>${t("sub_th_paid")}</th><th>${t("sub_th_collected")}</th><th>${t("sub_th_frozen")}</th><th>${t("sub_th_report")}</th><th>${t("za_th_actions")}</th></tr>
+      ${schoolRows}
+    </table></div>
+    <p class="hint">${t("sub_due_hint")}</p>
+    ${
+      offCount > 0
+        ? `<p class="hint">${t("sub_off_count", { count: offCount })} <button class="btn ghost sm" id="subGoSchools">${t("sub_go_schools")}</button></p>`
+        : ""
+    }
+  </div>
+
+  <div id="subDetail"></div>
+
+  <div class="panel">
+    <h3><i data-lucide="clipboard-check"></i> ${t("sub_reports_panel")}</h3>
+    <div class="table-wrap sticky-head"><table>
+      <thead><tr><th>${t("sa_th_school")}</th><th>${t("sub_th_month")}</th><th>${t("sub_th_total")}</th><th>${t("sub_th_students_paid")}</th><th>${t("sub_th_staff_paid")}</th><th>${t("sub_th_sent_by")}</th><th>${t("sub_th_sent_at")}</th><th>${t("sub_th_status")}</th><th></th></tr></thead>
+      <tbody>${reportRows}</tbody>
+    </table></div>
+  </div>`;
+
+  const reload = () => loadAndRenderSubscriptions();
+  document.getElementById("subMonthSel").addEventListener("change", (e) => {
+    SUB_VIEW.ec_month = Number(e.target.value);
+    reload();
+  });
+  document.getElementById("subYearSel").addEventListener("change", (e) => {
+    SUB_VIEW.ec_year = Number(e.target.value);
+    reload();
+  });
+  document.getElementById("subThisMonth").addEventListener("click", () => {
+    SUB_VIEW.ec_year = null;
+    SUB_VIEW.ec_month = null;
+    reload();
+  });
+  const goSchools = document.getElementById("subGoSchools");
+  if (goSchools) {
+    goSchools.addEventListener("click", () => {
+      activePage = "sa_nav_schools";
+      render();
+    });
+  }
+  document.querySelectorAll(".sub-open").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      SUB_VIEW.schoolId = Number(btn.closest("tr").dataset.id);
+      SUB_FILTER = { status: "unpaid", cls: "", q: "" };
+      SUB_TAB = "students";
+      await loadSubscriptionDetail();
+      const box = document.getElementById("subDetail");
+      if (box) box.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+  document.querySelectorAll(".sub-edit").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.closest("tr").dataset.id;
+      const s = subById[id];
+      openSubscriptionSetupModal({ id: s.id, school_name: s.school_name }, s);
+    });
+  });
+  document.querySelectorAll(".sub-report-view").forEach((btn) => {
+    btn.addEventListener("click", () => openSubscriptionReportModal(btn.dataset.id));
+  });
+}
+
+/* ---------------- One school's report for one EC month --------------- */
+async function loadSubscriptionDetail() {
+  const box = document.getElementById("subDetail");
+  if (!box) return;
+  box.innerHTML = `<div class="panel"><p class="hint">${t("za_loading")}</p></div>`;
+  try {
+    const data = await apiGet(`/api/super/subscriptions/${SUB_VIEW.schoolId}/report`, {
+      ec_year: SUB_VIEW.ec_year,
+      ec_month: SUB_VIEW.ec_month,
+    });
+    if (activePage !== "sa_nav_subscriptions") return;
+    SUB_DETAIL = data;
+    SUB_SELECTED = new Set();
+    renderSubscriptionDetail();
+  } catch (err) {
+    box.innerHTML = errorPanel(err);
+  }
+}
+
+function renderSubscriptionDetail() {
+  const box = document.getElementById("subDetail");
+  const d = SUB_DETAIL;
+  if (!box || !d) return;
+  const sm = d.summary;
+  const st = d.settings;
+  const label = subPeriodLabel(d.period.ec_year, d.period.ec_month);
+  const everyone = [...d.students, ...d.staff];
+  const frozenCount = everyone.filter((p) => p.frozen).length;
+  const bankLine = [st.bank_name, st.bank_account_name, st.bank_account_number]
+    .filter(Boolean)
+    .map(subEsc)
+    .join(", ");
+
+  const byClassRows = d.by_class.length
+    ? d.by_class
+        .map(
+          (c) => `<tr>
+      <td>${subEsc(c.class_label)}</td><td>${c.total}</td><td>${c.paid}</td>
+      <td class="sub-num">${subMoney(c.collected)}</td></tr>`,
+        )
+        .join("")
+    : "";
+  const sentRows = d.reports_sent
+    .map(
+      (r) => `<tr>
+      <td>${subFmtDateTime(r.sent_at)}</td>
+      <td class="sub-num">${subMoney(r.total_collected)}</td>
+      <td>${r.reviewed_at ? `<span class="pill ok">${t("sub_status_reviewed")}</span>` : `<span class="pill warn">${t("sub_status_new")}</span>`}</td>
+      <td><button class="btn ghost sm sub-report-view" data-id="${r.report_id}">${t("sub_view")}</button></td></tr>`,
+    )
+    .join("");
+  const classOpts = d.by_class
+    .map((c) => `<option value="${subEsc(c.class_label)}">${subEsc(c.class_label)}</option>`)
+    .join("");
+
+  box.innerHTML = `
+  <div class="panel" id="subDetailPanel">
+    <div class="sub-toolbar">
+      <h3><i data-lucide="clipboard-list"></i> ${subEsc(d.school.school_name)} — ${label}</h3>
+      <span class="sub-spacer"></span>
+      <button class="btn ghost sm" id="subDetailRefresh"><i data-lucide="refresh-cw"></i> ${t("sub_refresh")}</button>
+      <button class="btn ghost sm" id="subDetailClose"><i data-lucide="x"></i> ${t("sub_close")}</button>
+    </div>
+    <p class="hint" id="subDetailMsg"></p>
+
+    <div class="cards">
+      ${subCardHTML("banknote", t("sub_tile_collected"), subMoney(sm.total_collected), t("sub_tile_of_expected", { expected: subMoney(sm.total_expected) }))}
+      ${subCardHTML("users", t("sub_tile_students"), t("sub_tile_count", { paid: sm.students.paid, total: sm.students.total }), subMoney(sm.students.collected))}
+      ${subCardHTML("users", t("sub_tile_staff"), t("sub_tile_count", { paid: sm.staff.paid, total: sm.staff.total }), subMoney(sm.staff.collected))}
+      ${subCardHTML("lock", t("sub_card_frozen"), frozenCount, t("sub_card_frozen_sub"))}
+    </div>
+
+    <div class="alert-box info" style="margin-bottom:6px;">
+      <div class="icon"><i data-lucide="banknote"></i></div>
+      <div class="body"><span class="title">${t("sub_bank_title")}</span>${bankLine || "—"}</div>
+    </div>
+
+    ${
+      d.reports_sent.length
+        ? `<div class="sub-section-title">${t("sub_reports_sent")}</div>
+           <div class="table-wrap"><table>${sentRows}</table></div>`
+        : ""
+    }
+
+    ${
+      d.by_class.length
+        ? `<div class="sub-section-title">${t("sub_by_class")}</div>
+           <div class="table-wrap"><table>
+             <tr><th>${t("sub_th_class")}</th><th>${t("sub_th_students")}</th><th>${t("sub_th_paid")}</th><th>${t("sub_th_collected")}</th></tr>
+             ${byClassRows}
+           </table></div>`
+        : ""
+    }
+
+    <div class="sub-section-title">${t("sub_people")}</div>
+    <div class="tabs" role="tablist">
+      <button class="tab-btn sub-tab" role="tab" data-tab="students">${t("sub_tab_students", { count: d.students.length })}</button>
+      <button class="tab-btn sub-tab" role="tab" data-tab="staff">${t("sub_tab_staff", { count: d.staff.length })}</button>
+    </div>
+    <div class="sub-toolbar">
+      <select id="subFStatus" aria-label="${t("sub_th_status")}">
+        <option value="all">${t("sub_f_all")}</option>
+        <option value="unpaid">${t("sub_f_unpaid")}</option>
+        <option value="paid">${t("sub_f_paid")}</option>
+        <option value="frozen">${t("sub_f_frozen")}</option>
+      </select>
+      <select id="subFClass" aria-label="${t("sub_th_class")}"><option value="">${t("sub_all_classes")}</option>${classOpts}</select>
+      <div class="search-box"><i data-lucide="search"></i><input type="text" id="subFSearch" placeholder="${t("sub_search")}" aria-label="${t("sub_search")}"></div>
+    </div>
+    <div class="sub-selection-bar">
+      <button class="btn ghost sm" id="subSelUnpaid">${t("sub_select_unpaid")}</button>
+      <button class="btn ghost sm" id="subSelClear">${t("sub_clear_selection")}</button>
+      <span class="sub-selection-count" id="subSelCount" aria-live="polite"></span>
+      <span class="sub-spacer"></span>
+      <button class="btn danger sm" id="subFreezeBtn"><i data-lucide="lock"></i> ${t("sub_freeze_selected")}</button>
+      <button class="btn ghost sm" id="subUnfreezeBtn">${t("sub_unfreeze_selected")}</button>
+    </div>
+    <div class="table-wrap sticky-head" id="subPeopleTable"></div>
+    <p class="hint" id="subRowCap"></p>
+  </div>`;
+
+  document.getElementById("subFStatus").value = SUB_FILTER.status;
+  document.getElementById("subFClass").value = SUB_FILTER.cls;
+  document.getElementById("subFSearch").value = SUB_FILTER.q;
+
+  document.getElementById("subDetailRefresh").addEventListener("click", loadSubscriptionDetail);
+  document.getElementById("subDetailClose").addEventListener("click", () => {
+    SUB_VIEW.schoolId = null;
+    SUB_DETAIL = null;
+    box.innerHTML = "";
+  });
+  document.querySelectorAll(".sub-tab").forEach((b) => {
+    b.addEventListener("click", () => {
+      SUB_TAB = b.dataset.tab;
+      renderSubPeople();
+    });
+  });
+  document.getElementById("subFStatus").addEventListener("change", (e) => {
+    SUB_FILTER.status = e.target.value;
+    renderSubPeople();
+  });
+  document.getElementById("subFClass").addEventListener("change", (e) => {
+    SUB_FILTER.cls = e.target.value;
+    renderSubPeople();
+  });
+  document.getElementById("subFSearch").addEventListener("input", (e) => {
+    SUB_FILTER.q = e.target.value;
+    renderSubPeople();
+  });
+  document.getElementById("subSelUnpaid").addEventListener("click", () => {
+    subShownPeople().list.forEach((p) => {
+      if (!p.paid && !p.frozen) SUB_SELECTED.add(p.person_id);
+    });
+    renderSubPeople();
+  });
+  document.getElementById("subSelClear").addEventListener("click", () => {
+    SUB_SELECTED = new Set();
+    renderSubPeople();
+  });
+  document.getElementById("subFreezeBtn").addEventListener("click", () => subApplyFreeze(true));
+  document.getElementById("subUnfreezeBtn").addEventListener("click", () => subApplyFreeze(false));
+  document.querySelectorAll("#subDetailPanel .sub-report-view").forEach((btn) => {
+    btn.addEventListener("click", () => openSubscriptionReportModal(btn.dataset.id));
+  });
+  renderSubPeople();
+}
+
+// The people currently passing the filters, capped so a big school
+// doesn't paint thousands of rows at once.
+function subShownPeople() {
+  const d = SUB_DETAIL;
+  const source = SUB_TAB === "students" ? d.students : d.staff;
+  const q = SUB_FILTER.q.trim().toLowerCase();
+  const filtered = source.filter((p) => {
+    if (SUB_FILTER.status === "paid" && !p.paid) return false;
+    if (SUB_FILTER.status === "unpaid" && p.paid) return false;
+    if (SUB_FILTER.status === "frozen" && !p.frozen) return false;
+    if (SUB_TAB === "students" && SUB_FILTER.cls && p.class_label !== SUB_FILTER.cls) return false;
+    if (q && !(p.name.toLowerCase().includes(q) || p.person_id.toLowerCase().includes(q))) return false;
+    return true;
+  });
+  return { list: filtered.slice(0, SUB_ROW_CAP), total: filtered.length };
+}
+
+function renderSubPeople() {
+  if (!SUB_DETAIL) return;
+  const isStudents = SUB_TAB === "students";
+  document.querySelectorAll(".sub-tab").forEach((b) => {
+    const on = b.dataset.tab === SUB_TAB;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", String(on));
+  });
+  document.getElementById("subFClass").style.display = isStudents ? "" : "none";
+  const { list, total } = subShownPeople();
+  const rows = list
+    .map(
+      (p) => `
+    <tr>
+      <td><input type="checkbox" class="sub-pick" value="${subEsc(p.person_id)}" ${SUB_SELECTED.has(p.person_id) ? "checked" : ""} aria-label="${subEsc(p.name)}"></td>
+      <td>${subEsc(p.name)}</td>
+      <td>${subEsc(p.person_id)}</td>
+      <td>${isStudents ? subEsc(p.class_label || "—") + (p.role_code === "class_monitor" ? ` <span class="pill grad">${t("sub_role_class_monitor")}</span>` : "") : subEsc(subRoleLabel(p)) + (p.class_label ? ` (${subEsc(p.class_label)})` : "")}</td>
+      <td class="sub-num">${subMoney(p.amount)}</td>
+      <td>${p.paid ? `<span class="pill ok">${t("sub_status_paid")}</span>` : `<span class="pill warn">${t("sub_status_unpaid")}</span>`}</td>
+      <td>${p.frozen ? `<span class="pill bad">${t("sub_status_frozen")}</span>` : "—"}</td>
+    </tr>`,
+    )
+    .join("");
+  const allChecked = list.length > 0 && list.every((p) => SUB_SELECTED.has(p.person_id));
+  document.getElementById("subPeopleTable").innerHTML = `<table>
+    <thead><tr>
+      <th><input type="checkbox" id="subPickAll" ${allChecked ? "checked" : ""} aria-label="${t("sub_select_unpaid")}"></th>
+      <th>${t("sub_th_name")}</th><th>${t("sub_th_id")}</th><th>${isStudents ? t("sub_th_class") : t("sub_th_role")}</th>
+      <th>${t("sub_th_amount")}</th><th>${t("sub_th_status")}</th><th>${t("sub_th_frozen")}</th>
+    </tr></thead>
+    <tbody>${rows || `<tr><td colspan="7" class="hint">${t("sub_no_people")}</td></tr>`}</tbody>
+  </table>`;
+  document.getElementById("subRowCap").textContent =
+    total > list.length ? t("sub_row_cap", { shown: list.length, total }) : "";
+
+  document.querySelectorAll(".sub-pick").forEach((box) => {
+    box.addEventListener("change", () => {
+      if (box.checked) SUB_SELECTED.add(box.value);
+      else SUB_SELECTED.delete(box.value);
+      updateSubSelectionBar();
+    });
+  });
+  document.getElementById("subPickAll").addEventListener("change", (e) => {
+    list.forEach((p) => {
+      if (e.target.checked) SUB_SELECTED.add(p.person_id);
+      else SUB_SELECTED.delete(p.person_id);
+    });
+    renderSubPeople();
+  });
+  updateSubSelectionBar();
+}
+
+function updateSubSelectionBar() {
+  const n = SUB_SELECTED.size;
+  document.getElementById("subSelCount").textContent = n ? t("sub_selected_count", { count: n }) : "";
+  document.getElementById("subFreezeBtn").disabled = n === 0;
+  document.getElementById("subUnfreezeBtn").disabled = n === 0;
+}
+
+async function subApplyFreeze(frozen) {
+  const ids = Array.from(SUB_SELECTED);
+  if (ids.length === 0 || !SUB_DETAIL) return;
+  if (frozen) {
+    // People who collect fees can be frozen, but it stops them
+    // collecting — make that a deliberate choice.
+    const byId = new Map([...SUB_DETAIL.students, ...SUB_DETAIL.staff].map((p) => [p.person_id, p]));
+    const collectors = ids.map((id) => byId.get(id)).filter((p) => p && p.is_collector);
+    if (collectors.length > 0) {
+      const names =
+        collectors
+          .slice(0, 5)
+          .map((p) => `${subEsc(p.name)} (${subEsc(p.role_code === "class_monitor" ? t("sub_role_class_monitor") : subRoleLabel(p))})`)
+          .join(", ") + (collectors.length > 5 ? "…" : "");
+      const go = await showConfirm(t("sub_freeze_collectors_warn", { names }), {
+        title: t("sub_freeze_collectors_title"),
+        confirmText: t("sub_freeze_anyway"),
+      });
+      if (!go) return;
+    }
+  }
+  const pwMsg = t(frozen ? "sub_pwconfirm_freeze" : "sub_pwconfirm_unfreeze", { count: ids.length });
+  if (!(await showPasswordConfirm(pwMsg))) return;
+  try {
+    const result = await apiPost(`/api/super/subscriptions/${SUB_VIEW.schoolId}/freeze`, {
+      person_ids: ids,
+      frozen,
+    });
+    await loadAndRenderSubscriptions();
+    setSuccessMsg(document.getElementById("subDetailMsg"), subEsc(result.message));
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+/* ---------------- A report a school sent ----------------------------- */
+async function openSubscriptionReportModal(id) {
+  let r;
+  try {
+    r = await apiGet(`/api/super/subscription-reports/${id}`);
+  } catch (err) {
+    alert(err.message);
+    return;
+  }
+  const snap = r.snapshot;
+  const label = subPeriodLabel(r.ec_year, r.ec_month);
+  const listHTML = (rows, sub) =>
+    rows.length
+      ? `<div class="sub-list">${rows
+          .map((p) => `<div class="sub-list-row"><span>${subEsc(p.name)}</span><span>${subEsc(sub(p))}</span></div>`)
+          .join("")}</div>`
+      : "";
+  const summaryHTML =
+    snap && snap.summary
+      ? `<div class="sub-kv">
+          <div><div class="k">${t("sub_tile_collected")}</div><div class="v">${subMoney(snap.summary.total_collected)}</div></div>
+          <div><div class="k">${t("sub_tile_students")}</div><div class="v">${t("sub_tile_count", { paid: snap.summary.students.paid, total: snap.summary.students.total })}</div></div>
+          <div><div class="k">${t("sub_tile_staff")}</div><div class="v">${t("sub_tile_count", { paid: snap.summary.staff.paid, total: snap.summary.staff.total })}</div></div>
+        </div>`
+      : `<div class="sub-kv"><div><div class="k">${t("sub_tile_collected")}</div><div class="v">${subMoney(r.total_collected)}</div></div></div>
+         <p class="hint">${t("sub_report_no_snapshot")}</p>`;
+  const unpaidStudents = snap && snap.unpaid_students ? snap.unpaid_students : [];
+  const unpaidStaff = snap && snap.unpaid_staff ? snap.unpaid_staff : [];
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "confirm-modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="confirm-modal form-modal wide sub-modal" role="dialog" aria-modal="true" aria-labelledby="subReportTitle">
+      <div class="confirm-modal-icon"><i data-lucide="clipboard-check"></i></div>
+      <h3 class="confirm-modal-title" id="subReportTitle">${subEsc(r.school_name)} — ${label}</h3>
+      <p class="hint" style="text-align:center;margin:0 0 14px;">${t("sub_report_modal_hint", { name: subEsc(r.sent_by_name || r.sent_by), date: subEsc(subFmtDateTime(r.sent_at)) })}</p>
+      ${summaryHTML}
+      ${
+        unpaidStudents.length
+          ? `<div class="sub-section-title" style="margin-top:6px;">${t("sub_report_unpaid_students", { count: unpaidStudents.length })}</div>${listHTML(unpaidStudents, (p) => p.class_label || "")}`
+          : ""
+      }
+      ${
+        unpaidStaff.length
+          ? `<div class="sub-section-title" style="margin-top:6px;">${t("sub_report_unpaid_staff", { count: unpaidStaff.length })}</div>${listHTML(unpaidStaff, (p) => (p.role_code === "school_admin" ? p.title || t("sub_role_school_admin") : t("sub_role_" + p.role_code)))}`
+          : ""
+      }
+      <div class="confirm-modal-actions" style="margin-top:14px;">
+        <button class="btn ghost" id="subReportClose">${t("sub_close")}</button>
+        <button class="btn ghost" id="subReportLive">${t("sub_open_live")}</button>
+        ${r.reviewed_at ? "" : `<button class="btn primary" id="subReportReview">${t("sub_mark_reviewed")}</button>`}
+      </div>
+    </div>`;
+  document.body.appendChild(backdrop);
+  if (window.lucide) lucide.createIcons();
+  const close = () => backdrop.remove();
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) close();
+  });
+  backdrop.querySelector("#subReportClose").addEventListener("click", close);
+  backdrop.querySelector("#subReportLive").addEventListener("click", () => {
+    close();
+    SUB_VIEW = { ec_year: r.ec_year, ec_month: r.ec_month, schoolId: r.school_id };
+    SUB_FILTER = { status: "unpaid", cls: "", q: "" };
+    SUB_TAB = "students";
+    if (activePage !== "sa_nav_subscriptions") {
+      activePage = "sa_nav_subscriptions";
+      render();
+    } else {
+      loadAndRenderSubscriptions();
+    }
+  });
+  const reviewBtn = backdrop.querySelector("#subReportReview");
+  if (reviewBtn) {
+    reviewBtn.addEventListener("click", async () => {
+      reviewBtn.disabled = true;
+      try {
+        await apiPost(`/api/super/subscription-reports/${r.report_id}/review`);
+        close();
+        if (activePage === "sa_nav_subscriptions") loadAndRenderSubscriptions();
+      } catch (err) {
+        reviewBtn.disabled = false;
+        alert(err.message);
+      }
+    });
+  }
+}
+
 /* ---------------- Page router ----------------------------------------- */
 function render() {
   if (!navHasPage(activePage)) activePage = "sa_nav_dashboard";
@@ -3112,6 +4048,9 @@ function render() {
   } else if (activePage === "sa_nav_schools") {
     c.innerHTML = schoolsSkeletonHTML();
     loadAndRenderSchools();
+  } else if (activePage === "sa_nav_subscriptions") {
+    c.innerHTML = subscriptionsSkeletonHTML();
+    loadAndRenderSubscriptions();
   } else if (activePage === "sa_nav_schools_archive") {
     c.innerHTML = archivedSchoolsSkeletonHTML();
     loadAndRenderArchivedSchools();

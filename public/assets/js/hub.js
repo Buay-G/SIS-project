@@ -7,7 +7,7 @@
 // enforcement lives server-side.
 // ==========================================================
 
-const API_BASE = 'http://localhost:3001';
+const API_BASE = '';
 
 function apiFetch(url, options = {}) {
     return fetch(url, { credentials: 'include', ...options });
@@ -202,6 +202,39 @@ async function loadSchoolStats() {
 }
 
 // ---------- News & Announcements (public feed) ----------
+// ---------- Phone reading view ----------
+// On a phone the announcement list and the full text do not fit side by side, so tapping a headline
+// opens the full text on its own clean page, with a Back button (and the phone's own Back key works too).
+const PHONE_MQ = window.matchMedia('(max-width: 640px)');
+function isPhone() { return PHONE_MQ.matches; }
+// Label for the Back button. Uses the translation file if it has the key, otherwise a built-in English/Amharic text,
+// so nothing else in your project has to change.
+function backLabel() {
+    const v = t('hub_back_to_news');
+    if (v && v !== 'hub_back_to_news') return v;
+    let am = false; try { am = localStorage.getItem('sis_lang') === 'am'; } catch (e) { /* ignore */ }
+    return am ? '\u12C8\u12F0 \u12DC\u1293 \u1270\u1218\u1208\u1235' : 'Back to news';
+}
+function openReader() {
+    document.body.classList.add('hub-reading');
+    if (!(history.state && history.state.hubReading)) history.pushState({ hubReading: true }, '');
+    window.scrollTo(0, 0);
+}
+function closeReader(fromPopState) {
+    if (!document.body.classList.contains('hub-reading')) return;
+    document.body.classList.remove('hub-reading');
+    if (!fromPopState && history.state && history.state.hubReading) history.back();
+    const active = document.querySelector('.hub-news-list-item.active');
+    if (active && active.scrollIntoView) active.scrollIntoView({ block: 'center' });
+}
+window.addEventListener('popstate', () => closeReader(true));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeReader(false); });
+const onPhoneModeChange = () => {
+    document.body.classList.remove('hub-reading');
+    if (typeof ANNOUNCEMENTS_CACHE !== 'undefined' && ANNOUNCEMENTS_CACHE.length) renderAnnouncements();
+};
+if (PHONE_MQ.addEventListener) PHONE_MQ.addEventListener('change', onPhoneModeChange); else if (PHONE_MQ.addListener) PHONE_MQ.addListener(onPhoneModeChange);
+
 async function loadAnnouncements() {
     const listEl = document.getElementById('hub-announcements-list');
     listEl.innerHTML = `<div class="hub-loading">${t('sa_loading')}</div>`;
@@ -234,7 +267,7 @@ function renderAnnouncements() {
     // filtered) list; otherwise fall back to the most recent announcement
     // so the detail pane is never left pointing at nothing.
     if (!rows.some(a => a.announcement_id === SELECTED_ANNOUNCEMENT_ID)) {
-        SELECTED_ANNOUNCEMENT_ID = rows[0].announcement_id;
+        SELECTED_ANNOUNCEMENT_ID = isPhone() ? null : rows[0].announcement_id;
     }
 
     listEl.innerHTML = rows.map(a => `
@@ -248,7 +281,7 @@ function renderAnnouncements() {
         </button>`).join('');
 
     listEl.querySelectorAll('[data-announcement-id]').forEach(btn => {
-        btn.addEventListener('click', () => selectAnnouncement(Number(btn.dataset.announcementId)));
+        btn.addEventListener('click', () => { selectAnnouncement(Number(btn.dataset.announcementId)); if (isPhone()) openReader(); });
     });
 
     renderAnnouncementDetail(rows);
@@ -273,10 +306,12 @@ function renderAnnouncementDetail(rows) {
     if (!detailEl) return;
     const a = rows.find(r => r.announcement_id === SELECTED_ANNOUNCEMENT_ID);
     if (!a) {
+        closeReader(false);
         detailEl.innerHTML = `<div class="hub-empty">${t('hub_news_select_prompt')}</div>`;
         return;
     }
     detailEl.innerHTML = `
+        <button type="button" class="hub-reader-back"><span aria-hidden="true">&larr;</span> ${backLabel()}</button>
         <div class="hub-news-card-top">
             <h3 class="hub-news-title">${escapeHtml(a.title)}</h3>
             <span class="hub-news-date">${formatEthDateTime(a.posted_at)}</span>
@@ -291,6 +326,8 @@ function renderAnnouncementDetail(rows) {
             <span class="hub-lang-tag">${t(LANG_LABEL_KEYS[a.language] || 'hub_lang_english')}</span>
             <span class="hub-posted-by">${t('hub_posted_by')}</span>
         </div>`;
+    const backBtn = detailEl.querySelector('.hub-reader-back');
+    if (backBtn) backBtn.addEventListener('click', () => closeReader(false));
     refreshIcons();
 }
 

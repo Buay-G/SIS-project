@@ -262,7 +262,7 @@ a { color: inherit; }
 .alerts-dropdown {
     position: absolute; top: calc(100% + 10px); right: 0; z-index: 200;
     width: 340px; max-width: 90vw; max-height: 420px;
-    background: #fff; color: var(--text, #1f2937);
+    background: #fff; color: var(--text, #1f2a24);
     border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.22);
     border: 1px solid var(--border); overflow: hidden;
     display: flex; flex-direction: column;
@@ -789,7 +789,7 @@ a { color: inherit; }
 .idcard-signature-line {
     width: 65%;
     margin: 0 auto 6px;
-    border-top: 1px solid #94a3b8;
+    border-top: 1px solid #93a49a;
 }
 .idcard-signature-label {
     font-size: 0.66rem;
@@ -1120,7 +1120,7 @@ table.data-table tbody tr:hover { background: #f7faf8; }
 .badge-approved, .badge-present, .badge-returned, .badge-open { background: var(--success-bg); color: var(--success); }
 .badge-rejected, .badge-absent, .badge-lost, .badge-terminated { background: var(--danger-bg); color: var(--danger); }
 .badge-escalated, .badge-charged { background: var(--info-bg); color: var(--info); }
-.badge-none, .badge-closed, .badge-dismissed { background: #f1f5f9; color: #64748b; }
+.badge-none, .badge-closed, .badge-dismissed { background: #eef3f0; color: #66786d; }
 
 /* ---------- Teacher assignment section tick-boxes ----------
    Used in the "Current Assignments" table: instead of one row per
@@ -1131,7 +1131,7 @@ table.data-table tbody tr:hover { background: #f7faf8; }
 .ta-section-tick {
     display: inline-flex; align-items: center; gap: 5px;
     padding: 3px 9px 3px 7px; border-radius: 7px; border: 1px solid var(--border);
-    background: #f8fafc; color: #94a3b8; font-size: 0.78rem; font-weight: 600;
+    background: #f3f6f4; color: #93a49a; font-size: 0.78rem; font-weight: 600;
     cursor: default; user-select: none; transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 .ta-section-tick input[type="checkbox"] { margin: 0; accent-color: var(--accent); pointer-events: none; }
@@ -1531,3 +1531,34 @@ table.data-table.tt-grid-table thead th { position: static; top: auto; z-index: 
        box's own padding/width here so it uses the small screen well. */
     .modal-box { padding: 18px; border-radius: 12px; width: 94%; }
 }
+
+/* ---------- Subscription Fee ---------- */
+.sub-month-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 16px; }
+.sub-month-chip {
+    background: var(--card); border: 1px solid var(--border); border-radius: 999px;
+    padding: 6px 14px; font-weight: 800; font-size: 0.9rem; color: var(--primary);
+}
+.sub-month-hint { color: var(--muted); font-size: 0.8rem; }
+.sub-note {
+    background: var(--warning-bg); color: var(--warning); border-radius: 10px;
+    padding: 10px 14px; font-size: 0.85rem; font-weight: 600; margin-bottom: 16px;
+}
+.sub-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; margin-bottom: 18px; }
+.sub-kv {
+    display: flex; justify-content: space-between; gap: 12px;
+    padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 0.88rem;
+}
+.sub-kv > span:first-child { color: var(--muted); font-weight: 700; }
+.sub-account-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0 10px; }
+.sub-account-number {
+    font-size: 1.35rem; font-weight: 800; letter-spacing: 0.04em; color: var(--primary);
+    font-variant-numeric: tabular-nums; word-break: break-all;
+}
+.sub-toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+.sub-toolbar input { flex: 1; min-width: 200px; }
+.sub-toolbar select { width: auto; min-width: 150px; }
+.sub-num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sub-you { margin-left: 6px; }
+.sub-updated { color: var(--muted); font-size: 0.75rem; margin-top: 12px; }
+.sub-send-box p { margin: 8px 0; }
+.sub-send-box .btn { margin-top: 6px; }

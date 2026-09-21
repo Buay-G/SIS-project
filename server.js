@@ -142,7 +142,6 @@ app.use(cookieParser());
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/students", express.static(path.join(__dirname, "modules/students")));
 app.use("/teachers", express.static(path.join(__dirname, "modules/teachers")));
-app.use("/portal", express.static(path.join(__dirname, "modules/portal")));
 app.use(
   "/registrar",
   express.static(path.join(__dirname, "modules/registrar")),
@@ -621,19 +620,36 @@ function blockIfMustChangePassword(req, res, next) {
 // Routes should read req.user.school_id / req.user.user_id / req.user.role
 // query string for anything security-relevant. The token is the only
 // source of truth for "who is making this request."
-function requireAuth(req, res, next) {
+async function requireAuth(req, res, next) {
   const token = req.cookies?.auth_token;
   if (!token) {
     return res.status(401).json({ error: "Not logged in." });
   }
   try {
     req.user = jwt.verify(token, JWT_SECRET);
-    next();
   } catch (err) {
     return res
       .status(401)
       .json({ error: "Session expired or invalid. Please log in again." });
   }
+  // Subscription Fee: a student/teacher/school admin/registrar whose
+  // account Super Admin has frozen is cut off here, mid-session, not
+  // only at the next login (see isSubscriptionFrozen for the caching).
+  // Fails open — if the check itself errors, nobody gets locked out of
+  // the whole system by a database hiccup.
+  if (SUBSCRIPTION_GATED_ROLES.has(req.user.role)) {
+    try {
+      if (await isSubscriptionFrozen(req.user.user_id)) {
+        return res.status(403).json({
+          error: SUBSCRIPTION_FROZEN_MESSAGE,
+          code: SUBSCRIPTION_FROZEN_CODE,
+        });
+      }
+    } catch (err) {
+      console.error("requireAuth subscription check (non-fatal):", err);
+    }
+  }
+  next();
 }
 
 // Restricts a route to specific roles, e.g. requireRole('teachers').
@@ -3096,6 +3112,12 @@ async function ensureSchoolEducationalLevelsTable() {
   schoolEducationalLevelsTableReady = true;
 }
 const EDUCATIONAL_LEVELS = ["PRIMARY", "MIDDLE", "SECONDARY"];
+// Government/Public schools charge a registration fee only; Private
+// schools charge a registration fee AND a monthly school fee (Finance
+// module). Chosen by Super Admin when a school is registered and stored
+// in schools.school_type — run migrate_school_type.js once to add the
+// column.
+const SCHOOL_TYPES = ["PUBLIC", "PRIVATE"];
 // What educational_level implies for school_grade_tiers at registration
 // time — SECONDARY is the one case where this is more than one tier.
 const EDUCATIONAL_LEVEL_TIERS = {
@@ -5142,6 +5164,9 @@ app.get(
         return res.status(404).json({ error: "Student record not found" });
       const profile = rows[0];
       profile.qr_payload = signQrPayload(profile.student_id);
+      // School's own logo first, zone logo only as the fallback.
+      profile.display_logo_url =
+        profile.logo_url || profile.zone_logo_url || null;
 
       // Guardian(s) linked to this student — powers the "My Guardian/
       // Parent" page, where the student can see their guardian's
@@ -8073,6 +8098,18 @@ function academicYearForClassLevel(classLevel, currentClassLevel) {
 //     label VARCHAR(50) NOT NULL,
 //     is_current BOOLEAN NOT NULL DEFAULT TRUE,
 //     started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     -- Idempotency guard for rolloverAcademicYear() (Close Semester 2):
+//     -- sem1_started_at is stamped on the CURRENT row by POST /api/term/set
+//     -- whenever Semester 1 is (re)started, and is the actual gate a
+//     -- rollover checks before running — a row with no Semester 1 start
+//     -- on file yet cannot be rolled over again, which is what makes an
+//     -- accidental double Close Semester 2 (or a reopen-then-close with
+//     -- no new Semester 1 in between) a safe no-op instead of a second
+//     -- year-end. year_end_processed_at is stamped on the OUTGOING row
+//     -- purely as an audit trail of when that row was actually closed
+//     -- out; see rolloverAcademicYear() for exactly how both are used.
+//     sem1_started_at DATETIME NULL,
+//     year_end_processed_at DATETIME NULL,
 //     INDEX idx_school_current (school_id, is_current)
 //   );
 //
@@ -8118,6 +8155,8 @@ async function ensureAcademicYearTables() {
             label VARCHAR(50) NOT NULL,
             is_current BOOLEAN NOT NULL DEFAULT TRUE,
             started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            sem1_started_at DATETIME NULL,
+            year_end_processed_at DATETIME NULL,
             INDEX idx_school_current (school_id, is_current)
         )
     `);
@@ -8137,6 +8176,49 @@ async function ensureAcademicYearTables() {
             INDEX idx_lookup (school_id, academic_year_id, student_id)
         )
     `);
+  // Self-healing column add for schools whose academic_years table
+  // predates the Close-Semester-2 idempotency guard (same
+  // check-information_schema-then-ALTER pattern as
+  // ensureGuardianParentCodeSupport above). Only runs the ALTER (and the
+  // backfill below) the first time either column is found missing.
+  const [cols] = await pool.query(
+    `SELECT COLUMN_NAME FROM information_schema.columns
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'academic_years'
+       AND COLUMN_NAME IN ('sem1_started_at', 'year_end_processed_at')`,
+  );
+  const haveSem1 = cols.some((c) => c.COLUMN_NAME === "sem1_started_at");
+  const haveProcessed = cols.some(
+    (c) => c.COLUMN_NAME === "year_end_processed_at",
+  );
+  if (!haveSem1) {
+    await pool.query(
+      `ALTER TABLE academic_years ADD COLUMN sem1_started_at DATETIME NULL`,
+    );
+    // Backfill: every school's CURRENT row predates this guard, so there's
+    // no real record of whether Semester 1 was ever pressed for it. Treat
+    // it as already-eligible (stamp it now) rather than retroactively
+    // blocking every existing school's very next Close Semester 2 until
+    // they happen to press Start Semester 1 again — this guard is new
+    // behavior, not something existing schools should be surprised by.
+    // Past (already-outgoing) rows are left NULL; the guard only ever
+    // reads this off the current row.
+    await pool.query(
+      `UPDATE academic_years SET sem1_started_at = COALESCE(sem1_started_at, started_at, NOW()) WHERE is_current = TRUE`,
+    );
+  }
+  if (!haveProcessed) {
+    await pool.query(
+      `ALTER TABLE academic_years ADD COLUMN year_end_processed_at DATETIME NULL`,
+    );
+    // Backfill: every already-outgoing row (is_current = FALSE) got that
+    // way by having already been rolled over in the past, by definition —
+    // so it's safe (and keeps the audit trail honest) to mark all of them
+    // processed now, using started_at as the closest available stand-in
+    // for "when" since the real close time predates this column.
+    await pool.query(
+      `UPDATE academic_years SET year_end_processed_at = COALESCE(year_end_processed_at, started_at, NOW()) WHERE is_current = FALSE`,
+    );
+  }
   academicYearTablesReady = true;
 }
 
@@ -8215,6 +8297,35 @@ async function ensureTeacherRoleHistoryTable() {
 //      and are left alone rather than swept into Unregistered, since
 //      they've already been touched this cycle.
 //   2. A new academic_years row is created and marked current.
+//
+// IDEMPOTENCY GUARD: called every time Semester 2 is closed (see the call
+// site in POST /api/term/close), which is exactly the problem — nothing
+// stops Close Semester 2 from being pressed more than once for what's
+// really the same academic year (an accidental double-click, or Start
+// Semester used to reopen and then Close pressed again), and doing so
+// used to run this whole function again: re-snapshotting and unregistering
+// students who'd already been re-registered under the new year, and
+// creating a second, spurious academic_years row on top of the first.
+//
+// The fix checks the CURRENT row's sem1_started_at (stamped by POST
+// /api/term/set whenever Semester 1 is (re)started — see that route) and
+// refuses to roll over a row that has never had a Semester 1 start
+// recorded against it. That's deliberate, not incidental: the ONLY
+// column this could otherwise check is a "this row was already rolled
+// over" flag on the OUTGOING row — but the current row, by definition,
+// is always the freshly-created one from the last rollover, so a flag
+// like that would never be set yet and would never actually catch a
+// repeat call. Gating on "has this year's Semester 1 genuinely started"
+// instead means: an immediate double-close is blocked (no Start Semester
+// press happened in between at all); a reopen-then-close is blocked too
+// (Start Semester was pressed, but for Semester 2, not Semester 1 — the
+// new year's own Semester 1 still never ran); and a genuine close a full
+// year later goes through normally, because by then Semester 1 for that
+// row will have actually been started as part of the school's ordinary
+// yearly cycle. On a real duplicate call this returns
+// { skipped: true, reason: 'sem1_not_started', ... } instead of throwing —
+// closing Semester 2 a second time should still succeed as a normal
+// close, it just shouldn't repeat the year-end part of it.
 async function rolloverAcademicYear(school_id) {
   await ensureAcademicYearTables();
   await ensureTeacherRoleHistoryTable();
@@ -8223,7 +8334,7 @@ async function rolloverAcademicYear(school_id) {
     await conn.beginTransaction();
 
     const [currentYearRows] = await conn.query(
-      "SELECT id, label FROM academic_years WHERE school_id = ? AND is_current = TRUE LIMIT 1 FOR UPDATE",
+      "SELECT id, label, sem1_started_at FROM academic_years WHERE school_id = ? AND is_current = TRUE LIMIT 1 FOR UPDATE",
       [school_id],
     );
     // First-ever closure for this school: there's no prior "current"
@@ -8231,6 +8342,20 @@ async function rolloverAcademicYear(school_id) {
     // straight to creating the new one below — nothing to roll over.
     const outgoingYearId = currentYearRows[0]?.id || null;
     const outgoingYearLabel = currentYearRows[0]?.label || null;
+
+    // IDEMPOTENCY GUARD — see the doc-comment above this function for why
+    // this specific check (and not a flag on the outgoing row) is what
+    // actually catches a repeat call. Only applies once there IS a prior
+    // current row to gate on; a school's very first-ever close has
+    // nothing to duplicate yet, so it always proceeds.
+    if (outgoingYearId && !currentYearRows[0].sem1_started_at) {
+      await conn.rollback();
+      return {
+        skipped: true,
+        reason: "sem1_not_started",
+        current_academic_year: outgoingYearLabel,
+      };
+    }
 
     if (outgoingYearId) {
       const [activeStudents] = await conn.query(
@@ -8264,7 +8389,7 @@ async function rolloverAcademicYear(school_id) {
         );
       }
       await conn.query(
-        "UPDATE academic_years SET is_current = FALSE WHERE id = ?",
+        "UPDATE academic_years SET is_current = FALSE, year_end_processed_at = NOW() WHERE id = ?",
         [outgoingYearId],
       );
     }
@@ -8373,6 +8498,16 @@ async function rolloverAcademicYear(school_id) {
     await conn.query(
       `UPDATE teachers SET homeroom_class_level = NULL, homeroom_section = NULL, homeroom_stream = NULL
              WHERE school_id = ?`,
+      [school_id],
+    );
+    // A Class Monitor is a one-year appointment made by that year's homeroom
+    // teacher, just like the homeroom link cleared above. Without this the flag
+    // survived the rollover, so last year's monitor stayed a monitor after being
+    // promoted or seated in a new class (and could collect the Subscription Fee
+    // for a class he was never chosen for). Teachers appoint monitors again for
+    // the new year from the Action Center.
+    await conn.query(
+      "UPDATE students SET is_class_monitor = FALSE WHERE school_id = ?",
       [school_id],
     );
     await conn.query("DELETE FROM class_timetable WHERE school_id = ?", [
@@ -12598,7 +12733,13 @@ app.get(
         zone_logo_url = logoRows[0].zone_logo_url || null;
       }
 
-      res.json({ ...rows[0], zone_logo_url, school_logo_url });
+      res.json({
+        ...rows[0],
+        zone_logo_url,
+        school_logo_url,
+        // School's own logo first, zone logo only as the fallback.
+        display_logo_url: school_logo_url || zone_logo_url || null,
+      });
     } catch (err) {
       console.error("/api/guardian/me error:", err);
       res.status(500).json({ error: "Could not load your profile" });
@@ -17328,19 +17469,19 @@ async function buildIdCardHtml(
 
   const logoDataUri = !isSample ? readUploadedImageAsDataUri(s.logo_url) : null;
 
-  // Zone logo (set by a super admin or the zone's own Zonal Admin via
-  // POST /api/zonal/logo — see that route's comment) takes over the
-  // header's single logo slot entirely once a zone has uploaded one —
-  // not shown alongside the school's own logo. Falls back to the
-  // school logo when the zone hasn't set one yet, so the header is
-  // never left with no emblem at all.
+  // The header has a single logo slot. The school's OWN logo (uploaded
+  // by Super Admin via POST /api/super/schools/:id/logo) goes there;
+  // the zone logo (POST /api/super/zones/:zone_id/logo, or a Zonal
+  // Admin via POST /api/zonal/logo) is only the fallback for a school
+  // that has none yet, so the header is never left with no emblem at
+  // all. (Before per-school logos this was the other way round.)
   const zoneLogoDataUri = !isSample
     ? readUploadedImageAsDataUri(s.zone_logo_url)
     : null;
-  const logoStackHtml = zoneLogoDataUri
-    ? `<img src="${zoneLogoDataUri}" alt="Zone logo" class="id-card-logo">`
-    : logoDataUri
-      ? `<img src="${logoDataUri}" alt="School logo" class="id-card-logo">`
+  const logoStackHtml = logoDataUri
+    ? `<img src="${logoDataUri}" alt="School logo" class="id-card-logo">`
+    : zoneLogoDataUri
+      ? `<img src="${zoneLogoDataUri}" alt="Zone logo" class="id-card-logo">`
       : "";
 
   const flagDataUri = readStaticImageAsDataUri(
@@ -20207,10 +20348,13 @@ app.get("/api/homeroom/section-report", requireAuth, async (req, res) => {
         .json({ error: "You are not the homeroom teacher for this section." });
     }
 
+    // Registered-only (Active) — a marks/grading review for the current
+    // term should only ever list students actually placed here this
+    // year; see attendance-today above for the general reasoning.
     const [students] = await pool.query(
       `SELECT student_id, first_name, middle_name, last_name
              FROM students
-             WHERE class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?
+             WHERE class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ? AND status = 'Active'
              ORDER BY first_name, last_name`,
       [class_level, section, stream, req.user.school_id],
     );
@@ -20468,8 +20612,12 @@ app.post("/api/homeroom/student-status", requireAuth, async (req, res) => {
       });
     }
 
+    // Registered-only (Active): flagging Incomplete/Dropout for the
+    // CURRENT term is a forward-looking action — see attendance-today
+    // above. This is also what keeps notify-incomplete safe with no
+    // filter of its own: it only ever notifies rows written here.
     const [studentRows] = await pool.query(
-      "SELECT student_id FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?",
+      "SELECT student_id FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ? AND status = 'Active'",
       [student_id, class_level, section, stream, req.user.school_id],
     );
     if (studentRows.length === 0) {
@@ -21400,9 +21548,14 @@ app.get("/api/homeroom/attendance-today", requireAuth, async (req, res) => {
     if (!homeroom)
       return res.status(403).json({ error: "You are not a homeroom teacher." });
 
+    // Registered-only (Active): an Unregistered leftover from last year
+    // keeps this class/section label but hasn't been re-placed here this
+    // year, and can't log in — including them in today's attendance
+    // roster would let a teacher mark present a student who, as far as
+    // the system is concerned, isn't really in this class yet.
     const [students] = await pool.query(
       `SELECT student_id, first_name, middle_name, last_name FROM students
-             WHERE school_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%')
+             WHERE school_id = ? AND status = 'Active' AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%')
              ORDER BY first_name, last_name`,
       [
         req.user.school_id,
@@ -21468,9 +21621,10 @@ app.post("/api/homeroom/mark-present", requireAuth, async (req, res) => {
     if (!homeroom)
       return res.status(403).json({ error: "You are not a homeroom teacher." });
 
+    // Registered-only (Active) — see attendance-today above for why.
     const [studentRows] = await pool.query(
       `SELECT student_id, first_name, last_name FROM students
-             WHERE student_id = ? AND school_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%')`,
+             WHERE student_id = ? AND school_id = ? AND status = 'Active' AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%')`,
       [
         student_id,
         req.user.school_id,
@@ -21530,9 +21684,10 @@ app.post("/api/homeroom/undo-present", requireAuth, async (req, res) => {
     if (!homeroom)
       return res.status(403).json({ error: "You are not a homeroom teacher." });
 
+    // Registered-only (Active) — see attendance-today above for why.
     const [studentRows] = await pool.query(
       `SELECT student_id FROM students
-             WHERE student_id = ? AND school_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%')`,
+             WHERE student_id = ? AND school_id = ? AND status = 'Active' AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%')`,
       [
         student_id,
         req.user.school_id,
@@ -21619,8 +21774,11 @@ app.post(
         }
       }
 
+      // Registered-only (Active): see attendance-today above for why an
+      // Unregistered leftover from last year's roster shouldn't be
+      // editable here as if they were this year's student.
       const [studentRows] = await pool.query(
-        `SELECT student_id, first_name, last_name, id_photo_url FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?`,
+        `SELECT student_id, first_name, last_name, id_photo_url FROM students WHERE student_id = ? AND status = 'Active' AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?`,
         [
           student_id,
           homeroom.class_level,
@@ -21688,12 +21846,22 @@ app.get("/api/homeroom/id-photo-requests", requireAuth, async (req, res) => {
     if (!homeroom)
       return res.status(403).json({ error: "You are not a homeroom teacher." });
 
+    // Registered-only (Active) for the LISTING — a class/section label is
+    // reused year to year, and an Unregistered leftover keeps last year's
+    // label, so an unfiltered join could surface a stale request to a
+    // teacher who isn't really this student's teacher this year. Approving
+    // or rejecting a SPECIFIC already-submitted request below is left
+    // unrestricted by status (same reasoning as reset-student-password):
+    // by the time a request_id is being acted on it's already-identified,
+    // already-legitimate business that should still be closeable — and in
+    // practice a request can only exist from when the student was Active
+    // enough to log in and submit it.
     const [rows] = await pool.query(
       `SELECT r.request_id, r.student_id, r.requested_photo_url, r.status, r.requested_at,
                     st.first_name, st.last_name, st.id_photo_url AS current_photo_url
              FROM id_photo_change_requests r
              JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
-             WHERE r.school_id = ? AND r.status = 'pending'
+             WHERE r.school_id = ? AND r.status = 'pending' AND st.status = 'Active'
                AND st.class_level = ? AND st.section = ? AND st.stream LIKE CONCAT(?, '%')
              ORDER BY r.requested_at ASC`,
       [
@@ -21819,12 +21987,18 @@ app.get("/api/homeroom/absence-requests", requireAuth, async (req, res) => {
     if (!homeroom)
       return res.status(403).json({ error: "You are not a homeroom teacher." });
 
+    // Registered-only (Active) for the LISTING — same reasoning as
+    // id-photo-requests just above (stale cross-year label reuse); the
+    // approve/reject/escalate actions below stay unrestricted by status,
+    // same as reset-student-password, since they close out a specific
+    // already-submitted request rather than acting on "whoever's
+    // currently in my class."
     const [rows] = await pool.query(
       `SELECT r.request_id, r.student_id, r.date_from, r.date_to, r.reason, r.attachment_url,
                     r.status, r.requested_at, st.first_name, st.last_name
              FROM absence_requests r
              JOIN students st ON st.student_id = r.student_id AND st.school_id = r.school_id
-             WHERE r.school_id = ? AND r.status = 'pending'
+             WHERE r.school_id = ? AND r.status = 'pending' AND st.status = 'Active'
                AND st.class_level = ? AND st.section = ? AND st.stream LIKE CONCAT(?, '%')
              ORDER BY r.requested_at ASC`,
       [
@@ -22261,9 +22435,11 @@ app.get("/api/homeroom/textbooks", requireAuth, async (req, res) => {
     const { class_level, section, stream } = homeroom;
     const school_year = getSchoolYear();
 
+    // Registered-only (Active) for the roster — same reasoning as
+    // attendance-today above.
     const [students] = await pool.query(
       `SELECT student_id, first_name, middle_name, last_name
-             FROM students WHERE class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?
+             FROM students WHERE class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ? AND status = 'Active'
              ORDER BY first_name, last_name`,
       [class_level, section, stream, req.user.school_id],
     );
@@ -22370,8 +22546,13 @@ app.post("/api/homeroom/textbooks/issue", requireAuth, async (req, res) => {
       return res.status(403).json({ error: "You are not a homeroom teacher." });
     }
 
+    // Registered-only (Active): issuing is a new, forward-looking action —
+    // see attendance-today above. Returning/losing an already-issued book
+    // (below) is left unrestricted, since that book was legitimately
+    // issued while the student WAS Active, and processing what happens to
+    // it afterward should still work even if their status has since changed.
     const [studentCheck] = await pool.query(
-      `SELECT 1 FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?`,
+      `SELECT 1 FROM students WHERE student_id = ? AND status = 'Active' AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?`,
       [
         student_id,
         homeroom.class_level,
@@ -24159,6 +24340,21 @@ app.post(
              ON DUPLICATE KEY UPDATE setting_value = 'open'`,
         [req.user.school_id],
       );
+      // Starting Semester 1 specifically stamps the school's CURRENT
+      // academic_years row with sem1_started_at — this is the signal
+      // rolloverAcademicYear() (Close Semester 2) checks before agreeing
+      // to run the year-end again, so a genuine new year's first Close
+      // Semester 2 is never mistaken for a stray repeat of the last one.
+      // getCurrentAcademicYear() ensures the row exists first (lazily
+      // creating it if this is the school's very first term/set call
+      // ever), so there's always a row here to stamp.
+      if (term === "Semester 1") {
+        const year = await getCurrentAcademicYear(req.user.school_id);
+        await pool.query(
+          "UPDATE academic_years SET sem1_started_at = NOW() WHERE id = ?",
+          [year.id],
+        );
+      }
       res.json({
         message: `${term} started. Attendance counting begins today (${startDate}).`,
         current_term: term,
@@ -24257,16 +24453,29 @@ app.post(
       // Active student becomes Unregistered/blocked-from-login, and a
       // new academic_years row opens). Semester 1's own close doesn't
       // trigger this — the school year isn't over yet at that point.
+      // rolloverAcademicYear is itself idempotent (see its doc-comment):
+      // a repeat Close Semester 2 for a year that's already been rolled
+      // over comes back as { skipped: true, ... } instead of running the
+      // year-end again, so this Close Semester action always succeeds —
+      // it just doesn't repeat work that's already done.
       let rollover = null;
       if (term === "Semester 2") {
         rollover = await rolloverAcademicYear(req.user.school_id);
       }
+      const didRollover = !!(rollover && !rollover.skipped);
+
+      let rolloverNote = "";
+      if (didRollover) {
+        rolloverNote = ` Academic year rolled over to ${rollover.new_academic_year} — all Active students are now Unregistered until re-registered, and all teaching assignments, homerooms, and the timetable have been cleared for reconfiguration.`;
+      } else if (rollover?.skipped) {
+        rolloverNote = ` The academic year was already rolled over for ${rollover.current_academic_year} and Semester 1 hasn't been started since, so no further year-end action was taken.`;
+      }
 
       res.json({
-        message: `${term} closed.${rollover ? ` Academic year rolled over to ${rollover.new_academic_year} — all Active students are now Unregistered until re-registered, and all teaching assignments, homerooms, and the timetable have been cleared for reconfiguration.` : ""}`,
+        message: `${term} closed.${rolloverNote}`,
         current_term: term,
         semester_status: "closed",
-        academic_year_rollover: rollover,
+        academic_year_rollover: didRollover ? rollover : null,
       });
     } catch (err) {
       console.error("term/close error:", err);
@@ -24849,6 +25058,26 @@ app.post("/api/login", loginLimiter, async (req, res) => {
     const match = await bcrypt.compare(password, user.security_password);
     if (!match) return res.status(401).json({ error: "Invalid password" });
 
+    // Subscription Fee: a frozen account is refused here, AFTER the
+    // password check so nobody can probe which accounts are frozen
+    // without knowing the password. Fails open on error, same as
+    // requireAuth. Bypasses the cache so an unfreeze works instantly.
+    if (SUBSCRIPTION_GATED_ROLES.has(userRole)) {
+      try {
+        // Canonical ID from the row (the typed one may differ in case).
+        const authSource = authSources.find((x) => x.table === userRole);
+        const canonicalId = (authSource && user[authSource.idCol]) || id;
+        if (await isSubscriptionFrozen(canonicalId, { fresh: true })) {
+          return res.status(401).json({
+            error: SUBSCRIPTION_FROZEN_MESSAGE,
+            code: SUBSCRIPTION_FROZEN_CODE,
+          });
+        }
+      } catch (freezeErr) {
+        console.error("Login subscription check (non-fatal):", freezeErr);
+      }
+    }
+
     // Look up the school this account belongs to, so the frontend can
     // display the correct school name immediately without a second
     // round trip, and so we know what to put in the token. Zonal
@@ -25185,6 +25414,11 @@ app.get("/api/me", requireAuth, async (req, res) => {
       school_level,
       moe_school_code,
       logo_url,
+      // The one logo a portal header should show: the school's own logo
+      // if it has one, otherwise its zone's logo (never both, never
+      // zone-first). Frontends should prefer this over picking between
+      // logo_url / zone_logo_url themselves.
+      display_logo_url: logo_url || zone_logo_url || null,
       academic_year,
       additional_role,
       is_registrar,
@@ -27180,8 +27414,10 @@ app.post(
       const { class_level, section, stream } = homeroom;
       const term = await getCurrentTerm(req.user.school_id);
 
+      // Registered-only (Active): marking a dropout is a new,
+      // forward-looking action FOR THIS TERM — see attendance-today above.
       const [studentRows] = await pool.query(
-        "SELECT student_id FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ?",
+        "SELECT student_id FROM students WHERE student_id = ? AND class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%') AND school_id = ? AND status = 'Active'",
         [
           req.params.student_id,
           class_level,
@@ -28758,6 +28994,7 @@ app.get(
       await ensureSchoolEducationalLevelsTable();
       const [schools] = await pool.query(
         `SELECT sc.id, sc.school_name, sc.school_level, sc.educational_level, sc.school_prefix, sc.moe_school_code,
+                    sc.school_type, sc.logo_url,
                     sc.zone_id, z.zone_name, z.region_id, r.region_name,
                     w.woreda_name AS woreda,
                     GROUP_CONCAT(DISTINCT gt.school_level ORDER BY gt.school_level) AS grade_tiers,
@@ -28845,6 +29082,7 @@ app.post(
       woreda_id,
       kebele_id,
       streams,
+      school_type,
     } = req.body;
     // Multi-Tier School Registration: a campus can host more than one
     // Educational Level at once (e.g. Primary + Middle under one
@@ -28860,6 +29098,14 @@ app.post(
       return res.status(400).json({
         error:
           "school_name, at least one educational level, and zone_id are required",
+      });
+    }
+    // School type is an explicit choice with no silent default — a
+    // Private school registered as Public by accident would never be
+    // billed school fees.
+    if (!SCHOOL_TYPES.includes(school_type)) {
+      return res.status(400).json({
+        error: `school_type is required and must be one of: ${SCHOOL_TYPES.join(", ")}`,
       });
     }
     // Dedupe while preserving canonical PRIMARY/MIDDLE/SECONDARY order,
@@ -28907,8 +29153,8 @@ app.post(
       const basePrefix = buildSchoolPrefixBase(cleanName, primaryTier);
       const school_prefix = await getNextAvailableSchoolPrefix(basePrefix);
       const [result] = await conn.query(
-        `INSERT INTO schools (school_name, school_level, educational_level, school_prefix, moe_school_code, region_id, zone_id, woreda_id, kebele_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO schools (school_name, school_level, educational_level, school_prefix, moe_school_code, region_id, zone_id, woreda_id, kebele_id, school_type)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           cleanName,
           primaryTier,
@@ -28919,6 +29165,7 @@ app.post(
           zone_id,
           woreda_id || null,
           kebele_id || null,
+          school_type,
         ],
       );
       const school_id = result.insertId;
@@ -28957,7 +29204,7 @@ app.post(
         "school.create",
         "school",
         school_id,
-        `${cleanName} (${levels.join(" + ")}: ${gradeTiers.join(" + ")}) in zone ${zone_id}`,
+        `${cleanName} (${levels.join(" + ")}: ${gradeTiers.join(" + ")}) in zone ${zone_id}, ${school_type}`,
       );
       res.json({
         message: `School registered as ${school_prefix}.`,
@@ -29006,7 +29253,8 @@ app.put(
   requireSuperAdminPermission("manage_schools"),
   async (req, res) => {
     const schoolId = req.params.id;
-    const { add_educational_levels, streams, school_name } = req.body;
+    const { add_educational_levels, streams, school_name, school_type } =
+      req.body;
     const addInput = Array.isArray(add_educational_levels)
       ? add_educational_levels
       : [];
@@ -29015,10 +29263,19 @@ app.put(
     if (trimmedName !== undefined && trimmedName === "") {
       return res.status(400).json({ error: "school_name cannot be blank." });
     }
-    if (addInput.length === 0 && trimmedName === undefined) {
+    if (school_type !== undefined && !SCHOOL_TYPES.includes(school_type)) {
+      return res.status(400).json({
+        error: `school_type must be one of: ${SCHOOL_TYPES.join(", ")}`,
+      });
+    }
+    if (
+      addInput.length === 0 &&
+      trimmedName === undefined &&
+      school_type === undefined
+    ) {
       return res.status(400).json({
         error:
-          "Send add_educational_levels (non-empty array) and/or school_name to update.",
+          "Send add_educational_levels (non-empty array), school_name and/or school_type to update.",
       });
     }
     const addLevels = EDUCATIONAL_LEVELS.filter((l) => addInput.includes(l));
@@ -29047,7 +29304,7 @@ app.put(
       await conn.beginTransaction();
 
       const [schoolRows] = await conn.query(
-        "SELECT id, school_name FROM schools WHERE id = ? FOR UPDATE",
+        "SELECT id, school_name, school_type FROM schools WHERE id = ? FOR UPDATE",
         [schoolId],
       );
       if (schoolRows.length === 0) {
@@ -29056,6 +29313,13 @@ app.put(
       }
       const oldName = schoolRows[0].school_name;
       const renaming = trimmedName !== undefined && trimmedName !== oldName;
+      // Public <-> Private decides whether the school can charge monthly
+      // school fees. Fine to change freely today; once Finance data
+      // exists, switching a school from Private to Public while it still
+      // has unpaid invoices must be blocked here (added with the
+      // monthly-invoice phase).
+      const oldType = schoolRows[0].school_type;
+      const retyping = school_type !== undefined && school_type !== oldType;
 
       let newLevels = [];
       let newTiers = [];
@@ -29068,7 +29332,7 @@ app.put(
           existingLevelRows.map((r) => r.educational_level),
         );
         newLevels = addLevels.filter((l) => !existingLevels.has(l));
-        if (newLevels.length === 0 && !renaming) {
+        if (newLevels.length === 0 && !renaming && !retyping) {
           await conn.rollback();
           return res.status(400).json({
             error: "This school already has every level you selected.",
@@ -29126,6 +29390,13 @@ app.put(
         ]);
       }
 
+      if (retyping) {
+        await conn.query("UPDATE schools SET school_type = ? WHERE id = ?", [
+          school_type,
+          schoolId,
+        ]);
+      }
+
       await conn.commit();
       const auditParts = [];
       if (newLevels.length > 0)
@@ -29133,6 +29404,8 @@ app.put(
           `Added level(s) ${newLevels.join(" + ")} (tier(s) ${newTiers.join(" + ") || "none new"})`,
         );
       if (renaming) auditParts.push(`Renamed "${oldName}" to "${trimmedName}"`);
+      if (retyping)
+        auditParts.push(`School type changed from ${oldType} to ${school_type}`);
       await logAudit(
         req,
         "school.update",
@@ -29144,11 +29417,13 @@ app.put(
       if (newLevels.length > 0)
         messageParts.push(`now also offers ${newLevels.join(" + ")}`);
       if (renaming) messageParts.push(`renamed to ${trimmedName}`);
+      if (retyping) messageParts.push(`is now a ${school_type} school`);
       res.json({
         message: `${renaming ? trimmedName : oldName} ${messageParts.join(" and ") || "updated"}.`,
         added_educational_levels: newLevels,
         added_grade_tiers: newTiers,
         school_name: renaming ? trimmedName : oldName,
+        school_type: retyping ? school_type : oldType,
       });
     } catch (err) {
       await conn.rollback();
@@ -29156,6 +29431,180 @@ app.put(
       res.status(500).json({ error: "Could not update school." });
     } finally {
       conn.release();
+    }
+  },
+);
+
+// --- Super Admin: a school's own logo ---
+// Every school carries its own logo (schools.logo_url). Super Admin
+// uploads it when the school is registered (or replaces it later) and
+// it takes priority everywhere a logo is shown — portal headers, ID
+// cards, and fee receipts. The zone's logo (zone.logo_url, see
+// /api/super/zones/:zone_id/logo) is only the FALLBACK for a school
+// that has none of its own.
+//
+// Stricter than the zone-logo route on purpose: /uploads is served
+// publicly as static files, so only genuine JPEG/PNG images are
+// accepted — judged by the file's actual magic bytes, not the
+// client-supplied mimetype or filename — and the stored file is renamed
+// to the extension matching what it really is. That keeps an SVG, or an
+// HTML file renamed "logo.jpg", out of the public folder.
+const SCHOOL_LOGO_MAX_BYTES = 2 * 1024 * 1024; // 2 MB
+const SCHOOL_LOGO_MIN_PX = 64;
+const SCHOOL_LOGO_MAX_PX = 4000;
+
+function sniffLogoExtension(filePath) {
+  let fd;
+  try {
+    fd = fs.openSync(filePath, "r");
+    const header = Buffer.alloc(8);
+    fs.readSync(fd, header, 0, 8, 0);
+    if (header.subarray(0, 3).equals(JPEG_MAGIC)) return ".jpg";
+    if (header.equals(PNG_MAGIC)) return ".png";
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+// Validates and normalizes a logo file multer has already written to
+// disk: HEIC -> JPEG, size/format/dimension checks, extension fixed to
+// match the real format. Returns { file } on success, or { error } —
+// with the file deleted from disk — on any failure.
+async function processSchoolLogoUpload(file) {
+  const discard = (f) => fs.unlink(f.path, () => {});
+  const converted = await convertHeicIfNeeded(file);
+  if (converted) file = converted;
+
+  let size;
+  try {
+    size = fs.statSync(file.path).size;
+  } catch {
+    return { error: "Could not read the uploaded file." };
+  }
+  if (size > SCHOOL_LOGO_MAX_BYTES) {
+    discard(file);
+    return { error: "Logo is too large. Please use an image under 2 MB." };
+  }
+
+  const ext = sniffLogoExtension(file.path);
+  if (!ext) {
+    discard(file);
+    return { error: "Logo must be a PNG or JPG image." };
+  }
+
+  // Read from a Buffer rather than a path: image-size v2 no longer
+  // accepts file paths (sizeOf(path) throws), which is why
+  // tryReadImageDimensions above quietly returns null on this version.
+  // The magic-byte check just above already guarantees this is a real
+  // JPEG/PNG, which is all that helper's own guard exists to ensure.
+  let dims = null;
+  try {
+    dims = sizeOf(fs.readFileSync(file.path));
+  } catch {
+    dims = null;
+  }
+  if (
+    !dims ||
+    !dims.width ||
+    !dims.height ||
+    Math.min(dims.width, dims.height) < SCHOOL_LOGO_MIN_PX ||
+    Math.max(dims.width, dims.height) > SCHOOL_LOGO_MAX_PX
+  ) {
+    discard(file);
+    return {
+      error: `Logo must be at least ${SCHOOL_LOGO_MIN_PX}x${SCHOOL_LOGO_MIN_PX} and no larger than ${SCHOOL_LOGO_MAX_PX}x${SCHOOL_LOGO_MAX_PX} pixels.`,
+    };
+  }
+
+  if (path.extname(file.filename).toLowerCase() !== ext) {
+    const newName = file.filename.replace(/\.[^./]*$/, "") + ext;
+    const newPath = path.join(path.dirname(file.path), newName);
+    fs.renameSync(file.path, newPath);
+    file = { ...file, filename: newName, path: newPath };
+  }
+  return { file };
+}
+
+app.post(
+  "/api/super/schools/:id/logo",
+  requireAuth,
+  requireSuperAdmin,
+  requireSuperAdminPermission("manage_schools"),
+  handleUploadError(upload.single("logo")),
+  async (req, res) => {
+    const discardUpload = () =>
+      req.file && fs.unlink(req.file.path, () => {});
+    try {
+      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+      const [schoolRows] = await pool.query(
+        "SELECT id, school_name FROM schools WHERE id = ?",
+        [req.params.id],
+      );
+      if (schoolRows.length === 0) {
+        discardUpload();
+        return res.status(404).json({ error: "School not found." });
+      }
+
+      const result = await processSchoolLogoUpload(req.file);
+      if (result.error) return res.status(400).json({ error: result.error });
+
+      const logoPath = `/uploads/${result.file.filename}`;
+      await pool.query("UPDATE schools SET logo_url = ? WHERE id = ?", [
+        logoPath,
+        req.params.id,
+      ]);
+      await logAudit(
+        req,
+        "school.logo_update",
+        "school",
+        req.params.id,
+        `${schoolRows[0].school_name} — logo uploaded`,
+      );
+      res.json({
+        logo_url: logoPath,
+        message: `${schoolRows[0].school_name} logo updated.`,
+      });
+    } catch (err) {
+      discardUpload();
+      console.error("POST /api/super/schools/:id/logo error:", err);
+      res.status(500).json({ error: "Could not upload school logo" });
+    }
+  },
+);
+
+// Removes a school's own logo so it falls back to the zone logo.
+app.delete(
+  "/api/super/schools/:id/logo",
+  requireAuth,
+  requireSuperAdmin,
+  requireSuperAdminPermission("manage_schools"),
+  async (req, res) => {
+    try {
+      const [schoolRows] = await pool.query(
+        "SELECT id, school_name FROM schools WHERE id = ?",
+        [req.params.id],
+      );
+      if (schoolRows.length === 0)
+        return res.status(404).json({ error: "School not found." });
+      await pool.query("UPDATE schools SET logo_url = NULL WHERE id = ?", [
+        req.params.id,
+      ]);
+      await logAudit(
+        req,
+        "school.logo_remove",
+        "school",
+        req.params.id,
+        `${schoolRows[0].school_name} — logo removed`,
+      );
+      res.json({
+        message: `${schoolRows[0].school_name} logo removed — the zone logo will be used instead.`,
+      });
+    } catch (err) {
+      console.error("DELETE /api/super/schools/:id/logo error:", err);
+      res.status(500).json({ error: "Could not remove school logo" });
     }
   },
 );
@@ -31924,6 +32373,1718 @@ app.get(
     }
   },
 );
+// ====================================================================
+// SUBSCRIPTION FEE — monthly fee collected per school, tracked per
+// Ethiopian-Calendar (EC) month.
+//
+// How it fits together:
+//   - Super Admin turns Subscription on per school and sets a student
+//     fee, a staff fee and the bank account the school deposits into
+//     (school_subscription_settings).
+//   - Class Monitors / Homeroom Teachers mark students paid and the
+//     Admin VP marks staff paid (subscription_payments — one row per
+//     person per EC month, so a new EC month starts with an empty list
+//     without any scheduled job). The school-side routes live further
+//     down this block and are added in the school-portal pass.
+//   - The Principal sends the month's report to Super Admin
+//     (subscription_reports).
+//   - Super Admin reviews it and freezes/unfreezes unpaid students and
+//     staff (subscription_freezes). A frozen person is refused at login
+//     and cut off mid-session by requireAuth (see isSubscriptionFrozen).
+//
+// Tables are created on first use (same self-healing pattern as
+// ensureSuperAdminCoreTables) — no manual migration needed.
+// Billing runs for the 12 regular EC months; Pagume (month 13) is not
+// billed.
+// ====================================================================
+const SUBSCRIPTION_FROZEN_MESSAGE =
+  "You didn't pay your subscription fee. Please pay to access your account.";
+const SUBSCRIPTION_FROZEN_CODE = "SUBSCRIPTION_FROZEN";
+// The account types that pay the fee, and can therefore be frozen.
+// Super admins and zonal admins never pay and are never frozen.
+const SUBSCRIPTION_GATED_ROLES = new Set([
+  "students",
+  "teachers",
+  "school_admins",
+  "registrar_users",
+]);
+const SUBSCRIPTION_MAX_FEE = 10000000;
+
+let subscriptionTablesPromise = null;
+function ensureSubscriptionTables() {
+  if (!subscriptionTablesPromise) {
+    subscriptionTablesPromise = (async () => {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS school_subscription_settings (
+          school_id INT NOT NULL PRIMARY KEY,
+          is_enabled TINYINT(1) NOT NULL DEFAULT 0,
+          student_fee DECIMAL(10,2) NOT NULL DEFAULT 0,
+          staff_fee DECIMAL(10,2) NOT NULL DEFAULT 0,
+          bank_name VARCHAR(100) NULL,
+          bank_account_name VARCHAR(150) NULL,
+          bank_account_number VARCHAR(50) NULL,
+          updated_by VARCHAR(30) NULL,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (school_id) REFERENCES schools(id)
+        )
+      `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS subscription_payments (
+          payment_id INT AUTO_INCREMENT PRIMARY KEY,
+          school_id INT NOT NULL,
+          person_type ENUM('student','staff') NOT NULL,
+          person_id VARCHAR(30) NOT NULL,
+          ec_year INT NOT NULL,
+          ec_month TINYINT NOT NULL,
+          amount DECIMAL(10,2) NOT NULL,
+          marked_by VARCHAR(30) NOT NULL,
+          marked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_person_period (school_id, person_id, ec_year, ec_month),
+          KEY idx_period (school_id, ec_year, ec_month),
+          FOREIGN KEY (school_id) REFERENCES schools(id)
+        )
+      `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS subscription_freezes (
+          person_id VARCHAR(30) NOT NULL PRIMARY KEY,
+          person_type ENUM('student','staff') NOT NULL,
+          school_id INT NOT NULL,
+          frozen_by VARCHAR(30) NOT NULL,
+          frozen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          KEY idx_school (school_id),
+          FOREIGN KEY (school_id) REFERENCES schools(id)
+        )
+      `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS subscription_reports (
+          report_id INT AUTO_INCREMENT PRIMARY KEY,
+          school_id INT NOT NULL,
+          ec_year INT NOT NULL,
+          ec_month TINYINT NOT NULL,
+          total_collected DECIMAL(12,2) NOT NULL DEFAULT 0,
+          students_paid INT NOT NULL DEFAULT 0,
+          students_unpaid INT NOT NULL DEFAULT 0,
+          staff_paid INT NOT NULL DEFAULT 0,
+          staff_unpaid INT NOT NULL DEFAULT 0,
+          snapshot LONGTEXT NULL,
+          sent_by VARCHAR(30) NOT NULL,
+          sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          reviewed_by VARCHAR(30) NULL,
+          reviewed_at DATETIME NULL,
+          KEY idx_school_period (school_id, ec_year, ec_month),
+          KEY idx_sent (sent_at),
+          FOREIGN KEY (school_id) REFERENCES schools(id)
+        )
+      `);
+    })().catch((err) => {
+      // Let the next request retry instead of caching a failure forever.
+      subscriptionTablesPromise = null;
+      throw err;
+    });
+  }
+  return subscriptionTablesPromise;
+}
+
+// --- EC billing period ------------------------------------------------
+// "Today" is always taken in East Africa Time, whatever timezone the
+// server itself runs in, then handed to toEthiopianDate() as a plain
+// local date. Month 13 (Pagume) comes back billable:false.
+function currentBillingPeriod(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Africa/Addis_Ababa",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+  const pick = (type) => Number(parts.find((p) => p.type === type).value);
+  const ec = toEthiopianDate(
+    new Date(pick("year"), pick("month") - 1, pick("day")),
+  );
+  return {
+    ec_year: ec.year,
+    ec_month: ec.month,
+    month_name: ec.monthName,
+    billable: ec.month <= 12,
+  };
+}
+
+// Reads ec_year / ec_month from a query string or body. Missing values
+// fall back to the current billing month (Nehase during Pagume, since
+// Pagume itself isn't billed). Returns null for anything invalid.
+function parseBillingPeriod(source) {
+  const cur = currentBillingPeriod();
+  const has = (v) => v !== undefined && v !== null && v !== "";
+  const ecYear = has(source.ec_year) ? Number(source.ec_year) : cur.ec_year;
+  const ecMonth = has(source.ec_month)
+    ? Number(source.ec_month)
+    : cur.billable
+      ? cur.ec_month
+      : 12;
+  if (!Number.isInteger(ecYear) || ecYear < 1990 || ecYear > 2200) return null;
+  if (!Number.isInteger(ecMonth) || ecMonth < 1 || ecMonth > 12) return null;
+  return {
+    ec_year: ecYear,
+    ec_month: ecMonth,
+    month_name: ETHIOPIAN_MONTHS[ecMonth - 1],
+  };
+}
+
+function subscriptionRound2(n) {
+  return Math.round(Number(n || 0) * 100) / 100;
+}
+function subscriptionFullName(r) {
+  return [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(" ");
+}
+
+async function getSubscriptionSettings(schoolId) {
+  const [rows] = await pool.query(
+    "SELECT * FROM school_subscription_settings WHERE school_id = ?",
+    [schoolId],
+  );
+  const r = rows[0] || {};
+  return {
+    school_id: Number(schoolId),
+    is_enabled: !!r.is_enabled,
+    student_fee: Number(r.student_fee || 0),
+    staff_fee: Number(r.staff_fee || 0),
+    bank_name: r.bank_name || "",
+    bank_account_name: r.bank_account_name || "",
+    bank_account_number: r.bank_account_number || "",
+  };
+}
+// A school can only be switched on once there is something to charge
+// and somewhere to pay it to.
+function subscriptionSetupComplete(s) {
+  return (
+    (s.student_fee > 0 || s.staff_fee > 0) &&
+    !!String(s.bank_account_number || "").trim()
+  );
+}
+
+// --- Freeze enforcement ------------------------------------------------
+// requireAuth calls this on every request from a fee-paying account, so
+// answers are cached per person for 60s. Every freeze/unfreeze/toggle
+// clears the cache on this server; login bypasses it ({ fresh: true })
+// so an unfreeze takes effect on the very next sign-in.
+const subFreezeCache = new Map();
+const SUB_FREEZE_CACHE_MS = 60 * 1000;
+async function isSubscriptionFrozen(personId, { fresh = false } = {}) {
+  const now = Date.now();
+  if (!fresh) {
+    const hit = subFreezeCache.get(personId);
+    if (hit && hit.expires > now) return hit.frozen;
+  }
+  await ensureSubscriptionTables();
+  // Only counts while the school's subscription is still switched on.
+  const [rows] = await pool.query(
+    `SELECT 1 FROM subscription_freezes f
+       JOIN school_subscription_settings s
+         ON s.school_id = f.school_id AND s.is_enabled = 1
+      WHERE f.person_id = ? LIMIT 1`,
+    [personId],
+  );
+  const frozen = rows.length > 0;
+  if (subFreezeCache.size > 20000) subFreezeCache.clear();
+  subFreezeCache.set(personId, { frozen, expires: now + SUB_FREEZE_CACHE_MS });
+  return frozen;
+}
+
+// --- Roster + report builder -------------------------------------------
+// Everyone a school is billed for in one EC month, with paid/frozen
+// state. Students: status 'Active' only (Unregistered / Graduated /
+// Transferred aren't billed). Staff: teachers, school admins and
+// registrar accounts that are still active.
+async function loadSubscriptionRoster(schoolId, period, settings) {
+  const [studentRows] = await pool.query(
+    `SELECT student_id, first_name, middle_name, last_name, class_level, section, stream, is_class_monitor
+       FROM students
+      WHERE school_id = ? AND status = 'Active'
+      ORDER BY class_level, section, first_name, last_name`,
+    [schoolId],
+  );
+  const [teacherRows] = await pool.query(
+    `SELECT teacher_id, first_name, middle_name, last_name, homeroom_class_level, homeroom_section
+       FROM teachers
+      WHERE school_id = ? AND (is_active IS NULL OR is_active = TRUE)`,
+    [schoolId],
+  );
+  const [adminRows] = await pool.query(
+    `SELECT admin_id, first_name, middle_name, last_name, title
+       FROM school_admins
+      WHERE school_id = ? AND (is_active IS NULL OR is_active = TRUE)`,
+    [schoolId],
+  );
+  let registrarRows = [];
+  try {
+    [registrarRows] = await pool.query(
+      `SELECT registrar_id, first_name, middle_name, last_name
+         FROM registrar_users WHERE school_id = ?`,
+      [schoolId],
+    );
+  } catch (err) {
+    // A deployment without standalone registrar accounts is fine.
+    if (err.code !== "ER_NO_SUCH_TABLE" && err.code !== "ER_BAD_FIELD_ERROR")
+      throw err;
+  }
+  const [payRows] = await pool.query(
+    `SELECT person_id, amount, marked_by, marked_at
+       FROM subscription_payments
+      WHERE school_id = ? AND ec_year = ? AND ec_month = ?`,
+    [schoolId, period.ec_year, period.ec_month],
+  );
+  const [frozenRows] = await pool.query(
+    "SELECT person_id FROM subscription_freezes WHERE school_id = ?",
+    [schoolId],
+  );
+  const paidById = new Map(payRows.map((p) => [p.person_id, p]));
+  const frozenIds = new Set(frozenRows.map((f) => f.person_id));
+
+  const make = (base, fee) => {
+    const pay = paidById.get(base.person_id);
+    return {
+      ...base,
+      paid: !!pay,
+      amount: pay ? Number(pay.amount) : fee,
+      paid_at: pay ? pay.marked_at : null,
+      marked_by: pay ? pay.marked_by : null,
+      frozen: frozenIds.has(base.person_id),
+    };
+  };
+
+  const students = studentRows.map((s) =>
+    make(
+      {
+        person_id: s.student_id,
+        person_type: "student",
+        name: subscriptionFullName(s),
+        role_code: s.is_class_monitor ? "class_monitor" : "student",
+        title: null,
+        class_level: s.class_level,
+        section: s.section,
+        stream: s.stream || null,
+        class_label: `${s.class_level}${s.section ? "-" + s.section : ""}`,
+        is_collector: !!s.is_class_monitor,
+      },
+      settings.student_fee,
+    ),
+  );
+
+  const ADMIN_TITLE_CODES = {
+    Principal: "principal",
+    "Admin VP": "admin_vp",
+    "Academic VP": "academic_vp",
+  };
+  const staff = [
+    ...teacherRows.map((t) => {
+      // Same test getHomeroomSectionOrNull() uses elsewhere: a homeroom
+      // teacher is one with a homeroom_section on file.
+      const isHomeroom = !!t.homeroom_section;
+      return {
+        person_id: t.teacher_id,
+        person_type: "staff",
+        name: subscriptionFullName(t),
+        role_code: isHomeroom ? "homeroom_teacher" : "teacher",
+        title: null,
+        class_level: isHomeroom ? t.homeroom_class_level : null,
+        section: isHomeroom ? t.homeroom_section : null,
+        stream: null,
+        class_label: isHomeroom
+          ? `${t.homeroom_class_level}${t.homeroom_section ? "-" + t.homeroom_section : ""}`
+          : null,
+        is_collector: isHomeroom,
+      };
+    }),
+    ...adminRows.map((a) => ({
+      person_id: a.admin_id,
+      person_type: "staff",
+      name: subscriptionFullName(a),
+      role_code: ADMIN_TITLE_CODES[a.title] || "school_admin",
+      title: a.title || null,
+      class_level: null,
+      section: null,
+      stream: null,
+      class_label: null,
+      // Principal sends the report, Admin VP collects staff money.
+      is_collector: a.title === "Principal" || a.title === "Admin VP",
+    })),
+    ...registrarRows.map((r) => ({
+      person_id: r.registrar_id,
+      person_type: "staff",
+      name: subscriptionFullName(r),
+      role_code: "registrar",
+      title: null,
+      class_level: null,
+      section: null,
+      stream: null,
+      class_label: null,
+      is_collector: false,
+    })),
+  ].map((p) => make(p, settings.staff_fee));
+
+  return { students, staff };
+}
+
+function summarizeSubscriptionRoster(students, staff, settings) {
+  const sumOf = (list, fee) => {
+    const paid = list.filter((p) => p.paid);
+    return {
+      total: list.length,
+      paid: paid.length,
+      unpaid: list.length - paid.length,
+      collected: subscriptionRound2(paid.reduce((a, p) => a + p.amount, 0)),
+      expected: subscriptionRound2(list.length * fee),
+    };
+  };
+  const st = sumOf(students, settings.student_fee);
+  const sf = sumOf(staff, settings.staff_fee);
+  const byClass = new Map();
+  students.forEach((s) => {
+    const key = `${s.class_level}|${s.section || ""}`;
+    if (!byClass.has(key)) {
+      byClass.set(key, {
+        class_level: s.class_level,
+        section: s.section || "",
+        class_label: s.class_label,
+        total: 0,
+        paid: 0,
+        collected: 0,
+      });
+    }
+    const row = byClass.get(key);
+    row.total += 1;
+    if (s.paid) {
+      row.paid += 1;
+      row.collected = subscriptionRound2(row.collected + s.amount);
+    }
+  });
+  return {
+    summary: {
+      students: st,
+      staff: sf,
+      total_collected: subscriptionRound2(st.collected + sf.collected),
+      total_expected: subscriptionRound2(st.expected + sf.expected),
+    },
+    by_class: Array.from(byClass.values()).sort(
+      (a, b) =>
+        a.class_level - b.class_level ||
+        String(a.section).localeCompare(String(b.section)),
+    ),
+  };
+}
+
+// The full picture for one school + one EC month. Used by the Super
+// Admin report screen now, and by the school-side "live totals" and
+// "Send Report" routes later, so all three always agree.
+async function buildSubscriptionReport(schoolId, period) {
+  const settings = await getSubscriptionSettings(schoolId);
+  const { students, staff } = await loadSubscriptionRoster(
+    schoolId,
+    period,
+    settings,
+  );
+  const { summary, by_class } = summarizeSubscriptionRoster(
+    students,
+    staff,
+    settings,
+  );
+  return { period, settings, summary, by_class, students, staff };
+}
+
+// What gets frozen into subscription_reports.snapshot when the
+// Principal presses Send Report: the totals as they stood at that
+// moment plus who was still unpaid — not the paid list, which the
+// Super Admin can always read live.
+function subscriptionSnapshot(report) {
+  return {
+    period: report.period,
+    fees: {
+      student_fee: report.settings.student_fee,
+      staff_fee: report.settings.staff_fee,
+    },
+    summary: report.summary,
+    by_class: report.by_class,
+    unpaid_students: report.students
+      .filter((p) => !p.paid)
+      .map((p) => ({
+        person_id: p.person_id,
+        name: p.name,
+        class_label: p.class_label,
+      })),
+    unpaid_staff: report.staff
+      .filter((p) => !p.paid)
+      .map((p) => ({
+        person_id: p.person_id,
+        name: p.name,
+        role_code: p.role_code,
+        title: p.title,
+      })),
+  };
+}
+
+// --- Super Admin routes --------------------------------------------------
+const subscriptionSuperGuards = [
+  requireAuth,
+  requireSuperAdmin,
+  requireSuperAdminPermission("manage_schools"),
+];
+
+// Every active school with its subscription settings and, for the
+// chosen EC month (default: this one), how much has been collected.
+app.get(
+  "/api/super/subscriptions",
+  ...subscriptionSuperGuards,
+  async (req, res) => {
+    const period = parseBillingPeriod(req.query);
+    if (!period)
+      return res
+        .status(400)
+        .json({ error: "ec_year or ec_month is not a valid billing month." });
+    try {
+      await ensureSubscriptionTables();
+      const [schools] = await pool.query(
+        `SELECT sc.id, sc.school_name, sc.school_prefix, z.zone_name, r.region_name,
+              COALESCE(ss.is_enabled, 0) AS is_enabled,
+              COALESCE(ss.student_fee, 0) AS student_fee,
+              COALESCE(ss.staff_fee, 0) AS staff_fee,
+              ss.bank_name, ss.bank_account_name, ss.bank_account_number
+         FROM schools sc
+         LEFT JOIN zone z ON z.zone_id = sc.zone_id
+         LEFT JOIN region r ON r.region_id = z.region_id
+         LEFT JOIN school_subscription_settings ss ON ss.school_id = sc.id
+        WHERE sc.is_archived = 0
+        ORDER BY r.region_name, z.zone_name, sc.school_name`,
+      );
+      const [paidRows] = await pool.query(
+        `SELECT school_id, COUNT(*) AS paid_count, SUM(amount) AS collected
+         FROM subscription_payments
+        WHERE ec_year = ? AND ec_month = ?
+        GROUP BY school_id`,
+        [period.ec_year, period.ec_month],
+      );
+      const [frozenRows] = await pool.query(
+        "SELECT school_id, COUNT(*) AS frozen_count FROM subscription_freezes GROUP BY school_id",
+      );
+      const [reportRows] = await pool.query(
+        `SELECT school_id, MAX(report_id) AS report_id, MAX(sent_at) AS sent_at
+         FROM subscription_reports
+        WHERE ec_year = ? AND ec_month = ?
+        GROUP BY school_id`,
+        [period.ec_year, period.ec_month],
+      );
+      const paidBy = new Map(paidRows.map((r) => [r.school_id, r]));
+      const frozenBy = new Map(frozenRows.map((r) => [r.school_id, r]));
+      const reportBy = new Map(reportRows.map((r) => [r.school_id, r]));
+      res.json({
+        period,
+        current_period: currentBillingPeriod(),
+        schools: schools.map((s) => {
+          const settings = {
+            student_fee: Number(s.student_fee),
+            staff_fee: Number(s.staff_fee),
+            bank_account_number: s.bank_account_number,
+          };
+          const paid = paidBy.get(s.id);
+          return {
+            id: s.id,
+            school_name: s.school_name,
+            school_prefix: s.school_prefix,
+            zone_name: s.zone_name,
+            region_name: s.region_name,
+            is_enabled: !!s.is_enabled,
+            is_setup_complete: subscriptionSetupComplete(settings),
+            student_fee: settings.student_fee,
+            staff_fee: settings.staff_fee,
+            bank_name: s.bank_name || "",
+            bank_account_name: s.bank_account_name || "",
+            bank_account_number: s.bank_account_number || "",
+            paid_count: paid ? Number(paid.paid_count) : 0,
+            collected: paid ? subscriptionRound2(paid.collected) : 0,
+            frozen_count: frozenBy.has(s.id)
+              ? Number(frozenBy.get(s.id).frozen_count)
+              : 0,
+            report_id: reportBy.has(s.id) ? reportBy.get(s.id).report_id : null,
+            report_sent_at: reportBy.has(s.id)
+              ? reportBy.get(s.id).sent_at
+              : null,
+          };
+        }),
+      });
+    } catch (err) {
+      console.error("/api/super/subscriptions GET error:", err);
+      res.status(500).json({ error: "Could not load subscriptions" });
+    }
+  },
+);
+
+// Toggle and/or fee + bank setup for one school. Every field is
+// optional so the toggle on the Schools list can send just is_enabled.
+// The password confirmation happens in the portal beforehand
+// (POST /api/super/verify-password), same as every other write here.
+app.put(
+  "/api/super/subscriptions/:schoolId",
+  ...subscriptionSuperGuards,
+  async (req, res) => {
+    const schoolId = parseInt(req.params.schoolId, 10);
+    if (!Number.isInteger(schoolId))
+      return res.status(400).json({ error: "Invalid school." });
+    const body = req.body || {};
+    try {
+      await ensureSubscriptionTables();
+      const [schoolRows] = await pool.query(
+        "SELECT school_name FROM schools WHERE id = ? AND is_archived = 0",
+        [schoolId],
+      );
+      if (schoolRows.length === 0)
+        return res.status(404).json({ error: "School not found." });
+      const before = await getSubscriptionSettings(schoolId);
+      const next = { ...before };
+
+      const readFee = (key, label) => {
+        if (body[key] === undefined) return null;
+        const n = Number(body[key]);
+        if (
+          body[key] === "" ||
+          !Number.isFinite(n) ||
+          n < 0 ||
+          n > SUBSCRIPTION_MAX_FEE
+        )
+          return `${label} must be a number between 0 and ${SUBSCRIPTION_MAX_FEE}.`;
+        next[key] = subscriptionRound2(n);
+        return null;
+      };
+      const feeError =
+        readFee("student_fee", "Student fee") ||
+        readFee("staff_fee", "Staff fee");
+      if (feeError) return res.status(400).json({ error: feeError });
+
+      const textFields = [
+        ["bank_name", 100, "Bank name"],
+        ["bank_account_name", 150, "Account name"],
+        ["bank_account_number", 50, "Account number"],
+      ];
+      for (const [key, max, label] of textFields) {
+        if (body[key] === undefined) continue;
+        const v = String(body[key] ?? "").trim();
+        if (v.length > max)
+          return res
+            .status(400)
+            .json({ error: `${label} is too long (max ${max} characters).` });
+        if (
+          key === "bank_account_number" &&
+          v &&
+          !/^[A-Za-z0-9][A-Za-z0-9 \-]*$/.test(v)
+        )
+          return res.status(400).json({
+            error:
+              "Account number can only contain letters, digits, spaces and dashes.",
+          });
+        next[key] = v;
+      }
+      if (body.is_enabled !== undefined) {
+        if (typeof body.is_enabled !== "boolean")
+          return res
+            .status(400)
+            .json({ error: "is_enabled must be true or false." });
+        next.is_enabled = body.is_enabled;
+      }
+      if (next.is_enabled && !subscriptionSetupComplete(next)) {
+        return res.status(400).json({
+          error:
+            "Set at least one fee and the bank account number before turning Subscription on.",
+        });
+      }
+
+      await pool.query(
+        `INSERT INTO school_subscription_settings
+           (school_id, is_enabled, student_fee, staff_fee, bank_name, bank_account_name, bank_account_number, updated_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           is_enabled = VALUES(is_enabled), student_fee = VALUES(student_fee), staff_fee = VALUES(staff_fee),
+           bank_name = VALUES(bank_name), bank_account_name = VALUES(bank_account_name),
+           bank_account_number = VALUES(bank_account_number), updated_by = VALUES(updated_by)`,
+        [
+          schoolId,
+          next.is_enabled ? 1 : 0,
+          next.student_fee,
+          next.staff_fee,
+          next.bank_name || null,
+          next.bank_account_name || null,
+          next.bank_account_number || null,
+          req.user.user_id,
+        ],
+      );
+
+      // Switching a school off releases everyone who was frozen for it,
+      // so nobody stays locked out of a fee that no longer applies.
+      let released = 0;
+      if (before.is_enabled && !next.is_enabled) {
+        const [del] = await pool.query(
+          "DELETE FROM subscription_freezes WHERE school_id = ?",
+          [schoolId],
+        );
+        released = del.affectedRows || 0;
+      }
+      subFreezeCache.clear();
+
+      await logAudit(
+        req,
+        "subscription.settings",
+        "school",
+        schoolId,
+        `${schoolRows[0].school_name}: ${next.is_enabled ? "on" : "off"}, student fee ${next.student_fee}, staff fee ${next.staff_fee}` +
+          (released ? `, released ${released} frozen account(s)` : ""),
+      );
+      res.json({
+        message: next.is_enabled
+          ? "Subscription is on for this school."
+          : released
+            ? `Subscription is off for this school. ${released} frozen account(s) were released.`
+            : "Subscription settings saved.",
+        settings: {
+          ...next,
+          is_setup_complete: subscriptionSetupComplete(next),
+        },
+        released,
+      });
+    } catch (err) {
+      console.error("/api/super/subscriptions/:schoolId PUT error:", err);
+      res.status(500).json({ error: "Could not save subscription settings" });
+    }
+  },
+);
+
+// One school's paid/unpaid picture for one EC month — the Super
+// Admin's report screen.
+app.get(
+  "/api/super/subscriptions/:schoolId/report",
+  ...subscriptionSuperGuards,
+  async (req, res) => {
+    const schoolId = parseInt(req.params.schoolId, 10);
+    if (!Number.isInteger(schoolId))
+      return res.status(400).json({ error: "Invalid school." });
+    const period = parseBillingPeriod(req.query);
+    if (!period)
+      return res
+        .status(400)
+        .json({ error: "ec_year or ec_month is not a valid billing month." });
+    try {
+      await ensureSubscriptionTables();
+      const [schoolRows] = await pool.query(
+        "SELECT id, school_name FROM schools WHERE id = ?",
+        [schoolId],
+      );
+      if (schoolRows.length === 0)
+        return res.status(404).json({ error: "School not found." });
+      const report = await buildSubscriptionReport(schoolId, period);
+      const [sent] = await pool.query(
+        `SELECT report_id, sent_by, sent_at, total_collected, reviewed_at
+           FROM subscription_reports
+          WHERE school_id = ? AND ec_year = ? AND ec_month = ?
+          ORDER BY sent_at DESC`,
+        [schoolId, period.ec_year, period.ec_month],
+      );
+      res.json({
+        school: {
+          id: schoolRows[0].id,
+          school_name: schoolRows[0].school_name,
+        },
+        ...report,
+        reports_sent: sent.map((r) => ({
+          ...r,
+          total_collected: Number(r.total_collected),
+        })),
+      });
+    } catch (err) {
+      console.error("/api/super/subscriptions/:schoolId/report error:", err);
+      res.status(500).json({ error: "Could not load the subscription report" });
+    }
+  },
+);
+
+// Freeze or unfreeze specific people at one school. Only Super Admin
+// can do this. Freezing needs the school's subscription to be on and
+// only accepts people from that school's billable roster; unfreezing
+// always works, even for someone who has since left the roster.
+app.post(
+  "/api/super/subscriptions/:schoolId/freeze",
+  ...subscriptionSuperGuards,
+  async (req, res) => {
+    const schoolId = parseInt(req.params.schoolId, 10);
+    const { person_ids, frozen } = req.body || {};
+    if (!Number.isInteger(schoolId))
+      return res.status(400).json({ error: "Invalid school." });
+    if (typeof frozen !== "boolean")
+      return res.status(400).json({ error: "frozen must be true or false." });
+    if (
+      !Array.isArray(person_ids) ||
+      person_ids.length === 0 ||
+      person_ids.length > 3000
+    )
+      return res.status(400).json({ error: "Pick between 1 and 3000 people." });
+    const ids = Array.from(new Set(person_ids.map((v) => String(v))));
+    try {
+      await ensureSubscriptionTables();
+      const [schoolRows] = await pool.query(
+        "SELECT school_name FROM schools WHERE id = ?",
+        [schoolId],
+      );
+      if (schoolRows.length === 0)
+        return res.status(404).json({ error: "School not found." });
+
+      let count = 0;
+      if (frozen) {
+        const settings = await getSubscriptionSettings(schoolId);
+        if (!settings.is_enabled)
+          return res.status(409).json({
+            error:
+              "Subscription is off for this school, so accounts can't be frozen.",
+          });
+        const { students, staff } = await loadSubscriptionRoster(
+          schoolId,
+          parseBillingPeriod({}),
+          settings,
+        );
+        const typeById = new Map(
+          [...students, ...staff].map((p) => [p.person_id, p.person_type]),
+        );
+        const unknown = ids.filter((id) => !typeById.has(id));
+        if (unknown.length > 0)
+          return res.status(400).json({
+            error: `${unknown.length} selected account(s) aren't on this school's billing list.`,
+          });
+        const rows = ids.map((id) => [
+          id,
+          typeById.get(id),
+          schoolId,
+          req.user.user_id,
+        ]);
+        await pool.query(
+          `INSERT INTO subscription_freezes (person_id, person_type, school_id, frozen_by)
+           VALUES ?
+           ON DUPLICATE KEY UPDATE school_id = VALUES(school_id)`,
+          [rows],
+        );
+        count = ids.length;
+      } else {
+        const [del] = await pool.query(
+          "DELETE FROM subscription_freezes WHERE school_id = ? AND person_id IN (?)",
+          [schoolId, ids],
+        );
+        count = del.affectedRows || 0;
+      }
+      subFreezeCache.clear();
+      await logAudit(
+        req,
+        frozen ? "subscription.freeze" : "subscription.unfreeze",
+        "school",
+        schoolId,
+        `${schoolRows[0].school_name}: ${frozen ? "froze" : "unfroze"} ${count} account(s)`,
+      );
+      res.json({
+        message: frozen
+          ? `${count} account(s) frozen.`
+          : `${count} account(s) unfrozen.`,
+        count,
+      });
+    } catch (err) {
+      console.error("/api/super/subscriptions/:schoolId/freeze error:", err);
+      res.status(500).json({ error: "Could not update frozen accounts" });
+    }
+  },
+);
+
+// Reports schools have sent (newest first). Optional filters:
+// school_id, ec_year, ec_month.
+app.get(
+  "/api/super/subscription-reports",
+  ...subscriptionSuperGuards,
+  async (req, res) => {
+    try {
+      await ensureSubscriptionTables();
+      const where = [];
+      const params = [];
+      if (req.query.school_id) {
+        where.push("r.school_id = ?");
+        params.push(parseInt(req.query.school_id, 10) || 0);
+      }
+      if (req.query.ec_year) {
+        where.push("r.ec_year = ?");
+        params.push(parseInt(req.query.ec_year, 10) || 0);
+      }
+      if (req.query.ec_month) {
+        where.push("r.ec_month = ?");
+        params.push(parseInt(req.query.ec_month, 10) || 0);
+      }
+      const [rows] = await pool.query(
+        `SELECT r.report_id, r.school_id, sc.school_name, r.ec_year, r.ec_month,
+              r.total_collected, r.students_paid, r.students_unpaid, r.staff_paid, r.staff_unpaid,
+              r.sent_by, CONCAT_WS(' ', a.first_name, a.last_name) AS sent_by_name, r.sent_at,
+              r.reviewed_at
+         FROM subscription_reports r
+         JOIN schools sc ON sc.id = r.school_id
+         LEFT JOIN school_admins a ON a.admin_id = r.sent_by
+        ${where.length ? "WHERE " + where.join(" AND ") : ""}
+        ORDER BY r.sent_at DESC
+        LIMIT 200`,
+        params,
+      );
+      res.json(
+        rows.map((r) => ({
+          ...r,
+          month_name: ETHIOPIAN_MONTHS[r.ec_month - 1] || "",
+          total_collected: Number(r.total_collected),
+        })),
+      );
+    } catch (err) {
+      console.error("/api/super/subscription-reports GET error:", err);
+      res.status(500).json({ error: "Could not load reports" });
+    }
+  },
+);
+
+app.get(
+  "/api/super/subscription-reports/:id",
+  ...subscriptionSuperGuards,
+  async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id))
+      return res.status(400).json({ error: "Invalid report." });
+    try {
+      await ensureSubscriptionTables();
+      const [rows] = await pool.query(
+        `SELECT r.*, sc.school_name, CONCAT_WS(' ', a.first_name, a.last_name) AS sent_by_name
+           FROM subscription_reports r
+           JOIN schools sc ON sc.id = r.school_id
+           LEFT JOIN school_admins a ON a.admin_id = r.sent_by
+          WHERE r.report_id = ?`,
+        [id],
+      );
+      if (rows.length === 0)
+        return res.status(404).json({ error: "Report not found." });
+      const r = rows[0];
+      let snapshot = null;
+      try {
+        snapshot = r.snapshot ? JSON.parse(r.snapshot) : null;
+      } catch (e) {
+        snapshot = null;
+      }
+      res.json({
+        report_id: r.report_id,
+        school_id: r.school_id,
+        school_name: r.school_name,
+        ec_year: r.ec_year,
+        ec_month: r.ec_month,
+        month_name: ETHIOPIAN_MONTHS[r.ec_month - 1] || "",
+        total_collected: Number(r.total_collected),
+        sent_by: r.sent_by,
+        sent_by_name: r.sent_by_name,
+        sent_at: r.sent_at,
+        reviewed_at: r.reviewed_at,
+        snapshot,
+      });
+    } catch (err) {
+      console.error("/api/super/subscription-reports/:id GET error:", err);
+      res.status(500).json({ error: "Could not load the report" });
+    }
+  },
+);
+
+app.post(
+  "/api/super/subscription-reports/:id/review",
+  ...subscriptionSuperGuards,
+  async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id))
+      return res.status(400).json({ error: "Invalid report." });
+    try {
+      await ensureSubscriptionTables();
+      const [result] = await pool.query(
+        "UPDATE subscription_reports SET reviewed_by = ?, reviewed_at = NOW() WHERE report_id = ? AND reviewed_at IS NULL",
+        [req.user.user_id, id],
+      );
+      if (result.affectedRows === 0) {
+        const [exists] = await pool.query(
+          "SELECT report_id FROM subscription_reports WHERE report_id = ?",
+          [id],
+        );
+        if (exists.length === 0)
+          return res.status(404).json({ error: "Report not found." });
+      }
+      await logAudit(
+        req,
+        "subscription.report_reviewed",
+        "subscription_report",
+        id,
+        null,
+      );
+      res.json({ message: "Report marked as reviewed." });
+    } catch (err) {
+      console.error("/api/super/subscription-reports/:id/review error:", err);
+      res.status(500).json({ error: "Could not update the report" });
+    }
+  },
+);
+
+// --- School-side routes: Admin VP + Principal ----------------------------
+// Everything below applies to ONE school (req.user.school_id) and only
+// while Super Admin has Subscription switched on for it. The student-side
+// routes (Class Monitor / Homeroom Teacher marking students) are added
+// with the teacher and student portals and reuse the helpers above.
+
+// Resolves this school's settings and the current billing month, or sends
+// the error response itself and returns null. needBillable: writes are
+// refused in Pagume, which isn't billed.
+async function requireSchoolSubscription(
+  req,
+  res,
+  { needBillable = false } = {},
+) {
+  await ensureSubscriptionTables();
+  const schoolId = req.user.school_id;
+  if (!schoolId) {
+    res.status(403).json({ error: "This account isn't linked to a school." });
+    return null;
+  }
+  const settings = await getSubscriptionSettings(schoolId);
+  if (!settings.is_enabled) {
+    res.status(403).json({
+      error: "Subscription Fee isn't turned on for your school.",
+      code: "SUBSCRIPTION_OFF",
+    });
+    return null;
+  }
+  const current = currentBillingPeriod();
+  if (needBillable && !current.billable) {
+    res.status(409).json({
+      error: "Pagume isn't a billing month. Payments open again on Meskerem 1.",
+      code: "SUBSCRIPTION_PAGUME",
+    });
+    return null;
+  }
+  return { schoolId, settings, current };
+}
+
+// What a school is allowed to see of its own settings (no bookkeeping
+// fields such as updated_by).
+function subscriptionPublicSettings(s) {
+  return {
+    student_fee: s.student_fee,
+    staff_fee: s.staff_fee,
+    bank_name: s.bank_name,
+    bank_account_name: s.bank_account_name,
+    bank_account_number: s.bank_account_number,
+  };
+}
+
+// True only for someone who is currently billable staff at this school
+// (active teacher, active school admin, or a registrar account).
+async function isBillableStaff(schoolId, personId) {
+  const [t] = await pool.query(
+    "SELECT 1 FROM teachers WHERE teacher_id = ? AND school_id = ? AND (is_active IS NULL OR is_active = TRUE) LIMIT 1",
+    [personId, schoolId],
+  );
+  if (t.length > 0) return true;
+  const [a] = await pool.query(
+    "SELECT 1 FROM school_admins WHERE admin_id = ? AND school_id = ? AND (is_active IS NULL OR is_active = TRUE) LIMIT 1",
+    [personId, schoolId],
+  );
+  if (a.length > 0) return true;
+  try {
+    const [r] = await pool.query(
+      "SELECT 1 FROM registrar_users WHERE registrar_id = ? AND school_id = ? LIMIT 1",
+      [personId, schoolId],
+    );
+    return r.length > 0;
+  } catch (err) {
+    if (err.code === "ER_NO_SUCH_TABLE" || err.code === "ER_BAD_FIELD_ERROR")
+      return false;
+    throw err;
+  }
+}
+
+async function verifySchoolAdminPassword(adminId, password) {
+  const [[row]] = await pool.query(
+    "SELECT security_password FROM school_admins WHERE admin_id = ?",
+    [adminId],
+  );
+  if (!row || !row.security_password) return false;
+  return bcrypt.compare(String(password), row.security_password);
+}
+
+// Whether the Subscription Fee feature is on for the caller's school and
+// which parts of it this particular account may use. Portals call this
+// once at startup to decide whether to show the sidebar item — the
+// routes below enforce the same rules on the server regardless.
+app.get("/api/subscription/status", requireAuth, async (req, res) => {
+  const off = {
+    enabled: false,
+    capabilities: {
+      staff_collection: false,
+      report: false,
+      student_collection: false,
+      student_class: null,
+    },
+  };
+  try {
+    await ensureSubscriptionTables();
+    if (!SUBSCRIPTION_GATED_ROLES.has(req.user.role) || !req.user.school_id) {
+      return res.json(off);
+    }
+    const settings = await getSubscriptionSettings(req.user.school_id);
+    if (!settings.is_enabled) return res.json(off);
+    const capabilities = { ...off.capabilities };
+    if (req.user.role === "school_admins") {
+      capabilities.staff_collection = req.user.title === "Admin VP";
+      capabilities.report = req.user.title === "Principal";
+    } else if (req.user.role === "teachers") {
+      const homeroom = await getHomeroomSectionOrNull(
+        req.user.user_id,
+        req.user.school_id,
+      );
+      if (homeroom) {
+        capabilities.student_collection = true;
+        capabilities.student_class = homeroom;
+      }
+    } else if (req.user.role === "students") {
+      const monitor = await getMonitorSectionOrNull(
+        req.user.user_id,
+        req.user.school_id,
+      );
+      if (monitor) {
+        capabilities.student_collection = true;
+        capabilities.student_class = monitor;
+      }
+    }
+    res.json({
+      enabled: true,
+      period: currentBillingPeriod(),
+      student_fee: settings.student_fee,
+      staff_fee: settings.staff_fee,
+      capabilities,
+    });
+  } catch (err) {
+    console.error("/api/subscription/status error:", err);
+    // Fail closed for the UI: an unreadable status just hides the feature.
+    res.json(off);
+  }
+});
+
+// Admin VP: the live picture — money collected so far (students by class
+// and staff), the staff list to mark, and the account to deposit into.
+// The portal polls this every few seconds. Student names aren't sent:
+// the Admin VP sees student money as class totals only.
+app.get(
+  "/api/subscription/admin-vp/overview",
+  requireAuth,
+  requireAdminTitle("Admin VP"),
+  async (req, res) => {
+    try {
+      const ctx = await requireSchoolSubscription(req, res);
+      if (!ctx) return;
+      const period = parseBillingPeriod({});
+      const report = await buildSubscriptionReport(ctx.schoolId, period);
+      const [[sent]] = await pool.query(
+        `SELECT COUNT(*) AS n, MAX(sent_at) AS last_sent_at
+           FROM subscription_reports
+          WHERE school_id = ? AND ec_year = ? AND ec_month = ?`,
+        [ctx.schoolId, period.ec_year, period.ec_month],
+      );
+      res.json({
+        period,
+        billable: ctx.current.billable,
+        settings: subscriptionPublicSettings(report.settings),
+        summary: report.summary,
+        by_class: report.by_class,
+        staff: report.staff,
+        report_status: {
+          sent_count: Number(sent.n),
+          last_sent_at: sent.last_sent_at,
+        },
+        server_time: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error("/api/subscription/admin-vp/overview error:", err);
+      res.status(500).json({ error: "Could not load the subscription page" });
+    }
+  },
+);
+
+// Admin VP marks one staff member paid (they handed over the money) or
+// unpaid (undoing a mistake). Covers every staff account, the Admin VP's
+// own included. Always the CURRENT billing month — the client never picks
+// the month. The first person to mark keeps the credit (marked_by), and a
+// repeat "paid" is a harmless no-op.
+app.post(
+  "/api/subscription/staff/:personId/paid",
+  requireAuth,
+  requireAdminTitle("Admin VP"),
+  async (req, res) => {
+    const personId = String(req.params.personId || "");
+    const { paid } = req.body || {};
+    if (typeof paid !== "boolean")
+      return res.status(400).json({ error: "paid must be true or false." });
+    try {
+      const ctx = await requireSchoolSubscription(req, res, {
+        needBillable: true,
+      });
+      if (!ctx) return;
+      if (!(await isBillableStaff(ctx.schoolId, personId)))
+        return res
+          .status(404)
+          .json({ error: "That person isn't on your school's staff list." });
+      const period = parseBillingPeriod({});
+      if (paid) {
+        if (!(ctx.settings.staff_fee > 0))
+          return res
+            .status(409)
+            .json({ error: "No staff fee has been set for your school." });
+        // Checked explicitly rather than read from affectedRows: the
+        // mysql2 driver counts matched rows as "affected", which would
+        // make an untouched duplicate look like a fresh insert.
+        const [existing] = await pool.query(
+          `SELECT amount FROM subscription_payments
+            WHERE school_id = ? AND person_type = 'staff' AND person_id = ? AND ec_year = ? AND ec_month = ?`,
+          [ctx.schoolId, personId, period.ec_year, period.ec_month],
+        );
+        if (existing.length > 0)
+          return res.json({
+            message: "Already marked as paid.",
+            paid: true,
+            amount: Number(existing[0].amount),
+          });
+        // The unique key still makes two simultaneous taps safe.
+        await pool.query(
+          `INSERT INTO subscription_payments (school_id, person_type, person_id, ec_year, ec_month, amount, marked_by)
+           VALUES (?, 'staff', ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE person_id = person_id`,
+          [
+            ctx.schoolId,
+            personId,
+            period.ec_year,
+            period.ec_month,
+            ctx.settings.staff_fee,
+            req.user.user_id,
+          ],
+        );
+        return res.json({
+          message: "Marked as paid.",
+          paid: true,
+          amount: ctx.settings.staff_fee,
+        });
+      }
+      await pool.query(
+        `DELETE FROM subscription_payments
+          WHERE school_id = ? AND person_type = 'staff' AND person_id = ? AND ec_year = ? AND ec_month = ?`,
+        [ctx.schoolId, personId, period.ec_year, period.ec_month],
+      );
+      res.json({ message: "Marked as unpaid.", paid: false });
+    } catch (err) {
+      console.error("/api/subscription/staff/:personId/paid error:", err);
+      res.status(500).json({ error: "Could not update the payment" });
+    }
+  },
+);
+
+// Principal: this month's totals, exactly as they'd be reported, plus
+// whether a report has already gone out.
+app.get(
+  "/api/subscription/principal/report",
+  requireAuth,
+  requireAdminTitle("Principal"),
+  async (req, res) => {
+    try {
+      const ctx = await requireSchoolSubscription(req, res);
+      if (!ctx) return;
+      const period = parseBillingPeriod({});
+      const report = await buildSubscriptionReport(ctx.schoolId, period);
+      const [sent] = await pool.query(
+        `SELECT r.report_id, r.sent_at, r.total_collected,
+                CONCAT_WS(' ', a.first_name, a.last_name) AS sent_by_name
+           FROM subscription_reports r
+           LEFT JOIN school_admins a ON a.admin_id = r.sent_by
+          WHERE r.school_id = ? AND r.ec_year = ? AND r.ec_month = ?
+          ORDER BY r.sent_at DESC`,
+        [ctx.schoolId, period.ec_year, period.ec_month],
+      );
+      res.json({
+        period,
+        billable: ctx.current.billable,
+        settings: subscriptionPublicSettings(report.settings),
+        summary: report.summary,
+        by_class: report.by_class,
+        reports_sent: sent.map((r) => ({
+          ...r,
+          total_collected: Number(r.total_collected),
+        })),
+      });
+    } catch (err) {
+      console.error("/api/subscription/principal/report error:", err);
+      res.status(500).json({ error: "Could not load the report" });
+    }
+  },
+);
+
+// Principal presses Send Report and confirms their password. The
+// password is checked HERE, in the same request — not in a separate
+// call the client could skip. What gets stored is a snapshot of the
+// totals at this moment plus who was still unpaid; the Super Admin can
+// always read the live paid list separately. Sending again later in the
+// month (more people paid) simply adds a newer report.
+app.post(
+  "/api/subscription/principal/send-report",
+  requireAuth,
+  requireAdminTitle("Principal"),
+  async (req, res) => {
+    const { password } = req.body || {};
+    if (!password)
+      return res.status(400).json({ error: "Password is required." });
+    try {
+      const ctx = await requireSchoolSubscription(req, res, {
+        needBillable: true,
+      });
+      if (!ctx) return;
+      if (!(await verifySchoolAdminPassword(req.user.user_id, password)))
+        return res.status(401).json({ error: "Incorrect password." });
+      const period = parseBillingPeriod({});
+      // Guards against a double-click / double-tap sending twice.
+      const [recent] = await pool.query(
+        `SELECT report_id FROM subscription_reports
+          WHERE school_id = ? AND ec_year = ? AND ec_month = ? AND sent_at > (NOW() - INTERVAL 30 SECOND)
+          LIMIT 1`,
+        [ctx.schoolId, period.ec_year, period.ec_month],
+      );
+      if (recent.length > 0)
+        return res.status(409).json({
+          error:
+            "A report was just sent. Please wait a moment before sending another.",
+        });
+      const report = await buildSubscriptionReport(ctx.schoolId, period);
+      const sm = report.summary;
+      const [ins] = await pool.query(
+        `INSERT INTO subscription_reports
+           (school_id, ec_year, ec_month, total_collected, students_paid, students_unpaid, staff_paid, staff_unpaid, snapshot, sent_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          ctx.schoolId,
+          period.ec_year,
+          period.ec_month,
+          sm.total_collected,
+          sm.students.paid,
+          sm.students.unpaid,
+          sm.staff.paid,
+          sm.staff.unpaid,
+          JSON.stringify(subscriptionSnapshot(report)),
+          req.user.user_id,
+        ],
+      );
+      await logAudit(
+        req,
+        "subscription.report_sent",
+        "subscription_report",
+        ins.insertId,
+        `${period.month_name} ${period.ec_year} E.C.: collected ${sm.total_collected}`,
+      );
+      res.json({
+        message: "Report sent to the Super Admin.",
+        report_id: ins.insertId,
+        total_collected: sm.total_collected,
+      });
+    } catch (err) {
+      console.error("/api/subscription/principal/send-report error:", err);
+      res.status(500).json({ error: "Could not send the report" });
+    }
+  },
+);
+
+// --- School-side routes: students paying through their collector ----------
+// Class Monitors and Homeroom Teachers collect the student fee, each for
+// ONE class: class_level + section + stream, the same way
+// getHomeroomSectionOrNull / getMonitorSectionOrNull define it. A student is
+// marked paid when they hand the money over. The Class Monitor is a student,
+// so he/she pays the student fee and may mark themselves; the Homeroom
+// Teacher is staff, so the Admin VP marks them (see the staff route above).
+// Everything is enforced here on the server; hiding the page in the portal
+// is only a convenience.
+
+// Who is asking, and which class they collect for. Reads the CURRENT database
+// state (not the token's is_class_monitor flag), so a monitor who has just
+// been removed loses access at once. Returns null for anyone who isn't a
+// collector, including an ordinary student.
+async function getStudentCollectorContext(req) {
+  let kind = null;
+  let cls = null;
+  if (req.user.role === "teachers") {
+    cls = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
+    kind = "homeroom_teacher";
+  } else if (req.user.role === "students") {
+    // Same lookup as getMonitorSectionOrNull, plus status = 'Active': a student
+    // who is not registered this year is not a collector, whatever flag is left.
+    const [rows] = await pool.query(
+      "SELECT class_level, section, stream FROM students WHERE student_id = ? AND school_id = ? AND is_class_monitor = 1 AND status = 'Active'",
+      [req.user.user_id, req.user.school_id],
+    );
+    cls = rows.length ? rows[0] : null;
+    kind = "class_monitor";
+  }
+  // A class needs a level and a section to collect for.
+  if (!cls || !cls.class_level || !cls.section) return null;
+  return { kind, cls };
+}
+
+// SQL for "this student is in that class". Same idea as the existing homeroom
+// routes (level + section + stream, stream matched as a prefix so a homeroom
+// still stored as 'Natural' matches students filed under 'Natural Science'),
+// except that a class with NO stream matches its own stream-less students:
+// `stream LIKE CONCAT(NULL, '%')` never matches anything.
+function subscriptionClassFilter(cls) {
+  const stream =
+    cls.stream === null ||
+    cls.stream === undefined ||
+    String(cls.stream).trim() === ""
+      ? null
+      : String(cls.stream).trim();
+  if (stream === null) {
+    return {
+      sql: "class_level = ? AND section = ? AND (stream IS NULL OR stream = '')",
+      params: [cls.class_level, cls.section],
+    };
+  }
+  return {
+    sql: "class_level = ? AND section = ? AND stream LIKE CONCAT(?, '%')",
+    params: [cls.class_level, cls.section, stream.replace(/[\\%_]/g, "\\$&")],
+  };
+}
+
+// The Active students of one class with their paid state for one EC month.
+async function loadSubscriptionClassRoster(
+  schoolId,
+  cls,
+  period,
+  settings,
+  caller,
+) {
+  const f = subscriptionClassFilter(cls);
+  const [studentRows] = await pool.query(
+    `SELECT student_id, first_name, middle_name, last_name, is_class_monitor
+       FROM students
+      WHERE school_id = ? AND status = 'Active' AND ${f.sql}
+      ORDER BY first_name, middle_name, last_name, student_id`,
+    [schoolId, ...f.params],
+  );
+  let payRows = [];
+  if (studentRows.length > 0) {
+    [payRows] = await pool.query(
+      `SELECT person_id, amount, marked_by, marked_at
+         FROM subscription_payments
+        WHERE school_id = ? AND person_type = 'student' AND ec_year = ? AND ec_month = ?
+          AND person_id IN (?)`,
+      [
+        schoolId,
+        period.ec_year,
+        period.ec_month,
+        studentRows.map((s) => s.student_id),
+      ],
+    );
+  }
+  const paidById = new Map(payRows.map((p) => [p.person_id, p]));
+  const same = (a, b) =>
+    a != null &&
+    b != null &&
+    String(a).toLowerCase() === String(b).toLowerCase();
+  const fee = settings.student_fee;
+  const students = studentRows.map((s) => {
+    const pay = paidById.get(s.student_id);
+    return {
+      student_id: s.student_id,
+      name: subscriptionFullName(s),
+      is_class_monitor: !!s.is_class_monitor,
+      is_me: caller.role === "students" && same(s.student_id, caller.user_id),
+      paid: !!pay,
+      amount: pay ? Number(pay.amount) : fee,
+      paid_at: pay ? pay.marked_at : null,
+      marked_by_me: pay ? same(pay.marked_by, caller.user_id) : false,
+    };
+  });
+  const paid = students.filter((s) => s.paid);
+  return {
+    class: {
+      class_level: cls.class_level,
+      section: cls.section,
+      stream: cls.stream || null,
+      class_label: `${cls.class_level}${cls.section ? "-" + cls.section : ""}`,
+    },
+    summary: {
+      total: students.length,
+      paid: paid.length,
+      unpaid: students.length - paid.length,
+      collected: subscriptionRound2(paid.reduce((a, s) => a + s.amount, 0)),
+      expected: subscriptionRound2(students.length * fee),
+    },
+    students,
+  };
+}
+
+// The live list for the caller's OWN class. The portal polls this every few
+// seconds, so it is never cached. Only a Class Monitor (own class) or a
+// Homeroom Teacher (own class) may read it.
+app.get(
+  "/api/subscription/student/class-roster",
+  requireAuth,
+  blockIfMustChangePassword,
+  requireRole("students", "teachers"),
+  async (req, res) => {
+    try {
+      const collector = await getStudentCollectorContext(req);
+      if (!collector)
+        return res.status(403).json({
+          error: "Only a Class Monitor or a Homeroom Teacher can view this.",
+        });
+      const ctx = await requireSchoolSubscription(req, res);
+      if (!ctx) return;
+      const period = parseBillingPeriod({});
+      const roster = await loadSubscriptionClassRoster(
+        ctx.schoolId,
+        collector.cls,
+        period,
+        ctx.settings,
+        req.user,
+      );
+      res.set("Cache-Control", "no-store");
+      res.json({
+        period,
+        billable: ctx.current.billable,
+        role: collector.kind,
+        fee: ctx.settings.student_fee,
+        ...roster,
+        server_time: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error("/api/subscription/student/class-roster error:", err);
+      res.status(500).json({ error: "Could not load your class's fees" });
+    }
+  },
+);
+
+// Mark one student of the caller's own class paid (they handed over the money)
+// or unpaid (undoing a mistake). Always the CURRENT billing month; the client
+// never picks it. The amount is the student fee at this moment, kept as a
+// snapshot. The first person to mark keeps the credit (marked_by), and a
+// repeat "paid" is a harmless no-op.
+app.post(
+  "/api/subscription/student/:studentId/paid",
+  requireAuth,
+  blockIfMustChangePassword,
+  requireRole("students", "teachers"),
+  async (req, res) => {
+    const { paid } = req.body || {};
+    if (typeof paid !== "boolean")
+      return res.status(400).json({ error: "paid must be true or false." });
+    try {
+      // Who may do this comes first: an ordinary student, a teacher with no
+      // homeroom, or a monitor who was just removed is refused outright.
+      const collector = await getStudentCollectorContext(req);
+      if (!collector)
+        return res.status(403).json({
+          error: "Only a Class Monitor or a Homeroom Teacher can do this.",
+        });
+      const ctx = await requireSchoolSubscription(req, res, {
+        needBillable: true,
+      });
+      if (!ctx) return;
+
+      // The student must be in the caller's own class. Looking them up by
+      // school + class in one query means someone from another class or
+      // school is indistinguishable from an ID that doesn't exist.
+      const f = subscriptionClassFilter(collector.cls);
+      const [rows] = await pool.query(
+        `SELECT student_id, status FROM students
+          WHERE student_id = ? AND school_id = ? AND ${f.sql} LIMIT 1`,
+        [String(req.params.studentId || ""), ctx.schoolId, ...f.params],
+      );
+      if (rows.length === 0)
+        return res
+          .status(403)
+          .json({ error: "That student isn't in your class." });
+      if (rows[0].status !== "Active")
+        return res.status(409).json({
+          error: "That student isn't an active student, so no fee is due.",
+        });
+      // The canonical ID from the row (the URL may differ in case), so this
+      // payment always lines up with the totals the Admin VP and Super Admin see.
+      const studentId = rows[0].student_id;
+      const period = ctx.current;
+
+      if (paid) {
+        if (!(ctx.settings.student_fee > 0))
+          return res
+            .status(409)
+            .json({ error: "No student fee has been set for your school." });
+        // Checked explicitly rather than read from affectedRows: mysql2 counts
+        // matched rows as "affected", so an untouched duplicate would look
+        // like a fresh insert.
+        const [existing] = await pool.query(
+          `SELECT amount FROM subscription_payments
+            WHERE school_id = ? AND person_type = 'student' AND person_id = ? AND ec_year = ? AND ec_month = ?`,
+          [ctx.schoolId, studentId, period.ec_year, period.ec_month],
+        );
+        if (existing.length > 0)
+          return res.json({
+            message: "Already marked as paid.",
+            paid: true,
+            already: true,
+            student_id: studentId,
+            amount: Number(existing[0].amount),
+          });
+        // The unique key still makes two simultaneous taps safe.
+        await pool.query(
+          `INSERT INTO subscription_payments (school_id, person_type, person_id, ec_year, ec_month, amount, marked_by)
+           VALUES (?, 'student', ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE person_id = person_id`,
+          [
+            ctx.schoolId,
+            studentId,
+            period.ec_year,
+            period.ec_month,
+            ctx.settings.student_fee,
+            req.user.user_id,
+          ],
+        );
+        return res.json({
+          message: "Marked as paid.",
+          paid: true,
+          student_id: studentId,
+          amount: ctx.settings.student_fee,
+        });
+      }
+      await pool.query(
+        `DELETE FROM subscription_payments
+          WHERE school_id = ? AND person_type = 'student' AND person_id = ? AND ec_year = ? AND ec_month = ?`,
+        [ctx.schoolId, studentId, period.ec_year, period.ec_month],
+      );
+      res.json({
+        message: "Marked as unpaid.",
+        paid: false,
+        student_id: studentId,
+      });
+    } catch (err) {
+      console.error("/api/subscription/student/:studentId/paid error:", err);
+      res.status(500).json({ error: "Could not update the payment" });
+    }
+  },
+);
+
+// --- Homeroom: Class Monitors card (Action Center) ---------------------------
+// Used by the "Class Monitors" card in the Teacher portal. Unlike the older
+// /api/homeroom/section-roster + /set-class-monitor pair (which it replaces for
+// the card, and which are left as they were), these routes only ever deal with
+// REGISTERED students: at year-end every Active student becomes 'Unregistered'
+// but keeps LAST year's class/section, so a roster that ignores status shows
+// last year's class as if it were this year's. A student appears here only
+// once they are 'Active' (registered and placed) in the teacher's section.
+// The section is matched the same NULL-safe way as the Subscription Fee routes
+// (a homeroom with no stream, e.g. Grade 9/10, works too).
+
+// The Active students of the caller's own homeroom section, monitors flagged.
+app.get(
+  "/api/homeroom/class-monitors",
+  requireAuth,
+  requireRole("teachers"),
+  async (req, res) => {
+    try {
+      const homeroom = await getHomeroomSectionOrNull(
+        req.user.user_id,
+        req.user.school_id,
+      );
+      if (!homeroom || !homeroom.class_level || !homeroom.section)
+        return res
+          .status(403)
+          .json({ error: "You are not a homeroom teacher." });
+      const f = subscriptionClassFilter(homeroom);
+      const [students] = await pool.query(
+        `SELECT student_id, first_name, last_name, is_class_monitor
+           FROM students
+          WHERE school_id = ? AND status = 'Active' AND ${f.sql}
+          ORDER BY first_name, last_name, student_id`,
+        [req.user.school_id, ...f.params],
+      );
+      res.set("Cache-Control", "no-store");
+      res.json({
+        class: {
+          class_level: homeroom.class_level,
+          section: homeroom.section,
+          stream: homeroom.stream || null,
+        },
+        students: students.map((s) => ({
+          student_id: s.student_id,
+          first_name: s.first_name,
+          last_name: s.last_name,
+          is_class_monitor: !!s.is_class_monitor,
+        })),
+      });
+    } catch (err) {
+      console.error("/api/homeroom/class-monitors error:", err);
+      res.status(500).json({ error: "Could not load your class list" });
+    }
+  },
+);
+
+// Make a student of the caller's own section a Class Monitor, or remove them.
+// Making one requires the student to be Active (registered this year); removing
+// works for any student of the section, so a leftover flag can always be cleared.
+app.post(
+  "/api/homeroom/class-monitors/:studentId",
+  requireAuth,
+  requireRole("teachers"),
+  async (req, res) => {
+    const { is_class_monitor } = req.body || {};
+    if (typeof is_class_monitor !== "boolean")
+      return res
+        .status(400)
+        .json({ error: "is_class_monitor must be true or false." });
+    try {
+      const homeroom = await getHomeroomSectionOrNull(
+        req.user.user_id,
+        req.user.school_id,
+      );
+      if (!homeroom || !homeroom.class_level || !homeroom.section)
+        return res
+          .status(403)
+          .json({ error: "You are not a homeroom teacher." });
+      // Someone outside this section looks exactly like an ID that doesn't exist.
+      const f = subscriptionClassFilter(homeroom);
+      const [rows] = await pool.query(
+        `SELECT student_id, status FROM students
+          WHERE student_id = ? AND school_id = ? AND ${f.sql} LIMIT 1`,
+        [String(req.params.studentId || ""), req.user.school_id, ...f.params],
+      );
+      if (rows.length === 0)
+        return res
+          .status(403)
+          .json({ error: "This student is not in your homeroom section." });
+      if (is_class_monitor && rows[0].status !== "Active")
+        return res.status(409).json({
+          error:
+            "This student isn't registered yet, so can't be made a Class Monitor.",
+          code: "STUDENT_NOT_ACTIVE",
+        });
+      await pool.query(
+        "UPDATE students SET is_class_monitor = ? WHERE student_id = ? AND school_id = ?",
+        [is_class_monitor, rows[0].student_id, req.user.school_id],
+      );
+      res.json({
+        message: is_class_monitor
+          ? "Set as Class Monitor."
+          : "Removed as Class Monitor.",
+        student_id: rows[0].student_id,
+        is_class_monitor,
+      });
+    } catch (err) {
+      console.error("/api/homeroom/class-monitors/:studentId error:", err);
+      res.status(500).json({ error: "Could not update Class Monitor status" });
+    }
+  },
+);
+
 // --- Safety nets: keep the server alive on unexpected errors ---
 
 // Catches errors passed to next(err) or thrown synchronously in route handlers

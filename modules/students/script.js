@@ -144,6 +144,13 @@ function wireStaticEventListeners() {
         btn.addEventListener('click', () => setLang(btn.dataset.lang));
     });
 
+    on('sub-fee-search', 'input', () => renderSubFeeRosterList());
+    document.querySelectorAll('.sub-fee-filter-chip').forEach(btn => {
+        btn.addEventListener('click', () => setSubFeeStatusFilter(btn));
+    });
+    on('sub-fee-undo-modal-cancel-btn', 'click', () => closeSubFeeUndoModal());
+    on('sub-fee-undo-modal-confirm-btn', 'click', () => confirmSubFeeUndo());
+
     on('appeal-submit-btn', 'click', () => submitMarkAppeal());
     on('appeal-cancel-btn', 'click', () => closeMarkAppealForm());
     on('monitor-scan-toggle-btn', 'click', () => toggleMonitorScanner());
@@ -201,6 +208,16 @@ function wireStaticEventListeners() {
         });
     }
 
+    const subFeeOutput = document.getElementById('sub-fee-output');
+    if (subFeeOutput) {
+        subFeeOutput.addEventListener('click', (e) => {
+            const markBtn = e.target.closest('.sub-fee-mark-btn');
+            if (markBtn) { subFeeMarkPaid(markBtn.dataset.studentId, markBtn); return; }
+            const undoBtn = e.target.closest('.sub-fee-undo-btn');
+            if (undoBtn) { openSubFeeUndoModal(undoBtn.dataset.studentId, undoBtn.dataset.name); return; }
+        });
+    }
+
     const dashAttendance = document.getElementById('dashboard-attendance');
     if (dashAttendance) {
         dashAttendance.addEventListener('click', (e) => {
@@ -243,7 +260,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     setupNavigation();
-    await Promise.all([loadProfile(), loadNotifications()]);
+    await Promise.all([loadProfile(), loadNotifications(), loadSubscriptionFeeAccess()]);
     loadDashboard();
     loadSemesterBadge();
     document.querySelector('a[data-page="notifications"]').addEventListener('click', loadNotifications);
@@ -290,6 +307,8 @@ window.onSisLangChange = () => {
     loadRecognitionAward();
     const monitorNav = document.getElementById('nav-class-monitor');
     if (monitorNav && monitorNav.style.display !== 'none') { loadMonitorRoster(); loadMonitorPeriods(); }
+    const subFeeNav = document.getElementById('nav-sub-fee');
+    if (subFeeNav && subFeeNav.style.display !== 'none') loadSubFeeRoster();
 };
 
 // ---- ACCOUNT DROPDOWN (Profile Settings / Sign Out) ----
@@ -361,6 +380,17 @@ window.navigateTo = (target) => {
         const panel = document.getElementById('monitor-scanner-panel');
         if (panel) panel.style.display = 'none';
     }
+    // Subscription Fee: leaving the page (by ANY navigation path — this
+    // function or the sidebar click handler in setupNavigation below) must
+    // stop the 15s refresh timer. Entering it (re)loads the roster and
+    // (re)starts the timer; startSubFeePolling() always clears any existing
+    // one first, so this is safe even if already polling.
+    if (target === 'subscription-fee') {
+        loadSubFeeRoster();
+        startSubFeePolling();
+    } else if (typeof stopSubFeePolling === 'function') {
+        stopSubFeePolling();
+    }
 };
 
 function setupNavigation() {
@@ -377,6 +407,16 @@ function setupNavigation() {
             const page = document.getElementById(`page-${target}`);
             if (page) page.style.display = 'block';
             closeSidebar();
+            // Subscription Fee: a normal sidebar click lands here, not in
+            // navigateTo() above — so the same polling teardown/start has to
+            // happen here too, or the 15s timer would survive a plain click
+            // away from the page (an orphaned timer).
+            if (target === 'subscription-fee') {
+                loadSubFeeRoster();
+                startSubFeePolling();
+            } else if (typeof stopSubFeePolling === 'function') {
+                stopSubFeePolling();
+            }
         });
     });
 }
@@ -499,6 +539,7 @@ async function loadGuardian() {
     } catch (err) {
         console.error('Guardian load error:', err);
         output.innerHTML = `<p class="muted">${t('student_guardian_could_not_load')}</p>`;
+        if (window.PortalUI) PortalUI.upgradeError(output, () => loadGuardian());
     }
 }
 
@@ -648,6 +689,7 @@ async function loadCertificate() {
     } catch (err) {
         console.error('Certificate load error:', err);
         output.innerHTML = `<p class="muted">${t('certificate_could_not_load')}</p>`;
+        if (window.PortalUI) PortalUI.upgradeError(output, () => loadCertificate());
     }
 }
 
@@ -744,6 +786,7 @@ async function loadIDCard() {
     } catch (err) {
         console.error('ID card load error:', err);
         output.innerHTML = `<p class="muted">${t('idcard_could_not_load')}</p>`;
+        if (window.PortalUI) PortalUI.upgradeError(output, () => loadIDCard());
     }
 }
 
@@ -849,7 +892,7 @@ function renderIDCard(data, container) {
             text: data.qr_payload,
             width: 72,
             height: 72,
-            colorDark: '#1e293b',
+            colorDark: '#1f2a24',
             colorLight: '#ffffff',
             correctLevel: QRCode.CorrectLevel.M
         });
@@ -1006,6 +1049,7 @@ async function loadMarks() {
         loadIncompleteStatusBanner();
     } catch {
         output.innerHTML = `<p class="muted">${t('marks_could_not_load')}</p>`;
+        if (window.PortalUI) PortalUI.upgradeError(output, () => loadMarks());
     }
 }
 
@@ -1270,6 +1314,7 @@ async function loadTextbooks() {
         renderTextbooks(data.books, output);
     } catch {
         output.innerHTML = `<p class="muted">${t('textbooks_could_not_load')}</p>`;
+        if (window.PortalUI) PortalUI.upgradeError(output, () => loadTextbooks());
     }
 }
 
@@ -1309,6 +1354,7 @@ async function loadMonitorPeriods() {
         renderMonitorPeriods(periods);
     } catch {
         el.innerHTML = `<p class="muted">${t('monitor_could_not_load')}</p>`;
+        if (window.PortalUI) PortalUI.upgradeError(el, () => loadMonitorPeriods());
     }
 }
 
@@ -1376,6 +1422,7 @@ async function loadMonitorRoster() {
         renderMonitorRoster(currentMonitorRosterData);
     } catch {
         el.innerHTML = `<p class="muted">${t('monitor_could_not_load')}</p>`;
+        if (window.PortalUI) PortalUI.upgradeError(el, () => loadMonitorRoster());
     }
 }
 
@@ -1431,6 +1478,279 @@ window.filterMonitorRoster = () => {
     if (!currentMonitorRosterData) return;
     const input = document.getElementById('monitor-manual-id');
     renderMonitorRoster(currentMonitorRosterData, input ? input.value : '');
+};
+
+// ---- SUBSCRIPTION FEE (Class Monitor) ----
+// Mirrors the Teacher portal's Homeroom Teacher Subscription Fee page
+// against the exact same server routes (GET /api/subscription/student/
+// class-roster, POST /api/subscription/student/:studentId/paid) — a
+// Class Monitor and a Homeroom Teacher are both "collectors" for one
+// class as far as the server is concerned (see getStudentCollectorContext
+// in server.js). Nothing here is a security boundary: every rule (own
+// class only, current EC month only, Active students only, Pagume
+// refused) is enforced server-side: hiding/disabling here is only ever a
+// convenience, never the actual check.
+let subFeeStatusCache = null;   // last GET /api/subscription/status response
+let subFeeRosterCache = null;   // last GET /api/subscription/student/class-roster response
+let subFeeFilterStatus = 'all'; // 'all' | 'paid' | 'unpaid' — client-side only
+let subFeePollTimer = null;
+let subFeeUndoTarget = null;    // { studentId, name } awaiting confirm in the Undo modal
+
+// Whether to show the sidebar item at all. Reads the LIVE server
+// capability (capabilities.student_collection), never the login token's
+// is_class_monitor flag — a monitor who was just removed by their
+// homeroom teacher must lose the nav item the next time this is checked,
+// not only after signing back in.
+async function loadSubscriptionFeeAccess() {
+    const navLi = document.getElementById('nav-sub-fee');
+    if (!navLi) return;
+    try {
+        const res = await apiFetch('/api/subscription/status');
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        subFeeStatusCache = data;
+        const show = !!(data.enabled && data.capabilities && data.capabilities.student_collection);
+        navLi.style.display = show ? '' : 'none';
+        if (!show) stopSubFeePolling();
+    } catch (err) {
+        console.error('Subscription status load error:', err);
+        // Fail closed for the nav item, same as the server does for /api/subscription/status itself.
+        navLi.style.display = 'none';
+    }
+}
+
+// Stops the 15s auto-refresh. Safe to call any number of times (e.g. once
+// from navigateTo() and again from setupNavigation()'s own click handler
+// on the same click) — clearInterval on an already-cleared/absent timer
+// is a harmless no-op, and subFeePollTimer is always reset to null so a
+// second call never double-clears a *different*, newer timer.
+function stopSubFeePolling() {
+    if (subFeePollTimer) {
+        clearInterval(subFeePollTimer);
+        subFeePollTimer = null;
+    }
+}
+
+// Starts the 15s auto-refresh. Always clears any existing timer first, so
+// this is also safe to call repeatedly (e.g. a fresh click on the same
+// nav item) without ever stacking up a second interval.
+function startSubFeePolling() {
+    stopSubFeePolling();
+    subFeePollTimer = setInterval(() => {
+        // Belt-and-braces alongside the visibilitychange listener below:
+        // a background tab can still fire timers on some platforms, so
+        // this skips the network call outright while hidden rather than
+        // relying only on the listener to have already cleared it.
+        if (document.hidden) return;
+        loadSubFeeRoster({ silent: true });
+    }, 15000);
+}
+
+function isSubFeePageOpen() {
+    const page = document.getElementById('page-subscription-fee');
+    return !!page && page.style.display !== 'none';
+}
+
+// Pausing/resuming on visibility change covers every way the page can be
+// hidden without an in-app navigation: switching browser tabs, backgrounding
+// the app on a phone, locking the screen, minimizing the window. pagehide
+// is a second safety net for the tab/window actually closing or a bfcache
+// navigation, so the timer is never left running with nothing to receive it.
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        stopSubFeePolling();
+    } else if (isSubFeePageOpen()) {
+        startSubFeePolling();
+    }
+});
+window.addEventListener('pagehide', () => stopSubFeePolling());
+
+// Loads (or silently refreshes) the caller's own class roster for the
+// current EC month. silent=true (used by the 15s poll) never blanks the
+// list to a "Loading…" placeholder and never overwrites what's on screen
+// if the request fails — the next tick just tries again.
+async function loadSubFeeRoster({ silent = false } = {}) {
+    const el = document.getElementById('sub-fee-output');
+    if (!el) return;
+    if (!silent) el.innerHTML = `<p class="muted">${t('loading')}</p>`;
+    try {
+        const res = await apiFetch('/api/subscription/student/class-roster');
+        if (res.status === 403) {
+            // Access was revoked since the nav item was last shown (monitor
+            // just removed, or Subscription turned off) — stop polling and
+            // hide the nav item too, matching what a fresh status check
+            // would now show. A frozen account (SUBSCRIPTION_FROZEN, also a
+            // 403) is handled globally by guard.js, which shows its own
+            // full-screen notice — nothing extra is done for that case here,
+            // and this page must NOT redirect to login itself.
+            stopSubFeePolling();
+            const navLi = document.getElementById('nav-sub-fee');
+            if (navLi) navLi.style.display = 'none';
+            el.innerHTML = `<p class="muted">${t('sub_class_no_access')}</p>`;
+            return;
+        }
+        if (!res.ok) throw new Error();
+        subFeeRosterCache = await res.json();
+        renderSubFeePage(subFeeRosterCache);
+    } catch (err) {
+        console.error('Subscription class-roster load error:', err);
+        if (!silent) el.innerHTML = `<p class="muted">${t('sub_class_load_error')}</p>`;
+    }
+}
+
+function renderSubFeePage(data) {
+    const notice = document.getElementById('sub-fee-notice');
+    const body = document.getElementById('sub-fee-body');
+    if (!data.billable) {
+        // Pagume — the server itself refuses payment changes for it, so the
+        // list is shown as read-only info rather than hidden outright.
+        if (notice) {
+            notice.textContent = t('sub_pagume_closed');
+            notice.style.display = 'block';
+        }
+    } else if (notice) {
+        notice.style.display = 'none';
+    }
+    if (body) body.style.display = 'block';
+
+    setText('sub-fee-class-label', t('sub_class_label', { class: escapeHtml(data.class.class_label) }));
+    setText('sub-fee-period', `${t('sub_month_' + data.period.ec_month)} ${data.period.ec_year} ${t('sub_ec')}`);
+    setText('sub-fee-updated', t('sub_live_updated', { time: new Date(data.server_time).toLocaleTimeString() }));
+
+    const s = data.summary;
+    setText('sub-fee-tile-paid', t('sub_tile_count', { paid: s.paid, total: s.total }));
+    setText('sub-fee-tile-collected', `${s.collected} ${t('sub_birr')}`);
+    setText('sub-fee-tile-expected', t('sub_tile_of_expected', { expected: s.expected }));
+
+    const warn = document.getElementById('sub-fee-no-fee-warning');
+    if (warn) warn.style.display = data.fee > 0 ? 'none' : 'block';
+
+    renderSubFeeRosterList();
+}
+
+// Client-side search/filter only — re-applied against the already-fetched
+// subFeeRosterCache, no extra network round trip. The server's own list is
+// always the full, unfiltered class (own class, Active students, this EC
+// month); filtering here never hides anything the server itself enforces.
+function renderSubFeeRosterList() {
+    const el = document.getElementById('sub-fee-output');
+    if (!el || !subFeeRosterCache) return;
+    const { students } = subFeeRosterCache;
+    if (!students.length) {
+        el.innerHTML = `<p class="muted">${t('sub_no_students')}</p>`;
+        return;
+    }
+
+    const searchInput = document.getElementById('sub-fee-search');
+    const query = (searchInput ? searchInput.value : '').trim().toLowerCase();
+    const filtered = students.filter(st => {
+        if (subFeeFilterStatus === 'paid' && !st.paid) return false;
+        if (subFeeFilterStatus === 'unpaid' && st.paid) return false;
+        if (query && !(st.name.toLowerCase().includes(query) || st.student_id.toLowerCase().includes(query))) return false;
+        return true;
+    });
+
+    if (!filtered.length) {
+        el.innerHTML = `<p class="muted">${t('sub_no_people')}</p>`;
+        return;
+    }
+
+    const feeIsSet = subFeeRosterCache.fee > 0;
+    const billable = subFeeRosterCache.billable;
+
+    el.innerHTML = filtered.map(st => `
+        <div class="widget sub-fee-row">
+            <div>
+                <strong>${escapeHtml(st.name)}</strong>
+                ${st.is_me ? `<span class="badge badge-returned" style="margin-left:6px;">${t('sub_you')}</span>` : ''}
+                ${st.is_class_monitor ? `<span class="badge badge-escalated" style="margin-left:6px;">${t('sub_role_class_monitor')}</span>` : ''}
+                <div class="muted" style="font-size:0.8rem; margin-top:2px;">
+                    ${escapeHtml(st.student_id)} · ${Number(st.amount).toFixed(2)} ${t('sub_birr')}
+                </div>
+            </div>
+            <div class="sub-fee-row-action">
+                ${st.paid
+                    ? `<span class="badge badge-returned">${t('sub_status_paid')}</span>
+                       <button type="button" class="btn-cancel sub-fee-undo-btn" data-student-id="${escapeHtml(st.student_id)}" data-name="${escapeHtml(st.name)}" ${billable ? '' : 'disabled'}>${t('sub_undo')}</button>`
+                    : `<span class="badge badge-lost">${t('sub_status_unpaid')}</span>
+                       <button type="button" class="btn-primary sub-fee-mark-btn" style="width:auto;" data-student-id="${escapeHtml(st.student_id)}" data-name="${escapeHtml(st.name)}" ${(billable && feeIsSet) ? '' : 'disabled'}>${t('sub_mark_paid')}</button>`}
+            </div>
+        </div>`).join('');
+}
+
+window.setSubFeeStatusFilter = (btn) => {
+    document.querySelectorAll('.sub-fee-filter-chip').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    subFeeFilterStatus = btn.dataset.status;
+    renderSubFeeRosterList();
+};
+
+// Marks one student paid. The Class Monitor may mark himself/herself —
+// the server allows it (loadSubscriptionClassRoster/the :studentId route
+// apply no self-exclusion), so no special case is needed here either.
+async function subFeeMarkPaid(studentId, btn) {
+    const originalLabel = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = t('sub_saving'); }
+    try {
+        const res = await apiFetch(`/api/subscription/student/${encodeURIComponent(studentId)}/paid`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paid: true })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            showToast(data.error || t('sub_action_error'), 'error');
+            if (btn) { btn.disabled = false; btn.textContent = originalLabel; }
+            await loadSubFeeRoster({ silent: true });
+            return;
+        }
+        const name = btn ? (btn.dataset.name || '') : '';
+        showToast(data.already ? t('sub_already_paid_toast', { name }) : t('sub_marked_paid_toast', { name }));
+        await loadSubFeeRoster({ silent: true });
+    } catch (err) {
+        console.error('Mark paid error:', err);
+        showToast(t('sub_action_error'), 'error');
+        if (btn) { btn.disabled = false; btn.textContent = originalLabel; }
+    }
+}
+
+// ---- SUBSCRIPTION FEE: UNDO CONFIRMATION MODAL ----
+window.openSubFeeUndoModal = (studentId, name) => {
+    subFeeUndoTarget = { studentId, name };
+    const msg = document.getElementById('sub-fee-undo-modal-msg');
+    if (msg) msg.textContent = t('sub_undo_confirm', { name });
+    const modal = document.getElementById('sub-fee-undo-modal');
+    if (modal) modal.style.display = 'flex';
+};
+
+window.closeSubFeeUndoModal = () => {
+    subFeeUndoTarget = null;
+    const modal = document.getElementById('sub-fee-undo-modal');
+    if (modal) modal.style.display = 'none';
+};
+
+window.confirmSubFeeUndo = async () => {
+    if (!subFeeUndoTarget) return;
+    const { studentId, name } = subFeeUndoTarget;
+    closeSubFeeUndoModal();
+    try {
+        const res = await apiFetch(`/api/subscription/student/${encodeURIComponent(studentId)}/paid`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paid: false })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            showToast(data.error || t('sub_action_error'), 'error');
+            await loadSubFeeRoster({ silent: true });
+            return;
+        }
+        showToast(t('sub_marked_unpaid_toast', { name }));
+        await loadSubFeeRoster({ silent: true });
+    } catch (err) {
+        console.error('Undo payment error:', err);
+        showToast(t('sub_action_error'), 'error');
+    }
 };
 
 // ---- CLASS MONITOR: QR SCANNER ----
@@ -1670,6 +1990,7 @@ async function loadAbsenceHistory() {
         renderAbsenceHistory(requests, output);
     } catch {
         output.innerHTML = `<p class="muted">${t('absence_could_not_load')}</p>`;
+        if (window.PortalUI) PortalUI.upgradeError(output, () => loadAbsenceHistory());
     }
 }
 
@@ -1704,6 +2025,7 @@ async function loadNotifications() {
         const res = await apiFetch('/api/student/my-notifications');
         if (!res.ok) {
             if (output) output.innerHTML = `<p class="muted">${t('notifications_could_not_load')}</p>`;
+            if (window.PortalUI) PortalUI.upgradeError(output, () => loadNotifications());
             return;
         }
         // The API returns { unread_count, items }, not a flat array.
@@ -1715,6 +2037,7 @@ async function loadNotifications() {
     } catch (err) {
         console.error('Notifications error:', err);
         if (output) output.innerHTML = `<p class="muted">${t('notifications_could_not_load')}</p>`;
+        if (window.PortalUI) PortalUI.upgradeError(output, () => loadNotifications());
     }
 }
 
@@ -1888,6 +2211,7 @@ async function loadDashboardTimetable() {
             </div>`).join('');
     } catch {
         el.innerHTML = `<p class="muted">${t('dashboard_could_not_load_timetable')}</p>`;
+        if (window.PortalUI) PortalUI.upgradeError(el, () => loadDashboardTimetable());
     }
 }
 
@@ -2071,6 +2395,7 @@ window.loadAttendanceCalendar = async (weeksBack) => {
         renderAttendanceCalendar(data);
     } catch {
         el.innerHTML = attendanceStreakHtml + `<p class="muted">${t('dashboard_could_not_load_calendar')}</p>`;
+        if (window.PortalUI) PortalUI.upgradeError(el, null);
     }
 };
 
@@ -2078,7 +2403,7 @@ function renderAttendanceCalendar(data) {
     const el = document.getElementById('dashboard-attendance');
     if (!el || !data.days.length) return;
 
-    const statusColor = { present: '#16a34a', absent: '#dc2626', excused: '#3b82f6', weekend: '#d1d5db', holiday: '#eab308', future: '#f3f4f6', not_started: '#f3f4f6', semester_closed: '#e5e7eb' };
+    const statusColor = { present: '#16a34a', absent: '#dc2626', excused: '#3b82f6', weekend: '#cdd6d0', holiday: '#eab308', future: '#f3f4f6', not_started: '#f3f4f6', semester_closed: '#e0e7e2' };
     const statusLabel = { present: t('calendar_present'), absent: t('calendar_absent'), excused: t('calendar_excused'), weekend: t('calendar_weekend'), holiday: t('calendar_holiday'), semester_closed: t('calendar_semester_closed') };
 
     // GitHub-style grid: columns are weeks (Sunday-start), rows are the 7
@@ -2116,7 +2441,7 @@ function renderAttendanceCalendar(data) {
     el.innerHTML = attendanceStreakHtml + `
         <div style="overflow-x:auto;">
             <div style="display:grid; grid-template-columns:repeat(${weekCount}, 15px); gap:3px; margin-bottom:4px; min-width:${weekCount * 18}px;">
-                ${monthLabels.map(m => `<div style="grid-column:${m.week + 1}; font-size:0.72rem; color:#64748b;">${m.name}</div>`).join('')}
+                ${monthLabels.map(m => `<div style="grid-column:${m.week + 1}; font-size:0.72rem; color:#66786d;">${m.name}</div>`).join('')}
             </div>
             <div style="display:grid; grid-template-columns:repeat(${weekCount}, 15px); grid-template-rows:repeat(7, 15px); gap:3px; min-width:${weekCount * 18}px;">
                 ${cells}
@@ -2132,7 +2457,7 @@ function renderAttendanceCalendar(data) {
             <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#dc2626;margin-right:4px;"></span>${t('calendar_absent')}</span>
             <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#3b82f6;margin-right:4px;"></span>${t('calendar_excused')}</span>
             <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#eab308;margin-right:4px;"></span>${t('calendar_holiday')}</span>
-            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#d1d5db;margin-right:4px;"></span>${t('calendar_weekend')}</span>
+            <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#cdd6d0;margin-right:4px;"></span>${t('calendar_weekend')}</span>
         </div>`;
 }
 
