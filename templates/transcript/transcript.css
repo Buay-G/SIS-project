@@ -39,6 +39,24 @@ body{
   width:100%; max-width:210mm; min-height:297mm; padding:9mm 7mm 7mm; position:relative;
 }
 
+/* Zone logo watermark: the logo of the zone this school belongs to
+   (uploaded by the Super/Zonal Admin), centered and faint over the page.
+   pointer-events:none and low opacity keep text, the QR code and photo
+   fully readable and scannable. print-color-adjust keeps it in print. */
+.zone-watermark{
+  position:absolute;
+  top:50%; left:50%;
+  transform:translate(-50%, -50%);
+  width:60%; max-height:60%;
+  object-fit:contain;
+  opacity:0.09;
+  pointer-events:none;
+  z-index:5;
+  print-color-adjust:exact;
+  -webkit-print-color-adjust:exact;
+}
+.zone-watermark[hidden]{ display:none; }
+
 /* Header */
 .header{ display:grid; grid-template-columns:76px 1fr 76px; gap:var(--s3); align-items:center; padding-bottom:var(--s1); border-bottom:2px solid var(--seal); }
 .flag-box{ width:76px; display:flex; align-items:center; justify-content:center; }
@@ -166,63 +184,60 @@ body{
 .qr-box svg{ width:100%; height:100%; display:block; }
 .qr-caption{ font-size:0.55rem; color:var(--ink-faint); margin-top:2px; text-align:center; letter-spacing:0.02em; }
 
-/* Table styling like certificate */
-.table-wrap{ position:relative; }
-table{ width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; font-size:0.86rem; margin-top:8px; }
-th, td{ border:1px solid var(--line); padding:5px 7px; text-align:center; }
-thead th{ background:var(--seal); color:var(--paper); font-weight:700; padding:7px; }
-th.subject-col, td.subject-col{ text-align:left; padding-left:10px; width:20%; }
-tbody tr:nth-child(even) td{ background:oklch(0.975 0.006 95); }
-
-/* Summary rows (Absent/Total/Average/Rank) get the same green as the
-   header, like the header band, so they read as totals rather than
-   more subject rows. Written as `tbody tr.meta-row td` (not just
-   `.meta-row td`) so it reliably outranks the zebra-stripe rule above
-   regardless of whether a given summary row lands on an odd or even
-   position — the subject list length varies per school, so which
-   parity these rows fall on isn't fixed. */
-tbody tr.meta-row td{
-  background:var(--seal);
-  color:var(--paper);
-  font-weight:700;
+/* Grade blocks: 9th & 10th on the top row, 11th & 12th below. Each block
+   is its own small table (Subject / I / II / AV) with a green title bar,
+   a stream strip, and green summary rows (Absent / Total / Average /
+   Rank) in the same style as the old single wide table. */
+.grade-grid{
+  /* --u is the fit-to-page scale (1 = normal). transcript.js lowers it
+     in small steps until the whole page fits ONE sheet, so a longer
+     subject list shrinks the type and row height instead of spilling
+     onto a second page. Everything inside is sized in em off this. */
+  font-size:calc(1rem * var(--u, 1));
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:0.9em 0.75em;
+  margin-top:10px;
+  align-items:start;
 }
-tbody tr.meta-row td.subject-col{ color:var(--paper); }
-
-/* A subject that doesn't apply to a given year's stream (e.g. a
-   Natural-only subject in a Social-stream year, or vice versa) — struck
-   through with a double line for just that year's three columns, not
-   the whole row, since one row spans all four years and a subject can
-   be applicable in some and not others. Double line (rather than a
-   single strike) reads clearly as "not offered in this stream" at a
-   glance, distinct from a single-line correction mark. */
-td.not-applicable{
-  text-decoration:line-through;
-  text-decoration-style:double;
-  text-decoration-thickness:1.5px;
-  color:var(--ink-faint);
-  opacity:0.7;
+.grade-block{ min-width:0; break-inside:avoid; }
+.gb-head, .gb-stream{
+  display:flex; justify-content:space-between; align-items:center;
+  text-transform:uppercase; letter-spacing:0.04em; font-weight:700;
 }
+.gb-head{ background:var(--seal); color:var(--paper); font-size:0.74em; padding:0.4em 0.7em; }
+.gb-stream{
+  background:var(--accent-bg); color:var(--seal-deep); font-size:0.68em;
+  padding:0.25em 0.7em; border:1px solid var(--line); border-top:none;
+}
+.gb-subjects{ position:relative; }
+table.gb-table{
+  width:100%; border-collapse:collapse; table-layout:fixed;
+  font-variant-numeric:tabular-nums; font-size:0.74em;
+}
+table.gb-table + table.gb-table{ margin-top:-1px; }
+.gb-table th, .gb-table td{ border:1px solid var(--line); padding:0.2em 0.3em; text-align:center; height:1.9em; line-height:1.15; }
+.gb-table thead th{ background:var(--paper-2); color:var(--seal-deep); font-weight:700; }
+.gb-table col.c-sub{ width:46%; }
+th.subject-col, td.subject-col{ text-align:left; padding-left:7px; }
+.gb-table td.subject-col{ font-size:0.95em; font-weight:600; text-transform:uppercase; letter-spacing:0.02em; }
+.gb-subjects tbody tr:nth-child(even) td{ background:oklch(0.975 0.006 95); }
 
-/* A whole grade the student has no record for at all — never enrolled
-   here that year (e.g. transferred out after Grade 9, so Grades
-   10/11/12 never happened for them at this school) — is marked with
-   ONE continuous red diagonal line running the full height of each of
-   that grade's three columns (I/II/AV), not a fill in every cell. That
-   line is drawn by transcript.js on the <svg class="not-attended-lines">
-   overlay below, measured off the real rendered row positions — a
-   single stroke can't be expressed as a per-cell background, since it
-   has to span every row (subjects AND the Absent/Total/Average/Rank
-   rows) as one unbroken line. td.not-attended itself carries no visual
-   style; it's only a marker transcript.js queries to find each
-   column's cell edges and the block's top/bottom extent. Cells keep
-   whatever background they'd normally have (zebra stripe or the green
-   meta-row fill) — the line draws on top of that via the overlay, not
-   in place of it. */
-.not-attended-lines{
-  position:absolute;
-  top:0; left:0;
-  width:100%; height:100%;
-  pointer-events:none;
+/* Summary rows share the header's green so they read as totals. */
+/* White rules between the summary rows and between their cells; the
+   outer edge of the band stays green so it still reads as one block. */
+.gb-table tr.meta-row td{ background:var(--seal); color:var(--paper); font-weight:700; border:1px solid var(--paper); }
+.gb-table tr.meta-row td:first-child{ border-left-color:var(--seal); }
+.gb-table tr.meta-row td:last-child{ border-right-color:var(--seal); }
+.gb-table tr.meta-row:last-child td{ border-bottom-color:var(--seal); }
+
+/* A grade the student has no record for (never enrolled that year): one
+   red diagonal across the score columns of that block's subject table. */
+.grade-block.not-attended .gb-subjects::after{
+  content:""; position:absolute; left:46%; right:0; top:1.41em; bottom:0; pointer-events:none;
+  background:linear-gradient(to top right,
+    transparent calc(50% - 0.7px), var(--danger) calc(50% - 0.7px),
+    var(--danger) calc(50% + 0.7px), transparent calc(50% + 0.7px));
 }
 
 .note{ font-size:0.78rem; color:var(--ink-faint); margin-top:6px; margin-bottom:6px; }
@@ -256,6 +271,11 @@ td.not-applicable{
 .seal-slot{ display:flex; align-items:center; justify-content:center; }
 .seal-area{ width:100px; height:100px; border:1.5px dashed var(--line); border-radius:50%; display:flex; align-items:center; justify-content:center; color:var(--ink-faint); font-weight:700; overflow:hidden; }
 .seal-area img{ width:100%; height:100%; object-fit:contain; }
+/* Once a real seal image is on file, drop the dashed placeholder ring —
+   the seal artwork has its own circle, and the grey dashed line around
+   it looked like a broken outline. The dashed ring stays only as the
+   empty-slot placeholder. */
+.seal-area:has(img){ border:none; }
 /* A signature image sits just above its blank underline; when there's
    no signature on file the slot is simply empty and the underline
    alone stands in for "not yet signed" — same fallback as the
@@ -339,7 +359,15 @@ td.not-applicable{
   .photo-caption{ width:64px; }
   .qr-wrap{ width:64px; }
   .qr-box{ width:56px; height:56px; }
-  table{ font-size:0.78rem; }
-  th,td{ padding:3px 5px; }
-  thead th{ padding:5px; }
+  .grade-grid{ gap:0.7em 0.6em; }
+  table.gb-table{ font-size:0.68em; }
+  .gb-table th, .gb-table td{ padding:0.15em 0.25em; height:1.7em; }
+  .grade-block.not-attended .gb-subjects::after{ top:1.16em; }
+  /* Hard guarantee of ONE page: whatever the content, nothing past the
+     printable height (A4 297mm minus @page's 4mm top+bottom) can ever
+     start a second sheet. transcript.js shrinks the type first, so this
+     clip should never actually cut anything off. */
+  html,body{ height:auto; }
+  #page-scale-wrap{ max-height:289mm; overflow:hidden; page-break-after:avoid; break-after:avoid; }
+  .page{ page-break-inside:avoid; break-inside:avoid; }
 }

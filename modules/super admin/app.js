@@ -1,3 +1,15 @@
+// Live updates: loads /assets/js/live.js, which keeps a server-sent-events
+// connection open so changes appear without a browser refresh.
+// onLiveChange() calls made before live.js has loaded are queued.
+(function () {
+  if (window.onLiveChange) return;
+  window.__liveQueue = [];
+  window.onLiveChange = (fn) => window.__liveQueue.push(fn);
+  const el = document.createElement("script");
+  el.src = "/assets/js/live.js";
+  document.head.appendChild(el);
+})();
+
 /* This file relies on i18n.js being loaded first (t, applyTranslations,
    getCurrentLang, window.setLang) — see index.html script order.
 
@@ -304,19 +316,30 @@ const NAV_PERMISSION_MAP = {
   sa_nav_schools_archive: "manage_schools",
   sa_nav_subscriptions: "manage_schools",
   sa_nav_zonal_admins: "manage_zonal_admins",
+  // Same gate as the endpoint itself — see
+  // requireSuperAdminPermission("manage_schools") on
+  // POST /api/super/schools/:id/managing-director.
+  sa_nav_managing_directors: "manage_schools",
   sa_nav_subjects: "manage_subject_dictionary",
   sa_nav_roster: "manage_roster",
   sa_nav_streams: "manage_streams",
   sa_nav_audit: "view_audit_log",
 };
 function navItemAllowed(key) {
+  // Action Center can reset any account in the system, so a restricted
+  // ("IT Specialist") account never sees it — the endpoints refuse them too.
+  if (key === "sa_nav_action_center" && CURRENT_USER && CURRENT_USER.is_restricted)
+    return false;
   const permKey = NAV_PERMISSION_MAP[key];
   if (!permKey) return true;
   if (!CURRENT_USER_SUPER_PERMISSIONS) return true;
   return !!CURRENT_USER_SUPER_PERMISSIONS[permKey];
 }
 function getNavSuper() {
-  const userAccessItems = [["sa_nav_zonal_admins", "user-cog"]];
+  const userAccessItems = [
+    ["sa_nav_zonal_admins", "user-cog"],
+    ["sa_nav_managing_directors", "briefcase"],
+  ];
   if (CURRENT_USER && CURRENT_USER.title === "Owner") {
     userAccessItems.push(["sa_nav_super_admins", "user-cog"]);
   }
@@ -325,7 +348,13 @@ function getNavSuper() {
     ["sa_nav_audit", "scroll-text"],
   );
   const sections = [
-    { sec: "sa_sec_core_overview", items: [["sa_nav_dashboard", "home"]] },
+    {
+      sec: "sa_sec_core_overview",
+      items: [
+        ["sa_nav_dashboard", "home"],
+        ["sa_nav_action_center", "life-buoy"],
+      ],
+    },
     { sec: "sa_sec_user_access", items: userAccessItems },
     {
       sec: "sa_sec_institution_structure",
@@ -361,17 +390,21 @@ function getNavSuper() {
 }
 
 const SUPER_ADMIN_TITLES = ["Owner", "IT Lead"];
-const EDUCATIONAL_LEVELS = ["PRIMARY", "MIDDLE", "SECONDARY"];
+const EDUCATIONAL_LEVELS = ["KG", "PRIMARY", "MIDDLE", "SECONDARY"];
 // What each Educational Level implies for Grade-Tier(s) — a Secondary
 // school always carries BOTH General and Preparatory at once; this
 // mirrors EDUCATIONAL_LEVEL_TIERS in server.js exactly.
 const EDUCATIONAL_LEVEL_TIERS = {
+  // Kindergarten (KG1-KG3) is an add-on wing a school must be explicitly
+  // permitted to run; only schools with this level can register KG students.
+  KG: ["KG"],
   PRIMARY: ["BASIC"],
   MIDDLE: ["CORE"],
   SECONDARY: ["GENERAL", "PREPARATORY"],
 };
 const SCHOOL_LEVELS = ["BASIC", "CORE", "GENERAL", "PREPARATORY"];
 const SCHOOL_LEVEL_GRADES = {
+  KG: "KG1–KG3",
   BASIC: "1–6",
   CORE: "7–8",
   GENERAL: "9–10",
@@ -999,6 +1032,225 @@ function openZonalAdminEditModal(admin) {
 }
 
 /* ==================================================================
+   Managing Directors — one per PRIVATE school, appointed directly by
+   Super Admin (public schools go through the zonal workflow above
+   instead; a public school has no Managing Director — see
+   userCan(..., "appoint_managing_director", school) in server.js).
+   Sits right next to Zonal Admins in the sidebar since both answer
+   "who's in charge here" — just for a private school instead of a
+   zone. New MD accounts always start on the fixed default password
+   (1122) with a forced change at first login — see
+   DEFAULT_MANAGING_DIRECTOR_PASSWORD in server.js; there's no "reset
+   password" action here the way Zonal Admins has one, since
+   "Replace" already covers it (issues a fresh default + forces the
+   change again, and deactivates the old account).
+   ================================================================== */
+function managingDirectorsSkeletonHTML() {
+  return `<div class="panel"><h3><i data-lucide="briefcase"></i> ${t("sa_nav_managing_directors")}</h3><p class="hint">${t("za_loading")}</p></div>`;
+}
+async function loadAndRenderManagingDirectors() {
+  try {
+    const schools = await apiGet("/api/super/schools");
+    const privateSchools = schools.filter((s) => s.school_type === "PRIVATE");
+    const mdList = await Promise.all(
+      privateSchools.map((s) =>
+        apiGet(`/api/super/schools/${s.id}/managing-director`).catch(
+          () => null,
+        ),
+      ),
+    );
+    const mdBySchoolId = {};
+    privateSchools.forEach((s, i) => {
+      mdBySchoolId[s.id] = mdList[i] || null;
+    });
+    renderManagingDirectorsPanel(privateSchools, mdBySchoolId);
+  } catch (err) {
+    document.getElementById("content").innerHTML = errorPanel(err);
+  }
+}
+function renderManagingDirectorsPanel(privateSchools, mdBySchoolId) {
+  const schoolOpts = privateSchools
+    .map(
+      (s) =>
+        `<option value="${s.id}">${s.school_name}${s.zone_name ? ` — ${s.zone_name}` : ""}</option>`,
+    )
+    .join("");
+
+  const rows = privateSchools.length
+    ? privateSchools
+        .map((s) => {
+          const md = mdBySchoolId[s.id];
+          const mdCell = md
+            ? `${[md.first_name, md.middle_name, md.last_name].filter(Boolean).join(" ")} (${md.admin_id})${
+                md.must_change_password
+                  ? ` <span class="badge">${t("sa_md_pending_first_login")}</span>`
+                  : ""
+              }`
+            : `<span class="hint">${t("sa_md_none")}</span>`;
+          return `
+    <tr data-school-id="${s.id}">
+      <td>${s.school_name}</td>
+      <td>${s.zone_name || "—"}</td>
+      <td>${s.region_name || "—"}</td>
+      <td>${mdCell}</td>
+      <td><button class="btn ghost sm md-assign">${md ? t("sa_replace_md") : t("sa_assign_md")}</button></td>
+    </tr>`;
+        })
+        .join("")
+    : `<tr><td colspan="5" class="hint">${t("sa_md_private_schools_empty")}</td></tr>`;
+
+  document.getElementById("content").innerHTML = `
+  <div class="panel">
+    <h3><i data-lucide="user-plus"></i> <span id="mdFormTitle">${t("sa_assign_md")}</span></h3>
+    <p class="hint">${t("sa_md_form_hint")}</p>
+    <div class="form-grid">
+      <div class="form-field">
+        <label for="md_school">${t("sa_f_private_school")}</label>
+        <select id="md_school"><option value="">${t("sa_pick_private_school")}</option>${schoolOpts}</select>
+      </div>
+      <div class="form-field">
+        <label for="md_first">${t("sa_f_first_name")}</label>
+        <input type="text" id="md_first" placeholder="${t("sa_f_first_name")}">
+      </div>
+      <div class="form-field">
+        <label for="md_middle">${t("sa_f_middle_name")}</label>
+        <input type="text" id="md_middle" placeholder="${t("sa_f_middle_name")}">
+      </div>
+      <div class="form-field">
+        <label for="md_last">${t("sa_f_last_name")}</label>
+        <input type="text" id="md_last" placeholder="${t("sa_f_last_name")}">
+      </div>
+      <div class="form-field">
+        <label for="md_sex">${t("sa_f_sex")}</label>
+        <select id="md_sex">
+          <option value="">${t("sa_f_sex")}</option>
+          <option value="Male">${t("za_sex_male")}</option>
+          <option value="Female">${t("za_sex_female")}</option>
+        </select>
+      </div>
+      <div class="form-field">
+        <label for="md_education">${t("za_f_education_level")}</label>
+        <select id="md_education">
+          <option value="">${t("za_f_education_level")}</option>
+          <option value="TVET / College Diploma">TVET / College Diploma</option>
+          <option value="Bachelor's Degree">Bachelor's Degree</option>
+          <option value="Master's Degree">Master's Degree</option>
+          <option value="PhD / Doctoral Degree">PhD / Doctoral Degree</option>
+        </select>
+      </div>
+      <div class="form-field">
+        <label for="md_contact">${t("sa_f_contact")}</label>
+        <input type="text" id="md_contact" placeholder="09xxxxxxxx">
+      </div>
+      <div class="form-field">
+        <label for="md_email">${t("sa_f_email")}</label>
+        <input type="email" id="md_email" placeholder="name@example.com">
+      </div>
+    </div>
+    <div class="panel" id="md_current_wrap" style="display:none; margin-top:10px;">
+      <p class="hint" id="md_current_info"></p>
+    </div>
+    <div class="form-actions">
+      <button class="btn primary" id="btnCreateMd">${t("sa_assign_md")}</button>
+      <button class="btn ghost" id="btnCancelReplaceMd" style="display:none;">${t("za_cancel")}</button>
+    </div>
+    <p class="hint" id="mdFormMsg"></p>
+  </div>
+  <div class="panel">
+    <h3><i data-lucide="briefcase"></i> ${t("sa_nav_managing_directors")}</h3>
+    <div class="table-wrap"><table>
+      <tr><th>${t("sa_th_school")}</th><th>${t("sa_th_zone")}</th><th>${t("za_th_region")}</th><th>${t("sa_th_managing_director")}</th><th>${t("za_th_actions")}</th></tr>
+      ${rows}
+    </table></div>
+  </div>`;
+
+  const schoolEl = document.getElementById("md_school");
+  const msg = document.getElementById("mdFormMsg");
+  const formTitle = document.getElementById("mdFormTitle");
+  const btnCreate = document.getElementById("btnCreateMd");
+  const btnCancel = document.getElementById("btnCancelReplaceMd");
+  const currentWrap = document.getElementById("md_current_wrap");
+  const currentInfo = document.getElementById("md_current_info");
+  let replaceAdminId = null;
+
+  function clearReplaceState() {
+    replaceAdminId = null;
+    formTitle.textContent = t("sa_assign_md");
+    btnCreate.textContent = t("sa_assign_md");
+    btnCancel.style.display = "none";
+    currentWrap.style.display = "none";
+  }
+
+  function selectSchool(schoolId) {
+    schoolEl.value = schoolId;
+    const md = mdBySchoolId[schoolId];
+    if (md) {
+      replaceAdminId = md.admin_id;
+      formTitle.textContent = t("sa_replace_md");
+      btnCreate.textContent = t("sa_replace_md");
+      btnCancel.style.display = "inline-block";
+      currentWrap.style.display = "block";
+      currentInfo.textContent = t("sa_md_current_info", {
+        name: [md.first_name, md.middle_name, md.last_name]
+          .filter(Boolean)
+          .join(" "),
+        id: md.admin_id,
+      });
+    } else {
+      clearReplaceState();
+      schoolEl.value = schoolId;
+    }
+  }
+
+  schoolEl.addEventListener("change", () => {
+    setErrorMsg(msg, "");
+    if (schoolEl.value) selectSchool(schoolEl.value);
+    else clearReplaceState();
+  });
+  btnCancel.onclick = () => {
+    clearReplaceState();
+    schoolEl.value = "";
+  };
+  document.querySelectorAll(".md-assign").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      selectSchool(btn.closest("tr").dataset.schoolId);
+      schoolEl.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  });
+
+  btnCreate.onclick = async () => {
+    const schoolId = schoolEl.value;
+    const body = {
+      first_name: document.getElementById("md_first").value.trim(),
+      middle_name: document.getElementById("md_middle").value.trim() || null,
+      last_name: document.getElementById("md_last").value.trim(),
+      sex: document.getElementById("md_sex").value || null,
+      education_level: document.getElementById("md_education").value || null,
+      contact_number:
+        document.getElementById("md_contact").value.trim() || null,
+      email: document.getElementById("md_email").value.trim() || null,
+      replace_admin_id: replaceAdminId,
+    };
+    if (!schoolId || !body.first_name || !body.last_name) {
+      setErrorMsg(msg, t("sa_md_required"));
+      return;
+    }
+    if (!(await showPasswordConfirm(t("sa_pwconfirm_md")))) return;
+    try {
+      const result = await apiPost(
+        `/api/super/schools/${schoolId}/managing-director`,
+        body,
+      );
+      setSuccessMsg(msg, result.message);
+      showCredentialsModal(result.admin_id, result.default_password);
+      loadAndRenderManagingDirectors();
+    } catch (err) {
+      setErrorMsg(msg, err.message);
+    }
+  };
+}
+
+/* ==================================================================
    Schools — setup (name, EDUCATIONAL LEVEL, region/zone/woreda/kebele,
    streams) and a list of every school across every zone. A school
    picks its Educational Level ONCE at registration; the Grade-Tier(s)
@@ -1031,7 +1283,8 @@ function computeSchoolPrefixPreview(name, educationalLevels) {
   const tiers = new Set(
     (educationalLevels || []).flatMap((l) => EDUCATIONAL_LEVEL_TIERS[l] || []),
   );
-  const primaryTier = SCHOOL_LEVELS.find((t) => tiers.has(t));
+  const primaryTier =
+    SCHOOL_LEVELS.find((t) => tiers.has(t)) || (tiers.has("KG") ? "KG" : undefined);
   if (!initials || !primaryTier) return "";
   return initials + (SCHOOL_LEVEL_CODE[primaryTier] || "");
 }
@@ -2696,7 +2949,7 @@ function renderGradeMappingPanel(mapping, schools) {
     <tr>
       <td>${t("sa_edulevel_" + m.educational_level.toLowerCase())}</td>
       <td>${m.tiers.map((t2) => `<span class="badge">${t("sa_level_" + t2.school_level.toLowerCase())}</span>`).join(" ")}</td>
-      <td>${m.tiers.map((t2) => `${t2.grades[0]}–${t2.grades[1]}`).join(", ")}</td>
+      <td>${m.tiers.map((t2) => (t2.school_level === "KG" ? "KG1–KG3" : `${t2.grades[0]}–${t2.grades[1]}`)).join(", ")}</td>
     </tr>`,
     )
     .join("");
@@ -3286,6 +3539,10 @@ function subMoney(n) {
   })} ${t("sub_birr")}`;
 }
 function subPeriodLabel(year, month) {
+  // A yearly school's report covers the whole EC year; it is stored with
+  // month 0 (there is no month name for it).
+  if (Number(month) === 0)
+    return `${year} ${t("sub_ec")} · ${subTr("sub_full_year", "Full year")}`;
   return `${t("sub_month_" + month)} ${year} ${t("sub_ec")}`;
 }
 function subRoleLabel(p) {
@@ -3310,6 +3567,18 @@ function subRefreshCurrentPage() {
   if (activePage === "sa_nav_subscriptions") return loadAndRenderSubscriptions();
 }
 
+// Billing cycle (student fee only; the staff fee is always monthly).
+// Falls back to English if i18n.js doesn't have the key yet.
+function subTr(key, fallback) {
+  const v = t(key);
+  return !v || v === key ? fallback : v;
+}
+function subCycleLabel(cycle) {
+  return cycle === "yearly"
+    ? subTr("sub_cycle_yearly", "Yearly")
+    : subTr("sub_cycle_monthly", "Monthly");
+}
+
 /* ---------------- Schools screen: the Subscription column ------------ */
 function subscriptionCellHTML(school, sub) {
   if (!sub) return `<td>—</td>`;
@@ -3324,7 +3593,7 @@ function subscriptionCellHTML(school, sub) {
     </div>
     ${
       sub.is_enabled
-        ? `<div class="sub-cell-fees">${t("sub_fees_short", { student: subEsc(sub.student_fee), staff: subEsc(sub.staff_fee) })}</div>`
+        ? `<div class="sub-cell-fees">${t("sub_fees_short", { student: subEsc(sub.student_fee), staff: subEsc(sub.staff_fee) })} · ${subEsc(subCycleLabel(sub.billing_cycle))}</div>`
         : ""
     }
   </td>`;
@@ -3397,6 +3666,14 @@ function openSubscriptionSetupModal(school, sub, { enableOnSave = false } = {}) 
       </div>
       <p class="hint">${t("sub_fee_hint")}</p>
       <div class="form-field" style="margin-top:14px;">
+        <label for="subBillingCycle">${subTr("sub_f_billing_cycle", "Student fee billing cycle")}</label>
+        <select id="subBillingCycle">
+          <option value="monthly" ${s.billing_cycle !== "yearly" ? "selected" : ""}>${subTr("sub_cycle_monthly", "Monthly")}</option>
+          <option value="yearly" ${s.billing_cycle === "yearly" ? "selected" : ""}>${subTr("sub_cycle_yearly", "Yearly")}</option>
+        </select>
+      </div>
+      <p class="hint">${subTr("sub_cycle_hint", "Monthly: the student fee is charged every month. Yearly: the student fee is the full-year amount, paid once and spread over the remaining months of the academic year. The staff fee is always monthly.")}</p>
+      <div class="form-field" style="margin-top:14px;">
         <label for="subBankName">${t("sub_f_bank_name")}</label>
         <input type="text" id="subBankName" list="subBankList" maxlength="100" autocomplete="off" value="${subEsc(s.bank_name)}">
         <datalist id="subBankList">${SUB_BANK_SUGGESTIONS.map((b) => `<option value="${subEsc(b)}"></option>`).join("")}</datalist>
@@ -3452,6 +3729,7 @@ function openSubscriptionSetupModal(school, sub, { enableOnSave = false } = {}) 
     const body = {
       student_fee: studentFee,
       staff_fee: staffFee,
+      billing_cycle: $("subBillingCycle").value === "yearly" ? "yearly" : "monthly",
       bank_name: $("subBankName").value.trim(),
       bank_account_name: $("subAccountName").value.trim(),
       bank_account_number: accountNumber,
@@ -3536,9 +3814,9 @@ function renderSubscriptionsPanel(overview, reports) {
           (s) => `
     <tr data-id="${s.id}">
       <td>${subEsc(s.school_name)}<div class="hint" style="margin:2px 0 0;">${subEsc(s.zone_name || "—")}, ${subEsc(s.region_name || "—")}</div></td>
-      <td class="sub-num">${subMoney(s.student_fee)} / ${subMoney(s.staff_fee)}</td>
-      <td>${s.paid_count}</td>
-      <td class="sub-num">${subMoney(s.collected)}</td>
+      <td class="sub-num">${subMoney(s.student_fee)} / ${subMoney(s.staff_fee)}<div class="hint" style="margin:2px 0 0;">${subEsc(subCycleLabel(s.billing_cycle))}</div></td>
+      <td>${s.paid_count}${s.is_year ? `<div class="hint" style="margin:2px 0 0;">${subTr("sub_full_year", "Full year")}</div>` : ""}</td>
+      <td class="sub-num">${subMoney(s.collected)}${s.is_year ? `<div class="hint" style="margin:2px 0 0;">${subTr("sub_full_year", "Full year")}</div>` : ""}</td>
       <td>${s.frozen_count ? `<span class="pill bad">${s.frozen_count}</span>` : "—"}</td>
       <td>${
         s.report_sent_at
@@ -3576,7 +3854,7 @@ function renderSubscriptionsPanel(overview, reports) {
   document.getElementById("content").innerHTML = `
   <div class="cards">
     ${subCardHTML("building-2", t("sub_card_schools_on"), enabled.length, t("sub_card_schools_of", { total: overview.schools.length }))}
-    ${subCardHTML("banknote", t("sub_card_collected", { period: periodLabel }), subMoney(collected), "&nbsp;")}
+    ${subCardHTML("banknote", t("sub_card_collected", { period: periodLabel }), subMoney(collected), enabled.some((s) => s.is_year) ? subTr("sub_card_year_note", "Yearly schools show the full year.") : "&nbsp;")}
     ${subCardHTML("clipboard-check", t("sub_card_reports"), toReview, t("sub_card_reports_sub"), toReview > 0)}
     ${subCardHTML("lock", t("sub_card_frozen"), frozen, t("sub_card_frozen_sub"))}
   </div>
@@ -4028,6 +4306,216 @@ async function openSubscriptionReportModal(id) {
 }
 
 /* ---------------- Page router ----------------------------------------- */
+/* ==================================================================
+   Action Center — reset ANY account's password (Overview section).
+   Step 1: type an ID and press Reset -> GET /api/super/action-center/lookup/:id
+           shows who the account belongs to (photo, name, role, school...).
+   Step 2: confirm in the preview (re-typing your own password) ->
+           POST /api/super/action-center/reset-password sets the system
+           default and forces a new 6-digit PIN at the person's next login.
+   ================================================================== */
+function acEsc(v) {
+  return String(v ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+function actionCenterHTML() {
+  return `
+  <div class="panel">
+    <h3><i data-lucide="life-buoy"></i> ${t("sa_nav_action_center")}</h3>
+    <div class="ac-card">
+      <div class="ac-card-head">
+        <span class="ac-card-icon"><i data-lucide="key-round"></i></span>
+        <div>
+          <h4>${t("sa_ac_card_title")}</h4>
+          <p class="hint">${t("sa_ac_card_hint")}</p>
+        </div>
+      </div>
+      <div class="ac-form">
+        <div class="form-field">
+          <label for="acId">${t("sa_ac_id_label")}</label>
+          <input type="text" id="acId" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="40" placeholder="${acEsc(t("sa_ac_id_placeholder"))}">
+        </div>
+        <button class="btn primary" id="acResetBtn" type="button"><i data-lucide="rotate-ccw"></i> ${t("sa_ac_reset_btn")}</button>
+      </div>
+      <p class="hint" id="acMsg" aria-live="polite"></p>
+    </div>
+  </div>`;
+}
+function wireActionCenter() {
+  const input = document.getElementById("acId");
+  const btn = document.getElementById("acResetBtn");
+  const msg = document.getElementById("acMsg");
+  const start = async () => {
+    const id = input.value.trim();
+    msg.innerHTML = "";
+    if (!id) {
+      setErrorMsg(msg, t("sa_ac_id_required"));
+      input.focus();
+      return;
+    }
+    btn.disabled = true;
+    try {
+      const account = await apiGet(
+        `/api/super/action-center/lookup/${encodeURIComponent(id)}`,
+      );
+      const done = await openActionCenterPreview(account);
+      if (done) {
+        setSuccessMsg(
+          msg,
+          acEsc(
+            t("sa_ac_done_msg", {
+              name: done.full_name || done.id,
+              id: done.id,
+              pw: done.default_password,
+            }),
+          ),
+        );
+        input.value = "";
+      }
+    } catch (err) {
+      setErrorMsg(msg, acEsc(err.message));
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  btn.addEventListener("click", start);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      start();
+    }
+  });
+  input.focus();
+}
+
+// Resolves with the server's reset response when the reset went through,
+// or null if the Super Admin cancelled.
+function openActionCenterPreview(a) {
+  return new Promise((resolve) => {
+    const name = a.full_name || a.id;
+    const classLine =
+      a.class_level != null && a.class_level !== ""
+        ? [
+            t("sa_ac_grade", { grade: acEsc(a.class_level) }),
+            a.section ? t("sa_ac_section", { section: acEsc(a.section) }) : null,
+            a.stream ? acEsc(a.stream) : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")
+        : null;
+    const rows = [
+      [t("sa_ac_f_role"), t("sa_ac_role_" + a.role)],
+      [t("sa_ac_f_id"), acEsc(a.id)],
+      [t("sa_ac_f_name"), acEsc(a.full_name || "—")],
+      a.title ? [t("sa_ac_f_title"), acEsc(a.title)] : null,
+      a.school_name ? [t("sa_ac_f_school"), acEsc(a.school_name)] : null,
+      a.zone_name ? [t("sa_ac_f_zone"), acEsc(a.zone_name)] : null,
+      classLine ? [t("sa_ac_f_class"), classLine] : null,
+      a.status ? [t("sa_ac_f_status"), acEsc(a.status)] : null,
+      a.phone ? [t("sa_ac_f_phone"), acEsc(a.phone)] : null,
+      a.email ? [t("sa_ac_f_email"), acEsc(a.email)] : null,
+      a.children && a.children.length
+        ? [
+            t("sa_ac_f_children"),
+            a.children
+              .map((c) => `${acEsc(c.full_name || "")} (${acEsc(c.student_id)})`)
+              .join("<br>"),
+          ]
+        : null,
+    ].filter(Boolean);
+    const photo = a.photo_url
+      ? `<img class="ac-photo" src="${acEsc(a.photo_url)}" alt="${acEsc(t("sa_ac_photo_alt", { name }))}">`
+      : `<div class="ac-photo ac-photo-empty" title="${acEsc(t("sa_ac_no_photo"))}"><span>${acEsc(initialsOf(name))}</span><small>${t("sa_ac_no_photo")}</small></div>`;
+
+    const backdrop = document.createElement("div");
+    backdrop.className = "confirm-modal-backdrop";
+    backdrop.innerHTML = `
+      <div class="confirm-modal form-modal ac-modal" role="dialog" aria-modal="true" aria-labelledby="acConfirmTitle">
+        <div class="confirm-modal-icon"><i data-lucide="key-round"></i></div>
+        <h3 class="confirm-modal-title" id="acConfirmTitle">${t("sa_ac_confirm_title")}</h3>
+        <div class="ac-preview">
+          ${photo}
+          <dl class="ac-details">
+            ${rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("")}
+          </dl>
+        </div>
+        ${a.login_blocked ? `<div class="alert-box error ac-warn"><div class="icon"><i data-lucide="alert-triangle"></i></div><div class="body">${t("sa_ac_warn_blocked")}</div></div>` : ""}
+        <p class="confirm-modal-msg">${t("sa_ac_confirm_hint", { pw: acEsc(a.default_password) })}</p>
+        <div class="form-field" style="text-align:left;margin-bottom:4px;">
+          <label for="acPw">${t("sa_ac_pw_label")}</label>
+          <input type="password" id="acPw" autocomplete="current-password">
+        </div>
+        <p class="confirm-modal-error" id="acErr" role="alert" aria-live="assertive" style="display:none"></p>
+        <div class="confirm-modal-actions">
+          <button class="btn ghost" id="acCancel" type="button">${t("za_cancel")}</button>
+          <button class="btn primary" id="acConfirm" type="button">${t("sa_reset_password")}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(backdrop);
+    if (window.lucide) lucide.createIcons();
+    const pw = backdrop.querySelector("#acPw");
+    const err = backdrop.querySelector("#acErr");
+    const ok = backdrop.querySelector("#acConfirm");
+    const img = backdrop.querySelector("img.ac-photo");
+    if (img) {
+      // A broken photo link falls back to the initials tile.
+      img.addEventListener("error", () => {
+        img.outerHTML = `<div class="ac-photo ac-photo-empty"><span>${acEsc(initialsOf(name))}</span><small>${t("sa_ac_no_photo")}</small></div>`;
+      });
+    }
+    let finished = false;
+    const finish = (result) => {
+      if (finished) return;
+      finished = true;
+      backdrop.remove();
+      document.removeEventListener("keydown", onKey);
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") finish(null);
+      if (e.key === "Enter" && document.activeElement === pw) attempt();
+    };
+    document.addEventListener("keydown", onKey);
+    const attempt = async () => {
+      err.style.display = "none";
+      if (!pw.value) {
+        err.textContent = t("sa_ac_pw_required");
+        err.style.display = "block";
+        pw.focus();
+        return;
+      }
+      ok.disabled = true;
+      const label = ok.textContent;
+      ok.textContent = t("za_loading");
+      try {
+        const result = await apiPost("/api/super/action-center/reset-password", {
+          id: a.id,
+          expected_role: a.role,
+          password: pw.value,
+        });
+        finish(result);
+      } catch (e) {
+        err.textContent = e.message;
+        err.style.display = "block";
+        ok.disabled = false;
+        ok.textContent = label;
+        pw.select();
+        pw.focus();
+      }
+    };
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) finish(null);
+    });
+    backdrop.querySelector("#acCancel").addEventListener("click", () => finish(null));
+    ok.addEventListener("click", attempt);
+    pw.focus();
+  });
+}
+
 function render() {
   if (!navHasPage(activePage)) activePage = "sa_nav_dashboard";
   renderNav();
@@ -4036,12 +4524,18 @@ function render() {
   if (activePage === "sa_nav_dashboard") {
     c.innerHTML = dashboardSkeletonHTML();
     loadAndRenderDashboard();
+  } else if (activePage === "sa_nav_action_center") {
+    c.innerHTML = actionCenterHTML();
+    wireActionCenter();
   } else if (activePage === "sa_nav_regions") {
     c.innerHTML = regionsSkeletonHTML();
     loadAndRenderRegions();
   } else if (activePage === "sa_nav_zonal_admins") {
     c.innerHTML = zonalAdminsSkeletonHTML();
     loadAndRenderZonalAdmins();
+  } else if (activePage === "sa_nav_managing_directors") {
+    c.innerHTML = managingDirectorsSkeletonHTML();
+    loadAndRenderManagingDirectors();
   } else if (activePage === "sa_nav_permissions") {
     c.innerHTML = permissionsSkeletonHTML();
     loadAndRenderPermissions();
@@ -4190,3 +4684,14 @@ window.onSisLangChange = () => {
   if (CURRENT_USER) render();
 };
 document.addEventListener("DOMContentLoaded", boot);
+
+// Live refresh: keep the dashboard's numbers and activity feed current while
+// it is on screen (nothing is reloaded if another page is open, a field is
+// focused, or a dialog is up).
+window.onLiveChange(() => {
+  if (!document.getElementById("dashDataPanel")) return;
+  const a = document.activeElement;
+  if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+  if (document.querySelector(".modal-overlay, [role=\"dialog\"]")) return;
+  loadAndRenderDashboard();
+});

@@ -1,3 +1,15 @@
+// Live updates: loads /assets/js/live.js, which keeps a server-sent-events
+// connection open so new requests/notifications appear without a browser
+// refresh. onLiveChange() calls made before live.js has loaded are queued.
+(function () {
+  if (window.onLiveChange) return;
+  window.__liveQueue = [];
+  window.onLiveChange = (fn) => window.__liveQueue.push(fn);
+  const el = document.createElement("script");
+  el.src = "/assets/js/live.js";
+  document.head.appendChild(el);
+})();
+
 // --- 0. Current User / Role Gating ---
 // Registrar-only tabs: a Recorder can see these nav buttons but clicking
 // them shows the security intercept instead of opening the tab.
@@ -26,6 +38,8 @@ async function loadCurrentUser() {
     applyProfileChrome();
     loadSchoolGradeLevels();
     loadEaseCandidates();
+    initRegistrarActionCenter();
+    registerRegistrarLiveRefresh();
     if (currentUser.is_registrar) {
       loadRegistrarNotifications();
       setInterval(loadRegistrarNotifications, 60000);
@@ -43,8 +57,49 @@ async function loadCurrentUser() {
 // actually be enrolled into, not just Secondary. Fetched once per
 // session and cached; loadCurrentUser() above triggers this on load.
 let SCHOOL_GRADE_LEVELS = [];
+// Grades a brand-new entrant can be registered into: only the first grade
+// of each unbroken run the school offers (a school with Grades 9-12 and no
+// Grade 8 -> just Grade 9). Transfers use SCHOOL_GRADE_LEVELS (every grade
+// the school has). Mirrors getEntryGradeSet in server.js, which enforces it.
+let SCHOOL_ENTRY_GRADES = [];
+function computeEntryGrades(grades) {
+  // Any KG class is an entry point (a child can start at KG1, KG2 or KG3);
+  // for the rest, only the first grade of each unbroken run.
+  return grades.filter((g) => g < 0 || !grades.includes(g - 1));
+}
+
+// --- Kindergarten (KG1-KG3) ---
+// KG classes are stored as class_level -3/-2/-1 (see server.js). Never print
+// the raw number: these helpers turn any class_level into its display text.
+//   gradeNum(g)   -> "KG1" or "9"            (for places that add their own "Grade")
+//   gradeText(g)  -> "KG1" or "Grade 9"
+//   gradeLabelT(g)-> "KG1" or "<translated Grade> 9"
+const KG_LABELS = { "-3": "KG1", "-2": "KG2", "-1": "KG3" };
+function isKgGradeValue(g) {
+  return Object.prototype.hasOwnProperty.call(KG_LABELS, String(g));
+}
+function gradeNum(g) {
+  return isKgGradeValue(g) ? KG_LABELS[String(g)] : g;
+}
+function gradeText(g) {
+  return isKgGradeValue(g) ? KG_LABELS[String(g)] : `Grade ${g}`;
+}
+function gradeLabelT(g) {
+  return isKgGradeValue(g)
+    ? KG_LABELS[String(g)]
+    : `${t("reg_grade_label")} ${g}`;
+}
+// "KG2" (typed or shown in the Information Update box) -> -2; else unchanged.
+function parseGradeInput(v) {
+  const m = /^\s*KG\s*([123])\s*$/i.exec(String(v ?? ""));
+  return m ? String(Number(m[1]) - 4) : v;
+}
 const GRADE_SELECT_CONFIGS = [
-  { id: "reg_grade", placeholder: '<option value="">Select Grade</option>' },
+  {
+    id: "reg_grade",
+    placeholder: '<option value="">Select Grade</option>',
+    entryOnly: true,
+  },
   { id: "ext_grade", placeholder: '<option value="">Select Grade</option>' },
   { id: "sec_grade", placeholder: '<option value="">Select Grade</option>' },
   {
@@ -62,12 +117,15 @@ async function loadSchoolGradeLevels() {
     if (!res.ok) throw new Error("Could not load grade levels.");
     const data = await res.json();
     SCHOOL_GRADE_LEVELS = data.grades || [];
+    SCHOOL_ENTRY_GRADES =
+      data.entry_grades || computeEntryGrades(SCHOOL_GRADE_LEVELS);
   } catch (err) {
     console.error(err);
     // Fall back to the old Secondary-only range rather than leaving
     // every Grade picker in the portal completely empty if this
     // call fails — Secondary is still what most schools run today.
     SCHOOL_GRADE_LEVELS = [9, 10, 11, 12];
+    SCHOOL_ENTRY_GRADES = [9];
   }
   GRADE_SELECT_CONFIGS.forEach(populateGradeSelect);
 }
@@ -76,12 +134,21 @@ function populateGradeSelect(config) {
   const select = document.getElementById(config.id);
   if (!select) return;
   const current = select.value;
-  select.innerHTML =
-    config.placeholder +
-    SCHOOL_GRADE_LEVELS.map(
-      (g) => `<option value="${g}">Grade ${g}</option>`,
-    ).join("");
-  if (SCHOOL_GRADE_LEVELS.includes(Number(current))) select.value = current;
+  const grades = config.entryOnly ? SCHOOL_ENTRY_GRADES : SCHOOL_GRADE_LEVELS;
+  const options = grades
+    .map((g) => `<option value="${g}">${gradeText(g)}</option>`)
+    .join("");
+  // Only one grade to choose from (e.g. a Grade 9-12 school): no
+  // placeholder, preselect it, and fill the dependent stream/admission
+  // fields so the Registrar doesn't have to pick the only option.
+  const single = config.entryOnly && grades.length === 1;
+  select.innerHTML = (single ? "" : config.placeholder) + options;
+  if (single) {
+    select.value = String(grades[0]);
+    if (typeof updateStreamOptions === "function") updateStreamOptions();
+  } else if (grades.includes(Number(current))) {
+    select.value = current;
+  }
 }
 
 // Which stream option(s) a grade should offer, based on this school's
@@ -93,6 +160,9 @@ function populateGradeSelect(config) {
 // real choice, between Natural and Social Science.
 function streamOptionsHtmlForGrade(grade) {
   const g = Number(grade);
+  // Kindergarten is not streamed: its sections carry the tier name "KG".
+  if (grade !== "" && grade !== null && g < 0)
+    return '<option value="KG">KG</option>';
   if (g >= 1 && g <= 6) return '<option value="Basic">Basic</option>';
   if (g === 7 || g === 8) return '<option value="Core">Core</option>';
   if (g === 9 || g === 10) return '<option value="General">General</option>';
@@ -350,6 +420,7 @@ function switchTab(tabId) {
   });
   document.getElementById(tabId).classList.add("active");
   updateTopbarSectionName(tabId);
+  if (tabId === "new-entry") loadRejectedRegistrations();
   closeSidebar();
 }
 
@@ -790,12 +861,157 @@ function updateStreamOptions() {
   // the matching gate in POST /api/register.
   const admissionWrap = document.getElementById("reg_ease_admission_wrap");
   const admissionInput = document.getElementById("reg_ease_admission");
+  // A KG child has no Fayda ID or phone of their own — both become optional
+  // (the guardian's details below are still required). Restore the normal
+  // requirements as soon as a non-KG grade is chosen again.
+  const isKgEntrant = grade !== "" && Number(grade) < 0;
+  const faydaEl = document.getElementById("reg_fayda");
+  const phoneEl = document.getElementById("reg_phone");
+  [
+    [faydaEl, "Fayda Number"],
+    [phoneEl, "Phone Number"],
+  ].forEach(([el, label]) => {
+    if (!el) return;
+    el.required = !isKgEntrant;
+    el.placeholder = isKgEntrant ? `${label} (optional for KG)` : label;
+    if (isKgEntrant) el.value = "";
+  });
   const needsAdmission = grade === "7" || grade === "9";
   if (admissionWrap) admissionWrap.style.display = needsAdmission ? "flex" : "none";
   if (admissionInput) {
     admissionInput.required = needsAdmission;
     if (!needsAdmission) admissionInput.value = "";
   }
+}
+
+// Cash needs no reference; Bank/Mobile do (the transaction/receipt
+// number) — see the matching gate in POST /api/register.
+function updatePaymentReferenceField() {
+  loadRegistrationCharges();
+  const method = document.getElementById("reg_payment_method").value;
+  const refWrap = document.getElementById("reg_payment_reference_wrap");
+  const refInput = document.getElementById("reg_payment_reference");
+  const needsReference = method === "BANK" || method === "MOBILE";
+  if (refWrap) refWrap.style.display = needsReference ? "flex" : "none";
+  if (refInput) {
+    refInput.required = needsReference;
+    if (!needsReference) refInput.value = "";
+  }
+}
+
+// Amount to collect at registration: the school's registration fee plus the
+// subscription fee when Super Admin has Subscription on for this school (one
+// payment, one reference). The server adds the subscription part itself when
+// the student is registered; this box only shows the Registrar the total.
+// Also used by the Transfer Hub (incoming + external transfers owe the same
+// registration payment) - pass the id of the summary box to fill.
+const CHARGES_REQ = {};
+async function loadRegistrationCharges(boxId) {
+  if (typeof boxId !== "string") boxId = "reg_payment_summary";
+  const box = document.getElementById(boxId);
+  if (!box) return;
+  const reqId = (CHARGES_REQ[boxId] = (CHARGES_REQ[boxId] || 0) + 1);
+  try {
+    const res = await fetch("/api/registrar/registration-charges", {
+      credentials: "include",
+    });
+    if (!res.ok) throw new Error("charges " + res.status);
+    const d = await res.json();
+    if (reqId !== CHARGES_REQ[boxId]) return; // a newer request is in flight
+    const money = (n) =>
+      "ETB " +
+      Number(n).toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+    if (d.registration_fee === null || d.registration_fee === undefined) {
+      box.innerHTML =
+        '<div class="ps-row ps-warn">The registration fee has not been set yet. Ask Finance to set it before registering students.</div>';
+      box.style.display = "";
+      return;
+    }
+    const sub = d.subscription;
+    let rows =
+      '<div class="ps-row"><span>Registration fee</span><span class="ps-amount">' +
+      money(d.registration_fee) +
+      "</span></div>";
+    if (sub) {
+      const yearly = sub.billing_cycle === "yearly";
+      rows +=
+        '<div class="ps-row"><span>Subscription fee' +
+        '<span class="ps-note">' +
+        (yearly
+          ? "Yearly: covers the rest of the academic year"
+          : "Monthly: covers the first month") +
+        '</span></span><span class="ps-amount">' +
+        money(sub.amount) +
+        "</span></div>";
+    }
+    rows +=
+      '<div class="ps-row ps-total"><span>Total to collect</span><span class="ps-amount">' +
+      money(d.total) +
+      "</span></div>";
+    box.innerHTML = rows;
+    box.style.display = "";
+  } catch (err) {
+    console.error("registration charges:", err);
+    box.style.display = "none"; // registering still works; only the preview is lost
+  }
+}
+document.addEventListener("DOMContentLoaded", () => loadRegistrationCharges());
+
+// --- Shared payment-field helpers (transfers) ---
+// prefix "ext" -> ext_payment_method / ext_payment_reference(_wrap);
+// prefix "in"  -> in_payment_method  / in_payment_reference(_wrap).
+function syncPaymentReference(prefix) {
+  const method = document.getElementById(`${prefix}_payment_method`)?.value;
+  const wrap = document.getElementById(`${prefix}_payment_reference_wrap`);
+  const input = document.getElementById(`${prefix}_payment_reference`);
+  const needs = method === "BANK" || method === "MOBILE";
+  if (wrap) wrap.style.display = needs ? "flex" : "none";
+  if (input) {
+    input.required = needs;
+    if (!needs) input.value = "";
+  }
+}
+function updateExtPaymentReferenceField() {
+  syncPaymentReference("ext");
+}
+function updateInPaymentReferenceField() {
+  syncPaymentReference("in");
+}
+// Returns { payment_method, payment_reference } or { error }.
+function readPaymentFields(prefix) {
+  const method = document.getElementById(`${prefix}_payment_method`)?.value;
+  const ref = (
+    document.getElementById(`${prefix}_payment_reference`)?.value || ""
+  ).trim();
+  if (!method) return { error: "Select a payment method before continuing." };
+  if (method !== "CASH" && !ref)
+    return {
+      error:
+        "Enter the transaction/receipt number for a bank or mobile payment.",
+    };
+  return {
+    payment_method: method,
+    payment_reference: method === "CASH" ? null : ref,
+  };
+}
+function paymentFieldsHtml(prefix, onchangeFn) {
+  return `
+    <h4 style="margin: 14px 0 6px">Registration payment</h4>
+    <div id="${prefix}_payment_summary" class="payment-summary" style="display: none; width: 100%"></div>
+    <div class="form-grid" style="width: 100%">
+      <select id="${prefix}_payment_method" data-onchange="${onchangeFn}" required>
+        <option value="">Select Payment Method</option>
+        <option value="CASH">Cash</option>
+        <option value="BANK">Bank Transfer</option>
+        <option value="MOBILE">Mobile Money</option>
+      </select>
+    </div>
+    <div id="${prefix}_payment_reference_wrap" class="form-grid" style="display: none; width: 100%">
+      <input type="text" id="${prefix}_payment_reference" placeholder="Transaction / Receipt Number" autocomplete="off" />
+    </div>`;
 }
 
 // --- 3. Database Interactions ---
@@ -853,6 +1069,19 @@ async function submitRegistration() {
     );
   }
 
+  const paymentMethod = document.getElementById("reg_payment_method").value;
+  const paymentReference = document
+    .getElementById("reg_payment_reference")
+    .value.trim();
+  if (!paymentMethod) {
+    return showAlert("Select a payment method before registering.");
+  }
+  if (paymentMethod !== "CASH" && !paymentReference) {
+    return showAlert(
+      "Enter the transaction/receipt number for a bank or mobile payment.",
+    );
+  }
+
   const data = {
     fayda_number: document.getElementById("reg_fayda").value,
     phone_number: document.getElementById("reg_phone").value,
@@ -864,6 +1093,8 @@ async function submitRegistration() {
     stream: document.getElementById("reg_stream").value,
     emis_id: emisEl ? emisEl.value.trim() || null : null,
     admission_number: admissionEl ? admissionEl.value.trim() || null : null,
+    payment_method: paymentMethod,
+    payment_reference: paymentMethod === "CASH" ? null : paymentReference,
     guardian,
   };
 
@@ -883,7 +1114,10 @@ async function submitRegistration() {
     if (res.ok) {
       const successMsg = document.querySelector("#success-modal p");
       successMsg.innerText =
-        `Student Registered Successfully! ID: ${result.student_id} | Section: Awaiting Placement | PC: ${result.assigned_pc}` +
+        `Student Registered Successfully! ID: ${result.student_id} | Section: Awaiting Placement` +
+        (result.has_account === false
+          ? " | KG student — no portal account or login"
+          : ` | PC: ${result.assigned_pc}`) +
         (result.guardian_parent_code
           ? ` | Guardian Login ID: ${result.guardian_parent_code}`
           : "");
@@ -891,9 +1125,15 @@ async function submitRegistration() {
       document.getElementById("registration-form").reset();
       document.getElementById("reg_stream").innerHTML =
         '<option value="">Select Stream</option>';
+      GRADE_SELECT_CONFIGS.filter((c) => c.id === "reg_grade").forEach(
+        populateGradeSelect,
+      );
       document.getElementById("reg_ease_admission_wrap").style.display = "none";
+      document.getElementById("reg_payment_reference_wrap").style.display = "none";
+      if (SCHOOL_ENTRY_GRADES.length === 1) updateStreamOptions();
       clearEmisField("reg");
       clearGuardianMatch("reg");
+      loadRegistrationCharges();
     } else {
       showAlert("Registration Failed: " + (result.error || "Unknown error"));
     }
@@ -905,6 +1145,124 @@ async function submitRegistration() {
     btn.disabled = false;
   }
 }
+
+// --- Rejected registration payments: resubmit ---
+// When Finance rejects a registration payment (new entrant or incoming
+// transfer) the student sits as "Registration Rejected". The Registrar
+// submits a corrected receipt here, which sends them back to Finance.
+// Server: GET /api/registrar/rejected-registrations and
+// POST /api/registrar/students/:student_id/payment.
+let REJECTED_TOTAL_TEXT = "";
+async function loadRejectedRegistrations() {
+  const section = document.getElementById("rejected-registrations-section");
+  const list = document.getElementById("rejected-registrations-list");
+  if (!section || !list) return;
+  try {
+    const res = await fetch("/api/registrar/rejected-registrations", {
+      credentials: "include",
+    });
+    if (!res.ok) throw new Error("rejected " + res.status);
+    const rows = await res.json();
+    if (!rows.length) {
+      section.style.display = "none";
+      list.innerHTML = "";
+      return;
+    }
+    try {
+      const c = await (
+        await fetch("/api/registrar/registration-charges", {
+          credentials: "include",
+        })
+      ).json();
+      REJECTED_TOTAL_TEXT =
+        c && c.total !== null && c.total !== undefined
+          ? "Amount to collect: ETB " +
+            Number(c.total).toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })
+          : "";
+    } catch (_) {
+      REJECTED_TOTAL_TEXT = "";
+    }
+    list.innerHTML = rows
+      .map((r) => {
+        const name = [r.first_name, r.middle_name, r.last_name]
+          .filter(Boolean)
+          .join(" ");
+        return `
+        <div class="rej-card" data-student="${escAttr(r.student_id)}">
+          <div class="rej-card-head">
+            <strong>${escapeHtml(name)}</strong>
+            <span class="muted">(${escapeHtml(r.student_id)}) &middot; ${escapeHtml(gradeText(r.class_level))}</span>
+          </div>
+          <p class="rej-reason">Finance's reason: ${escapeHtml(r.rejection_reason || "not given")}${r.method ? ` <span class="muted">&middot; previous payment: ${escapeHtml(r.method)}${r.reference_number ? " " + escapeHtml(r.reference_number) : ""}</span>` : ""}</p>
+          ${REJECTED_TOTAL_TEXT ? `<p class="muted">${escapeHtml(REJECTED_TOTAL_TEXT)}</p>` : ""}
+          <div class="rej-row">
+            <select class="rej-method">
+              <option value="">Select Payment Method</option>
+              <option value="CASH">Cash</option>
+              <option value="BANK">Bank Transfer</option>
+              <option value="MOBILE">Mobile Money</option>
+            </select>
+            <input type="text" class="rej-reference" placeholder="Transaction / Receipt Number" autocomplete="off" disabled />
+            <button type="button" ${dataArg("resubmitRegistrationPayment", r.student_id)}>Resubmit to Finance</button>
+          </div>
+        </div>`;
+      })
+      .join("");
+    section.style.display = "";
+  } catch (err) {
+    console.error("rejected registrations:", err);
+    section.style.display = "none";
+  }
+}
+
+document.addEventListener("change", (e) => {
+  const sel = e.target.closest && e.target.closest(".rej-method");
+  if (!sel) return;
+  const input = sel.closest(".rej-card").querySelector(".rej-reference");
+  const needs = sel.value === "BANK" || sel.value === "MOBILE";
+  input.disabled = !needs;
+  if (!needs) input.value = "";
+});
+
+async function resubmitRegistrationPayment(studentId) {
+  const card = [...document.querySelectorAll(".rej-card")].find(
+    (el) => el.dataset.student === studentId,
+  );
+  if (!card) return;
+  const method = card.querySelector(".rej-method").value;
+  const reference = card.querySelector(".rej-reference").value.trim();
+  if (!method) return showAlert("Select a payment method first.");
+  if (method !== "CASH" && !reference)
+    return showAlert(
+      "Enter the transaction/receipt number for a bank or mobile payment.",
+    );
+  try {
+    const res = await fetch(
+      `/api/registrar/students/${encodeURIComponent(studentId)}/payment`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          payment_method: method,
+          payment_reference: method === "CASH" ? null : reference,
+        }),
+      },
+    );
+    const result = await res.json();
+    if (!res.ok)
+      return showAlert(result.error || "Could not resubmit the payment.");
+    showAlert(result.message);
+    await loadRejectedRegistrations();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
+  }
+}
+document.addEventListener("DOMContentLoaded", loadRejectedRegistrations);
 
 // --- EMIS ID lookup (shared by New Entrant Registration's reg_emis field
 // and Transfer Hub's external/manual ext_emis field) ---
@@ -1137,7 +1495,12 @@ async function fetchStudent() {
     document.getElementById("upd_first").value = data.first_name;
     document.getElementById("upd_middle").value = data.middle_name;
     document.getElementById("upd_last").value = data.last_name;
-    document.getElementById("upd_class").value = data.class_level;
+    const updClassEl = document.getElementById("upd_class");
+    updClassEl.value = gradeNum(data.class_level);
+    // KG grade/stream are changed only through Promotion, never typed here.
+    const updIsKg = isKgGradeValue(data.class_level);
+    updClassEl.readOnly = updIsKg;
+    document.getElementById("upd_stream").readOnly = updIsKg;
     document.getElementById("upd_section").value = data.section;
     document.getElementById("upd_stream").value = data.stream;
     document.getElementById("upd_phone").value = data.phone_number;
@@ -1314,7 +1677,7 @@ async function submitUpdate() {
     phone_number: document.getElementById("upd_phone").value,
     fayda_number: document.getElementById("upd_fayda").value,
     sex: document.getElementById("upd_sex").value,
-    class_level: document.getElementById("upd_class").value,
+    class_level: parseGradeInput(document.getElementById("upd_class").value),
     stream: document.getElementById("upd_stream").value,
   };
 
@@ -1387,7 +1750,7 @@ async function fetchForPromotion() {
     document.getElementById("promo-form").style.display = "block";
     document.getElementById("student-name-display").innerText =
       `${data.first_name} ${data.last_name}`;
-    document.getElementById("current-grade").innerText = currentGrade;
+    document.getElementById("current-grade").innerText = gradeNum(currentGrade);
 
     const eligBox = document.getElementById("promo-eligibility");
     if (eligibility) {
@@ -1428,7 +1791,17 @@ async function fetchForPromotion() {
     document.getElementById("promote-fields").style.display = "block";
     window.isLockedToCutoff = false;
 
-    if (currentGrade >= 12) {
+    if (currentGrade < 0) {
+      // Kindergarten: no marks, no cut-off, no national exam. The Registrar
+      // just chooses Promote or Retain by hand. KG1 -> KG2 -> KG3, and only
+      // KG3 goes on to Grade 1 (the server enforces this too).
+      const nextGrade = currentGrade === -1 ? 1 : currentGrade + 1;
+      newGradeSelect.innerHTML = `<option value="${nextGrade}">${gradeText(nextGrade)}</option>`;
+      streamContainer.style.display = "none";
+      window.isLockedToCutoff = false;
+      document.getElementById("promote-fields").style.display = "block";
+      eligBox.innerHTML = `<p class="muted"><strong>${gradeText(currentGrade)}</strong> — no marks or cut-off. Choose Promote (to ${gradeText(nextGrade)}) or Retain.</p>`;
+    } else if (currentGrade >= 12) {
       newGradeSelect.innerHTML =
         '<option value="">No higher grade — graduation is handled separately</option>';
       promoteRadio.disabled = true;
@@ -1478,12 +1851,140 @@ async function fetchForPromotion() {
         document.getElementById("promote-fields").style.display = "none";
       }
     }
+    setEasePromotionMode(currentGrade);
     updateOverrideVisibility();
   } catch (error) {
     console.error("Promotion Error:", error);
     showAlert(error.message);
   } finally {
     btn.innerText = "Search";
+  }
+}
+
+// --- EASE Candidate box (Grade 6 -> 7, Grade 8 -> 9) ---
+// For these two grades the national exam result, not the school cutoff,
+// decides. The usual decision controls are swapped for a box where the
+// Registrar types the student's registration (admission) number, looks up
+// the result the Super Admin uploaded, and applies it (Pass = promote,
+// Fail = retain). Server: POST /api/registrar/ease-lookup/:id and
+// POST /api/registrar/ease-promote/:id (which re-checks everything).
+const EASE_PROMO_GRADES = [6, 8];
+function setEasePromotionMode(currentGrade) {
+  const g = Number(currentGrade);
+  const isEase = EASE_PROMO_GRADES.includes(g);
+  // Grade 12 is also decided by the national exam, but through the
+  // Graduation Wizard, so here it only gets a pointer.
+  const isGrade12 = g === 12;
+  const box = document.getElementById("promo-ease-box");
+  const submitBtn = document.getElementById("promo-submit-btn");
+  const elig = document.getElementById("promo-eligibility");
+  if (!box) return;
+  const examDecided = isEase || isGrade12;
+  box.style.display = examDecided ? "block" : "none";
+  if (submitBtn) submitBtn.style.display = examDecided ? "none" : "";
+  // The school's own average/cutoff is for the transcript only, so it is
+  // not shown as a basis for these decisions.
+  if (elig) elig.style.display = examDecided ? "none" : "";
+  document.getElementById("promo-ease-result").innerHTML = "";
+  document.getElementById("promo-ease-admission").value = "";
+  document.getElementById("promo-ease-search").style.display = isEase
+    ? ""
+    : "none";
+  document.getElementById("promo-ease-title").textContent = isGrade12
+    ? "Decided by the national exam (EASE)"
+    : "EASE Candidate";
+  if (!examDecided) return;
+  // Replace the cutoff-based controls entirely for these grades.
+  window.isLockedToCutoff = false;
+  document.getElementById("promo-decision-choice").style.display = "none";
+  document.getElementById("promo-locked-outcome").style.display = "none";
+  document.getElementById("promote-fields").style.display = "none";
+  document.getElementById("override-reason-box").style.display = "none";
+  document.getElementById("promo-ease-intro").textContent = isGrade12
+    ? "Grade 12 students are decided only by the national exam. Use the Graduation Wizard: a Pass graduates the student, a Fail readmits them to repeat Grade 12. The school's own exam results are for the transcript only."
+    : `Grade ${g} students are decided only by the national exam (EASE); the school's own exam results are for the transcript only. Enter this student's registration number, look up the result uploaded by the Super Admin, and a Pass promotes them to Grade ${g + 1}.`;
+}
+
+function easeFmt(v) {
+  return v === null || v === undefined || v === "" ? "—" : escapeHtml(String(v));
+}
+
+async function lookupEaseResult() {
+  const id = document.getElementById("promo-id").value.trim();
+  const adm = document.getElementById("promo-ease-admission").value.trim();
+  const out = document.getElementById("promo-ease-result");
+  if (!adm) return showAlert("Enter the student's registration number first.");
+  out.innerHTML = '<p class="muted">Looking up…</p>';
+  try {
+    const res = await fetch(
+      `/api/registrar/ease-lookup/${encodeURIComponent(id)}`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ admission_number: adm }),
+      },
+    );
+    const r = await res.json();
+    if (!res.ok) {
+      out.innerHTML = `<div class="ease-result-card warn">${escapeHtml(r.error || "Could not look up that result.")}</div>`;
+      return;
+    }
+    if (!r.found) {
+      out.innerHTML = `<div class="ease-result-card warn">No ${escapeHtml(gradeText(r.class_level))} result found for <strong>${escapeHtml(adm)}</strong> (exam year ${escapeHtml(r.exam_year)} E.C.). Check the number, or the Super Admin may not have uploaded the results yet.</div>`;
+      return;
+    }
+    const pass = r.result === "Pass";
+    const details = `
+      <dl>
+        <dt>Name on result</dt><dd>${easeFmt(r.result_name)}</dd>
+        <dt>Mark</dt><dd>${easeFmt(r.mark)}</dd>
+        <dt>Cutoff</dt><dd>${easeFmt(r.cutoff)}</dd>
+        <dt>Average</dt><dd>${easeFmt(r.average)}</dd>
+        <dt>Percentile</dt><dd>${easeFmt(r.percentile)}</dd>
+      </dl>`;
+    if (!r.can_apply) {
+      out.innerHTML = `<div class="ease-result-card warn"><div class="ease-verdict">${pass ? "Pass" : "Fail"}</div>${details}<p>${escapeHtml(r.blocked_reason || "This result can't be applied.")}</p></div>`;
+      return;
+    }
+    out.innerHTML = `
+      <div class="ease-result-card ${pass ? "pass" : "fail"}">
+        <div class="ease-verdict">${pass ? `Pass — eligible for ${escapeHtml(gradeText(r.new_grade))}` : `Fail — stays in ${escapeHtml(gradeText(r.class_level))}`}</div>
+        ${details}
+        <button type="button" data-action="applyEaseResult">${pass ? `Promote to ${escapeHtml(gradeText(r.new_grade))}` : `Retain in ${escapeHtml(gradeText(r.class_level))}`}</button>
+      </div>`;
+  } catch (err) {
+    console.error(err);
+    out.innerHTML = "";
+    showAlert(t("reg_server_error"));
+  }
+}
+
+async function applyEaseResult() {
+  const id = document.getElementById("promo-id").value.trim();
+  const adm = document.getElementById("promo-ease-admission").value.trim();
+  if (!adm) return showAlert("Enter the student's registration number first.");
+  const ok = await showConfirm(
+    "Apply this national exam result to the student? A Pass promotes them, a Fail retains them.",
+  );
+  if (!ok) return;
+  try {
+    const res = await fetch(
+      `/api/registrar/ease-promote/${encodeURIComponent(id)}`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ admission_number: adm }),
+      },
+    );
+    const r = await res.json();
+    if (!res.ok) return showAlert(r.error || "Could not apply the result.");
+    showAlert(r.message, "success");
+    resetPromotionForNextStudent();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_server_error"));
   }
 }
 
@@ -1539,7 +2040,7 @@ async function lookupReadmit() {
             <div class="search-box" style="flex-direction: column; align-items: flex-start;">
                 <p style="margin: 0 0 6px;"><strong>${data.full_name}</strong> (${data.student_id})</p>
                 <p class="muted" style="margin: 0 0 12px;">
-                    Last grade: ${data.class_level} &nbsp;•&nbsp; Status: ${data.status}
+                    Last grade: ${gradeNum(data.class_level)} &nbsp;•&nbsp; Status: ${data.status}
                 </p>
                 <button type="button" data-action="confirmReadmit" data-arg="${data.student_id}">
                     <span data-i18n="reg_readmit_confirm_btn">Re-admit This Student</span>
@@ -1700,6 +2201,7 @@ function resetPromotionForNextStudent() {
   document.getElementById("override-reason").value = "";
   document.getElementById("promo-decision-choice").style.display = "block";
   document.getElementById("promo-locked-outcome").style.display = "none";
+  setEasePromotionMode(0);
   window.currentEligibility = null;
   window.isLockedToCutoff = false;
   // The Placement Wizard's "recently promoted" list is stale now too —
@@ -1810,7 +2312,7 @@ async function loadEmisRoster() {
               <tr>
                 <td class="data-table-id">${s.student_id}</td>
                 <td>${escapeHtml([s.first_name, s.middle_name, s.last_name].filter(Boolean).join(" "))}</td>
-                <td>${s.class_level}</td>
+                <td>${gradeNum(s.class_level)}</td>
                 <td>${s.section || "—"}</td>
                 <td>${s.emis_id ? escapeHtml(s.emis_id) : "—"}</td>
                 <td>${emisLinkStatusPill(s)}</td>
@@ -2076,7 +2578,7 @@ async function loadSections() {
     // of the app (Grade 9, Grade 11 - Natural Science, etc.).
     const groups = {};
     sections.forEach((s) => {
-      const key = `Grade ${s.class_level} - ${s.stream}`;
+      const key = `${gradeText(s.class_level)} - ${s.stream}`;
       if (!groups[key]) groups[key] = [];
       groups[key].push(s);
     });
@@ -2149,7 +2651,7 @@ async function loadBulkSectionOptions() {
           active
             .map((s) => {
               const count = s.student_count || 0;
-              const label = `Grade ${s.class_level} — ${s.section_name} (${s.stream}) — ${count} student${count === 1 ? "" : "s"}`;
+              const label = `${gradeText(s.class_level)} — ${s.section_name} (${s.stream}) — ${count} student${count === 1 ? "" : "s"}`;
               return `<option value="${s.class_level}|${s.section_name}|${s.stream}" ${count === 0 ? "disabled" : ""}>${label}${count === 0 ? " — empty" : ""}</option>`;
             })
             .join("");
@@ -2210,10 +2712,17 @@ function bulkDownloadIdCards() {
     return;
   }
   const [class_level, section, stream] = val.split("|");
+  if (isKgGradeValue(class_level)) {
+    showAlert(
+      "Kindergarten (KG) students don't have ID cards, so nothing can be downloaded for a KG section.",
+      "error",
+    );
+    return;
+  }
   const params = new URLSearchParams({ class_level, section, stream });
   downloadBulkDocument(
     `/api/registrar/documents/id-card/bulk/pdf-zip?${params}`,
-    `ID-Cards-Grade${class_level}-${section}.zip`,
+    `ID-Cards-${gradeText(class_level).replace(' ', '')}-${section}.zip`,
   );
 }
 
@@ -2224,10 +2733,17 @@ function bulkDownloadReportCards() {
     return;
   }
   const [class_level, section, stream] = val.split("|");
+  if (isKgGradeValue(class_level)) {
+    showAlert(
+      "Kindergarten (KG) students don't have report cards, so nothing can be downloaded for a KG section.",
+      "error",
+    );
+    return;
+  }
   const params = new URLSearchParams({ class_level, section, stream });
   downloadBulkDocument(
     `/api/registrar/documents/report-card/bulk/pdf?${params}`,
-    `ReportCards-Grade${class_level}-${section}.pdf`,
+    `ReportCards-${gradeText(class_level).replace(' ', '')}-${section}.pdf`,
   );
 }
 
@@ -2385,7 +2901,7 @@ async function loadPlacementRegistered(
       .map(
         (s) => `
             <div class="search-box" style="justify-content: space-between; align-items: center;">
-                <span><strong>${s.full_name}</strong> <span class="muted">(${s.student_id})</span> &nbsp; ${t("reg_grade_label")} ${s.class_level} — ${s.stream}</span>
+                <span><strong>${s.full_name}</strong> <span class="muted">(${s.student_id})</span> &nbsp; ${gradeLabelT(s.class_level)} — ${s.stream}</span>
                 <span class="muted" style="font-size: 12px;">${t("reg_enrolled_label")}: ${formatYearBilingual(s.created_at) || "—"}</span>
             </div>
         `,
@@ -2422,7 +2938,7 @@ async function loadPlacementPromoted(containerId = "placement-promoted-list") {
       .map(
         (r) => `
             <div class="search-box" style="justify-content: space-between; align-items: center;">
-                <span><strong>${r.full_name}</strong> <span class="muted">(${r.student_id})</span> &nbsp; ${t("reg_grade_label")} ${r.from_class_level} → ${r.to_class_level}${r.section ? " - " + r.section : ""}</span>
+                <span><strong>${r.full_name}</strong> <span class="muted">(${r.student_id})</span> &nbsp; ${gradeLabelT(r.from_class_level)} → ${r.to_class_level}${r.section ? " - " + r.section : ""}</span>
                 <span class="muted" style="font-size: 12px;">${formatDateBilingual(r.decided_at)}</span>
             </div>
         `,
@@ -2459,7 +2975,7 @@ async function loadUnassignedQueue() {
         (b) => `
             <div class="search-box" style="flex-direction:column; align-items:stretch;">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span><strong>Grade ${b.class_level} - ${b.stream}</strong> — ${b.students.length} waiting</span>
+                    <span><strong>${gradeText(b.class_level)} - ${b.stream}</strong> — ${b.students.length} waiting</span>
                     <button type="button" ${dataArgs("runPlacement", [b.class_level, b.stream])}
                         ${b.active_sections_configured === 0 ? 'disabled title="No active sections configured for this grade/stream"' : ""}>
                         Run Placement
@@ -2597,7 +3113,7 @@ async function loadPendingRoster() {
             <tr>
                 <td><strong>${fullName}</strong></td>
                 <td>${r.sex}</td>
-                <td class="data-table-meta">Grade ${r.class_level}-${r.section}${r.stream ? " — " + r.stream : ""}</td>
+                <td class="data-table-meta">${gradeText(r.class_level)}-${r.section}${r.stream ? " — " + r.stream : ""}</td>
                 <td><span class="status-pill ${state.cls}">${state.text}</span></td>
                 <td class="data-table-action">
                     <button type="button" class="confirm-btn"
@@ -2842,6 +3358,8 @@ function buildStudentRegistryParams() {
     document.getElementById("student_registry_status")?.value || "";
   const gradeFilter =
     document.getElementById("student_registry_grade")?.value || "";
+  const streamFilter =
+    document.getElementById("student_registry_stream")?.value || "";
   const q = document.getElementById("student_registry_search")?.value || "";
   const academicYearId =
     document.getElementById("student_registry_academic_year")?.value || "";
@@ -2849,9 +3367,115 @@ function buildStudentRegistryParams() {
   const params = new URLSearchParams();
   if (statusFilter) params.set("status", statusFilter);
   if (gradeFilter) params.set("class_level", gradeFilter);
+  if (streamFilter) params.set("stream", streamFilter);
   if (q.trim()) params.set("q", q.trim());
   if (academicYearId) params.set("academic_year_id", academicYearId);
   return params;
+}
+
+// Streams a grade can have — same rule as streamOptionsHtmlForGrade above
+// (KG -> KG, 1-6 -> Basic, 7-8 -> Core, 9-10 -> General, 11-12 -> Natural /
+// Social Science), as plain values for the Student Registry stream filter.
+const STUDENT_REGISTRY_ALL_STREAMS = [
+  "KG",
+  "Basic",
+  "Core",
+  "General",
+  "Natural Science",
+  "Social Science",
+];
+function streamValuesForGrade(grade) {
+  const g = Number(grade);
+  if (grade === "" || grade === null || grade === undefined)
+    return STUDENT_REGISTRY_ALL_STREAMS;
+  if (g < 0) return ["KG"];
+  if (g >= 1 && g <= 6) return ["Basic"];
+  if (g === 7 || g === 8) return ["Core"];
+  if (g === 9 || g === 10) return ["General"];
+  if (g === 11 || g === 12) return ["Natural Science", "Social Science"];
+  return STUDENT_REGISTRY_ALL_STREAMS;
+}
+
+// Makes the Stream filter follow the Grade filter: pick KG1 and Stream
+// becomes KG, Grade 8 -> Core, Grade 9 -> General, Grade 11/12 -> Natural or
+// Social Science (left on "All Streams" since there are two real choices).
+// A grade with exactly one possible stream selects it automatically.
+function updateStudentRegistryStreamOptions() {
+  const gradeSel = document.getElementById("student_registry_grade");
+  const streamSel = document.getElementById("student_registry_stream");
+  if (!gradeSel || !streamSel) return;
+  const values = streamValuesForGrade(gradeSel.value);
+  const previous = streamSel.value;
+  const placeholder = streamSel.querySelector('option[value=""]');
+  streamSel.innerHTML = "";
+  if (placeholder) streamSel.appendChild(placeholder);
+  values.forEach((v) => {
+    const opt = document.createElement("option");
+    opt.value = v;
+    opt.textContent = v;
+    streamSel.appendChild(opt);
+  });
+  if (gradeSel.value !== "" && values.length === 1) streamSel.value = values[0];
+  else streamSel.value = values.includes(previous) ? previous : "";
+}
+
+function onStudentRegistryGradeChange() {
+  updateStudentRegistryStreamOptions();
+  loadStudentRegistry();
+}
+
+// The Grade list comes from the school's configured tiers, so a school whose
+// tiers stop at Grade 8 would never offer Grade 9-12 here even though it has
+// students in those grades on file (older records, transfers, imports).
+// Add any grade/stream that actually appears in the loaded rows, so every
+// student can be filtered for. Options already present are left alone, and
+// anything added stays for the rest of the session.
+function syncStudentRegistryFilterOptions(students) {
+  const gradeSel = document.getElementById("student_registry_grade");
+  if (gradeSel) {
+    const have = new Set([...gradeSel.options].map((o) => o.value));
+    const missing = [
+      ...new Set(
+        students
+          .map((s) => s.class_level)
+          .filter((g) => g !== null && g !== undefined && g !== ""),
+      ),
+    ].filter((g) => !have.has(String(g)));
+    if (missing.length) {
+      const all = [...gradeSel.options]
+        .filter((o) => o.value !== "")
+        .map((o) => Number(o.value))
+        .concat(missing.map(Number));
+      const current = gradeSel.value;
+      const placeholder = gradeSel.querySelector('option[value=""]');
+      gradeSel.innerHTML = "";
+      if (placeholder) gradeSel.appendChild(placeholder);
+      [...new Set(all)]
+        .sort((x, y) => x - y)
+        .forEach((g) => {
+          const opt = document.createElement("option");
+          opt.value = String(g);
+          opt.textContent = gradeText(g);
+          gradeSel.appendChild(opt);
+        });
+      gradeSel.value = current;
+    }
+  }
+  const streamSel = document.getElementById("student_registry_stream");
+  // With a grade picked, the stream list is already limited to what that
+  // grade can have (see updateStudentRegistryStreamOptions), so only add
+  // data-driven extras while "All Grades" is showing.
+  if (streamSel && !gradeSel?.value) {
+    const have = new Set([...streamSel.options].map((o) => o.value));
+    [...new Set(students.map((s) => s.stream).filter(Boolean))]
+      .filter((v) => !have.has(v))
+      .forEach((v) => {
+        const opt = document.createElement("option");
+        opt.value = v;
+        opt.textContent = v;
+        streamSel.appendChild(opt);
+      });
+  }
 }
 
 async function loadStudentRegistry() {
@@ -2866,6 +3490,7 @@ async function loadStudentRegistry() {
     );
     if (!res.ok) throw new Error("Could not load the student registry.");
     const students = await res.json();
+    syncStudentRegistryFilterOptions(students);
     if (students.length === 0) {
       container.innerHTML =
         '<p class="muted">No students match this filter.</p>';
@@ -2895,7 +3520,7 @@ async function loadStudentRegistry() {
                                 <td>
                                     <button type="button" class="student-name-link" ${dataArg("viewStudentHistory", s.student_id)}>${s.full_name}</button>
                                 </td>
-                                <td>${t("reg_grade_label")} ${s.class_level}${s.section ? "-" + s.section : ""}${s.stream ? " — " + s.stream : ""}</td>
+                                <td>${gradeLabelT(s.class_level)}${s.section ? "-" + s.section : ""}${s.stream ? " — " + s.stream : ""}</td>
                                 <td><span class="status-pill ${statusPillClass(s.status)}">${s.status || "—"}</span></td>
                                 <td>${
                                   s.has_guardian
@@ -2947,7 +3572,7 @@ function renderStudentHistoryHtml(history) {
     .map(
       (g) => `
         <tr>
-            <td style="padding:6px; border:1px solid #ddd;">${t("reg_grade_label")} ${g.class_level}</td>
+            <td style="padding:6px; border:1px solid #ddd;">${gradeLabelT(g.class_level)}</td>
             <td style="padding:6px; border:1px solid #ddd; text-align:center;">${g.has_academic_record ? t("reg_doc_history_has_record") : t("reg_doc_history_no_record")}</td>
             <td style="padding:6px; border:1px solid #ddd;">${
               g.documents && g.documents.length > 0
@@ -3105,7 +3730,7 @@ async function viewGuardianChildren(guardian_id) {
             <tr>
                 <td class="data-table-id">${c.student_id}</td>
                 <td>${c.full_name}</td>
-                <td>${t("reg_grade_label")} ${c.class_level}${c.section ? "-" + c.section : ""}${c.stream ? " — " + c.stream : ""}</td>
+                <td>${gradeLabelT(c.class_level)}${c.section ? "-" + c.section : ""}${c.stream ? " — " + c.stream : ""}</td>
                 <td><span class="status-pill ${statusPillClass(c.status)}">${c.status || "—"}</span></td>
             </tr>
         `,
@@ -3373,7 +3998,7 @@ async function loadApprovedTransferRequests() {
                 <span>
                     <strong>${reqRow.full_name || reqRow.student_id}</strong>
                     <span class="muted">(${reqRow.student_id})</span>
-                    ${reqRow.class_level ? ` &nbsp; ${t("reg_grade_label")} ${reqRow.class_level}${reqRow.section ? "-" + reqRow.section : ""}` : ""}
+                    ${reqRow.class_level ? ` &nbsp; ${gradeLabelT(reqRow.class_level)}${reqRow.section ? "-" + reqRow.section : ""}` : ""}
                     <span class="chip-principal">${t("reg_principal_initiated")}</span>
                     ${reqRow.reason ? `<br><span class="muted" style="font-size: 12px;">${reqRow.reason}</span>` : ""}
                     <br><span class="muted" style="font-size: 12px;">${formatDateBilingual(reqRow.decided_at)}</span>
@@ -3491,15 +4116,24 @@ async function lookupIncomingTransfer() {
     }
 
     const s = result.snapshot;
+    // The student's grade has to exist at this school; if it doesn't,
+    // say so and don't offer the payment/confirm controls.
+    const gradeOk = result.grade_available !== false;
     preview.innerHTML = `
             <div class="search-box" style="flex-direction: column; align-items: flex-start;">
-                <p><strong>${s.first_name} ${s.middle_name || ""} ${s.last_name}</strong></p>
-                <p>Grade ${s.class_level} — ${s.stream} &nbsp; | &nbsp; ${s.sex}</p>
+                <p><strong>${escapeHtml(s.first_name)} ${escapeHtml(s.middle_name || "")} ${escapeHtml(s.last_name)}</strong></p>
+                <p>${escapeHtml(gradeText(s.class_level))} — ${escapeHtml(s.stream)} &nbsp; | &nbsp; ${escapeHtml(s.sex)}</p>
                 ${s.emis_id ? `<p>EMIS ID: <strong>${escapeHtml(s.emis_id)}</strong> (carries over automatically)</p>` : `<p class="muted">No EMIS ID on file for this student yet.</p>`}
-                <button type="button" ${dataArg("completeIncomingTransfer", result.transfer_code)}>Confirm Import</button>
+                ${
+                  gradeOk
+                    ? `${paymentFieldsHtml("in", "updateInPaymentReferenceField")}
+                <button type="button" ${dataArg("completeIncomingTransfer", result.transfer_code)}>Confirm Import &amp; Submit Payment</button>`
+                    : `<p class="emis-status emis-status-error">This school does not offer ${escapeHtml(gradeText(s.class_level))} (it offers: ${escapeHtml((result.school_grades || []).join(", "))}), so this student cannot be imported here.</p>`
+                }
                 <div style="width:100%; margin-top:10px;">${renderStudentHistoryHtml(result.history)}</div>
             </div>
         `;
+    if (gradeOk) loadRegistrationCharges("in_payment_summary");
   } catch (err) {
     console.error(err);
     showAlert(t("reg_server_error"));
@@ -3507,6 +4141,8 @@ async function lookupIncomingTransfer() {
 }
 
 async function completeIncomingTransfer(transfer_code) {
+  const pay = readPaymentFields("in");
+  if (pay.error) return showAlert(pay.error);
   try {
     const res = await fetch(
       "/api/registrar/transfers/incoming/complete",
@@ -3514,7 +4150,11 @@ async function completeIncomingTransfer(transfer_code) {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transfer_code }),
+        body: JSON.stringify({
+          transfer_code,
+          payment_method: pay.payment_method,
+          payment_reference: pay.payment_reference,
+        }),
       },
     );
     const result = await res.json();
@@ -3533,7 +4173,9 @@ async function completeIncomingTransfer(transfer_code) {
 
 function toggleExternalTransferForm() {
   const form = document.getElementById("external-transfer-form");
-  form.style.display = form.style.display === "none" ? "block" : "none";
+  const opening = form.style.display === "none";
+  form.style.display = opening ? "block" : "none";
+  if (opening) loadRegistrationCharges("ext_payment_summary");
 }
 
 function updateExternalStreamOptions() {
@@ -3572,6 +4214,10 @@ async function submitExternalTransfer() {
       "First name, last name, sex, grade, and stream are required.",
     );
   }
+  const pay = readPaymentFields("ext");
+  if (pay.error) return showAlert(pay.error);
+  data.payment_method = pay.payment_method;
+  data.payment_reference = pay.payment_reference;
 
   try {
     const res = await fetch(
@@ -3602,6 +4248,9 @@ async function submitExternalTransfer() {
       document.getElementById(id).value = "";
     });
     clearEmisField("ext");
+    document.getElementById("ext_payment_method").value = "";
+    syncPaymentReference("ext");
+    loadRejectedRegistrations();
     await loadIncomingTransfers();
   } catch (err) {
     console.error(err);
@@ -3670,7 +4319,22 @@ async function loadDocumentStudent() {
     const fullName = [result.first_name, result.middle_name, result.last_name]
       .filter(Boolean)
       .join(" ");
-    info.innerHTML = `<div class="search-box"><span><strong>${fullName}</strong> — Grade ${result.class_level}${result.section ? " - " + result.section : " (Awaiting Placement)"}, ${result.stream}</span></div>`;
+    // Kindergarten children have no report card, transcript or ID card:
+    // show a warning and offer nothing to issue (checked here, before any
+    // fee could be collected).
+    if (isKgGradeValue(result.class_level)) {
+      info.innerHTML = `<div class="search-box"><span><strong>${escapeHtml(fullName)}</strong> &mdash; ${gradeText(result.class_level)}</span></div>
+        <div role="alert" style="margin-top:10px;padding:12px 14px;border-left:4px solid #b45309;background:#fffbeb;color:#78350f;border-radius:8px;font-weight:600;">
+          &#9888; Kindergarten (KG) students don't have report cards, transcripts or ID cards, so there is nothing to issue for ${escapeHtml(fullName)}.
+        </div>`;
+      actions.style.display = "none";
+      currentDocStudentId = null;
+      document.getElementById("doc-report-card-preview").innerHTML = "";
+      const histBox = document.getElementById("doc-grade-history");
+      if (histBox) histBox.innerHTML = "";
+      return;
+    }
+    info.innerHTML = `<div class="search-box"><span><strong>${fullName}</strong> — ${gradeText(result.class_level)}${result.section ? " - " + result.section : " (Awaiting Placement)"}, ${result.stream}</span></div>`;
     currentDocStudentId = student_id;
     actions.style.display = "flex";
     document.getElementById("doc-report-card-preview").innerHTML = "";
@@ -3738,11 +4402,11 @@ async function previewReportCard(student_id, targetId) {
         : result.report
             .map(
               (cl) => `
-                <h4>Grade ${cl.class_level} — ${cl.section} (${cl.stream})</h4>
+                <h4>${gradeText(cl.class_level)} — ${cl.section} (${cl.stream})</h4>
                 ${
                   cl.subjects.length === 0
                     ? `
-                <p class="muted" style="margin-bottom:15px;">No marks synced for Grade ${cl.class_level} yet — a report card can still be generated, but every subject will print blank.</p>
+                <p class="muted" style="margin-bottom:15px;">No marks synced for ${gradeText(cl.class_level)} yet — a report card can still be generated, but every subject will print blank.</p>
                 `
                     : `
                 <table style="width:100%; border-collapse:collapse; margin-bottom:15px;">
@@ -3779,7 +4443,7 @@ async function previewReportCard(student_id, targetId) {
                 <div class="grade-download-picker">
                     <label for="${selectId}">Download grade:</label>
                     <select id="${selectId}">
-                        ${result.report.map((cl) => `<option value="${cl.class_level}">Grade ${cl.class_level}${cl.subjects.length === 0 ? " (no marks yet)" : ""}</option>`).join("")}
+                        ${result.report.map((cl) => `<option value="${cl.class_level}">${gradeText(cl.class_level)}${cl.subjects.length === 0 ? " (no marks yet)" : ""}</option>`).join("")}
                     </select>
                     <p class="muted">Pick any grade this student has a record for — not just their current one.</p>
                 </div>`;
@@ -3805,7 +4469,7 @@ async function previewReportCard(student_id, targetId) {
   }
 }
 
-function downloadReportCard(student_id, gradeSelectId) {
+async function downloadReportCard(student_id, gradeSelectId) {
   const gradeSelect = gradeSelectId
     ? document.getElementById(gradeSelectId)
     : null;
@@ -3813,9 +4477,15 @@ function downloadReportCard(student_id, gradeSelectId) {
   const params = classLevel
     ? `?${new URLSearchParams({ class_level: classLevel })}`
     : "";
-  window.open(
+  // Ordinary end-of-term copies stay free ("Other / no charge"); a copy
+  // for a transfer or graduating student is charged at Finance's rate.
+  const paid = await collectDocumentFee(student_id, "report_card", {
+    allowNoCharge: true,
+  });
+  if (!paid) return;
+  openIssuedDocument(
     `/api/registrar/documents/report-card/${encodeURIComponent(student_id)}/pdf${params}`,
-    "_blank",
+    paid,
   );
   setTimeout(loadIssuanceLog, 1500);
   setTimeout(() => loadDocumentHistory(student_id), 1500);
@@ -3854,7 +4524,7 @@ async function previewTranscript(student_id) {
         (y, i) => `
                 <label style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
                     <input type="checkbox" class="transcript-year-check" value="${y.class_level}" checked>
-                    Grade ${y.class_level}${y.ec_year ? ` — ${y.ec_year}` : ""}
+                    ${gradeText(y.class_level)}${y.ec_year ? ` — ${y.ec_year}` : ""}
                 </label>`,
       )
       .join("");
@@ -3877,16 +4547,22 @@ async function previewTranscript(student_id) {
 // route's handling of it) — same "the PDF opens in a new tab since
 // it's the actual issuance action" reasoning previewTranscript used to
 // carry before the year picker existed.
-function issueTranscript(student_id) {
+async function issueTranscript(student_id) {
   const checked = Array.from(
     document.querySelectorAll(".transcript-year-check:checked"),
   ).map((el) => el.value);
   const params = checked.length
     ? `?${new URLSearchParams({ class_levels: checked.join(",") })}`
     : "";
-  window.open(
+  // A transcript is only given to a student who is transferring out or
+  // graduating, so the fee Finance set for that reason is collected first.
+  const paid = await collectDocumentFee(student_id, "transcript", {
+    allowNoCharge: false,
+  });
+  if (!paid) return;
+  openIssuedDocument(
     `/api/registrar/documents/transcript/${encodeURIComponent(student_id)}/pdf${params}`,
-    "_blank",
+    paid,
   );
   setTimeout(loadIssuanceLog, 1500);
   setTimeout(() => loadDocumentHistory(student_id), 1500);
@@ -3941,27 +4617,348 @@ function previewSampleRecommendation() {
   preview.innerHTML = `<iframe src="/api/registrar/documents/recommendation/SAMPLE-0001/preview" title="Sample Recommendation Letter" style="width:100%; height:80vh; min-height:600px; border:1px solid #ddd; border-radius:8px; margin-top:15px;"></iframe>`;
 }
 
+// ---------- Document fees: collect the money, report it to Finance ----------
+// Finance sets what each document costs (Fee Setup > Document Fees). When the
+// Registrar issues a document for a transfer or graduating student, they
+// collect that amount here; the record goes to Finance immediately and
+// Finance confirms the money reached them. The amount comes from the
+// server - it can't be typed in.
+function docFeeLabel(k) {
+  const key = "fin_docfee_type_" + k;
+  const v = t(key);
+  return v === key ? k : v;
+}
+function docFeePurposeLabel(k) {
+  const key = "fin_docfee_purpose_" + k;
+  const v = t(key);
+  return v === key ? k : v;
+}
+function fmtEtb(n) {
+  return (
+    "ETB " +
+    Number(n || 0).toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })
+  );
+}
+
+// Opens the document in the tab that was reserved on the click that
+// confirmed the fee (so pop-up blockers don't eat it), else a new tab.
+function openIssuedDocument(url, paid) {
+  if (paid && paid.win && !paid.win.closed) {
+    paid.win.location.href = url;
+  } else {
+    window.open(url, "_blank");
+  }
+}
+
+// Resolves to null if the Registrar cancels (or the fee could not be
+// recorded), otherwise { win } and the document may be issued.
+function collectDocumentFee(student_id, doc_type, { allowNoCharge }) {
+  return new Promise(async (resolve) => {
+    let fees = null;
+    try {
+      const res = await fetch("/api/registrar/document-fees", {
+        credentials: "include",
+      });
+      if (res.ok) fees = await res.json();
+    } catch (err) {
+      console.error(err);
+    }
+    if (!fees) {
+      showAlert(t("reg_docfee_err_load"), "error");
+      return resolve(null);
+    }
+
+    const docLabel = docFeeLabel(doc_type);
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.style.display = "flex";
+    overlay.innerHTML = `
+      <div class="modal-box docfee-box" role="dialog" aria-modal="true" aria-labelledby="docfee-title">
+        <h3 id="docfee-title">${escapeHtml(t("reg_docfee_title", { doc: docLabel }))}</h3>
+        <p class="muted docfee-student">${escapeHtml(t("reg_docfee_student"))} <strong>${escapeHtml(student_id)}</strong></p>
+        <label class="docfee-label" for="docfee-purpose">${escapeHtml(t("reg_docfee_why"))}</label>
+        <select id="docfee-purpose">
+          <option value="transfer">${escapeHtml(t("reg_docfee_opt_transfer"))}</option>
+          <option value="graduate">${escapeHtml(t("reg_docfee_opt_graduate"))}</option>
+          ${allowNoCharge ? `<option value="none">${escapeHtml(t("reg_docfee_opt_none"))}</option>` : ""}
+        </select>
+        <div id="docfee-amount" class="docfee-amount"></div>
+        <label class="docfee-check" id="docfee-check-wrap">
+          <input type="checkbox" id="docfee-confirm" />
+          <span id="docfee-confirm-text"></span>
+        </label>
+        <div id="docfee-ref-wrap">
+          <label class="docfee-label" for="docfee-ref">${escapeHtml(t("reg_docfee_receipt"))}</label>
+          <input type="text" id="docfee-ref" maxlength="100" autocomplete="off" />
+        </div>
+        <p class="muted docfee-note" id="docfee-note"></p>
+        <div class="docfee-actions">
+          <button type="button" class="confirm-btn confirm-btn-secondary" id="docfee-cancel">${escapeHtml(t("reg_confirm_cancel"))}</button>
+          <button type="button" class="confirm-btn" id="docfee-ok">${escapeHtml(t("reg_docfee_btn_continue"))}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    const $ = (id) => overlay.querySelector("#" + id);
+    const purposeEl = $("docfee-purpose");
+    const amountEl = $("docfee-amount");
+    const checkWrap = $("docfee-check-wrap");
+    const checkEl = $("docfee-confirm");
+    const refWrap = $("docfee-ref-wrap");
+    const noteEl = $("docfee-note");
+    const okBtn = $("docfee-ok");
+
+    const close = (result) => {
+      document.removeEventListener("keydown", onKey);
+      overlay.remove();
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") close(null);
+    };
+    document.addEventListener("keydown", onKey);
+
+    // What does this purpose cost right now?
+    const feeFor = () => {
+      const p = purposeEl.value;
+      if (p === "none") return { mode: "none" };
+      const v = fees.rates?.[doc_type]?.[p];
+      if (v === null || v === undefined) return { mode: "unset" };
+      if (Number(v) === 0) return { mode: "free" };
+      return { mode: "pay", amount: Number(v) };
+    };
+    const refresh = () => {
+      const f = feeFor();
+      checkEl.checked = false;
+      refWrap.style.display = f.mode === "pay" ? "" : "none";
+      checkWrap.style.display = f.mode === "pay" ? "" : "none";
+      noteEl.textContent = "";
+      okBtn.disabled = false;
+      if (f.mode === "pay") {
+        amountEl.innerHTML = `${escapeHtml(t("reg_docfee_fee_label"))} <strong>${fmtEtb(f.amount)}</strong>`;
+        $("docfee-confirm-text").textContent =
+          t("reg_docfee_collected_check", { amount: fmtEtb(f.amount) });
+        okBtn.textContent = t("reg_docfee_btn_record");
+        noteEl.textContent = t("reg_docfee_reported_note");
+        okBtn.disabled = true;
+      } else if (f.mode === "free") {
+        amountEl.innerHTML = `${escapeHtml(t("reg_docfee_fee_label"))} <strong>${escapeHtml(t("reg_docfee_free"))}</strong>`;
+        okBtn.textContent = t("reg_docfee_btn_issue");
+      } else if (f.mode === "none") {
+        amountEl.innerHTML = escapeHtml(t("reg_docfee_no_fee"));
+        okBtn.textContent = t("reg_docfee_btn_issue");
+      } else {
+        amountEl.innerHTML = `${escapeHtml(t("reg_docfee_fee_label"))} <strong>${escapeHtml(t("reg_docfee_not_set"))}</strong>`;
+        noteEl.textContent = t("reg_docfee_unset_note");
+        okBtn.textContent = t("reg_docfee_btn_issue");
+        okBtn.disabled = true;
+      }
+    };
+    purposeEl.addEventListener("change", refresh);
+    checkEl.addEventListener("change", () => {
+      if (feeFor().mode === "pay") okBtn.disabled = !checkEl.checked;
+    });
+    $("docfee-cancel").addEventListener("click", () => close(null));
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) close(null);
+    });
+
+    okBtn.addEventListener("click", async () => {
+      const f = feeFor();
+      // Reserve the tab on this click so the browser lets the PDF open
+      // after the network call below.
+      let win = null;
+      try {
+        win = window.open("", "_blank");
+      } catch (e) {
+        win = null;
+      }
+      if (f.mode === "pay") {
+        okBtn.disabled = true;
+        okBtn.textContent = t("reg_docfee_btn_recording");
+        try {
+          const res = await fetch("/api/registrar/document-fees/collect", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              student_id,
+              doc_type,
+              purpose: purposeEl.value,
+              receipt_ref: $("docfee-ref").value.trim(),
+            }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            if (win) win.close();
+            showAlert(data.error || t("reg_docfee_err_record"), "error");
+            okBtn.disabled = false;
+            okBtn.textContent = t("reg_docfee_btn_record");
+            return;
+          }
+          showAlert(data.message || t("reg_docfee_recorded"), "success");
+          loadDocumentFeeCollections();
+        } catch (err) {
+          console.error(err);
+          if (win) win.close();
+          showAlert(t("reg_server_error"), "error");
+          okBtn.disabled = false;
+          okBtn.textContent = t("reg_docfee_btn_record");
+          return;
+        }
+      }
+      close({ win });
+    });
+
+    refresh();
+  });
+}
+
+// ---------- Documents tab: sub-tabs ----------
+// The tab used to be one long page; the issuing tools, the fee list, the
+// issuance log and the bulk tools each get their own pane now.
+function switchDocPane(name) {
+  ["issue", "fees", "log", "bulk"].forEach((p) => {
+    const pane = document.getElementById("doc-pane-" + p);
+    const btn = document.getElementById("doc-subtab-" + p);
+    const on = p === name;
+    if (pane) pane.classList.toggle("active", on);
+    if (btn) {
+      btn.classList.toggle("active", on);
+      btn.setAttribute("aria-selected", on ? "true" : "false");
+    }
+  });
+  if (name === "fees") loadDocumentFeeCollections();
+  if (name === "log") loadIssuanceLog();
+}
+
+const DOC_LIST_PAGE = 15;
+let docFeeRowsCache = [];
+let docFeeShowAll = false;
+let issuanceRowsCache = [];
+let issuanceShowAll = false;
+function showAllDocFees() {
+  docFeeShowAll = true;
+  renderDocumentFeeCollections();
+}
+function showAllIssuances() {
+  issuanceShowAll = true;
+  renderIssuanceLog();
+}
+
+// What this registrar has collected and what Finance decided about it.
+async function loadDocumentFeeCollections() {
+  const container = document.getElementById("doc-fee-collections-list");
+  if (!container) return;
+  try {
+    const res = await fetch("/api/registrar/document-fees/collections", {
+      credentials: "include",
+    });
+    if (!res.ok) throw new Error("Could not load collections.");
+    docFeeRowsCache = await res.json();
+    renderDocumentFeeCollections();
+  } catch (err) {
+    console.error(err);
+    container.innerHTML =
+      `<p class="muted">${escapeHtml(t("reg_docfee_err_list"))}</p>`;
+  }
+}
+
+function renderDocumentFeeCollections() {
+  const container = document.getElementById("doc-fee-collections-list");
+  if (!container) return;
+  const rows = docFeeRowsCache;
+  const badge = document.getElementById("doc-fees-badge");
+  const pendingCount = rows.filter((r) => r.status === "pending").length;
+  const rejectedCount = rows.filter((r) => r.status === "rejected").length;
+  if (badge) {
+    const n = pendingCount + rejectedCount;
+    badge.textContent = n;
+    badge.style.display = n > 0 ? "" : "none";
+    badge.classList.toggle("is-alert", rejectedCount > 0);
+    badge.title = t("reg_docfee_badge_title", { pending: pendingCount, rejected: rejectedCount });
+  }
+  if (rows.length === 0) {
+    container.innerHTML = `<p class="muted">${escapeHtml(t("reg_docfee_empty"))}</p>`;
+    return;
+  }
+  const today = new Date().toDateString();
+  let todayTotal = 0;
+  let pendingTotal = 0;
+  rows.forEach((r) => {
+    const amt = Number(r.amount);
+    if (new Date(r.collected_at).toDateString() === today) todayTotal += amt;
+    if (r.status === "pending") pendingTotal += amt;
+  });
+  const statusLabel = {
+    pending: t("reg_docfee_status_pending"),
+    approved: t("reg_docfee_status_approved"),
+    rejected: t("reg_docfee_status_rejected"),
+  };
+  const shown = docFeeShowAll ? rows : rows.slice(0, DOC_LIST_PAGE);
+  container.innerHTML =
+    `<div class="docfee-summary"><span>${escapeHtml(t("reg_docfee_today"))} <strong>${fmtEtb(todayTotal)}</strong></span>` +
+    `<span>${escapeHtml(t("reg_docfee_waiting"))} <strong>${fmtEtb(pendingTotal)}</strong></span>` +
+    (rejectedCount
+      ? `<span class="docfee-alert">${escapeHtml(t("reg_docfee_rejected_alert", { n: rejectedCount }))}</span>`
+      : "") +
+    `</div>` +
+    shown
+      .map(
+        (r) => `
+        <div class="search-box docfee-row">
+          <span><strong>${escapeHtml(r.student_name || r.student_id)}</strong> (${escapeHtml(r.student_id)})<br>
+            <span class="muted">${escapeHtml(docFeeLabel(r.doc_type))} &middot; ${escapeHtml(docFeePurposeLabel(r.purpose))}${r.receipt_ref ? " &middot; " + escapeHtml(t("reg_docfee_receipt_ref", { ref: r.receipt_ref })) : ""}</span>
+            ${r.status === "rejected" && r.reject_reason ? `<br><span class="docfee-reason">${escapeHtml(t("reg_docfee_reason", { reason: r.reject_reason }))}</span>` : ""}</span>
+          <span class="docfee-right"><strong>${fmtEtb(r.amount)}</strong><br>
+            <span class="docfee-badge is-${escapeHtml(r.status)}">${escapeHtml(statusLabel[r.status] || r.status)}</span><br>
+            <span class="muted" style="font-size: 12px;">${formatDateBilingual(r.collected_at)}</span></span>
+        </div>`,
+      )
+      .join("") +
+    (!docFeeShowAll && rows.length > DOC_LIST_PAGE
+      ? `<button type="button" class="confirm-btn confirm-btn-secondary" data-action="showAllDocFees">${escapeHtml(t("reg_docfee_show_all", { n: rows.length }))}</button>`
+      : "");
+}
+
 async function loadIssuanceLog() {
   const container = document.getElementById("issuance-log-list");
   if (!container) return;
   try {
-    const res = await fetch(
-      "/api/registrar/documents/issuance-log",
-      { credentials: "include" },
-    );
-    if (!res.ok) throw new Error("Could not load issuance log.");
-    const rows = await res.json();
-    if (rows.length === 0) {
-      container.innerHTML = '<p class="muted">No documents issued yet.</p>';
-      return;
-    }
+    const res = await fetch("/api/registrar/documents/issuance-log", {
+      credentials: "include",
+    });
+    if (!res.ok) throw new Error("Could not load the issuance log.");
+    issuanceRowsCache = await res.json();
+    renderIssuanceLog();
+  } catch (err) {
+    console.error(err);
+    container.innerHTML =
+      '<p class="muted">Could not load the issuance log.</p>';
+  }
+  // keeps the "Fees collected" badge current
+  loadDocumentFeeCollections();
+}
 
-    const labels = {
-      report_card: "Report Card",
-      transcript: "Transcript",
-      id_card: "ID Card",
-    };
-    container.innerHTML = rows
+function renderIssuanceLog() {
+  const container = document.getElementById("issuance-log-list");
+  if (!container) return;
+  const rows = issuanceRowsCache;
+  if (rows.length === 0) {
+    container.innerHTML = '<p class="muted">No documents issued yet.</p>';
+    return;
+  }
+  const labels = {
+    report_card: "Report Card",
+    transcript: "Transcript",
+    id_card: "ID Card",
+  };
+  const shown = issuanceShowAll ? rows : rows.slice(0, DOC_LIST_PAGE);
+  container.innerHTML =
+    shown
       .map(
         (r) => `
             <div class="search-box" style="justify-content: space-between; align-items: center;">
@@ -3970,12 +4967,10 @@ async function loadIssuanceLog() {
             </div>
         `,
       )
-      .join("");
-  } catch (err) {
-    console.error(err);
-    container.innerHTML =
-      '<p class="muted">Could not load the issuance log.</p>';
-  }
+      .join("") +
+    (!issuanceShowAll && rows.length > DOC_LIST_PAGE
+      ? `<button type="button" class="confirm-btn confirm-btn-secondary" data-action="showAllIssuances">${escapeHtml(t("reg_docfee_show_all", { n: rows.length }))}</button>`
+      : "");
 }
 
 // --- 9. G12 Graduation Wizard ---
@@ -4010,13 +5005,7 @@ async function loadGraduationEligible() {
           const fullName = [s.first_name, s.middle_name, s.last_name]
             .filter(Boolean)
             .join(" ");
-          const badge =
-            s.category === "Eligible for Promotion"
-              ? "color:#27ae60;"
-              : s.category === "Detained/Retained"
-                ? "color:#e74c3c;"
-                : "color:#7f8c8d;";
-          // Grade 12 progression is actually decided by EASE (the
+          // Grade 12 progression is decided only by EASE (the
           // national exam), not the internal average above — the
           // checkbox+Graduate flow only ever succeeds for a Pass (see
           // POST /api/registrar/graduation/process); a Fail gets its
@@ -4040,9 +5029,8 @@ async function loadGraduationEligible() {
                 <div class="search-box" style="justify-content: space-between; align-items: center; flex-wrap: wrap;">
                     <label style="font-weight: normal; display:flex; align-items:center; gap:10px;">
                         <input type="checkbox" class="grad-checkbox" value="${s.student_id}" data-onchange="syncGradSelectAllState" ${s.ease_status !== "Pass" ? "disabled" : ""} />
-                        <span><strong>${fullName}</strong> (${s.student_id}) — Avg: ${s.year_average ?? "—"}</span>
+                        <span><strong>${fullName}</strong> (${s.student_id})</span>
                     </label>
-                    <span style="${badge} font-weight:600;">${s.category}</span>
                     <span style="color:${easeColor}; font-weight:600;">EASE: ${s.ease_status}</span>
                     ${readmitBtn}
                 </div>
@@ -4110,9 +5098,6 @@ async function processGraduation() {
     (cb) => cb.value,
   );
   const batch_tag = document.getElementById("grad_batch_tag").value.trim();
-  const override_reason = document
-    .getElementById("grad_override_reason")
-    .value.trim();
 
   if (checked.length === 0) return showAlert("Select at least one student.");
   if (!batch_tag)
@@ -4138,7 +5123,6 @@ async function processGraduation() {
         body: JSON.stringify({
           student_ids: checked,
           batch_tag,
-          override_reason,
           password,
         }),
       },
@@ -4156,7 +5140,6 @@ async function processGraduation() {
     showAlert(summary);
 
     document.getElementById("grad_batch_tag").value = "";
-    document.getElementById("grad_override_reason").value = "";
     await loadGraduationEligible();
     await loadGraduationHistory();
   } catch (err) {
@@ -4288,7 +5271,7 @@ async function loadEaseCandidates() {
             return `
           <tr>
             <td>${fullName} <span class="muted">(${s.student_id})</span></td>
-            <td>${s.class_level}</td>
+            <td>${gradeNum(s.class_level)}</td>
             <td>${s.section || "—"}</td>
             <td>${s.stream || "—"}</td>
             <td>${s.admission_number || "—"}</td>
@@ -4506,6 +5489,26 @@ function applyProfileChrome() {
   // whichever tab is active at load time.
   const activeTab = document.querySelector(".tab-content.active");
   updateTopbarSectionName(activeTab ? activeTab.id : "dashboard");
+
+  // School logo at the top of the sidebar: the school's own logo, falling back to its
+  // zone's (display_logo_url from /api/me). Hidden if there is none or the
+  // image fails to load.
+  const topLogo = document.getElementById("sidebar-school-logo");
+  if (topLogo) {
+    const logoUrl = currentUser.display_logo_url || currentUser.logo_url;
+    if (logoUrl) {
+      topLogo.onerror = () => {
+        topLogo.hidden = true;
+      };
+      topLogo.src = logoUrl;
+      topLogo.alt = currentUser.school_name
+        ? `${currentUser.school_name} logo`
+        : "School logo";
+      topLogo.hidden = false;
+    } else {
+      topLogo.hidden = true;
+    }
+  }
 
   const moeChip = document.getElementById("topbar-moe-code");
   if (moeChip) {
@@ -4770,4 +5773,264 @@ async function registrarLogout() {
     console.error(err);
   }
   window.location.href = "/login.html";
+}
+
+
+// =====================================================================
+// ACTION CENTER (Registrar + Recorder)
+// Look a student up by ID, review everything on file (including the
+// guardian) in a pop-up, then reset a forgotten password or upload the
+// student's ID photo. Resetting asks for the staff member's OWN password;
+// the student goes back to the system default and must choose a new 6-digit
+// PIN at next login. Kindergarten children have no account or ID card, so
+// both actions are switched off for them with an explanation.
+// The tab and its sidebar entry are created here so no HTML change is
+// needed.
+// =====================================================================
+function initRegistrarActionCenter() {
+  if (document.getElementById("action-center")) return;
+  if (!currentUser || !(currentUser.is_registrar || currentUser.is_recorder))
+    return;
+  const refTab = document.querySelector(".tab-content");
+  if (!refTab) return;
+
+  const panel = document.createElement("div");
+  panel.id = "action-center";
+  panel.className = "tab-content";
+  panel.innerHTML = `
+    <h1 data-i18n="reg_ac_heading">${t("reg_ac_heading")}</h1>
+    <p class="muted" data-i18n="reg_ac_sub">${t("reg_ac_sub")}</p>
+    <div class="search-box">
+      <input type="text" id="ac_student_id" data-i18n-placeholder="reg_ac_id_placeholder" placeholder="${t("reg_ac_id_placeholder")}" autocomplete="off" />
+      <button type="button" id="ac_find_btn" data-i18n="reg_ac_find_btn">${t("reg_ac_find_btn")}</button>
+    </div>
+    <div id="ac_message" class="muted"></div>`;
+  refTab.parentNode.appendChild(panel);
+
+  const refNav =
+    document.getElementById("nav-guardians") ||
+    document.getElementById("nav-students");
+  if (refNav) {
+    const li = refNav.cloneNode(true);
+    li.id = "nav-action-center";
+    li.style.display = "block";
+    li.querySelectorAll("[data-i18n]").forEach((el) => el.removeAttribute("data-i18n"));
+    // refNav is the <button data-tab> itself (not a wrapper around one), and
+    // querySelector only searches descendants, so check the clone first —
+    // otherwise btn is null and the copy stays a second "Guardian/Parent".
+    const btn = li.matches("[data-tab]") ? li : li.querySelector("[data-tab]");
+    if (btn) {
+      btn.dataset.tab = "action-center";
+      btn.classList.remove("active");
+      const icon = btn.querySelector("svg, i");
+      if (icon) {
+        const fresh = document.createElement("i");
+        fresh.setAttribute("data-lucide", "life-buoy");
+        icon.replaceWith(fresh);
+      }
+      const label = btn.querySelector("span");
+      if (label) {
+        label.setAttribute("data-i18n", "reg_ac_nav");
+        label.textContent = t("reg_ac_nav");
+      }
+    }
+    refNav.parentNode.insertBefore(li, refNav.nextSibling);
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  const input = document.getElementById("ac_student_id");
+  document.getElementById("ac_find_btn").addEventListener("click", acFindStudent);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") acFindStudent();
+  });
+}
+
+async function acFindStudent() {
+  const input = document.getElementById("ac_student_id");
+  const msg = document.getElementById("ac_message");
+  const student_id = (input.value || "").trim();
+  if (!student_id) {
+    msg.textContent = t("reg_ac_enter_id");
+    return;
+  }
+  msg.textContent = t("reg_ac_searching");
+  try {
+    const res = await fetch(
+      `/api/registrar/action-center/student/${encodeURIComponent(student_id)}`,
+      { credentials: "include" },
+    );
+    const data = await res.json();
+    if (!res.ok) {
+      msg.textContent = data.error || t("reg_ac_not_found");
+      return;
+    }
+    msg.textContent = "";
+    acShowStudentModal(data);
+  } catch (err) {
+    console.error(err);
+    msg.textContent = t("reg_ac_conn_error");
+  }
+}
+
+function acCloseModal() {
+  document.getElementById("ac-student-modal")?.remove();
+}
+
+function acField(label, value) {
+  const v = value === null || value === undefined || value === "" ? "&mdash;" : escapeHtml(String(value));
+  return `<div style="min-width:150px;"><div class="muted" style="font-size:12px;margin-bottom:2px;">${label}</div><div style="font-weight:600;">${v}</div></div>`;
+}
+
+function acShowStudentModal(data) {
+  acCloseModal();
+  const st = data.student;
+  const fullName = [st.first_name, st.middle_name, st.last_name].filter(Boolean).join(" ");
+  const guardiansHtml = data.guardians.length
+    ? data.guardians
+        .map(
+          (g) => `<div style="background:#f4f8f5;border-radius:8px;padding:12px;margin-top:8px;display:flex;flex-wrap:wrap;gap:14px;">
+            ${acField(t("reg_ac_f_name"), g.full_name)}
+            ${acField(t("reg_ac_f_phone"), g.phone_number)}
+            ${acField(t("reg_ac_f_fayda"), g.fayda_number)}
+            ${acField(t("reg_ac_f_guardian_login"), g.parent_code)}
+          </div>`,
+        )
+        .join("")
+    : `<p class="muted" style="margin-top:8px;">${escapeHtml(t("reg_ac_no_guardian"))}</p>`;
+  const photo = st.id_photo_url
+    ? `<img id="ac-photo" src="${escapeHtml(st.id_photo_url)}?t=${Date.now()}" alt="" style="width:96px;height:120px;object-fit:cover;border-radius:8px;border:1px solid #dde5e0;" />`
+    : `<div id="ac-photo" style="width:96px;height:120px;border-radius:8px;border:1px dashed #b7c4bc;display:flex;align-items:center;justify-content:center;color:#66786d;font-size:12px;text-align:center;">${escapeHtml(t("reg_ac_no_photo"))}</div>`;
+  const notice = (txt) =>
+    `<p style="margin:8px 0 0;padding:10px 12px;border-left:4px solid #b45309;background:#fffbeb;color:#78350f;border-radius:6px;font-size:13px;">${escapeHtml(txt)}</p>`;
+
+  const overlay = document.createElement("div");
+  overlay.id = "ac-student-modal";
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-box modal-box-wide" role="dialog" aria-modal="true" aria-label="${escapeHtml(t("reg_ac_details_aria"))}">
+      <button type="button" class="modal-close-btn" id="ac-close" aria-label="${escapeHtml(t("reg_ac_close_aria"))}">&times;</button>
+      <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;">
+        ${photo}
+        <div style="flex:1 1 220px;">
+          <h2 style="margin-bottom:4px;">${escapeHtml(fullName)}</h2>
+          <div class="muted">${escapeHtml(st.student_id)} &middot; ${escapeHtml(gradeText(st.class_level))}${st.section ? " - " + escapeHtml(st.section) : ""}</div>
+        </div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:14px;margin-top:18px;">
+        ${acField(t("reg_ac_f_sex"), st.sex)}
+        ${acField(t("reg_ac_f_status"), st.status)}
+        ${acField(t("reg_ac_f_stream"), st.stream)}
+        ${acField(t("reg_ac_f_fayda"), st.fayda_number)}
+        ${acField(t("reg_ac_f_emis"), st.emis_id)}
+        ${acField(t("reg_ac_f_phone"), st.phone_number)}
+        ${data.has_account ? acField(t("reg_ac_f_email"), st.email_address) : ""}
+      </div>
+      <h3 style="margin-top:20px;">${escapeHtml(t("reg_ac_guardians"))}</h3>
+      ${guardiansHtml}
+      <div style="margin-top:22px;padding-top:16px;border-top:1px solid #e6ece8;display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+        <button type="button" class="confirm-btn" id="ac-reset" ${data.can_reset ? "" : "disabled"}>${escapeHtml(t("reg_ac_reset_btn"))}</button>
+        <button type="button" class="confirm-btn confirm-btn-secondary" id="ac-photo-btn" ${data.can_upload_photo ? "" : "disabled"}>${escapeHtml(t("reg_ac_photo_btn"))}</button>
+        <input type="file" id="ac-photo-input" accept="image/*" style="display:none;" />
+      </div>
+      ${data.can_reset ? "" : notice(data.reset_blocked_reason)}
+      ${data.can_upload_photo || data.photo_blocked_reason === data.reset_blocked_reason ? "" : notice(data.photo_blocked_reason)}
+    </div>`;
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) acCloseModal();
+  });
+  document.getElementById("ac-close").addEventListener("click", acCloseModal);
+  document.getElementById("ac-reset")?.addEventListener("click", () => acResetPassword(st, fullName));
+  const fileInput = document.getElementById("ac-photo-input");
+  document.getElementById("ac-photo-btn")?.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", () => acUploadPhoto(st.student_id, fileInput));
+}
+
+async function acResetPassword(st, fullName) {
+  const password = await showPasswordPrompt(
+    t("reg_ac_reset_prompt", { name: fullName }),
+  );
+  if (!password) return;
+  try {
+    const res = await fetch("/api/registrar/action-center/reset-password", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ student_id: st.student_id, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showAlert(data.error || t("reg_ac_reset_fail"), "error");
+      return;
+    }
+    showAlert(data.message, "success");
+    acCloseModal();
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_ac_conn_error"), "error");
+  }
+}
+
+async function acUploadPhoto(student_id, fileInput) {
+  const file = fileInput.files && fileInput.files[0];
+  if (!file) return;
+  const form = new FormData();
+  form.append("photo", file);
+  try {
+    const res = await fetch(
+      `/api/registrar/action-center/student/${encodeURIComponent(student_id)}/photo`,
+      { method: "POST", credentials: "include", body: form },
+    );
+    const data = await res.json();
+    fileInput.value = "";
+    if (!res.ok) {
+      showAlert(data.error || t("reg_ac_photo_fail"), "error");
+      return;
+    }
+    const holder = document.getElementById("ac-photo");
+    if (holder) {
+      const img = document.createElement("img");
+      img.id = "ac-photo";
+      img.alt = "";
+      img.src = `${data.id_photo_url}?t=${Date.now()}`;
+      img.style.cssText =
+        "width:96px;height:120px;object-fit:cover;border-radius:8px;border:1px solid #dde5e0;";
+      holder.replaceWith(img);
+    }
+    showAlert(data.message || t("reg_ac_photo_updated"), "success");
+  } catch (err) {
+    console.error(err);
+    showAlert(t("reg_ac_conn_error"), "error");
+  }
+}
+
+// ---------------------------------------------------------------------
+// Live refresh: when the server says something changed (a payment
+// approved, a transfer sent, ...), refresh the bell and whichever request
+// lists are on screen — without touching anything the person is typing in.
+// ---------------------------------------------------------------------
+function registerRegistrarLiveRefresh() {
+  if (!window.onLiveChange) return;
+  window.onLiveChange(() => {
+    if (currentUser && currentUser.is_registrar) loadRegistrarNotifications();
+  });
+  window.onLiveChange(() => {
+    if (!currentUser) return;
+    const a = document.activeElement;
+    if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+    if (document.getElementById("ac-student-modal")) return;
+    const pw = document.getElementById("password-confirm-modal");
+    if (pw && getComputedStyle(pw).display !== "none") return;
+    const active = document.querySelector(".tab-content.active");
+    const id = active ? active.id : "";
+    const run = (...fns) => fns.forEach((fn) => typeof fn === "function" && fn());
+    if (/dashboard/.test(id)) run(loadDashboardStats);
+    else if (/transfer/.test(id))
+      run(loadApprovedTransferRequests, loadOutgoingTransfers, loadIncomingTransfers);
+    else if (/placement/.test(id) && currentUser.is_registrar)
+      run(loadUnassignedQueue, loadPlacementRegistered, loadPlacementPromoted);
+    else if (id === "new-entry") run(loadRejectedRegistrations);
+    else if (/emis/.test(id) && currentUser.is_registrar) run(loadEmisRequests);
+  });
 }

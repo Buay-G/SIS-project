@@ -1,0 +1,498 @@
+/* =========================================================
+   FINANCE PORTAL — same dark green/gold theme, sidebar+top-bar
+   shell, and component classes (widget/data-table/badge/btn/
+   modal/toast/form-*) as the School Admin portal, so the two feel
+   like the same product family. Kept as its own self-contained
+   file (not shared with school-admin's styles.css) since this is
+   a separate login/role — but the variable names, class names and
+   values below are copied 1:1 from that portal's styles.css so a
+   shared component library could be extracted later without a
+   visual mismatch.
+   ========================================================= */
+
+:root {
+    --primary: #14532d;
+    --primary-dark: #0b3320;
+    --primary-light: #1c6b3f;
+    --accent: #c9a15a;
+    --accent-dark: #a97f38;
+    --bg: #f3f6f4;
+    --card: #ffffff;
+    --text: #1f2a24;
+    --muted: #66786d;
+    --border: #dde5e0;
+    --danger: #b91c1c;
+    --danger-bg: #fee2e2;
+    --success: #15803d;
+    --success-bg: #dcfce7;
+    --warning: #b45309;
+    --warning-bg: #fef3c7;
+    --info-bg: #e0f2ee;
+    --info: #0f6e5c;
+}
+
+* { box-sizing: border-box; }
+html { overscroll-behavior: none; }
+html, body { height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; }
+body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); }
+a { color: inherit; }
+
+/* ---------- Layout shell ---------- */
+.dashboard-container {
+    display: grid;
+    grid-template-columns: 250px 1fr;
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+}
+
+.sidebar {
+    background-color: var(--primary);
+    background-image: linear-gradient(180deg, var(--primary-dark) 0%, var(--primary) 45%, var(--primary-light) 100%);
+    color: #fff;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    height: 100%;
+    min-height: 0;
+}
+
+.logo { display: flex; align-items: center; gap: 10px; padding: 22px 20px; border-bottom: 1px solid rgba(255,255,255,0.12); }
+.logo-badge {
+    width: 34px; height: 34px; border-radius: 9px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-dark));
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; color: #1f2a24; font-size: 0.85rem; flex-shrink: 0; overflow: hidden;
+}
+.logo-badge img { width: 100%; height: 100%; object-fit: cover; }
+.logo-text { font-weight: 800; letter-spacing: 0.04em; font-size: 1rem; }
+.logo-sub { display: block; font-size: 0.68rem; font-weight: 500; color: rgba(255,255,255,0.65); letter-spacing: 0.03em; }
+
+.nav-menu { list-style: none; margin: 0; padding: 14px 10px; flex: 1; overflow-y: auto; overscroll-behavior: none; }
+.nav-menu li { margin-bottom: 2px; position: relative; }
+.nav-link {
+    display: flex; align-items: center; gap: 14px; padding: 11px 14px; border-radius: 9px;
+    color: rgba(255,255,255,0.8); text-decoration: none; font-size: 0.9rem; font-weight: 500;
+    transition: background 0.15s, color 0.15s;
+}
+.nav-link .nav-icon { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.nav-icon .lucide-icon { width: 18px; height: 18px; }
+.nav-link:hover { background: rgba(255,255,255,0.08); color: #fff; }
+.nav-link.active { background: var(--accent); color: #22321f; font-weight: 700; }
+.nav-section-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: rgba(255,255,255,0.45); padding: 14px 14px 6px; font-weight: 700; }
+
+/* Small count badge next to a nav item (e.g. pending payments,
+   overdue invoices) — not present in the school-admin sheet this
+   was copied from, added for Finance's own needs. */
+.nav-badge-dot {
+    position: absolute; top: 8px; right: 10px;
+    background: var(--accent); color: #22321f; font-size: 0.62rem; font-weight: 800;
+    border-radius: 999px; min-width: 17px; height: 17px; padding: 0 4px;
+    display: flex; align-items: center; justify-content: center;
+}
+.nav-badge-dot.nav-badge-danger { background: var(--danger); color: #fff; }
+
+.sidebar-footer { padding: 12px; border-top: 1px solid rgba(255,255,255,0.12); display: flex; flex-direction: column; gap: 8px; }
+.sidebar-account-badge { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.14); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.sidebar-account-title { font-size: 0.78rem; font-weight: 700; color: rgba(255,255,255,0.92); display: flex; align-items: center; gap: 6px; }
+.sidebar-account-id { font-size: 0.68rem; font-weight: 700; color: rgba(255,255,255,0.55); text-transform: uppercase; letter-spacing: 0.06em; display: flex; align-items: center; gap: 6px; padding-top: 6px; border-top: 1px dashed rgba(255,255,255,0.14); }
+.sidebar-account-id span:last-child { color: var(--accent); font-weight: 800; letter-spacing: normal; text-transform: none; font-size: 0.78rem; }
+.logout-btn {
+    display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 8px;
+    color: rgba(255,255,255,0.85); text-decoration: none; font-size: 0.88rem; font-weight: 600;
+    background: rgba(239,68,68,0.16); border: 1px solid rgba(239,68,68,0.3); cursor: pointer;
+}
+.logout-btn:hover { background: rgba(239,68,68,0.32); color: #fff; }
+
+/* ---------- Top bar ---------- */
+.top-bar {
+    position: sticky; top: 0; left: 0; z-index: 50;
+    display: flex; align-items: center; flex-wrap: wrap; row-gap: 10px; column-gap: 16px;
+    background: linear-gradient(135deg, var(--primary-dark) 0%, var(--primary) 100%);
+    padding: 12px 24px; min-height: 70px; flex-shrink: 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+.top-bar-titlegroup { display: flex; flex-direction: column; justify-content: center; gap: 3px; min-width: 0; flex: 1 1 220px; }
+.top-bar-title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.page-title-text { color: #fff; font-size: 1.1rem; font-weight: 800; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; line-height: 1.1; flex-shrink: 0; }
+.topbar-school-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.topbar-meta-chip { font-size: 0.66rem; font-weight: 700; white-space: nowrap; color: rgba(255,255,255,0.82); background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.16); border-radius: 999px; padding: 2px 9px; }
+.topbar-meta-chip-moe { color: var(--accent); border-color: rgba(240,180,41,0.3); }
+.top-bar-right { margin-left: auto; display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 10px 14px; flex-shrink: 0; }
+.lang-switch-group { display: flex; background: rgba(255,255,255,0.12); border-radius: 8px; overflow: hidden; }
+.lang-switch-btn { border: none; background: transparent; color: rgba(255,255,255,0.75); padding: 6px 12px; font-size: 0.78rem; font-weight: 700; cursor: pointer; }
+.lang-switch-btn.lang-switch-active { background: var(--accent); color: #22321f; }
+.topbar-profile { display: flex; align-items: center; gap: 8px; color: #fff; min-width: 0; }
+.topbar-profile-avatar { width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: #22321f; font-weight: 800; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; overflow: hidden; flex-shrink: 0; border: 2px solid rgba(255,255,255,0.3); }
+.topbar-profile-text { min-width: 0; }
+.topbar-profile-name, .topbar-profile-title { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topbar-profile-name { font-size: 0.82rem; font-weight: 700; line-height: 1.1; }
+.topbar-profile-title { font-size: 0.68rem; color: rgba(255,255,255,0.65); }
+
+/* ---------- Main content ---------- */
+.main-content { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow-y: auto; overflow-x: auto; overscroll-behavior: none; -webkit-overflow-scrolling: touch; }
+.page-content { display: none; padding: 22px 28px 40px; }
+.page-content.active { display: block; }
+.page-content h2 { margin: 0 0 4px; font-size: 1.3rem; }
+.page-subtitle { color: var(--muted); font-size: 0.85rem; margin: 0 0 20px; }
+
+/* ---------- Stat cards ---------- */
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 16px; margin-bottom: 20px; }
+.stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; display: flex; align-items: center; gap: 14px; box-shadow: 0 1px 2px rgba(20,83,45,0.04); transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease; }
+.stat-card:hover { transform: translateY(-2px); box-shadow: 0 10px 24px rgba(20,83,45,0.1); border-color: rgba(201,161,90,0.4); }
+.stat-card .stat-icon { width: 46px; height: 46px; border-radius: 13px; background: var(--info-bg); color: var(--info); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.stat-card .stat-label { font-size: 0.75rem; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+.stat-card .stat-value { font-size: 1.6rem; font-weight: 800; color: var(--text); line-height: 1.25; }
+.stat-card.stat-warning .stat-icon { background: var(--warning-bg); color: var(--warning); }
+.stat-card.stat-danger .stat-icon { background: var(--danger-bg); color: var(--danger); }
+.stat-card.stat-success .stat-icon { background: var(--success-bg); color: var(--success); }
+
+/* ---------- Widget cards ---------- */
+.widget { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; box-shadow: 0 1px 2px rgba(20,83,45,0.04); transition: box-shadow 0.15s ease; margin-bottom: 18px; }
+.widget:hover { box-shadow: 0 6px 18px rgba(20,83,45,0.07); }
+.widget h3 { margin: 0 0 14px; font-size: 0.95rem; font-weight: 700; display: flex; align-items: center; justify-content: space-between; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+
+/* ---------- Decorative dashboard hero ---------- */
+.dash-hero {
+    position: relative; overflow: hidden;
+    background: linear-gradient(135deg, var(--primary-dark) 0%, var(--primary) 60%, var(--primary-light) 130%);
+    border-radius: 18px; padding: 26px 28px; color: #fff; margin-bottom: 22px;
+    box-shadow: 0 10px 30px rgba(11,51,32,0.28);
+}
+.dash-hero::after { content: ""; position: absolute; right: -40px; top: -60px; width: 220px; height: 220px; border-radius: 50%; background: conic-gradient(from 90deg, var(--accent), transparent 60%); opacity: 0.3; }
+.dash-hero::before { content: ""; position: absolute; left: -30px; bottom: -60px; width: 160px; height: 160px; border-radius: 50%; background: radial-gradient(circle, rgba(255,255,255,0.14), transparent 70%); }
+.dash-hero h2, .dash-hero p { position: relative; z-index: 1; }
+.dash-hero h2 { font-size: 1.5rem; letter-spacing: -0.01em; margin: 0; }
+.dash-hero p { color: rgba(255,255,255,0.82); font-size: 0.88rem; margin: 6px 0 0; }
+
+/* ---------- Profile header card ---------- */
+.profile-header-card { display: flex; align-items: center; gap: 20px; background: linear-gradient(135deg, var(--primary-dark), var(--primary)); border-radius: 16px; padding: 22px 26px; color: #fff; margin-bottom: 18px; box-shadow: 0 10px 26px rgba(11,51,32,0.22); }
+.profile-avatar-wrap { position: relative; flex-shrink: 0; }
+.profile-avatar-circle { width: 84px; height: 84px; border-radius: 50%; background: var(--accent); color: #22321f; font-weight: 800; font-size: 1.4rem; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 3px solid rgba(255,255,255,0.35); }
+.profile-header-name { font-size: 1.2rem; font-weight: 800; }
+.profile-header-title { font-size: 0.85rem; color: rgba(255,255,255,0.75); margin-top: 2px; }
+.profile-id-chip { display: inline-flex; gap: 6px; align-items: center; margin-top: 10px; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.18); border-radius: 999px; padding: 5px 12px; font-size: 0.78rem; font-weight: 700; }
+.profile-id-chip strong { color: var(--accent); }
+
+/* ---------- Tables ---------- */
+/* auto (was visible): a table wider than the screen now scrolls inside its own
+   box instead of pushing the whole page sideways (the rubber-band scroll). */
+.data-table-wrap { overflow-x: auto; }
+table.data-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+table.data-table thead th { position: sticky; top: 0; text-align: left; padding: 10px 14px; background: var(--bg); color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; border-bottom: 1px solid var(--border); white-space: nowrap; }
+table.data-table tbody td { padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+table.data-table tbody tr:hover { background: #f7faf8; }
+table.data-table tbody tr:last-child td { border-bottom: none; }
+
+/* ---------- Badges ---------- */
+.badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.7rem; font-weight: 700; }
+.badge-pending { background: var(--warning-bg); color: var(--warning); }
+.badge-approved, .badge-paid { background: var(--success-bg); color: var(--success); }
+.badge-rejected, .badge-overdue { background: var(--danger-bg); color: var(--danger); }
+.badge-none { background: #eef3f0; color: #66786d; }
+
+/* ---------- Buttons ---------- */
+.btn { display: inline-flex; align-items: center; gap: 6px; border: none; border-radius: 8px; padding: 9px 16px; font-size: 0.85rem; font-weight: 700; cursor: pointer; transition: filter 0.15s, transform 0.05s; }
+.btn:active { transform: translateY(1px); }
+.btn-accent { background: var(--accent); color: #22321f; }
+.btn-accent:hover { filter: brightness(1.08); }
+.btn-danger { background: var(--danger-bg); color: var(--danger); }
+.btn-danger:hover { filter: brightness(0.96); }
+.btn-success { background: var(--success-bg); color: var(--success); }
+.btn-success:hover { filter: brightness(0.96); }
+.btn-ghost { background: transparent; color: var(--primary); border: 1px solid var(--border); }
+.btn-ghost:hover { background: #f0f4f2; }
+.btn-sm { padding: 6px 11px; font-size: 0.78rem; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ---------- Forms ---------- */
+.form-group { margin-bottom: 14px; }
+.form-group label { display: block; font-size: 0.8rem; font-weight: 700; margin-bottom: 5px; color: var(--text); }
+.form-group input, .form-group select, .form-group textarea { width: 100%; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.85rem; font-family: inherit; background: #fff; }
+.form-group textarea { resize: vertical; min-height: 70px; }
+.form-group input:focus, .form-group select:focus, .form-group textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(201, 161, 90, 0.2); }
+.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.form-actions { display: flex; gap: 10px; margin-top: 16px; }
+.form-hint { font-size: 0.75rem; color: var(--muted); margin-top: 4px; }
+.toolbar-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin-bottom: 16px; }
+.toolbar-row .form-group { min-width: 160px; margin-bottom: 0; position: relative; }
+.toolbar-row .btn { height: 38px; }
+/* The Ethiopian-date hint under a date/month input used to sit in the field's
+   normal flow, making that field taller than its neighbours so its input
+   floated ~16px above the select and buttons beside it. It is now pulled out
+   of the flow and drawn under the input; the row reserves room for it. */
+.toolbar-row .ec-preview { position: absolute; left: 0; top: 100%; margin-top: 3px; white-space: nowrap; }
+.toolbar-row:has(.ec-preview) { margin-bottom: 34px; }
+
+/* ---------- Modal ---------- */
+.modal-overlay { position: fixed; inset: 0; background: rgba(15,30,20,0.5); display: flex; align-items: center; justify-content: center; z-index: 200; }
+.modal-box { background: #fff; border-radius: 14px; padding: 24px; width: 92%; max-width: 440px; max-height: 86vh; overflow-y: auto; overscroll-behavior: none; }
+.modal-box h3 { margin-top: 0; }
+.modal-box .form-actions .btn { flex: 1; }
+
+/* ---------- Toast ---------- */
+.toast { position: fixed; bottom: 24px; right: 24px; z-index: 300; background: var(--text); color: #fff; padding: 12px 18px; border-radius: 10px; font-size: 0.85rem; font-weight: 600; box-shadow: 0 6px 20px rgba(0,0,0,0.25); }
+.toast.toast-error { background: var(--danger); }
+.toast.toast-success { background: var(--success); }
+.toast.toast-warning { background: var(--warning); }
+
+/* ---------- Sidebar toggle (mobile) ---------- */
+.sidebar-toggle { display: none; }
+.sidebar-backdrop { display: none; }
+
+@media (max-width: 900px) {
+    .dashboard-container { grid-template-columns: 1fr; }
+    .sidebar { position: fixed; left: 0; top: 0; bottom: 0; width: 250px; z-index: 100; transform: translateX(-100%); transition: transform 0.2s; }
+    .sidebar.open { transform: translateX(0); }
+    .sidebar-backdrop { display: block; position: fixed; inset: 0; z-index: 90; background: rgba(0,0,0,0.45); opacity: 0; pointer-events: none; transition: opacity 0.2s; }
+    .sidebar-backdrop.active { opacity: 1; pointer-events: auto; }
+    .sidebar-toggle { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 9px; border: none; background: rgba(255,255,255,0.12); color: #fff; cursor: pointer; }
+    .form-row { grid-template-columns: 1fr; }
+    .profile-header-card { flex-wrap: wrap; text-align: center; justify-content: center; }
+    .profile-id-chip { margin: 6px auto 0; }
+    .data-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    table.data-table { min-width: 640px; }
+    /* Fee Setup's forms are plain (no table), so unlike the wide-table
+       rule above they need no override — they already reflow via
+       .form-row's single-column rule. */
+}
+
+/* Scholarship / sponsor / waived fee state */
+.badge-waived { background: #e6eefb; color: #2b5aa8; }
+.data-table input[type="number"] { width: 100%; max-width: 160px; }
+
+/* =========================================================
+   School logo in the sidebar header + officer name in the footer
+   ========================================================= */
+.logo-badge.has-logo { background: #fff; padding: 2px; box-shadow: 0 0 0 2px rgba(255,255,255,0.18); }
+.logo-badge.has-logo img { object-fit: contain; border-radius: 7px; }
+.logo > div:last-child { min-width: 0; }
+.logo-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
+.sidebar-account-name span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* =========================================================
+   Dual-calendar dates: Ethiopian first, GC in brackets
+   ========================================================= */
+.ec-date { display: block; line-height: 1.3; font-weight: 600; white-space: nowrap; }
+.gc-date { display: block; font-size: 0.72rem; font-weight: 500; color: var(--muted); }
+.gc-date.gc-inline { display: inline; }
+.ec-preview { color: var(--primary-light); font-weight: 600; min-height: 1em; }
+
+/* =========================================================
+   Fee Setup — card layout, currency inputs, edit mode
+   ========================================================= */
+.fee-page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.fee-year-chip { background: var(--info-bg); color: var(--info); border: 1px solid rgba(15,110,92,0.18); border-radius: 999px; padding: 5px 13px; font-size: 0.75rem; font-weight: 700; white-space: nowrap; }
+
+.fee-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 18px; margin-bottom: 18px; align-items: stretch; }
+.fee-card {
+    display: flex; flex-direction: column; gap: 16px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+    padding: 22px; box-shadow: 0 1px 2px rgba(20,83,45,0.04), 0 8px 24px rgba(20,83,45,0.05);
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+.fee-card-wide { margin-bottom: 18px; }
+.fee-card.is-editing { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(201,161,90,0.18), 0 8px 24px rgba(20,83,45,0.07); }
+.fee-card-head { display: flex; align-items: flex-start; gap: 14px; }
+.fee-card-icon { width: 46px; height: 46px; border-radius: 13px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #e8f3ec, #d5e9dc); color: var(--primary); }
+.fee-card-title { flex: 1; min-width: 0; }
+.fee-card-title h3 { margin: 0 0 3px; font-size: 1rem; font-weight: 800; color: var(--text); border: 0; padding: 0; display: block; }
+.fee-card-title p { margin: 0; font-size: 0.8rem; line-height: 1.45; color: var(--muted); }
+.fee-edit-btn { flex-shrink: 0; }
+.fee-edit-btn svg { flex-shrink: 0; }
+
+.fee-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.fee-field label { font-size: 0.74rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.fee-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+.fee-input {
+    display: flex; align-items: stretch; background: #fff;
+    border: 1.5px solid var(--border); border-radius: 11px; overflow: hidden;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+.fee-input:focus-within { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(201,161,90,0.2); }
+.fee-input-affix { display: flex; align-items: center; padding: 0 13px; background: #f3f8f5; border-right: 1.5px solid var(--border); font-size: 0.78rem; font-weight: 800; color: var(--primary); letter-spacing: 0.04em; }
+.fee-input input,
+.form-group .fee-input input {
+    flex: 1; min-width: 0; width: 100%; border: 0; border-radius: 0; background: transparent; box-shadow: none;
+    padding: 12px 14px; font-size: 1.02rem; font-weight: 700; color: var(--text); font-family: inherit; -moz-appearance: textfield; appearance: textfield;
+}
+.fee-input input:focus, .form-group .fee-input input:focus { outline: none; box-shadow: none; }
+.fee-input input::placeholder { color: #a9b8af; font-weight: 500; font-size: 0.88rem; }
+.fee-input input::-webkit-outer-spin-button, .fee-input input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.fee-input-sm .fee-input-affix { padding: 0 10px; font-size: 0.72rem; }
+.fee-input-sm input, .data-table .fee-input-sm input { max-width: none; padding: 9px 12px; font-size: 0.92rem; }
+
+.fee-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: auto; padding-top: 14px; border-top: 1px dashed var(--border); }
+.fee-current { font-size: 0.78rem; font-weight: 600; color: var(--muted); }
+.fee-foot-actions { display: flex; gap: 10px; margin-left: auto; }
+
+/* Class-level table */
+.fee-rates-wrap { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+table.data-table.fee-rates-table { min-width: 0; }
+.fee-rates-table thead th { position: static; }
+.fee-rates-table th:last-child, .fee-rates-table td:last-child { width: 55%; }
+.fee-rates-table tbody tr { transition: background 0.15s; }
+.fee-rates-table tbody tr.is-changed { background: #fbf5e8; box-shadow: inset 3px 0 0 var(--accent); }
+.fee-level { display: inline-flex; align-items: center; gap: 11px; font-weight: 700; }
+.fee-level-chip { width: 30px; height: 30px; border-radius: 9px; background: var(--primary); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: 800; }
+.fee-amount { font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; }
+.fee-muted { color: var(--muted); font-size: 0.82rem; font-style: italic; }
+
+/* =========================================================
+   Password confirmation modal
+   ========================================================= */
+.pw-modal { text-align: center; }
+.pw-modal .form-group { text-align: left; margin-top: 14px; }
+.pw-modal-icon { width: 52px; height: 52px; margin: 0 auto 12px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #f6ecd6, #ecd9ab); color: var(--accent-dark); }
+.pw-modal h3 { margin: 0 0 6px; font-size: 1.1rem; }
+.pw-modal-desc { margin: 0; font-size: 0.84rem; line-height: 1.5; color: var(--muted); white-space: pre-line; }
+.pw-input input { letter-spacing: 0.05em; }
+.pw-toggle { border: 0; border-left: 1.5px solid var(--border); background: #f3f8f5; color: var(--primary); font-size: 0.74rem; font-weight: 800; padding: 0 14px; cursor: pointer; }
+.pw-toggle:hover { background: #e8f3ec; }
+.pw-error { margin: 7px 0 0; min-height: 1.1em; font-size: 0.78rem; font-weight: 600; color: var(--danger); }
+
+/* =========================================================
+   Phones — matches the other portals: bottom tab bar, one-row
+   header (from portal-ui.css), compact cards, bottom-aligned toasts
+   ========================================================= */
+@media (max-width: 900px) {
+    .page-content { padding: 16px 14px 28px; }
+    .page-content h2 { font-size: 1.15rem; }
+    .page-subtitle { margin-bottom: 14px; }
+    .dash-hero { padding: 18px 18px; border-radius: 16px; margin-bottom: 16px; }
+    .dash-hero h2 { font-size: 1.25rem; }
+    .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+    .stat-card { padding: 13px 12px; gap: 10px; border-radius: 13px; }
+    .stat-card .stat-icon { width: 36px; height: 36px; border-radius: 10px; }
+    .stat-card .stat-label { font-size: 0.66rem; }
+    .stat-card .stat-value { font-size: 1.2rem; }
+    .widget { padding: 16px; border-radius: 14px; }
+    .toolbar-row { gap: 10px; }
+    .toolbar-row .form-group { min-width: 100%; flex: 1 1 100%; }
+    .toolbar-row .btn { width: 100%; justify-content: center; }
+    .toolbar-row .ec-preview { position: static; white-space: normal; }
+    .toolbar-row:has(.ec-preview) { margin-bottom: 16px; }
+    .fee-card { padding: 18px 16px; border-radius: 15px; gap: 14px; }
+    .fee-card-head { flex-wrap: wrap; }
+    .fee-card-icon { width: 40px; height: 40px; border-radius: 11px; }
+    .fee-card-title { flex: 1 1 calc(100% - 60px); }
+    .fee-edit-btn { width: 100%; justify-content: center; }
+    .fee-field-row { grid-template-columns: 1fr; }
+    .fee-card-foot { flex-direction: column; align-items: stretch; }
+    .fee-card-foot > .btn { width: 100%; justify-content: center; }
+    .fee-foot-actions { margin-left: 0; width: 100%; }
+    .fee-foot-actions .btn { flex: 1; justify-content: center; }
+    .fee-current { text-align: center; }
+    .fee-rates-table th:last-child, .fee-rates-table td:last-child { width: 58%; }
+    .modal-overlay { align-items: flex-end; }
+    .modal-box { width: 100%; max-width: none; border-radius: 18px 18px 0 0; padding: 22px 18px calc(22px + env(safe-area-inset-bottom, 0px)); }
+    .modal-box[style*="max-width"] { max-width: none !important; }
+    body.has-tabbar .toast { left: 12px; right: 12px; bottom: calc(var(--pu-tab-h, 62px) + env(safe-area-inset-bottom, 0px) + 12px); text-align: center; }
+}
+
+
+/* =========================================================
+   Sidebar — fluid width, no overlapping text
+   - width follows the viewport between 214px and 250px
+   - every label can shrink and wrap instead of running into
+     the icon or the count badge
+   - the footer shrinks on short screens so the menu keeps room
+   ========================================================= */
+.dashboard-container { grid-template-columns: clamp(214px, 21vw, 250px) minmax(0, 1fr); }
+.sidebar, .main-content { min-width: 0; }
+
+.logo { padding: 18px 16px; flex-shrink: 0; min-width: 0; }
+.logo > div:last-child { flex: 1 1 auto; min-width: 0; }
+.logo-text, .logo-sub { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.nav-menu { min-height: 0; padding: 10px; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.28) transparent; }
+.nav-menu::-webkit-scrollbar { width: 6px; }
+.nav-menu::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.28); border-radius: 999px; }
+.nav-menu::-webkit-scrollbar-track { background: transparent; }
+
+.nav-link { gap: 12px; min-width: 0; line-height: 1.25; }
+.nav-link .nav-icon { flex: 0 0 22px; }
+.nav-link > span:last-child { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.nav-section-label { line-height: 1.3; overflow-wrap: anywhere; }
+
+/* Count badge sits inside the pill, vertically centred, and the label
+   gets room so the two never touch (shown/hidden by script via display). */
+.nav-badge-dot { top: 50%; right: 12px; transform: translateY(-50%); }
+.nav-menu li:has(.nav-badge-dot:not([style*="none"])) .nav-link { padding-right: 40px; }
+
+.sidebar-footer { flex-shrink: 0; padding: 10px 12px; gap: 6px; }
+.sidebar-account-badge, .sidebar-account-title, .logout-btn { min-width: 0; }
+.sidebar-account-title span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logout-btn { padding: 9px 14px; }
+
+/* Short screens (small laptops, phones in landscape): give the menu the room */
+@media (max-height: 720px) {
+    .logo { padding: 12px 14px; }
+    .nav-link { padding: 9px 12px; }
+    .nav-section-label { padding: 10px 12px 4px; }
+    .sidebar-account-badge { padding: 7px 10px; gap: 4px; }
+    .sidebar-account-id { padding-top: 4px; }
+}
+@media (max-height: 560px) {
+    .sidebar-account-badge { display: none; }
+}
+
+/* Slide-in menu on tablets/phones never wider than the screen */
+@media (max-width: 900px) {
+    .sidebar { width: min(280px, 86vw); }
+    /* The sidebar is position:fixed here, so it is no longer a grid item and the
+       main area would fall into the 214px sidebar column of the rule above
+       (squeezed, then scrolling sideways). Give it the whole width. */
+    .dashboard-container { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Top bar: let the title block shrink so it can't push into the profile */
+.top-bar-titlegroup { min-width: 0; }
+.topbar-meta-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+
+/* =========================================================
+   Fee Setup — read-only subscription card
+   ========================================================= */
+.fee-readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
+.fee-readout > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 12px 14px; background: #f3f8f5; border: 1px solid var(--border); border-radius: 11px; }
+.fee-readout-label { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.fee-readout strong { font-size: 1.05rem; font-weight: 800; color: var(--text); overflow-wrap: anywhere; }
+.fee-split { margin-top: 3px; font-size: 0.72rem; font-weight: 500; color: var(--muted); line-height: 1.35; }
+
+
+/* =========================================================
+   Forced "set your PIN" dialog: centred and scrollable at every
+   size (the generic bottom-sheet rule would sit behind the
+   on-screen keyboard), stacked buttons on phones.
+   ========================================================= */
+.modal-overlay.force-pw-overlay { align-items: center; justify-content: center; padding: 12px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.force-pw-box { width: 100%; max-width: 420px; max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); overflow-y: auto; box-sizing: border-box; margin: auto; }
+.force-pw-box input { width: 100%; box-sizing: border-box; font-size: 16px; } /* 16px stops iOS zoom-on-focus */
+.force-pw-box .pin-input { letter-spacing: .35em; text-align: center; }
+@media (max-width: 640px) {
+    .modal-overlay.force-pw-overlay { align-items: center; }
+    .modal-box.force-pw-box { width: 100%; max-width: 420px; border-radius: 16px; padding: 20px 16px; }
+    .force-pw-box .form-actions { flex-direction: column-reverse; }
+    .force-pw-box .form-actions .btn { width: 100%; }
+}
+@media (max-height: 520px) { .force-pw-box { padding: 14px 16px; } .force-pw-box .form-group { margin-bottom: 8px; } }
+
+
+/* Document fees table: two amount columns, so the class-table "last column 55%" rule is reset */
+.fee-doc-wrap { margin-top: 14px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.fee-doc-table th:last-child, .fee-doc-table td:last-child { width: auto; }
+.fee-doc-table th:not(:first-child), .fee-doc-table td:not(:first-child) { width: 31%; }
+.fee-doc-table td.is-changed { background: #fbf5e8; box-shadow: inset 0 -2px 0 var(--accent); }
+@media (max-width: 640px) {
+    .fee-doc-table { min-width: 0; }
+    .fee-doc-table thead { display: none; }
+    .fee-doc-table, .fee-doc-table tbody, .fee-doc-table tr, .fee-doc-table td { display: block; width: 100% !important; box-sizing: border-box; }
+    .fee-doc-table tr { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+    .fee-doc-table td { padding: 4px 0; border: 0; }
+    .fee-doc-table td:first-child { font-weight: 800; padding-bottom: 6px; }
+    .fee-doc-table td[data-label]::before { content: attr(data-label); display: block; font-size: 0.72rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 4px; }
+}
+
+
+.fin-subheading { margin: 28px 0 4px; font-size: 1.05rem; font-weight: 800; color: var(--text); }

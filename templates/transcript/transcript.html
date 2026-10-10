@@ -13,6 +13,8 @@
   <body>
     <div id="page-scale-wrap">
       <div class="page">
+        <!-- Zone logo watermark (DATA.zone_logo_data_uri, filled by transcript.js) -->
+        <img class="zone-watermark" id="zone-watermark" alt="" hidden />
         <!-- Top Header -->
         <div class="header">
           <div class="flag-box">
@@ -105,60 +107,12 @@
           </div>
         </div>
 
-        <!-- Main Table. Wrapped so the not-attended-grade lines (drawn by
-           transcript.js as one continuous diagonal per column, spanning
-           the full row height — not a per-cell fill) can be positioned
-           with real pixel coordinates measured off the actual rendered
-           rows. -->
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th rowspan="3" class="subject-col">Subjects</th>
-                <th colspan="12">Academic Years</th>
-              </tr>
-              <tr>
-                <th colspan="3" id="yr-header-9">20___ E.C</th>
-                <th colspan="3" id="yr-header-10">20___ E.C</th>
-                <th colspan="3" id="yr-header-11">20___ E.C</th>
-                <th colspan="3" id="yr-header-12">20___ E.C</th>
-              </tr>
-              <tr>
-                <!-- 9th -->
-                <th colspan="3">9th</th>
-                <!-- 10th -->
-                <th colspan="3">10th</th>
-                <!-- 11th -->
-                <th colspan="3">11th</th>
-                <!-- 12th -->
-                <th colspan="3">12th</th>
-              </tr>
-              <tr>
-                <th></th>
-                <!-- 9th sub -->
-                <th>I</th>
-                <th>II</th>
-                <th>AV</th>
-                <!-- 10th sub -->
-                <th>I</th>
-                <th>II</th>
-                <th>AV</th>
-                <!-- 11th sub -->
-                <th>I</th>
-                <th>II</th>
-                <th>AV</th>
-                <!-- 12th sub -->
-                <th>I</th>
-                <th>II</th>
-                <th>AV</th>
-              </tr>
-            </thead>
-            <tbody id="transcript-body">
-              <!-- filled by transcript.js -->
-            </tbody>
-          </table>
-          <svg class="not-attended-lines" id="not-attended-lines"></svg>
-        </div>
+        <!-- Four grade blocks (9th & 10th on top, 11th & 12th below).
+           Each block is built by transcript.js from that grade's own
+           subject list and stream, so Grades 9/10 share a subject set
+           while Grades 11/12 follow the student's Natural/Social
+           Science stream. -->
+        <div class="grade-grid" id="grade-grid"></div>
 
         <!-- Disclaimer Note -->
         <div class="note">

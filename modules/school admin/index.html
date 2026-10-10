@@ -32,7 +32,7 @@
         <ul class="nav-menu" id="sa-nav-menu">
           <li
             class="nav-section-label"
-            data-titles="Principal,Admin VP,Academic VP"
+            data-titles="Principal,Admin VP,Academic VP,Managing Director"
             data-i18n="sa_nav_section_overview"
           >
             Overview
@@ -42,7 +42,7 @@
               href="#"
               class="nav-link active"
               data-page="dashboard"
-              data-titles="Principal,Admin VP,Academic VP"
+              data-titles="Principal,Admin VP,Academic VP,Managing Director"
             >
               <span class="nav-icon"
                 ><svg
@@ -62,6 +62,46 @@
                     d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
                   /></svg></span
               ><span data-i18n="sa_nav_dashboard">Dashboard</span></a
+            >
+          </li>
+
+          <!--
+            Principal (public schools) or Managing Director (private) —
+            whoever holds recruit_finance. Its own top-level page, not
+            buried under Profile, since creating/replacing this account
+            is something the Principal/MD needs to reach quickly, same
+            standing as the other Overview/Governance pages.
+          -->
+          <li
+            class="nav-section-label"
+            data-titles="Managing Director"
+            data-i18n="sa_nav_section_md_finance"
+          >
+            Finance
+          </li>
+          <li>
+            <a
+              href="#"
+              class="nav-link"
+              data-page="finance"
+              data-titles="Principal,Managing Director"
+            >
+              <span class="nav-icon"
+                ><svg
+                  class="lucide-icon"
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1" />
+                  <path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4" /></svg></span
+              ><span data-i18n="sa_nav_finance">Finance</span></a
             >
           </li>
 
@@ -163,12 +203,19 @@
               ></a
             >
           </li>
+          <li
+            class="nav-section-label"
+            data-titles="Managing Director"
+            data-i18n="sa_nav_section_md_staff"
+          >
+            Staff
+          </li>
           <li>
             <a
               href="#"
               class="nav-link"
               data-page="teacher-setup"
-              data-titles="Principal"
+              data-titles="Principal,Managing Director"
             >
               <span class="nav-icon"
                 ><svg
@@ -696,12 +743,19 @@
           >
             General & Communication
           </li>
+          <li
+            class="nav-section-label"
+            data-titles="Managing Director"
+            data-i18n="sa_nav_section_md_students"
+          >
+            Student Affairs
+          </li>
           <li>
             <a
               href="#"
               class="nav-link"
               data-page="students"
-              data-titles="Principal,Admin VP,Academic VP"
+              data-titles="Principal,Admin VP,Academic VP,Managing Director"
             >
               <span class="nav-icon"
                 ><svg
@@ -759,12 +813,19 @@
               ></span
             ></a>
           </li>
+          <li
+            class="nav-section-label"
+            data-titles="Managing Director"
+            data-i18n="sa_nav_section_md_account"
+          >
+            Account
+          </li>
           <li>
             <a
               href="#"
               class="nav-link"
               data-page="profile"
-              data-titles="Principal,Admin VP,Academic VP"
+              data-titles="Principal,Admin VP,Academic VP,Managing Director"
             >
               <span class="nav-icon"
                 ><svg
@@ -1128,6 +1189,25 @@
           <div class="widget-grid" id="sa-dashboard-widgets"></div>
         </section>
 
+        <!--
+          Principal (public schools) / Managing Director (private) —
+          whoever holds recruit_finance. See POST/GET/deactivate under
+          /api/school/finance-account in server.js.
+        -->
+        <section class="page-content" id="page-finance">
+          <h2 data-i18n="sa_nav_finance">Finance</h2>
+          <p class="page-subtitle" data-i18n="sa_finance_page_sub">
+            Manage this school's Finance account — the account
+            responsible for verifying registration payments and issuing
+            receipts.
+          </p>
+          <div class="stat-row" id="sa-finance-stats"></div>
+          <div class="widget" style="margin-top: 18px">
+            <h3 data-i18n="sa_finance_account_heading">Finance Account</h3>
+            <div id="sa-finance-account-body"></div>
+          </div>
+        </section>
+
         <!-- ===================== TEACHER ONBOARDING, Stage 1 (Principal) ===================== -->
         <section class="page-content" id="page-teacher-setup">
           <h2 data-i18n="sa_nav_teacher_setup">Teacher Onboarding</h2>
@@ -1136,6 +1216,39 @@
             directly, and mint their school Teacher ID. Academic VP takes it
             from here to assign the teaching load.
           </p>
+
+          <!-- Managing Director only (private schools) — recruit_staff -->
+          <div class="widget" id="sa-md-recruit-widget" style="display:none; margin-bottom: 18px">
+            <div class="form-actions" style="justify-content: space-between; align-items: center">
+              <h3 style="margin: 0" data-i18n="sa_md_recruit_heading">Recruit a Teacher</h3>
+              <button class="btn btn-accent" data-action="openRecruitTeacherModal" data-i18n="sa_md_recruit_btn">Recruit Teacher</button>
+            </div>
+            <p class="form-hint" style="margin: 6px 0 0" data-i18n="sa_md_recruit_hint">
+              Sends the candidate to your Principal for review. Once the
+              Principal accepts, the teacher is given their school Teacher ID.
+            </p>
+          </div>
+
+          <!-- Managing Director only (private schools) — appoint_leadership -->
+          <div class="widget" id="sa-md-leadership-widget" style="display:none; margin-bottom: 18px">
+            <div class="form-actions" style="justify-content: space-between; align-items: center">
+              <h3 style="margin: 0" data-i18n="sa_md_leadership_heading">School Leadership</h3>
+              <button class="btn btn-accent" data-action="openAppointLeadershipModal" data-i18n="sa_md_leadership_appoint_btn">Appoint / Replace</button>
+            </div>
+            <div class="data-table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="sa_col_title">Title</th>
+                    <th data-i18n="sa_col_name">Name</th>
+                    <th data-i18n="sa_col_contact">Contact</th>
+                    <th data-i18n="sa_f_email">Email</th>
+                  </tr>
+                </thead>
+                <tbody id="sa-md-leadership-tbody"><tr><td colspan="4"></td></tr></tbody>
+              </table>
+            </div>
+          </div>
 
           <p class="page-subtitle" data-i18n="sa_incoming_teachers_sub">
             Teachers a Zonal Admin has registered and sent to your school.
@@ -1734,9 +1847,8 @@
           </div>
 
           <div
-            class="widget"
+            class="widget subject-config-widget"
             id="subject-config-widget"
-            style="margin-top: 18px; max-width: 640px"
           >
             <h3 data-i18n="sa_subject_config_heading">Subject Configuration</h3>
             <p class="form-hint" data-i18n="sa_subject_config_hint">
@@ -3045,7 +3157,7 @@
                   <div class="idcard-front-top">
                     <div class="idcard-front-top-content">
                       <div class="idcard-logo-badge">
-                        <img src="/assets/images/gflag.jpg" alt="" />
+                        <img id="idcard-logo-front" src="/assets/images/gflag.jpg" alt="" />
                       </div>
                       <div class="idcard-brand-text">
                         <div class="idcard-zone-line" id="idcard-zone-front">
@@ -3121,7 +3233,7 @@
                   <div class="idcard-back-header">
                     <div class="idcard-back-header-content">
                       <div class="idcard-logo-badge">
-                        <img src="/assets/images/gflag.jpg" alt="" />
+                        <img id="idcard-logo-back" src="/assets/images/gflag.jpg" alt="" />
                       </div>
                       <div class="idcard-brand-text idcard-brand-text-dark">
                         <div class="idcard-zone-line" id="idcard-zone-back">

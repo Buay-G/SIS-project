@@ -485,36 +485,6 @@ td { padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 0.87
 tr:last-child td { border-bottom: none; }
 tr:hover td { background: #f3f6f4; }
 
-/* ---- SUBSCRIPTION FEE (Class Monitor / Homeroom Teacher class page) ---- */
-.sub-fee-tiles { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
-.sub-fee-tile { flex: 1 1 160px; min-width: 160px; }
-.sub-fee-tile-num { font-size: 1.3rem; font-weight: 800; color: var(--primary); margin-top: 2px; }
-.sub-fee-filter-chip {
-    width: auto;
-    padding: 7px 14px;
-    font-size: 0.82rem;
-    border-radius: 999px;
-    cursor: pointer;
-}
-.sub-fee-filter-chip.active { background: var(--primary); color: #fff; border-color: var(--primary); }
-.sub-fee-row {
-    margin-bottom: 8px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-}
-.sub-fee-row-action { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.sub-fee-row-action .btn-cancel,
-.sub-fee-row-action .btn-primary { width: auto; padding: 6px 14px; font-size: 0.82rem; }
-@media (max-width: 640px) {
-    .sub-fee-row { flex-direction: column; align-items: flex-start; }
-    .sub-fee-row-action { width: 100%; }
-    .sub-fee-row-action .btn-cancel,
-    .sub-fee-row-action .btn-primary { flex: 1; }
-}
-
 /* ---- UTILITIES ---- */
 .muted { color: var(--muted); font-size: 0.85rem; }
 .filter-row { display: flex; gap: 10px; flex-wrap: wrap; }

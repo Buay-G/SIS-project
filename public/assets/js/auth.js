@@ -12,6 +12,7 @@
         super_admins: "/super-admin/",
         registrar_users: "/registrar/",
         guardians: "/guardians/",
+        finance_users: "/finance/",
       };
       if (map[data.role]) window.location.href = map[data.role];
     }
@@ -47,6 +48,7 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
         super_admins: "/super-admin/",
         registrar_users: "/registrar/",
         guardians: "/guardians/",
+        finance_users: "/finance/",
       };
 
       window.location.href = redirectMap[data.role] || "/";

@@ -13,6 +13,15 @@ import dotenv from "dotenv";
 import crypto, { Certificate } from "crypto";
 import sizeOf from "image-size";
 import heicConvert from "heic-convert";
+// Public-vs-Private governance rules (who may recruit / appoint / handle
+// money at a school). Pure functions, no DB — see governance.js.
+import {
+  governanceModelOf,
+  userCan,
+  STAFFING_CHANNEL_BY_MODEL,
+  TITLES,
+  MD_APPOINTABLE_TITLES,
+} from "./governance.js";
 import puppeteer from "puppeteer";
 // Renders the student ID QR code to a PNG data URI server-side (see
 // buildIdCardHtml below) — run `npm install qrcode` if this isn't
@@ -138,6 +147,134 @@ app.use(
 );
 app.use(cookieParser());
 
+// ---- Kindergarten: no report cards, transcripts or ID cards ----
+// KG children have no marks and no ID card. Rather than touching each of the
+// eight document routes, this one guard sits in front of all of them
+// (single-student and bulk) and answers with a clear message the Registrar
+// screen shows as a warning. Auth is still enforced by each route itself:
+// if there's no valid session the guard just steps aside.
+app.use("/api/registrar/documents", async (req, res, next) => {
+  try {
+    const m = req.path.match(
+      /^\/(report-card|transcript|id-card)\/([^/]+)(?:\/(pdf|years|preview|pdf-zip))?\/?$/,
+    );
+    if (!m) return next();
+    let user;
+    try {
+      user = jwt.verify(req.cookies?.auth_token, JWT_SECRET);
+    } catch (_) {
+      return next();
+    }
+    let kg = false;
+    if (m[2] === "bulk") {
+      kg = isKgGrade(req.query.class_level);
+    } else if (user && user.school_id) {
+      const [rows] = await pool.query(
+        "SELECT class_level FROM students WHERE student_id = ? AND school_id = ?",
+        [decodeURIComponent(m[2]), user.school_id],
+      );
+      kg = rows.length > 0 && isKgGrade(rows[0].class_level);
+    }
+    if (!kg) return next();
+    const what =
+      m[1] === "report-card"
+        ? "report cards"
+        : m[1] === "transcript"
+          ? "transcripts"
+          : "ID cards";
+    return res.status(400).json({
+      error: `Kindergarten (KG) students don't have ${what}.`,
+      code: "KG_NO_DOCUMENTS",
+    });
+  } catch (err) {
+    console.error("KG document guard (non-fatal):", err);
+    next();
+  }
+});
+
+// ---- Live updates (Server-Sent Events) ----
+// Every portal opens ONE long-lived GET /api/live/events. Whenever anyone
+// successfully changes something (any POST/PUT/PATCH/DELETE), the server
+// pings the affected people with a tiny "changed" event and their page
+// re-checks its notifications/lists on the spot — so a new request shows up
+// without anyone refreshing the browser. Scope: the writer's own school, plus
+// Zonal/Super Admins; writes with no school (Zonal/Super/Guardian) or
+// cross-school transfers ping everyone. Pings are coalesced (max one flush
+// per 400 ms) so a bulk upload can't cause a storm. If the connection is
+// blocked by a proxy, the portals still fall back to a short poll.
+const liveClients = new Set(); // { res, school_id, role, user_id }
+let liveFlushTimer = null;
+const livePending = { all: false, schools: new Set() };
+function liveScheduleFlush() {
+  if (liveFlushTimer) return;
+  liveFlushTimer = setTimeout(() => {
+    liveFlushTimer = null;
+    const all = livePending.all;
+    const schools = new Set(livePending.schools);
+    livePending.all = false;
+    livePending.schools.clear();
+    for (const c of liveClients) {
+      const hit =
+        all ||
+        c.role === "zonal_admins" ||
+        c.role === "super_admins" ||
+        (c.school_id != null && schools.has(String(c.school_id)));
+      if (!hit) continue;
+      try {
+        c.res.write("event: changed\ndata: {}\n\n");
+      } catch (_) {
+        liveClients.delete(c);
+      }
+    }
+  }, 400);
+}
+app.use("/api", (req, res, next) => {
+  if (
+    req.method !== "GET" &&
+    req.method !== "HEAD" &&
+    req.method !== "OPTIONS" &&
+    !req.path.startsWith("/live/") &&
+    liveClients.size > 0
+  ) {
+    res.on("finish", () => {
+      if (res.statusCode >= 400) return;
+      const sid = req.user && req.user.school_id;
+      if (sid && !/transfer/i.test(req.path)) livePending.schools.add(String(sid));
+      else livePending.all = true;
+      liveScheduleFlush();
+    });
+  }
+  next();
+});
+app.get("/api/live/events", requireAuth, (req, res) => {
+  res.status(200).set({
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no", // tell nginx not to buffer this stream
+  });
+  res.flushHeaders?.();
+  res.write("retry: 5000\n\n");
+  const client = {
+    res,
+    school_id: req.user.school_id ?? null,
+    role: req.user.role,
+    user_id: req.user.user_id,
+  };
+  liveClients.add(client);
+  const ping = setInterval(() => {
+    try {
+      res.write(": ping\n\n");
+    } catch (_) {
+      liveClients.delete(client);
+    }
+  }, 25000);
+  req.on("close", () => {
+    clearInterval(ping);
+    liveClients.delete(client);
+  });
+});
+
 // Static Files
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/students", express.static(path.join(__dirname, "modules/students")));
@@ -161,6 +298,16 @@ app.use(
 app.use(
   "/guardians",
   express.static(path.join(__dirname, "modules/guardians")),
+);
+// Not yet built — added so POST /api/login and finance_users' actual
+// frontend just drop in later without another server.js change.
+// The finance_users role, fee_* tables, and every /api/finance/* and
+// /api/school/finance-account* route are already live (see below);
+// only this static mount plus the modules/finance/ frontend itself
+// are outstanding.
+app.use(
+  "/finance",
+  express.static(path.join(__dirname, "modules/finance")),
 );
 app.use("/library", express.static(path.join(__dirname, "modules/library")));
 app.use("/uploads", express.static("uploads"));
@@ -397,6 +544,99 @@ function isValidFaydaFormat(fayda) {
   return /^[0-9]{16}$/.test(fayda);
 }
 
+// ---------------------------------------------------------------------
+// ONE default password for the whole system.
+// Every account that is created for somebody else, or reset for them,
+// starts on this value (the per-role DEFAULT_* constants below all point
+// at it) with must_change_password = TRUE. The first thing that person
+// has to do is replace it with a 6-digit PIN: requireAuth blocks every
+// route except the ones in FIRST_LOGIN_ALLOWED_PATHS until they do, and
+// POST /api/auth/change-password (any role) is the way out.
+// ---------------------------------------------------------------------
+const SYSTEM_DEFAULT_PASSWORD = "1122";
+const FIRST_LOGIN_ALLOWED_PATHS = new Set([
+  "/api/me",
+  "/api/logout",
+  "/api/auth/change-password",
+  // Existing per-role change-password routes — kept reachable so the
+  // portals that already ship their own "set your PIN" screen keep working.
+  "/api/student/update-password",
+  "/api/guardian/update-password",
+  "/api/teacher/update-password",
+  "/api/finance/update-password",
+  "/api/finance/change-password",
+  "/api/school-admin/update-password",
+]);
+
+// The one password rule for every role: exactly 6 digits. (The default,
+// 1122, is 4 digits, so it can never be chosen as the "new" PIN.)
+function validateNewPin(newPass) {
+  if (!/^\d{6}$/.test(String(newPass ?? ""))) {
+    return "New PIN must be exactly 6 digits (numbers only).";
+  }
+  return null;
+}
+
+// Same rule for an admin-issued starting password. Blank is fine (the
+// account gets SYSTEM_DEFAULT_PASSWORD); the system default itself is also
+// accepted (it is a 4-digit value, issued with must_change_password = TRUE,
+// so the account is forced to set a real 6-digit PIN at first login).
+// Anything else must already be a valid 6-digit PIN so no account can ever
+// hold a non-PIN password.
+function assertValidInitialPin(password) {
+  if (password === undefined || password === null || password === "") return;
+  if (String(password) === SYSTEM_DEFAULT_PASSWORD) return;
+  if (!/^\d{6}$/.test(String(password))) {
+    throw Object.assign(
+      new Error("The password must be exactly 6 digits (numbers only)."),
+      { status: 400 },
+    );
+  }
+}
+
+// must_change_password used to exist only on students, guardians,
+// finance_users and school_admins. The first-login rule now covers every
+// role, so provision the column on the rest the same self-healing way the
+// other lazily-created columns in this file work. Existing rows get 0
+// (nobody who already has a real password is suddenly locked out).
+const MUST_CHANGE_TABLES = [
+  "students",
+  "teachers",
+  "school_admins",
+  "zonal_admins",
+  "super_admins",
+  "registrar_users",
+  "guardians",
+  "finance_users",
+];
+let _mustChangeColumnsReady = false;
+async function ensureMustChangePasswordColumns() {
+  if (_mustChangeColumnsReady) return;
+  const [tables] = await pool.query(
+    `SELECT TABLE_NAME AS t FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (?)`,
+    [MUST_CHANGE_TABLES],
+  );
+  const [withCol] = await pool.query(
+    `SELECT TABLE_NAME AS t FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'must_change_password'
+        AND TABLE_NAME IN (?)`,
+    [MUST_CHANGE_TABLES],
+  );
+  const have = new Set(withCol.map((r) => r.t));
+  for (const { t: table } of tables) {
+    if (have.has(table)) continue;
+    try {
+      await pool.query(
+        `ALTER TABLE \`${table}\` ADD COLUMN must_change_password TINYINT(1) NOT NULL DEFAULT 0`,
+      );
+    } catch (err) {
+      if (err.code !== "ER_DUP_FIELDNAME") throw err;
+    }
+  }
+  _mustChangeColumnsReady = true;
+}
+
 // Every newly-created (or newly-linked-for-the-first-time) guardian
 // account starts on this same default password, exactly like
 // DEFAULT_STUDENT_PASSWORD below — paired with must_change_password so
@@ -405,7 +645,7 @@ function isValidFaydaFormat(fayda) {
 // (matched by Fayda number and linked to another child) keeps whatever
 // password they already set — this only applies the moment a guardians
 // row is first inserted.
-const DEFAULT_GUARDIAN_PASSWORD = "1234";
+const DEFAULT_GUARDIAN_PASSWORD = SYSTEM_DEFAULT_PASSWORD;
 
 // A guardian's login identity is now this platform-wide PAR##### code —
 // NOT the Fayda number (too sensitive/long to type as a username) and
@@ -649,6 +889,20 @@ async function requireAuth(req, res, next) {
       console.error("requireAuth subscription check (non-fatal):", err);
     }
   }
+  // First-login rule: someone still on the default/reset password can't
+  // use anything except the change-password routes until they've set a
+  // 6-digit PIN. Applies to every role, not just students.
+  if (req.user.must_change_password) {
+    const path = String(req.originalUrl || req.url || "")
+      .split("?")[0]
+      .replace(/\/+$/, "");
+    if (!FIRST_LOGIN_ALLOWED_PATHS.has(path)) {
+      return res.status(403).json({
+        error: "Set a new 6-digit PIN before continuing.",
+        must_change_password: true,
+      });
+    }
+  }
   next();
 }
 
@@ -712,6 +966,160 @@ function requireAdminTitle(...allowedTitles) {
     next();
   };
 }
+
+// Students whose registration payment Finance rejected, with the reason, so
+// the Registrar can see who needs a corrected payment (new entrants and
+// transfers alike). Resubmit with POST /api/registrar/students/:id/payment.
+app.get(
+  "/api/registrar/rejected-registrations",
+  requireAuth,
+  requireRegistrarOrRecorder,
+  async (req, res) => {
+    try {
+      const [students] = await pool.query(
+        `SELECT student_id, first_name, middle_name, last_name, class_level, stream
+           FROM students
+          WHERE school_id = ? AND status = 'Registration Rejected'
+          ORDER BY student_id`,
+        [req.user.school_id],
+      );
+      if (students.length === 0) return res.json([]);
+      const [pays] = await pool.query(
+        `SELECT id, student_id, rejection_reason, method, reference_number, amount,
+                verified_at AS rejected_at
+           FROM fee_payments
+          WHERE school_id = ? AND fee_type = 'REGISTRATION' AND status = 'REJECTED'
+            AND student_id IN (?)
+          ORDER BY id`,
+        [req.user.school_id, students.map((r) => r.student_id)],
+      );
+      const lastPay = new Map(pays.map((p) => [p.student_id, p]));
+      const rows = students.map((r) => {
+        const p = lastPay.get(r.student_id) || {};
+        return {
+          ...r,
+          rejection_reason: p.rejection_reason || null,
+          method: p.method || null,
+          reference_number: p.reference_number || null,
+          amount: p.amount ?? null,
+          rejected_at: p.rejected_at || null,
+        };
+      });
+      res.json(rows);
+    } catch (err) {
+      console.error("GET /api/registrar/rejected-registrations error:", err);
+      res.status(500).json({ error: "Could not load rejected registrations" });
+    }
+  },
+);
+
+// A registration payment Finance rejected can be corrected without
+// re-registering the student from scratch: the Registrar submits a new
+// receipt for the same still-"Registration Rejected" student, putting
+// them back into "Pending Payment" for Finance to look at again.
+app.post(
+  "/api/registrar/students/:student_id/payment",
+  requireAuth,
+  requireRegistrarOrRecorder,
+  async (req, res) => {
+    const { payment_method, payment_reference } = req.body;
+    if (!["CASH", "BANK", "MOBILE"].includes(payment_method)) {
+      return res.status(400).json({
+        error: "payment_method is required and must be CASH, BANK or MOBILE.",
+      });
+    }
+    if (payment_method !== "CASH" && !String(payment_reference || "").trim()) {
+      return res.status(400).json({
+        error: "payment_reference is required for a bank or mobile payment.",
+      });
+    }
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [studentRows] = await conn.query(
+        "SELECT student_id, status FROM students WHERE student_id = ? AND school_id = ? FOR UPDATE",
+        [req.params.student_id, req.user.school_id],
+      );
+      if (studentRows.length === 0) {
+        await conn.rollback();
+        return res.status(404).json({ error: "Student not found." });
+      }
+      if (studentRows[0].status !== "Registration Rejected") {
+        await conn.rollback();
+        return res.status(409).json({
+          error:
+            "A corrected payment can only be submitted for a student whose registration was rejected.",
+        });
+      }
+      const [feeRows] = await conn.query(
+        "SELECT registration_fee FROM fee_structures WHERE school_id = ? AND academic_year = ?",
+        [req.user.school_id, (await getCurrentAcademicYear(req.user.school_id)).label],
+      );
+      if (feeRows.length === 0) {
+        await conn.rollback();
+        return res
+          .status(409)
+          .json({ error: "This school's registration fee isn't set." });
+      }
+      // The corrected payment carries the subscription fee too (when the
+      // school has Subscription on) — one payment, one reference.
+      const subCharge = await getRegistrationSubscriptionCharge(
+        req.user.school_id,
+      );
+      try {
+        const [payIns] = await conn.query(
+          `INSERT INTO fee_payments
+             (school_id, student_id, fee_type, amount, method, reference_number, submitted_by)
+           VALUES (?, ?, 'REGISTRATION', ?, ?, ?, ?)`,
+          [
+            req.user.school_id,
+            req.params.student_id,
+            Number(feeRows[0].registration_fee) +
+              (subCharge ? subCharge.amount : 0),
+            payment_method,
+            payment_method === "CASH" ? null : String(payment_reference).trim(),
+            req.user.user_id,
+          ],
+        );
+        if (subCharge)
+          await saveRegistrationSubscriptionCharge(conn, {
+            paymentId: payIns.insertId,
+            schoolId: req.user.school_id,
+            studentId: req.params.student_id,
+            charge: subCharge,
+          });
+      } catch (feeErr) {
+        if (feeErr.code === "ER_DUP_ENTRY") {
+          await conn.rollback();
+          return res.status(409).json({
+            error:
+              "This payment reference has already been used for a registration at this school.",
+          });
+        }
+        throw feeErr;
+      }
+      await conn.query(
+        "UPDATE students SET status = 'Pending Payment' WHERE student_id = ? AND school_id = ?",
+        [req.params.student_id, req.user.school_id],
+      );
+      await conn.commit();
+      await logAudit(
+        req,
+        "registrar.payment_resubmit",
+        "student",
+        req.params.student_id,
+        `${payment_method} ${payment_reference || ""}`.trim(),
+      );
+      res.json({ message: "Corrected payment submitted for Finance to review." });
+    } catch (err) {
+      await conn.rollback();
+      console.error("POST /api/registrar/students/:student_id/payment error:", err);
+      res.status(500).json({ error: "Could not submit the corrected payment" });
+    } finally {
+      conn.release();
+    }
+  },
+);
 
 // --- Registrar & Recorder ---
 // Registrar can happen two ways, both fully equivalent to every endpoint
@@ -1000,7 +1408,7 @@ async function getNextSuperAdminId(title) {
 // A fresh IT Lead (or additionally-created Owner) account always starts
 // on this password, same "change it after first login" expectation as
 // DEFAULT_ZONAL_ADMIN_PASSWORD.
-const DEFAULT_SUPER_ADMIN_PASSWORD = "1130";
+const DEFAULT_SUPER_ADMIN_PASSWORD = SYSTEM_DEFAULT_PASSWORD;
 
 // Archiving / deletion for schools — three distinct actions from the
 // Schools screen's Delete button:
@@ -1284,6 +1692,148 @@ async function getZonalSchoolIds(req) {
   return rows.map((r) => r.id);
 }
 
+// --- Finance ---
+// One Finance account per school, created by whoever holds the
+// recruit_finance capability for that school (the Principal at a
+// public school, the Managing Director at a private one — see
+// governance.js). Modeled closely on school_admins/createSchoolAdminAccount,
+// but Finance handles money, so it gets its own table and two things
+// school admins don't: a RANDOM starting password (never the fixed
+// '1121' every school admin gets) and a forced change on first login.
+const FINANCE_ID_PREFIX = "FIN";
+const FINANCE_ID_DIGITS = 4;
+
+async function getNextFinanceId() {
+  const conn = await pool.getConnection();
+  try {
+    await conn.query(
+      `UPDATE finance_id_seq SET next_val = LAST_INSERT_ID(next_val + 1) WHERE id = 1`,
+    );
+    const [rows] = await conn.query(`SELECT LAST_INSERT_ID() AS id`);
+    return `${FINANCE_ID_PREFIX}${String(rows[0].id).padStart(FINANCE_ID_DIGITS, "0")}`;
+  } finally {
+    conn.release();
+  }
+}
+
+function generateTempPassword() {
+  // Fixed default for every new Finance account, by deliberate product
+  // decision (overriding the earlier random-password approach this
+  // function used). must_change_password is hardcoded TRUE on the
+  // INSERT that uses this, so the officer is forced onto a real
+  // password at first login regardless.
+  return SYSTEM_DEFAULT_PASSWORD;
+}
+
+// requireCapability("recruit_finance") (below) already proves the caller
+// may CREATE a Finance account for their own school; this middleware is
+// for every OTHER Finance route — it just proves the caller IS the
+// currently-active Finance account, the same shape as requirePrincipal.
+// Identity-only check: proves the caller IS a Finance account, nothing
+// more. Used ONLY by the two password-change routes, since those are
+// the way OUT of the forced-change state.
+function requireFinanceIdentity(req, res, next) {
+  if (!req.user || req.user.role !== "finance_users") {
+    return res
+      .status(403)
+      .json({ error: "This action is restricted to the Finance account." });
+  }
+  next();
+}
+
+// Every other Finance route. A brand-new Finance account starts on the
+// default password with must_change_password TRUE (carried in the JWT,
+// same as students/guardians) and is blocked from ALL fee data until
+// it sets its own password.
+function requireFinance(req, res, next) {
+  if (!req.user || req.user.role !== "finance_users") {
+    return res
+      .status(403)
+      .json({ error: "This action is restricted to the Finance account." });
+  }
+  if (req.user.must_change_password) {
+    return res.status(403).json({
+      error: "You must change your password before continuing.",
+      must_change_password: true,
+    });
+  }
+  next();
+}
+
+// --- Governance: Public vs Private schools ---
+// Who may STAFF (recruit / appoint) a school depends on its governance
+// model, which is derived from schools.school_type (the School Type
+// Super Admin sets) — see governance.js for the full capability table.
+//   public  -> zonal workflow (TDC proposes, Head of Education approves)
+//   private -> the school's own Managing Director; the zonal office is
+//              bypassed. The zone still SUPERVISES it (zone_id is kept).
+// pushIncomingTeacher and createSchoolAdminAccount (below) are the single
+// choke point EVERY hiring path goes through — the direct zonal routes,
+// zonal proposals, transfers, and the Managing Director routes — so the
+// rule is enforced there, once, instead of re-checked in each route.
+const PRIVATE_SCHOOL_ZONAL_MESSAGE =
+  "This is a private school — its staff are recruited and appointed by its own Managing Director, not by the zonal office.";
+const PUBLIC_SCHOOL_MD_MESSAGE =
+  "This is a public school — its staff are recruited through the zonal office, not by a Managing Director.";
+
+async function getSchoolGovernance(schoolId) {
+  if (schoolId == null) return null;
+  const [rows] = await pool.query(
+    "SELECT id, zone_id, school_type FROM schools WHERE id = ?",
+    [schoolId],
+  );
+  if (rows.length === 0) return null;
+  return { ...rows[0], governance_model: governanceModelOf(rows[0]) };
+}
+
+// channel: "zonal" | "managing_director". Throws (with .status) unless that
+// channel is the one allowed to staff this school. Returns the school.
+async function assertStaffingChannel(schoolId, channel) {
+  const school = await getSchoolGovernance(schoolId);
+  if (!school)
+    throw Object.assign(new Error("School not found."), { status: 404 });
+  const required = STAFFING_CHANNEL_BY_MODEL[school.governance_model];
+  if (!required) {
+    throw Object.assign(
+      new Error(
+        "This school's type isn't set, so staffing is blocked until Super Admin sets it.",
+      ),
+      { status: 409 },
+    );
+  }
+  if (channel !== required) {
+    throw Object.assign(
+      new Error(
+        required === "managing_director"
+          ? PRIVATE_SCHOOL_ZONAL_MESSAGE
+          : PUBLIC_SCHOOL_MD_MESSAGE,
+      ),
+      { status: 403 },
+    );
+  }
+  return school;
+}
+
+// Express guard: the logged-in user must hold `capability` at THEIR OWN
+// school (school taken from the JWT, never from the request body).
+function requireCapability(capability) {
+  return async (req, res, next) => {
+    try {
+      const school = await getSchoolGovernance(req.user?.school_id);
+      if (!school || !userCan(req.user, capability, school)) {
+        return res.status(403).json({
+          error: "You don't have permission to do this at this school.",
+        });
+      }
+      req.governedSchool = school;
+      next();
+    } catch (err) {
+      console.error("requireCapability error:", err);
+      res.status(500).json({ error: "Could not verify permissions." });
+    }
+  };
+}
+
 // Staff (teacher / school admin) IDs are intentionally a SEPARATE ID
 // space from schools.school_prefix — that prefix is student-only (see
 // the student_id generation further down, which still uses it as-is).
@@ -1352,6 +1902,41 @@ async function getNextStaffId() {
   }
 }
 
+// Managing Director IDs are their own space — visibly "MD###" rather
+// than folding into the shared TCH#### teacher/school-admin sequence
+// above, since an MD isn't a teacher and Super Admin/support staff
+// should be able to tell one apart from a Principal/VP at a glance.
+// Still stored in the same school_admins.admin_id column as everyone
+// else (just prefixed differently) — nothing about lookups, login, or
+// the unified staff directory needs to know the ID came from a
+// different counter.
+const MD_ID_PREFIX = "MD";
+const MD_ID_DIGITS = 3;
+
+// One-time setup required (same shape as staff_id_seq above, its own
+// row so the two counters never contend with each other):
+//   CREATE TABLE IF NOT EXISTS md_id_seq (
+//     id TINYINT PRIMARY KEY,
+//     next_val INT NOT NULL
+//   );
+//   INSERT INTO md_id_seq (id, next_val)
+//   SELECT 1, COALESCE(MAX(CAST(SUBSTRING(admin_id, 3) AS UNSIGNED)), 0) + 1
+//   FROM school_admins WHERE admin_id LIKE 'MD%'
+//   WHERE NOT EXISTS (SELECT 1 FROM md_id_seq WHERE id = 1);
+async function getNextManagingDirectorId() {
+  const conn = await pool.getConnection();
+  try {
+    await conn.query(
+      `UPDATE md_id_seq SET next_val = LAST_INSERT_ID(next_val + 1) WHERE id = 1`,
+    );
+    const [rows] = await conn.query(`SELECT LAST_INSERT_ID() AS id`);
+    const nextNumber = rows[0].id;
+    return `${MD_ID_PREFIX}${String(nextNumber).padStart(MD_ID_DIGITS, "0")}`;
+  } finally {
+    conn.release();
+  }
+}
+
 // --- Zonal: schools & school admin accounts ---
 // GET is available to all three zonal_admins titles, scoped by
 // getZonalSchoolIds — Head of Education/Teacher Development Coordinator see every
@@ -1413,15 +1998,20 @@ app.get(
 //   ALTER TABLE school_admins ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE;
 //   ALTER TABLE school_admins ADD COLUMN sex ENUM('Male','Female') NULL AFTER last_name;
 //   ALTER TABLE school_admins ADD COLUMN education_level ENUM('TVET / College Diploma','Bachelor''s Degree','Master''s Degree','PhD / Doctoral Degree') NULL AFTER sex;
+//   ALTER TABLE school_admins ADD COLUMN must_change_password TINYINT(1) NOT NULL DEFAULT 0;
 // and the login query (see /api/login) should reject is_active = FALSE
-// school_admins the same way it should for teachers.
+// school_admins the same way it should for teachers. must_change_password
+// defaults to 0 for every existing school-admin title (Principal, VPs,
+// etc. keep the old fixed-1121-forever behavior) — only the Managing
+// Director appointment path below (see DEFAULT_MANAGING_DIRECTOR_PASSWORD)
+// ever sets it TRUE, same shape as finance_users.must_change_password.
 // Every new School Admin (created via the appoint_school_admin proposal
 // push, below) gets this same default password if the proposal's payload
 // didn't carry one — same pattern as DEFAULT_SUPERVISOR_PASSWORD. The
 // "Appoint School Admin" proposal form never collects a password from the
 // Teacher Development Coordinator (see za_admin_default_password_note in
 // the UI), so payload.password is normally absent here.
-const DEFAULT_SCHOOL_ADMIN_PASSWORD = "1121";
+const DEFAULT_SCHOOL_ADMIN_PASSWORD = SYSTEM_DEFAULT_PASSWORD;
 
 async function createSchoolAdminAccount({
   school_id,
@@ -1435,12 +2025,71 @@ async function createSchoolAdminAccount({
   email,
   password,
   replace_admin_id,
+  // Who is doing the appointing: "zonal" (public schools only),
+  // "managing_director" (private schools only) or "super_admin"
+  // (appoints a private school's Managing Director, nothing else).
+  channel = "zonal",
+  // TRUE for every new school-admin account now (Principal, VPs, Managing
+  // Director...): the password they're handed is an admin-issued one, so
+  // the first login must replace it with a 6-digit PIN.
+  must_change_password = true,
 }) {
   const [schoolRows] = await pool.query("SELECT id FROM schools WHERE id = ?", [
     school_id,
   ]);
   if (schoolRows.length === 0)
     throw Object.assign(new Error("School not found."), { status: 404 });
+  assertValidInitialPin(password);
+
+  // Governance — see governance.js.
+  if (channel === "super_admin") {
+    if (title !== TITLES.MANAGING_DIRECTOR) {
+      throw Object.assign(
+        new Error(
+          "Super Admin appoints only the Managing Director of a private school.",
+        ),
+        { status: 403 },
+      );
+    }
+    await assertStaffingChannel(school_id, "managing_director");
+  } else {
+    await assertStaffingChannel(school_id, channel);
+    if (title === TITLES.MANAGING_DIRECTOR) {
+      throw Object.assign(
+        new Error(
+          "A Managing Director account is created by Super Admin when a private school is set up.",
+        ),
+        { status: 403 },
+      );
+    }
+    if (channel === "managing_director" && !MD_APPOINTABLE_TITLES.includes(title)) {
+      throw Object.assign(
+        new Error(
+          `A Managing Director can appoint: ${MD_APPOINTABLE_TITLES.join(", ")}.`,
+        ),
+        { status: 400 },
+      );
+    }
+  }
+  if (title === TITLES.MANAGING_DIRECTOR) {
+    // Exactly one active Managing Director per school; replacing one
+    // deactivates the outgoing account (same as any admin replacement).
+    const [mdRows] = await pool.query(
+      "SELECT admin_id FROM school_admins WHERE school_id = ? AND title = ? AND (is_active IS NULL OR is_active = TRUE)",
+      [school_id, TITLES.MANAGING_DIRECTOR],
+    );
+    if (
+      mdRows.length > 0 &&
+      !(replace_admin_id && mdRows.some((r) => r.admin_id === replace_admin_id))
+    ) {
+      throw Object.assign(
+        new Error(
+          "This school already has an active Managing Director. Pass replace_admin_id to replace them.",
+        ),
+        { status: 409 },
+      );
+    }
+  }
 
   if (replace_admin_id) {
     const [outgoingRows] = await pool.query(
@@ -1457,14 +2106,20 @@ async function createSchoolAdminAccount({
     }
   }
 
-  const admin_id = await getNextStaffId();
+  // Managing Director draws from its own MD### sequence; every other
+  // school-admin title keeps the shared TCH#### staff sequence — see
+  // getNextManagingDirectorId's comment above.
+  const admin_id =
+    title === TITLES.MANAGING_DIRECTOR
+      ? await getNextManagingDirectorId()
+      : await getNextStaffId();
   const hashedPassword = await bcrypt.hash(
     password || DEFAULT_SCHOOL_ADMIN_PASSWORD,
     10,
   );
   await pool.query(
-    `INSERT INTO school_admins (admin_id, school_id, first_name, middle_name, last_name, title, sex, education_level, contact_number, email, security_password)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO school_admins (admin_id, school_id, first_name, middle_name, last_name, title, sex, education_level, contact_number, email, security_password, must_change_password)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       admin_id,
       school_id,
@@ -1477,6 +2132,7 @@ async function createSchoolAdminAccount({
       contact_number || null,
       email || null,
       hashedPassword,
+      !!must_change_password,
     ],
   );
 
@@ -1499,7 +2155,7 @@ async function createSchoolAdminAccount({
 // Every new Supervisor gets the same default password — the same
 // pattern the student portal uses for a password reset — and is
 // expected to change it from Profile Settings after first login.
-const DEFAULT_SUPERVISOR_PASSWORD = "1122";
+const DEFAULT_SUPERVISOR_PASSWORD = SYSTEM_DEFAULT_PASSWORD;
 
 // Supervisor IDs live in the same zonal_admins.admin_id space as every
 // other zonal admin (e.g. 'GCEO-HOE-001'), but on their own '-SUP-'
@@ -1566,10 +2222,11 @@ async function createSupervisorAccount({
   }
 
   const admin_id = await getNextSupervisorId(zone_id);
+  await ensureMustChangePasswordColumns();
   const hashedPassword = await bcrypt.hash(DEFAULT_SUPERVISOR_PASSWORD, 10);
   await pool.query(
-    `INSERT INTO zonal_admins (admin_id, zone_id, title, first_name, middle_name, last_name, contact_number, email, security_password, can_act_independently)
-         VALUES (?, ?, 'Supervisor', ?, ?, ?, ?, ?, ?, FALSE)`,
+    `INSERT INTO zonal_admins (admin_id, zone_id, title, first_name, middle_name, last_name, contact_number, email, security_password, can_act_independently, must_change_password)
+         VALUES (?, ?, 'Supervisor', ?, ?, ?, ?, ?, ?, FALSE, TRUE)`,
     [
       admin_id,
       zone_id,
@@ -1699,12 +2356,19 @@ async function createTeacherAccount({
   ]);
   if (schoolRows.length === 0)
     throw Object.assign(new Error("School not found."), { status: 404 });
+  assertValidInitialPin(password);
 
+  await ensureMustChangePasswordColumns();
   const teacher_id = await getNextStaffId();
-  const hashedPassword = await bcrypt.hash(password, 10);
+  // No password supplied -> the system default; either way the teacher
+  // is forced to replace it with a 6-digit PIN at first login.
+  const hashedPassword = await bcrypt.hash(
+    password || SYSTEM_DEFAULT_PASSWORD,
+    10,
+  );
   await pool.query(
-    `INSERT INTO teachers (teacher_id, school_id, first_name, middle_name, last_name, sex, education_level, contact_number, email, security_password)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO teachers (teacher_id, school_id, first_name, middle_name, last_name, sex, education_level, contact_number, email, security_password, must_change_password)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)`,
     [
       teacher_id,
       school_id,
@@ -1778,12 +2442,33 @@ async function pushIncomingTeacher({
   zonal_recruitment_code,
   transferred_from_teacher_id,
   transferred_from_school_id,
+  // "zonal" (public schools only) or "managing_director" (private only).
+  channel = "zonal",
 }) {
   const [schoolRows] = await pool.query("SELECT id FROM schools WHERE id = ?", [
     school_id,
   ]);
   if (schoolRows.length === 0)
     throw Object.assign(new Error("School not found."), { status: 404 });
+
+  // Governance — see governance.js. A TRANSFER moves an existing teacher
+  // between schools, so the school they are LEAVING must be one the
+  // zonal office governs too: the zone can't pull a private school's
+  // employee out. A Managing Director recruits new staff only.
+  await assertStaffingChannel(school_id, channel);
+  if (transferred_from_teacher_id || transferred_from_school_id) {
+    if (channel === "managing_director") {
+      throw Object.assign(
+        new Error(
+          "Transfers between schools are arranged by the zonal office; a Managing Director recruits new staff only.",
+        ),
+        { status: 403 },
+      );
+    }
+    if (transferred_from_school_id) {
+      await assertStaffingChannel(transferred_from_school_id, "zonal");
+    }
+  }
   const [result] = await pool.query(
     `INSERT INTO incoming_teachers (school_id, pushed_by, first_name, middle_name, last_name, sex, education_level, contact_number, email, zonal_recruitment_code, transferred_from_teacher_id, transferred_from_school_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -2038,6 +2723,14 @@ app.post(
           .status(403)
           .json({ error: "One or more of those schools aren't in your zone." });
       }
+      // Private schools are staffed by their own Managing Director — never
+      // through a zonal proposal. (assign_supervisor is different: it only
+      // delegates SUPERVISION, which stays open for every school in the
+      // zone, public or private.) Failing here, at submit time, saves the
+      // Head of Education from approving something that can never be pushed.
+      if (proposal_type !== "assign_supervisor") {
+        await assertStaffingChannel(school_id, "zonal");
+      }
       await pool.query(
         `INSERT INTO zonal_proposals (zone_id, proposed_by, proposal_type, school_id, payload)
              VALUES (?, ?, ?, ?, ?)`,
@@ -2054,7 +2747,9 @@ app.post(
       });
     } catch (err) {
       console.error("/api/zonal/proposals POST error:", err);
-      res.status(500).json({ error: "Could not submit proposal" });
+      res.status(err.status || 500).json({
+        error: err.status ? err.message : "Could not submit proposal",
+      });
     }
   },
 );
@@ -2965,13 +3660,133 @@ app.get(
 //                              SCHOOL_STREAMS and the school_streams table
 //                              below. Only PREPARATORY schools have
 //                              streams; the other three stages don't.
-const SCHOOL_LEVELS = ["BASIC", "CORE", "GENERAL", "PREPARATORY"];
+const SCHOOL_LEVELS = ["KG", "BASIC", "CORE", "GENERAL", "PREPARATORY"];
 const SCHOOL_LEVEL_GRADES = {
+  // Kindergarten: KG1/KG2/KG3 are stored as class_level -3/-2/-1 so every
+  // existing INT class_level column, ordering and "next grade = +1" step
+  // keeps working, and no value is ever 0 (falsy). KG3 (-1) is followed by
+  // Grade 1 (there is no 0) — see nextGradeAfter(). Use gradeLabel() to
+  // show these as "KG1" etc.; never print the raw number.
+  KG: [-3, -1],
   BASIC: [1, 6],
   CORE: [7, 8],
   GENERAL: [9, 10],
   PREPARATORY: [11, 12],
 };
+// ---- Kindergarten (KG1-KG3) helpers ----
+// KG students are registered by the Registrar like everyone else (same
+// student_id scheme, guardian link, payment gate, placement), but have NO
+// portal account: no usable password, no login, no credentials slip. They
+// are also never marked/assessed, so promotion is a manual Registrar
+// decision (see PUT /api/promote/:id).
+const KG_MIN_GRADE = -3;
+const KG_MAX_GRADE = -1;
+function isKgGrade(g) {
+  const n = Number(g);
+  return Number.isInteger(n) && n >= KG_MIN_GRADE && n <= KG_MAX_GRADE;
+}
+function gradeLabel(g) {
+  const n = Number(g);
+  if (isKgGrade(n)) return `KG${n - KG_MIN_GRADE + 1}`; // -3 -> KG1
+  return Number.isInteger(n) ? `Grade ${n}` : String(g ?? "");
+}
+// Where a student goes on "promote". KG1->KG2->KG3->Grade 1; KG3 is the
+// ONLY KG grade that can enter Grade 1 (KG1/KG2 can't skip ahead).
+function nextGradeAfter(g) {
+  const n = Number(g);
+  if (n === KG_MAX_GRADE) return 1;
+  return n + 1;
+}
+// Labels for every KG grade, handed to the frontends so they never have to
+// duplicate the -3/-2/-1 mapping.
+const KG_GRADE_LABELS = { "-3": "KG1", "-2": "KG2", "-1": "KG3" };
+
+// Self-healing schema widening for KG (same lazy pattern as every other
+// ensure*() in this file — no manual migration needed):
+//  * adds 'KG' to the tier/level ENUM columns, and
+//  * makes sure no class_level-style column is UNSIGNED (a negative KG
+//    grade would be rejected or clamped to 0 by an unsigned column).
+let kgSupportPromise = null;
+function ensureKgSupport() {
+  if (!kgSupportPromise) {
+    kgSupportPromise = (async () => {
+      try {
+        await ensureSchoolEducationalLevelsTable();
+      } catch (e) {
+        console.error("ensureKgSupport: school_educational_levels:", e);
+      }
+      const enumTargets = [
+        ["schools", "school_level"],
+        ["schools", "educational_level"],
+        ["school_grade_tiers", "school_level"],
+        ["school_educational_levels", "educational_level"],
+      ];
+      for (const [table, column] of enumTargets) {
+        try {
+          const [rows] = await pool.query(
+            `SELECT COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+            [table, column],
+          );
+          if (rows.length === 0) continue;
+          const type = String(rows[0].COLUMN_TYPE);
+          if (!/^enum\(/i.test(type) || /'KG'/.test(type)) continue;
+          const widened = type.replace(/\)\s*$/, ",'KG')");
+          const nullSql = rows[0].IS_NULLABLE === "YES" ? "NULL" : "NOT NULL";
+          const def =
+            rows[0].COLUMN_DEFAULT !== null && rows[0].COLUMN_DEFAULT !== undefined
+              ? ` DEFAULT '${String(rows[0].COLUMN_DEFAULT).replace(/'/g, "''")}'`
+              : "";
+          await pool.query(
+            `ALTER TABLE \`${table}\` MODIFY \`${column}\` ${widened} ${nullSql}${def}`,
+          );
+        } catch (e) {
+          console.error(`ensureKgSupport: widening ${table}.${column}:`, e);
+        }
+      }
+      // KG students have no PC assignment and no portal e-mail, so those two
+      // account-ish columns must be allowed to stay empty.
+      for (const column of ["assigned_computer", "email_address"]) {
+        try {
+          const [rows] = await pool.query(
+            `SELECT COLUMN_TYPE, IS_NULLABLE FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'students' AND COLUMN_NAME = ?`,
+            [column],
+          );
+          if (rows.length > 0 && rows[0].IS_NULLABLE === "NO") {
+            await pool.query(
+              `ALTER TABLE students MODIFY \`${column}\` ${rows[0].COLUMN_TYPE} NULL`,
+            );
+          }
+        } catch (e) {
+          console.error(`ensureKgSupport: students.${column}:`, e);
+        }
+      }
+      try {
+        const [cols] = await pool.query(
+          `SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
+             FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND COLUMN_NAME IN ('class_level','from_class_level','to_class_level','class_level_at_readmission')
+              AND COLUMN_TYPE LIKE '%unsigned%'`,
+        );
+        for (const c of cols) {
+          try {
+            await pool.query(
+              `ALTER TABLE \`${c.TABLE_NAME}\` MODIFY \`${c.COLUMN_NAME}\` INT ${c.IS_NULLABLE === "YES" ? "NULL" : "NOT NULL"}`,
+            );
+          } catch (e) {
+            console.error(`ensureKgSupport: ${c.TABLE_NAME}.${c.COLUMN_NAME}:`, e);
+          }
+        }
+      } catch (e) {
+        console.error("ensureKgSupport: class_level scan:", e);
+      }
+    })();
+  }
+  return kgSupportPromise;
+}
+
 // SCHOOL_STREAMS itself is declared further below (`let`, not `const`)
 // as part of the Stream Setup catalog — see refreshStreamCache() — now
 // that it's a live, Super-Admin-managed list instead of a fixed pair.
@@ -3111,7 +3926,7 @@ async function ensureSchoolEducationalLevelsTable() {
     `);
   schoolEducationalLevelsTableReady = true;
 }
-const EDUCATIONAL_LEVELS = ["PRIMARY", "MIDDLE", "SECONDARY"];
+const EDUCATIONAL_LEVELS = ["KG", "PRIMARY", "MIDDLE", "SECONDARY"];
 // Government/Public schools charge a registration fee only; Private
 // schools charge a registration fee AND a monthly school fee (Finance
 // module). Chosen by Super Admin when a school is registered and stored
@@ -3121,6 +3936,7 @@ const SCHOOL_TYPES = ["PUBLIC", "PRIVATE"];
 // What educational_level implies for school_grade_tiers at registration
 // time — SECONDARY is the one case where this is more than one tier.
 const EDUCATIONAL_LEVEL_TIERS = {
+  KG: ["KG"],
   PRIMARY: ["BASIC"],
   MIDDLE: ["CORE"],
   SECONDARY: ["GENERAL", "PREPARATORY"],
@@ -4134,6 +4950,7 @@ app.post(
 
     try {
       await ensureGuardianParentCodeSupport();
+      await ensureKgSupport();
       const {
         first_name,
         middle_name,
@@ -4198,6 +5015,20 @@ app.post(
       // outright, same "no override" rule as the Promote gate for a
       // student already at this school.
       const enteringGrade = Number(class_level);
+      if (req.user.school_id) {
+        const offered = await getSchoolGradeSet(req.user.school_id);
+        if (offered.size > 0) {
+          const entryGrades = await getEntryGradeSet(req.user.school_id);
+          if (!entryGrades.has(enteringGrade)) {
+            const list = [...entryGrades].sort((a, b) => a - b).join(", ");
+            return res.status(400).json({
+              error: offered.has(enteringGrade)
+                ? `New entrants can only be registered into Grade ${list} at this school. Use the Transfer Hub for a student arriving into Grade ${enteringGrade}.`
+                : `This school does not offer Grade ${enteringGrade}.`,
+            });
+          }
+        }
+      }
       if (enteringGrade === 7 || enteringGrade === 9) {
         const { admission_number } = req.body;
         if (!admission_number || !String(admission_number).trim()) {
@@ -4273,22 +5104,80 @@ app.post(
       const nextNumber = studentCount + 1;
       const student_id = `${school_prefix}${String(nextNumber).padStart(5, "0")}`;
 
+      // Kindergarten (KG1-KG3): registered and rostered like anyone else, but
+      // NO account — no usable password, no PC, no portal e-mail, no
+      // credentials slip. The random hash below is never shown or stored
+      // anywhere else, so nobody can ever sign in as this student (login also
+      // refuses KG IDs outright). The guardian's PAR login is the only portal
+      // access for a KG child.
+      const isKg = isKgGrade(class_level);
       const lms_username = student_id;
-      const email_address = `${student_id}@${school_prefix.toLowerCase()}.edu`;
+      const email_address = isKg
+        ? null
+        : `${student_id}@${school_prefix.toLowerCase()}.edu`;
       // Every new student starts with the same default PIN; must_change_password
       // forces them onto their own 6-digit PIN via /api/student/update-password
       // the moment they first log in — see blockIfMustChangePassword, which
       // locks out every other student route until that happens. Still
       // bcrypt-hashed before it ever touches the database — the plaintext
       // only exists in this request/response.
-      const plain_password = "1234";
-      const security_password = await bcrypt.hash(plain_password, 10);
-      const assigned_pc = `PC-${Math.floor(Math.random() * 39) + 1}`;
-      // Every new registration starts Inactive until placed into a
-      // section — one of the four Student Status & Academic Year
-      // Management statuses (see the block near getCurrentAcademicYear
-      // below). Placement Wizard flips this to Active once seated.
-      const status = "Inactive";
+      const plain_password = isKg ? null : SYSTEM_DEFAULT_PASSWORD;
+      const security_password = await bcrypt.hash(
+        isKg ? crypto.randomBytes(24).toString("hex") : plain_password,
+        10,
+      );
+      const assigned_pc = isKg
+        ? null
+        : `PC-${Math.floor(Math.random() * 39) + 1}`;
+      // Payment gate: a new registration does NOT go Inactive (i.e.
+      // into the placement queue) until Finance verifies the
+      // registration fee. It sits as Pending Payment until then — see
+      // POST /api/finance/payments/:id/approve, which is the ONLY place
+      // that flips a brand-new student to Inactive.
+      //
+      // Checked in this order on purpose: whether the school even HAS a
+      // registration fee set is a school-setup problem, independent of
+      // what the Registrar typed in — so it's checked first, before any
+      // payment_method/reference validation, so a Registrar hitting a
+      // brand-new (fee-less) school gets the real reason first.
+      const school_gov = await getSchoolGovernance(req.user.school_id);
+      if (!school_gov) {
+        return res.status(409).json({
+          error:
+            "This school's type isn't set yet — contact Super Admin before registering students.",
+        });
+      }
+      const [feeRows] = await pool.query(
+        "SELECT registration_fee FROM fee_structures WHERE school_id = ? AND academic_year = ?",
+        [req.user.school_id, (await getCurrentAcademicYear(req.user.school_id)).label],
+      );
+      if (feeRows.length === 0) {
+        return res.status(409).json({
+          error:
+            "This school's Finance office hasn't set the registration fee yet.",
+        });
+      }
+      const registrationFeeAmount = feeRows[0].registration_fee;
+      // Subscription fee collected together with the registration fee
+      // (null when the school has Subscription off / no student fee).
+      const subCharge = await getRegistrationSubscriptionCharge(
+        req.user.school_id,
+      );
+
+      const { payment_method, payment_reference } = req.body;
+      if (!["CASH", "BANK", "MOBILE"].includes(payment_method)) {
+        return res.status(400).json({
+          error: "payment_method is required and must be CASH, BANK or MOBILE.",
+        });
+      }
+      if (payment_method !== "CASH" && !String(payment_reference || "").trim()) {
+        return res.status(400).json({
+          error:
+            "payment_reference is required for a bank or mobile payment (the transaction/receipt number).",
+        });
+      }
+
+      const status = "Pending Payment";
 
       // No section assigned at registration time anymore — the student
       // sits in the unassigned queue (section IS NULL) until a Registrar
@@ -4306,9 +5195,9 @@ app.post(
         normalizeName(last_name),
         sex,
         class_level,
-        stream,
-        phone_number,
-        fayda_number,
+        isKg ? "KG" : stream,
+        isKg ? phone_number || null : phone_number,
+        isKg ? fayda_number || null : fayda_number,
         normalizedEmisId,
         status,
         lms_username,
@@ -4316,6 +5205,38 @@ app.post(
         assigned_pc,
         security_password,
       ]);
+
+      try {
+        const [payIns] = await conn.query(
+          `INSERT INTO fee_payments
+             (school_id, student_id, fee_type, amount, method, reference_number, submitted_by)
+           VALUES (?, ?, 'REGISTRATION', ?, ?, ?, ?)`,
+          [
+            school_id,
+            student_id,
+            Number(registrationFeeAmount) + (subCharge ? subCharge.amount : 0),
+            payment_method,
+            payment_method === "CASH" ? null : String(payment_reference).trim(),
+            req.user.user_id,
+          ],
+        );
+        if (subCharge)
+          await saveRegistrationSubscriptionCharge(conn, {
+            paymentId: payIns.insertId,
+            schoolId: school_id,
+            studentId: student_id,
+            charge: subCharge,
+          });
+      } catch (feeErr) {
+        if (feeErr.code === "ER_DUP_ENTRY") {
+          await conn.rollback();
+          return res.status(409).json({
+            error:
+              "This payment reference has already been used for a registration at this school.",
+          });
+        }
+        throw feeErr;
+      }
 
       // Resolve the guardian: either link to an existing one (Registrar
       // already confirmed the Fayda match via GET /api/guardians/lookup)
@@ -4369,10 +5290,14 @@ app.post(
       await conn.commit();
 
       res.json({
-        message: "Registered!",
+        message:
+          "Registered — pending Finance's approval of the registration payment before the student can be placed into a section.",
         student_id,
-        assigned_pc,
-        security_password: plain_password,
+        // KG children have no account, so there is nothing to hand over:
+        // the frontend must not show a credentials slip for them.
+        ...(isKg
+          ? { is_kg: true, has_account: false }
+          : { assigned_pc, security_password: plain_password }),
         // Only present when a brand-new guardian was created this call
         // (not when linking to an existing one) — this is the login ID
         // the Registrar hands to the parent, same idea as showing the
@@ -5109,15 +6034,17 @@ app.post(
           return res
             .status(401)
             .json({ error: "Current password is incorrect." });
-        if (new_password.length < 6)
-          return res
-            .status(400)
-            .json({ error: "New password must be at least 6 characters." });
+        {
+          const pinErr = validateNewPin(new_password);
+          if (pinErr) return res.status(400).json({ error: pinErr });
+        }
+        await ensureMustChangePasswordColumns();
         const hashed = await bcrypt.hash(new_password, 10);
         await pool.query(
-          "UPDATE zonal_admins SET security_password = ? WHERE admin_id = ?",
+          "UPDATE zonal_admins SET security_password = ?, must_change_password = FALSE WHERE admin_id = ?",
           [hashed, req.user.user_id],
         );
+        issueAuthToken(res, { ...req.user, must_change_password: false });
       }
       res.json({ message: "Account updated." });
     } catch (err) {
@@ -5164,9 +6091,8 @@ app.get(
         return res.status(404).json({ error: "Student record not found" });
       const profile = rows[0];
       profile.qr_payload = signQrPayload(profile.student_id);
-      // School's own logo first, zone logo only as the fallback.
-      profile.display_logo_url =
-        profile.logo_url || profile.zone_logo_url || null;
+      // The school's own logo only — every school must have one.
+      profile.display_logo_url = profile.logo_url || null;
 
       // Guardian(s) linked to this student — powers the "My Guardian/
       // Parent" page, where the student can see their guardian's
@@ -8559,6 +9485,7 @@ function buildSchoolDisplayName(schoolName, schoolLevel) {
 function resolveDocumentStream(classLevel, streamValue) {
   const grade = parseInt(classLevel, 10);
   if (Number.isInteger(grade)) {
+    if (isKgGrade(grade)) return "KG";
     if (grade >= 1 && grade <= 6) return "Basic";
     if (grade === 7 || grade === 8) return "Core";
   }
@@ -8837,6 +9764,31 @@ function buildStampWatermarkHtml(stampUrl) {
   return `<img class="stamp-watermark" src="${dataUri}" alt="">`;
 }
 
+// The zone's logo (zone.logo_url, uploaded by the Super/Zonal Admin) as a
+// faint centered watermark over the document — the identity of the zone
+// the school belongs to. Empty string (no watermark) when the zone has no
+// logo on file.
+function buildZoneWatermarkHtml(logoUrl) {
+  const dataUri = readUploadedImageAsDataUri(logoUrl);
+  if (!dataUri) return "";
+  return `<img class="zone-watermark" src="${dataUri}" alt="">`;
+}
+
+// zone.logo_url for a school (via schools.zone_id) — used by the sample
+// documents, which have no student row to read the zone from.
+async function getZoneLogoUrlForSchool(schoolId) {
+  try {
+    const [rows] = await pool.query(
+      `SELECT z.logo_url FROM schools sc JOIN zone z ON z.zone_id = sc.zone_id WHERE sc.id = ? LIMIT 1`,
+      [schoolId],
+    );
+    return rows[0]?.logo_url || null;
+  } catch (err) {
+    console.error("zone logo lookup failed:", err);
+    return null;
+  }
+}
+
 // Fills the server-side certificate template (templates/certificate.html,
 // never served directly — see the route below) with one student's real
 // data via plain token replacement. The template's own <script> still
@@ -8906,6 +9858,7 @@ function renderCertificateHtml(data) {
       data.school_seal_html || '<div class="seal-ring">School<br>Seal</div>',
     __PRINCIPAL_STAMP_WATERMARK_HTML__:
       data.principal_stamp_watermark_html || "",
+    __ZONE_WATERMARK_HTML__: data.zone_watermark_html || "",
     __RESULT_PROMOTED_CLASS__: data.result_promoted_class || "",
     __RESULT_DETAINED_CLASS__: data.result_detained_class || "",
     __PROMOTED_TO_GRADE_TEXT__: escapeHtml(data.promoted_to_grade_text || "—"),
@@ -9086,12 +10039,66 @@ function renderRecommendationHtml(data) {
 // root in a container; drop it if your host runs Chromium as a
 // non-root user with proper OS sandboxing available.
 let _browserPromise = null;
+
+// Path to an already-installed Chrome/Edge, used when Puppeteer's own
+// downloaded Chromium can't start (on Windows that shows up as
+// "Error: spawn UNKNOWN" — a corrupt/partial download, antivirus
+// blocking the exe, or a wrong-architecture build). Set
+// PUPPETEER_EXECUTABLE_PATH (or CHROME_PATH) in .env to force one.
+function findSystemChrome() {
+  const local = process.env.LOCALAPPDATA || "";
+  const candidates = [
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+    process.env.CHROME_PATH,
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    local && path.join(local, "Google", "Chrome", "Application", "chrome.exe"),
+    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+  ];
+  return candidates.find((p) => p && fs.existsSync(p));
+}
+
+async function launchBrowser() {
+  const base = {
+    headless: "new",
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  };
+  const system = findSystemChrome();
+  // An explicit path from .env always wins.
+  if (process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_PATH) {
+    return puppeteer.launch({ ...base, executablePath: system });
+  }
+  try {
+    return await puppeteer.launch(base);
+  } catch (err) {
+    if (!system) throw err;
+    console.warn(
+      `Puppeteer's bundled Chromium failed to start (${err.code || err.message}); using ${system} instead.`,
+    );
+    return puppeteer.launch({ ...base, executablePath: system });
+  }
+}
+
 function getBrowser() {
   if (!_browserPromise) {
-    _browserPromise = puppeteer.launch({
-      headless: "new",
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
+    // A failed launch must not stay cached: before, one failure left a
+    // rejected promise here and every later request (transcript, report
+    // card, ...) failed until the server was restarted.
+    _browserPromise = launchBrowser()
+      .then((browser) => {
+        browser.on("disconnected", () => {
+          _browserPromise = null;
+        });
+        return browser;
+      })
+      .catch((err) => {
+        _browserPromise = null;
+        throw err;
+      });
   }
   return _browserPromise;
 }
@@ -10075,7 +11082,7 @@ app.get(
 
       const [studentRows] = await pool.query(
         `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.sex, st.id_photo_url, st.class_level,
-                    sc.school_name, sc.school_level, z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region, k.kebele_name AS kebele
+                    sc.school_name, sc.school_level, z.zone_name AS zone, z.logo_url AS zone_logo_url, w.woreda_name AS woreda, r.region_name AS region, k.kebele_name AS kebele
              FROM students st
              LEFT JOIN schools sc ON sc.id = st.school_id
              LEFT JOIN zone z ON z.zone_id = sc.zone_id
@@ -10167,6 +11174,7 @@ app.get(
         latest.class_level,
       );
       const html = renderCertificateHtml({
+        zone_watermark_html: buildZoneWatermarkHtml(s.zone_logo_url),
         school_name: s.school_name,
         school_level: s.school_level,
         region: s.region,
@@ -11372,9 +12380,22 @@ app.put(
         });
       }
 
+      // Moving a child between Kindergarten and Grade 1+ changes whether
+      // they have a portal account at all, so it is never done by editing
+      // the grade here — KG3 -> Grade 1 goes through Promotion.
+      const wasKg = isKgGrade(beforeRows[0].class_level);
+      const nowKg = isKgGrade(class_level);
+      if (wasKg !== nowKg) {
+        return res.status(400).json({
+          error:
+            "A student can't be moved between Kindergarten and Grade 1+ from Information Update. Use Promotion (KG3 is the only KG class that goes on to Grade 1).",
+        });
+      }
+      const streamToStore = nowKg ? "KG" : stream;
+
       const gradeOrStreamChanged =
         String(beforeRows[0].class_level) !== String(class_level) ||
-        String(beforeRows[0].stream) !== String(stream);
+        String(beforeRows[0].stream) !== String(streamToStore);
 
       // Status used to be force-set to 'Active' on every info update
       // (back when it only tracked Fayda-number completeness). That's
@@ -11398,11 +12419,11 @@ app.put(
         normalizeName(first_name),
         normalizeName(middle_name),
         normalizeName(last_name),
-        phone_number,
-        fayda_number,
+        nowKg ? phone_number || null : phone_number,
+        nowKg ? fayda_number || null : fayda_number,
         sex,
         class_level,
-        stream,
+        streamToStore,
         finalStatus,
         req.params.id,
         req.user.school_id,
@@ -11547,6 +12568,23 @@ app.get(
         return res
           .status(404)
           .json({ error: "Student not found in your school." });
+      // KG has no marks and no cut-off: the Registrar simply decides
+      // Promote or Detain by hand (see the KG branch of PUT /api/promote/:id).
+      if (isKgGrade(rows[0].class_level)) {
+        const cg = Number(rows[0].class_level);
+        const ng = nextGradeAfter(cg);
+        return res.json({
+          is_kg: true,
+          manual: true,
+          year_average: null,
+          cutoff_mark: null,
+          category: "Manual decision (Kindergarten)",
+          current_grade: cg,
+          current_grade_label: gradeLabel(cg),
+          next_grade: ng,
+          next_grade_label: gradeLabel(ng),
+        });
+      }
       res.json(
         await computePromotionEligibility(
           req.params.id,
@@ -11606,6 +12644,90 @@ app.put(
           .status(404)
           .json({ error: "Student not found in your school." });
       const currentGrade = studentRows[0].class_level;
+
+      // Kindergarten: no marks, no cut-off, no national exam. The Registrar
+      // just enters the ID and chooses Promote or Detain. KG1 -> KG2 -> KG3,
+      // and ONLY KG3 may go on to Grade 1 (KG1/KG2 can't skip ahead).
+      if (isKgGrade(currentGrade)) {
+        await ensureKgSupport();
+        if (action !== "promote" && action !== "retain") {
+          return res
+            .status(400)
+            .json({ error: "action must be 'promote' or 'retain'." });
+        }
+        const cur = Number(currentGrade);
+        const newGrade = nextGradeAfter(cur);
+        if (action === "promote") {
+          if (
+            class_level !== undefined &&
+            class_level !== null &&
+            class_level !== "" &&
+            Number(class_level) !== newGrade
+          ) {
+            return res.status(400).json({
+              error: `${gradeLabel(cur)} can only be promoted to ${gradeLabel(newGrade)}. Only KG3 may go on to Grade 1.`,
+            });
+          }
+          const offered = await getSchoolGradeSet(req.user.school_id);
+          if (!offered.has(newGrade)) {
+            return res.status(400).json({
+              error: `This school does not offer ${gradeLabel(newGrade)}. If the child is leaving for another school, use the Transfer Hub instead.`,
+            });
+          }
+          await pool.query(
+            "UPDATE students SET class_level = ?, stream = ?, section = NULL, status = 'Pending Promotion' WHERE student_id = ? AND school_id = ?",
+            [
+              newGrade,
+              isKgGrade(newGrade) ? "KG" : "Basic",
+              req.params.id,
+              req.user.school_id,
+            ],
+          );
+        } else {
+          await pool.query(
+            "UPDATE students SET status = 'Active' WHERE student_id = ? AND school_id = ?",
+            [req.params.id, req.user.school_id],
+          );
+        }
+        await pool
+          .query(
+            `INSERT INTO promotion_audit_log
+                (student_id, school_id, action, from_class_level, to_class_level, year_average, cutoff_mark, was_override, override_reason, decided_by)
+             VALUES (?, ?, ?, ?, ?, NULL, NULL, FALSE, NULL, ?)`,
+            [
+              req.params.id,
+              req.user.school_id,
+              action,
+              cur,
+              action === "promote" ? newGrade : cur,
+              req.user.user_id,
+            ],
+          )
+          .catch((err) =>
+            console.error("promotion_audit_log (KG) insert failed:", err),
+          );
+        return res.json({
+          message:
+            action === "promote"
+              ? `Student promoted to ${gradeLabel(newGrade)}.`
+              : `Student detained in ${gradeLabel(cur)}.`,
+        });
+      }
+
+      // Grades 6, 8 and 12 are decided only by the national exam (EASE).
+      // The school's own exam results are for the transcript, never for
+      // this decision.
+      if (Number(currentGrade) === 6 || Number(currentGrade) === 8) {
+        return res.status(400).json({
+          error: `Grade ${currentGrade} students are decided by the national exam. Use the EASE Candidate box on this screen: enter the registration number and look up the result.`,
+        });
+      }
+      if (Number(currentGrade) === 12) {
+        return res.status(400).json({
+          error:
+            "Grade 12 students are decided by the national exam. Use the Graduation Wizard (Pass: graduate, Fail: readmit to repeat Grade 12).",
+        });
+      }
 
       const { year_average, cutoff_mark, category } =
         await computePromotionEligibility(
@@ -12127,12 +13249,24 @@ app.post(
           .status(400)
           .json({ error: "Grade, stream, and section name are required." });
       }
+      // A KG section can only be created at a school that has been granted
+      // Kindergarten (the KG tier, set by Super Admin).
+      if (isKgGrade(class_level)) {
+        await ensureKgSupport();
+        const offered = await getSchoolGradeSet(req.user.school_id);
+        if (!offered.has(Number(class_level))) {
+          return res.status(400).json({
+            error:
+              "This school hasn't been permitted to run Kindergarten. Ask Super Admin to enable it.",
+          });
+        }
+      }
       await pool.query(
         "INSERT INTO class_sections (school_id, class_level, stream, section_name, max_capacity, is_active) VALUES (?, ?, ?, ?, ?, TRUE)",
         [
           req.user.school_id,
           class_level,
-          stream,
+          isKgGrade(class_level) ? "KG" : stream,
           normalizeName(section_name),
           max_capacity || null,
         ],
@@ -12221,8 +13355,13 @@ app.delete(
 
 async function getUnassignedBuckets(school_id) {
   const [students] = await pool.query(
+    // Registration only reaches this queue once Finance has verified
+    // the registration payment (status flips Pending Payment ->
+    // Inactive at that point — see POST /api/finance/payments/:id/approve).
+    // A student still waiting on Finance, or whose payment was
+    // rejected, must NOT be placeable into a section.
     `SELECT student_id, first_name, last_name, class_level, stream FROM students
-         WHERE school_id = ? AND (section IS NULL OR section = '')`,
+         WHERE school_id = ? AND (section IS NULL OR section = '') AND status = 'Inactive'`,
     [school_id],
   );
   const [activeSections] = await pool.query(
@@ -12351,7 +13490,7 @@ app.get(
 // below and the CSV/PDF export routes so all three can never drift.
 async function fetchStudentRegistryRows(
   school_id,
-  { status, class_level, q, academic_year_id } = {},
+  { status, class_level, stream, q, academic_year_id } = {},
 ) {
   await ensureAcademicYearTables();
   if (academic_year_id) {
@@ -12364,6 +13503,10 @@ async function fetchStudentRegistryRows(
     if (class_level) {
       where += " AND sn.class_level = ?";
       params.push(class_level);
+    }
+    if (stream) {
+      where += " AND sn.stream = ?";
+      params.push(stream);
     }
     if (q && q.trim()) {
       where +=
@@ -12405,6 +13548,10 @@ async function fetchStudentRegistryRows(
   if (class_level) {
     where += " AND s.class_level = ?";
     params.push(class_level);
+  }
+  if (stream) {
+    where += " AND s.stream = ?";
+    params.push(stream);
   }
   if (q && q.trim()) {
     where +=
@@ -12453,10 +13600,11 @@ app.get(
   requireRegistrarOrRecorder,
   async (req, res) => {
     try {
-      const { status, class_level, q, academic_year_id } = req.query;
+      const { status, class_level, stream, q, academic_year_id } = req.query;
       const rows = await fetchStudentRegistryRows(req.user.school_id, {
         status,
         class_level,
+        stream,
         q,
         academic_year_id: academic_year_id || null,
       });
@@ -13142,16 +14290,8 @@ app.post(
         .status(400)
         .json({ error: "Current and new password are both required" });
     }
-    if (String(newPass).length < 4) {
-      return res
-        .status(400)
-        .json({ error: "New password must be at least 4 characters" });
-    }
-    if (newPass === DEFAULT_GUARDIAN_PASSWORD) {
-      return res.status(400).json({
-        error: "Choose a password other than the default one you were given.",
-      });
-    }
+    const pinErr = validateNewPin(newPass);
+    if (pinErr) return res.status(400).json({ error: pinErr });
 
     try {
       await ensureGuardianParentCodeSupport();
@@ -13228,10 +14368,11 @@ app.get(
   requireRegistrarOrRecorder,
   async (req, res) => {
     try {
-      const { status, class_level, q, academic_year_id } = req.query;
+      const { status, class_level, stream, q, academic_year_id } = req.query;
       const rows = await fetchStudentRegistryRows(req.user.school_id, {
         status,
         class_level,
+        stream,
         q,
         academic_year_id: academic_year_id || null,
       });
@@ -13297,10 +14438,11 @@ app.get(
   requireRegistrarOrRecorder,
   async (req, res) => {
     try {
-      const { status, class_level, q, academic_year_id } = req.query;
+      const { status, class_level, stream, q, academic_year_id } = req.query;
       const rows = await fetchStudentRegistryRows(req.user.school_id, {
         status,
         class_level,
+        stream,
         q,
         academic_year_id: academic_year_id || null,
       });
@@ -13757,6 +14899,106 @@ app.delete(
 //     completed_at DATETIME NULL
 //   );
 
+// --- Incoming transfers pay the registration fee too -----------------------
+// A transferred-in student is a new arrival here, so they owe the same
+// registration fee (plus the subscription fee when Subscription is on) as a
+// new entrant, collected in one payment with one reference. They start as
+// "Pending Payment"; Finance's approve/reject (see /api/finance/payments/
+// :id/approve|reject) moves them to Inactive (placement queue) or
+// "Registration Rejected" (Registrar resubmits via POST
+// /api/registrar/students/:student_id/payment).
+//
+// Step 1 (before any write): validate the payment fields and work out what
+// is owed. Returns { error: {status, message} } or { prepared }.
+async function prepareTransferCharge(req, body) {
+  const [feeRows] = await pool.query(
+    "SELECT registration_fee FROM fee_structures WHERE school_id = ? AND academic_year = ?",
+    [
+      req.user.school_id,
+      (await getCurrentAcademicYear(req.user.school_id)).label,
+    ],
+  );
+  if (feeRows.length === 0) {
+    return {
+      error: {
+        status: 409,
+        message:
+          "This school's Finance office hasn't set the registration fee yet.",
+      },
+    };
+  }
+  const { payment_method, payment_reference } = body || {};
+  if (!["CASH", "BANK", "MOBILE"].includes(payment_method)) {
+    return {
+      error: {
+        status: 400,
+        message:
+          "payment_method is required and must be CASH, BANK or MOBILE.",
+      },
+    };
+  }
+  if (payment_method !== "CASH" && !String(payment_reference || "").trim()) {
+    return {
+      error: {
+        status: 400,
+        message:
+          "payment_reference is required for a bank or mobile payment (the transaction/receipt number).",
+      },
+    };
+  }
+  const subCharge = await getRegistrationSubscriptionCharge(
+    req.user.school_id,
+  );
+  return {
+    prepared: {
+      registrationFee: Number(feeRows[0].registration_fee),
+      subCharge,
+      method: payment_method,
+      reference:
+        payment_method === "CASH" ? null : String(payment_reference).trim(),
+    },
+  };
+}
+
+// Step 2 (inside the transaction, after the student row exists): write the
+// PENDING fee_payments row (+ the subscription part riding on it). Throws an
+// error carrying httpStatus/userMessage for a reused reference so the
+// route's catch can answer 409 instead of 500.
+async function recordTransferPayment(conn, req, student_id, prepared) {
+  try {
+    const [payIns] = await conn.query(
+      `INSERT INTO fee_payments
+         (school_id, student_id, fee_type, amount, method, reference_number, submitted_by)
+       VALUES (?, ?, 'REGISTRATION', ?, ?, ?, ?)`,
+      [
+        req.user.school_id,
+        student_id,
+        prepared.registrationFee +
+          (prepared.subCharge ? prepared.subCharge.amount : 0),
+        prepared.method,
+        prepared.reference,
+        req.user.user_id,
+      ],
+    );
+    if (prepared.subCharge)
+      await saveRegistrationSubscriptionCharge(conn, {
+        paymentId: payIns.insertId,
+        schoolId: req.user.school_id,
+        studentId: student_id,
+        charge: prepared.subCharge,
+      });
+  } catch (feeErr) {
+    if (feeErr.code === "ER_DUP_ENTRY") {
+      const e = new Error("duplicate payment reference");
+      e.httpStatus = 409;
+      e.userMessage =
+        "This payment reference has already been used for a registration at this school.";
+      throw e;
+    }
+    throw feeErr;
+  }
+}
+
 function generateTransferCode() {
   return "TRF-" + crypto.randomBytes(5).toString("hex").toUpperCase();
 }
@@ -13764,7 +15006,11 @@ function generateTransferCode() {
 // Same fields carried over on every path into this school (network
 // transfer-in or external manual bypass) — kept in one place so both
 // paths build the new record identically.
-async function insertTransferredStudent(conn, school_id, fields) {
+// opts.status: the status the new row starts with. Defaults to "Inactive"
+// (straight into the placement queue); incoming transfers pass
+// "Pending Payment" because they owe the registration fee like any other
+// new arrival (see prepareTransferCharge / recordTransferPayment below).
+async function insertTransferredStudent(conn, school_id, fields, opts = {}) {
   const { school_name, school_prefix } =
     (
       await conn.query(
@@ -13783,17 +15029,25 @@ async function insertTransferredStudent(conn, school_id, fields) {
   );
   const student_id = `${school_prefix}${String(studentCount + 1).padStart(5, "0")}`;
   const lms_username = student_id;
-  const email_address = `${student_id}@${school_prefix.toLowerCase()}.edu`;
+  const email_address = isKgGrade(fields.class_level)
+    ? null
+    : `${student_id}@${school_prefix.toLowerCase()}.edu`;
   // Same default-PIN-plus-forced-change pattern as new registration —
   // see insertTransferredStudent's caller-side comment and
   // blockIfMustChangePassword for how the forced change is enforced.
-  const security_password = await bcrypt.hash("1234", 10);
-  const assigned_pc = `PC-${Math.floor(Math.random() * 39) + 1}`;
+  // KG children (class_level -3..-1) get no account: random, never-shared
+  // hash, no PC, no portal e-mail — see POST /api/register.
+  const isKg = isKgGrade(fields.class_level);
+  const security_password = await bcrypt.hash(
+    isKg ? crypto.randomBytes(24).toString("hex") : SYSTEM_DEFAULT_PASSWORD,
+    10,
+  );
+  const assigned_pc = isKg ? null : `PC-${Math.floor(Math.random() * 39) + 1}`;
   // Same as new registration: Inactive until the Placement Wizard
   // seats them into a section (see the four-status lifecycle notes
   // near getCurrentAcademicYear). Starting this as 'Active' while
   // section is still NULL would contradict what 'Active' means now.
-  const status = "Inactive";
+  const status = opts.status || "Inactive";
 
   // section is left NULL on purpose — transferred-in students wait for
   // the Placement Wizard exactly like new registrations do.
@@ -13820,7 +15074,7 @@ async function insertTransferredStudent(conn, school_id, fields) {
       normalizeName(fields.last_name),
       fields.sex,
       fields.class_level,
-      fields.stream,
+      isKg ? "KG" : fields.stream,
       fields.phone_number || null,
       fields.fayda_number || null,
       normalizedEmisId,
@@ -14309,13 +15563,20 @@ app.post(
         );
       }
 
+      const snapshot =
+        typeof t.student_snapshot === "string"
+          ? JSON.parse(t.student_snapshot)
+          : t.student_snapshot;
+      // Whether this school even offers the student's grade, so the
+      // Registrar learns it before confirming rather than after.
+      const offered = await getSchoolGradeSet(req.user.school_id);
       res.json({
         transfer_code: t.transfer_code,
-        snapshot:
-          typeof t.student_snapshot === "string"
-            ? JSON.parse(t.student_snapshot)
-            : t.student_snapshot,
+        snapshot,
         history,
+        grade_available:
+          offered.size === 0 || offered.has(Number(snapshot.class_level)),
+        school_grades: [...offered].sort((a, b) => a - b),
       });
     } catch (err) {
       console.error("/api/registrar/transfers/incoming/lookup error:", err);
@@ -14364,11 +15625,30 @@ app.post(
         typeof t.student_snapshot === "string"
           ? JSON.parse(t.student_snapshot)
           : t.student_snapshot;
+
+      // The student's grade must exist at this school.
+      const offered = await getSchoolGradeSet(req.user.school_id);
+      if (offered.size > 0 && !offered.has(Number(snapshot.class_level))) {
+        await conn.rollback();
+        return res.status(400).json({
+          error: `This school does not offer Grade ${snapshot.class_level}, so this student cannot be imported here.`,
+        });
+      }
+      // ...and they owe the registration fee like any new arrival.
+      const charge = await prepareTransferCharge(req, req.body);
+      if (charge.error) {
+        await conn.rollback();
+        return res
+          .status(charge.error.status)
+          .json({ error: charge.error.message });
+      }
       const { student_id, assigned_pc } = await insertTransferredStudent(
         conn,
         req.user.school_id,
         snapshot,
+        { status: "Pending Payment" },
       );
+      await recordTransferPayment(conn, req, student_id, charge.prepared);
 
       await conn.query(
         `UPDATE student_transfers SET status = 'completed', to_school_id = ?, new_student_id = ?, completed_by = ?, completed_at = NOW() WHERE id = ?`,
@@ -14382,11 +15662,13 @@ app.post(
 
       await conn.commit();
       res.json({
-        message: `Student imported. New ID: ${student_id} — Awaiting Placement | PC: ${assigned_pc}`,
+        message: `Student imported. New ID: ${student_id} — registration payment sent to Finance for approval, then Awaiting Placement | PC: ${assigned_pc}`,
         student_id,
       });
     } catch (err) {
       await conn.rollback();
+      if (err.httpStatus)
+        return res.status(err.httpStatus).json({ error: err.userMessage });
       console.error("/api/registrar/transfers/incoming/complete error:", err);
       res
         .status(500)
@@ -14434,6 +15716,20 @@ app.post(
         });
       }
 
+      // Any grade this school offers is allowed for a transfer (not just
+      // the new-entrant entry grades).
+      const offered = await getSchoolGradeSet(req.user.school_id);
+      if (offered.size > 0 && !offered.has(Number(class_level))) {
+        return res.status(400).json({
+          error: `This school does not offer Grade ${class_level}.`,
+        });
+      }
+      const charge = await prepareTransferCharge(req, req.body);
+      if (charge.error)
+        return res
+          .status(charge.error.status)
+          .json({ error: charge.error.message });
+
       await conn.beginTransaction();
       const { student_id, assigned_pc } = await insertTransferredStudent(
         conn,
@@ -14449,7 +15745,9 @@ app.post(
           fayda_number,
           emis_id: normalizedEmisId,
         },
+        { status: "Pending Payment" },
       );
+      await recordTransferPayment(conn, req, student_id, charge.prepared);
 
       await conn.query(
         `INSERT INTO student_transfers (student_id, from_school_id, to_school_id, transfer_code, status, is_external, student_snapshot, new_student_id, initiated_by, completed_by, completed_at)
@@ -14476,11 +15774,13 @@ app.post(
 
       await conn.commit();
       res.json({
-        message: `Student added via external transfer. ID: ${student_id} — Awaiting Placement | PC: ${assigned_pc}`,
+        message: `Student added via external transfer. ID: ${student_id} — registration payment sent to Finance for approval, then Awaiting Placement | PC: ${assigned_pc}`,
         student_id,
       });
     } catch (err) {
       await conn.rollback();
+      if (err.httpStatus)
+        return res.status(err.httpStatus).json({ error: err.userMessage });
       if (
         err.code === "ER_DUP_ENTRY" &&
         String(err.sqlMessage).includes("emis_id")
@@ -14955,24 +16255,11 @@ app.get(
              ORDER BY first_name, last_name`,
         [req.user.school_id],
       );
-      const cutoff_mark = await getPassMarkCutoff(req.user.school_id);
-      const leaderboard = await getSchoolYearLeaderboard(req.user.school_id);
       const withCategory = await Promise.all(
         rows.map(async (r) => {
-          const entry = leaderboard.find(
-            (l) => String(l.student_id) === String(r.student_id),
-          );
-          const year_average = entry ? entry.year_average : null;
-          const category =
-            year_average === null
-              ? "No marks on record yet"
-              : year_average >= cutoff_mark
-                ? "Eligible for Promotion"
-                : "Detained/Retained";
-          // Grade 12 progression is actually decided by the national
-          // exam (EASE), not this internal cutoff — the cutoff/average
-          // above is still shown for reference, but ease_status is what
-          // POST /api/registrar/graduation/process actually gates on.
+          // Grade 12 progression is decided only by the national exam
+          // (EASE). The school's own marks are for the transcript and play
+          // no part here, so no average/cutoff is computed.
           const ease = await getEaseStatusForStudent(
             r.student_id,
             req.user.school_id,
@@ -14983,8 +16270,6 @@ app.get(
             full_name: [r.first_name, r.middle_name, r.last_name]
               .filter(Boolean)
               .join(" "),
-            year_average,
-            category,
             ease_status: ease.status,
           };
         }),
@@ -15004,7 +16289,7 @@ app.post(
   requireAuth,
   requireRegistrarOnly,
   async (req, res) => {
-    const { student_ids, batch_tag, override_reason, password } = req.body;
+    const { student_ids, batch_tag, password } = req.body;
     if (!batch_tag || !Array.isArray(student_ids) || student_ids.length === 0) {
       return res
         .status(400)
@@ -15040,15 +16325,10 @@ app.post(
              WHERE school_id = ? AND status IN ('Active', 'Unregistered') AND student_id IN (?)`,
         [req.user.school_id, student_ids],
       );
-      const cutoff_mark = await getPassMarkCutoff(req.user.school_id);
-      const leaderboard = await getSchoolYearLeaderboard(req.user.school_id);
-
-      // Grade 12 graduation is gated on the national exam (EASE), not
-      // this school's own internal cutoff — the internal average is
-      // still computed below (and still needs an override reason to
-      // graduate someone below it), but a student without a Pass on
-      // file is skipped outright, no override possible: same "no
-      // disagreeing with the exam" rule as the Grade 6/8 Promote gate.
+      // Grade 12 graduation is decided only by the national exam (EASE).
+      // The school's own marks are for the transcript, so there is no
+      // cut-off or override here: a student without a Pass on file is
+      // skipped outright, same rule as Grade 6/8 promotion.
       // A Fail specifically isn't handled here at all — that student
       // needs the distinct readmit decision (POST
       // /api/registrar/graduation/grade12-readmit below), not a skip
@@ -15070,21 +16350,6 @@ app.post(
                 : ease.status === "Pending Result"
                   ? "Marked as an EASE candidate, but no result uploaded yet."
                   : "EASE result is a Fail — use the Grade 12 readmit decision instead.",
-          });
-          continue;
-        }
-        const entry = leaderboard.find(
-          (l) => String(l.student_id) === String(s.student_id),
-        );
-        const year_average = entry ? entry.year_average : null;
-        const eligible = year_average !== null && year_average >= cutoff_mark;
-        if (!eligible && (!override_reason || !override_reason.trim())) {
-          skipped.push({
-            student_id: s.student_id,
-            reason:
-              year_average === null
-                ? "No marks on record yet"
-                : "Below the pass-mark cut-off (override reason required)",
           });
           continue;
         }
@@ -15365,6 +16630,268 @@ app.post(
       res
         .status(500)
         .json({ error: "Could not mark this student as a candidate." });
+    }
+  },
+);
+
+// --- EASE Candidate box on Promotion/Stream (Grade 6 -> 7, Grade 8 -> 9) ---
+// In a school that keeps its students from Grade 6 into Grade 7 (or 8 into 9),
+// those students are not new entrants: they are EASE candidates. The
+// Registrar types the student's registration (admission) number, this looks
+// it up in the results the Super Admin uploaded (ease_exam_results), and the
+// result decides: Pass -> promoted to the next grade (waits for the
+// Placement Wizard), Fail -> retained in the same grade.
+//
+// Shared by the read-only lookup and the apply step so the apply step
+// re-checks everything itself instead of trusting what the lookup showed.
+function easeNormName(v) {
+  return String(v || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+function easeTierStream(grade) {
+  const g = Number(grade);
+  if (g >= 1 && g <= 6) return "Basic";
+  if (g === 7 || g === 8) return "Core";
+  if (g === 9 || g === 10) return "General";
+  return null; // 11/12 keep whatever stream they chose
+}
+async function evaluateEaseAdmission(school_id, student_id, admission_number) {
+  const adm = String(admission_number || "").trim();
+  if (!adm) return { status: 400, error: "Enter the admission number first." };
+  const [studentRows] = await pool.query(
+    "SELECT student_id, first_name, class_level, status FROM students WHERE student_id = ? AND school_id = ?",
+    [student_id, school_id],
+  );
+  if (studentRows.length === 0)
+    return { status: 404, error: "Student not found in your school." };
+  const student = studentRows[0];
+  const grade = Number(student.class_level);
+  if (![6, 8].includes(grade))
+    return {
+      status: 400,
+      error: "The EASE Candidate box is only for Grade 6 and Grade 8 students.",
+    };
+  // Closing Semester 2 flips every Active student to 'Unregistered', and that
+  // is exactly when promotion decisions get made, so both are allowed.
+  if (!["Active", "Unregistered"].includes(student.status))
+    return {
+      status: 409,
+      error: `This student's status is "${student.status}" — only an Active or Unregistered student can be promoted through EASE.`,
+    };
+  await ensureEaseTables();
+  // The exam is sat in one academic year and promotion is applied at the end
+  // of it or after the new year has started (the EC year rolls over in
+  // September), so the newest result from this or last exam year counts.
+  const minYear = Number(currentEaseExamYear()) - 1;
+  const [resRows] = await pool.query(
+    `SELECT first_name, mark, cutoff, average, percentile, result, exam_year
+       FROM ease_exam_results
+      WHERE admission_number = ? AND class_level = ? AND CAST(exam_year AS UNSIGNED) >= ?
+      ORDER BY CAST(exam_year AS UNSIGNED) DESC LIMIT 1`,
+    [adm, grade, minYear],
+  );
+  const exam_year = resRows.length ? String(resRows[0].exam_year) : currentEaseExamYear();
+  const out = {
+    student,
+    grade,
+    adm,
+    exam_year,
+    new_grade: grade + 1,
+    found: resRows.length > 0,
+    row: resRows[0] || null,
+    can_apply: false,
+    blocked_reason: null,
+  };
+  if (!out.found) return out;
+
+  // The same admission number can't back two different students.
+  const [dupRows] = await pool.query(
+    `SELECT student_id FROM ease_candidates
+      WHERE admission_number = ? AND class_level = ? AND exam_year = ? AND student_id <> ?
+      LIMIT 1`,
+    [adm, grade, exam_year, student_id],
+  );
+  if (dupRows.length > 0) {
+    out.blocked_reason =
+      "This admission number is already linked to another student. Check that it was typed correctly.";
+    return out;
+  }
+  // The Ministry sheet carries the student's first name as a check, so a
+  // number that belongs to somebody else can't be used to promote this one.
+  if (
+    out.row.first_name &&
+    easeNormName(out.row.first_name) !== easeNormName(student.first_name)
+  ) {
+    out.blocked_reason = `The name on the result ("${out.row.first_name}") does not match this student ("${student.first_name}"). Check the admission number, or correct the spelling in Information Update.`;
+    return out;
+  }
+  if (!(await schoolHasGrade(school_id, grade + 1))) {
+    out.blocked_reason = `This school does not offer Grade ${grade + 1}. Use EASE Candidates and mark the student Graduated/Outgoing instead.`;
+    return out;
+  }
+  out.can_apply = true;
+  return out;
+}
+
+app.post(
+  "/api/registrar/ease-lookup/:student_id",
+  requireAuth,
+  requireRegistrarOrRecorder,
+  async (req, res) => {
+    try {
+      const ev = await evaluateEaseAdmission(
+        req.user.school_id,
+        req.params.student_id,
+        req.body && req.body.admission_number,
+      );
+      if (ev.error) return res.status(ev.status).json({ error: ev.error });
+      res.json({
+        found: ev.found,
+        exam_year: ev.exam_year,
+        class_level: ev.grade,
+        new_grade: ev.new_grade,
+        student_name: ev.student.first_name,
+        result_name: ev.row ? ev.row.first_name : null,
+        result: ev.row ? ev.row.result : null,
+        mark: ev.row ? ev.row.mark : null,
+        cutoff: ev.row ? ev.row.cutoff : null,
+        average: ev.row ? ev.row.average : null,
+        percentile: ev.row ? ev.row.percentile : null,
+        can_apply: ev.can_apply,
+        blocked_reason: ev.blocked_reason,
+        action: ev.row
+          ? ev.row.result === "Pass"
+            ? "promote"
+            : "retain"
+          : null,
+      });
+    } catch (err) {
+      console.error("/api/registrar/ease-lookup error:", err);
+      res.status(500).json({ error: "Could not look up that result." });
+    }
+  },
+);
+
+app.post(
+  "/api/registrar/ease-promote/:student_id",
+  requireAuth,
+  requireRegistrarOrRecorder,
+  async (req, res) => {
+    const conn = await pool.getConnection();
+    try {
+      const ev = await evaluateEaseAdmission(
+        req.user.school_id,
+        req.params.student_id,
+        req.body && req.body.admission_number,
+      );
+      if (ev.error) return res.status(ev.status).json({ error: ev.error });
+      if (!ev.found)
+        return res.status(404).json({
+          error: `No Grade ${ev.grade} result found for admission number "${ev.adm}" (exam year ${ev.exam_year}). The Super Admin may not have uploaded it yet.`,
+        });
+      if (!ev.can_apply)
+        return res.status(409).json({ error: ev.blocked_reason });
+
+      const passed = ev.row.result === "Pass";
+      const toGrade = passed ? ev.new_grade : ev.grade;
+
+      await conn.beginTransaction();
+      // Keep the EASE Candidates screen in step with what was just used.
+      await conn.query(
+        `INSERT INTO ease_candidates (student_id, school_id, class_level, admission_number, first_name, exam_year, marked_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE admission_number = VALUES(admission_number), class_level = VALUES(class_level),
+           first_name = VALUES(first_name), marked_by = VALUES(marked_by), marked_at = NOW()`,
+        [
+          req.params.student_id,
+          req.user.school_id,
+          ev.grade,
+          ev.adm,
+          ev.student.first_name,
+          ev.exam_year,
+          req.user.user_id,
+        ],
+      );
+      if (passed) {
+        // Stream follows the new tier (Grade 7 -> Core, Grade 9 -> General)
+        // so the Placement Wizard finds sections set up for that stream.
+        await conn.query(
+          "UPDATE students SET class_level = ?, stream = COALESCE(?, stream, 'General'), section = NULL, status = 'Pending Promotion' WHERE student_id = ? AND school_id = ?",
+          [
+            toGrade,
+            easeTierStream(toGrade),
+            req.params.student_id,
+            req.user.school_id,
+          ],
+        );
+      } else {
+        await conn.query(
+          "UPDATE students SET status = 'Active' WHERE student_id = ? AND school_id = ?",
+          [req.params.student_id, req.user.school_id],
+        );
+      }
+      await conn.commit();
+
+      // Same follow-ups the normal promote/retain decision does; neither
+      // may block the decision itself.
+      pool
+        .query("DELETE FROM marks WHERE student_id = ? AND school_id = ?", [
+          req.params.student_id,
+          req.user.school_id,
+        ])
+        .catch((e) => console.error("marks reset (ease-promote):", e));
+      let year_average = null;
+      let cutoff_mark = null;
+      try {
+        const el = await computePromotionEligibility(
+          req.params.student_id,
+          req.user.school_id,
+          ev.grade,
+        );
+        year_average = el.year_average ?? null;
+        cutoff_mark = el.cutoff_mark ?? null;
+      } catch (_) {}
+      pool
+        .query(
+          `INSERT INTO promotion_audit_log
+             (student_id, school_id, action, from_class_level, to_class_level, year_average, cutoff_mark, was_override, override_reason, decided_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, FALSE, NULL, ?)`,
+          [
+            req.params.student_id,
+            req.user.school_id,
+            passed ? "promote" : "retain",
+            ev.grade,
+            toGrade,
+            year_average,
+            cutoff_mark,
+            req.user.user_id,
+          ],
+        )
+        .catch((e) => console.error("promotion_audit_log (ease-promote):", e));
+      await logAudit(
+        req,
+        "ease.promote",
+        "student",
+        req.params.student_id,
+        `Grade ${ev.grade} EASE ${ev.row.result} (admission ${ev.adm}, ${ev.exam_year}) — ${passed ? `promoted to Grade ${toGrade}` : "retained"}`,
+      );
+      res.json({
+        message: passed
+          ? `Passed the Grade ${ev.grade} national exam — promoted to Grade ${toGrade}. They now wait for the Placement Wizard.`
+          : `Failed the Grade ${ev.grade} national exam — retained in Grade ${ev.grade}.`,
+        result: ev.row.result,
+        new_grade: toGrade,
+      });
+    } catch (err) {
+      try {
+        await conn.rollback();
+      } catch (_) {}
+      console.error("/api/registrar/ease-promote error:", err);
+      res.status(500).json({ error: "Could not apply the exam result." });
+    } finally {
+      conn.release();
     }
   },
 );
@@ -16299,7 +17826,7 @@ async function buildReportCardForStudent(
 
   const [studentRows] = await pool.query(
     `SELECT st.student_id, st.first_name, st.middle_name, st.last_name, st.sex, st.id_photo_url, st.class_level,
-                sc.school_name, sc.school_level, sc.school_seal_url, z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region, k.kebele_name AS kebele
+                sc.school_name, sc.school_level, sc.school_seal_url, z.zone_name AS zone, z.logo_url AS zone_logo_url, w.woreda_name AS woreda, r.region_name AS region, k.kebele_name AS kebele
          FROM students st
          LEFT JOIN schools sc ON sc.id = st.school_id
          LEFT JOIN zone z ON z.zone_id = sc.zone_id
@@ -16426,6 +17953,7 @@ async function buildReportCardForStudent(
     latest.class_level,
   );
   const html = renderCertificateHtml({
+    zone_watermark_html: buildZoneWatermarkHtml(s.zone_logo_url),
     school_name: s.school_name,
     school_level: s.school_level,
     region: s.region,
@@ -16630,6 +18158,9 @@ app.get(
       if (isSample) {
         verify_code = "SAMPLE";
         html = renderCertificateHtml({
+          zone_watermark_html: buildZoneWatermarkHtml(
+            await getZoneLogoUrlForSchool(req.user.school_id),
+          ),
           school_name: "Newland High School (Sample)",
           school_level: "GENERAL",
           region: "Sample Region",
@@ -16893,6 +18424,9 @@ app.get(
       if (isSample) {
         verify_code = "SAMPLE";
         html = renderTranscriptHtml({
+          zone_logo_data_uri: readUploadedImageAsDataUri(
+            await getZoneLogoUrlForSchool(req.user.school_id),
+          ),
           student_id: SAMPLE_STUDENT.student_id,
           student_name: "Sample Student",
           sex: "Female",
@@ -17028,10 +18562,11 @@ app.get(
         // Using stamp_url here was why an already-uploaded seal
         // never showed up.
         const [schoolRows] = await pool.query(
-          `SELECT sc.school_name, sc.school_level, sc.school_seal_url,
+          `SELECT sc.school_name, sc.school_level, sc.school_seal_url, z.logo_url AS zone_logo_url,
                         pa.first_name AS principal_first_name, pa.middle_name AS principal_middle_name, pa.last_name AS principal_last_name,
                         pa.signature_url AS principal_signature_url
                  FROM schools sc
+                 LEFT JOIN zone z ON z.zone_id = sc.zone_id
                  LEFT JOIN school_admins pa ON pa.school_id = sc.id AND pa.title = 'Principal' AND (pa.is_active IS NULL OR pa.is_active = TRUE)
                  WHERE sc.id = ? LIMIT 1`,
           [req.user.school_id],
@@ -17167,6 +18702,7 @@ app.get(
           latest.class_level,
         );
         html = renderTranscriptHtml({
+          zone_logo_data_uri: readUploadedImageAsDataUri(school.zone_logo_url),
           student_id: s.student_id,
           student_name: studentFullName,
           sex: s.sex,
@@ -17469,20 +19005,12 @@ async function buildIdCardHtml(
 
   const logoDataUri = !isSample ? readUploadedImageAsDataUri(s.logo_url) : null;
 
-  // The header has a single logo slot. The school's OWN logo (uploaded
-  // by Super Admin via POST /api/super/schools/:id/logo) goes there;
-  // the zone logo (POST /api/super/zones/:zone_id/logo, or a Zonal
-  // Admin via POST /api/zonal/logo) is only the fallback for a school
-  // that has none yet, so the header is never left with no emblem at
-  // all. (Before per-school logos this was the other way round.)
-  const zoneLogoDataUri = !isSample
-    ? readUploadedImageAsDataUri(s.zone_logo_url)
-    : null;
+  // The header has a single logo slot and it always holds the school's OWN
+  // logo (uploaded by Super Admin via POST /api/super/schools/:id/logo) —
+  // every school must have one. No zone-logo fallback on the student card.
   const logoStackHtml = logoDataUri
     ? `<img src="${logoDataUri}" alt="School logo" class="id-card-logo">`
-    : zoneLogoDataUri
-      ? `<img src="${zoneLogoDataUri}" alt="Zone logo" class="id-card-logo">`
-      : "";
+    : "";
 
   const flagDataUri = readStaticImageAsDataUri(
     path.join(__dirname, "public", "assets", "images", "gambella_flag.png"),
@@ -17560,7 +19088,7 @@ async function buildIdCardHtml(
         <div class="id-card-fields">
           <div class="id-card-name">${escapeHtml(full)}</div>
           <div><span class="id-label">የተማሪ መታወቂያ | Student ID</span><span>${escapeHtml(s.student_id)}</span></div>
-          <div><span class="id-label">ክፍል | Class</span><span>Grade ${escapeHtml(s.class_level)} - ${escapeHtml(s.section || "Unassigned")}</span></div>
+          <div><span class="id-label">ክፍል | Class</span><span>${escapeHtml(gradeLabel(s.class_level))} - ${escapeHtml(s.section || "Unassigned")}</span></div>
           <div><span class="id-label">ትምህርት ዘርፍ | Stream</span><span>${escapeHtml(resolveDocumentStream(s.class_level, s.stream) || "—")}</span></div>
           <div><span class="id-label">ስልክ ቁጥር | Contact</span><span>${escapeHtml(s.phone_number || "—")}</span></div>
           ${s.moe_school_code ? `<div><span class="id-label">የትምህርት ቤት ኮድ | School Code</span><span>${escapeHtml(s.moe_school_code)}</span></div>` : ""}
@@ -18217,9 +19745,63 @@ app.get("/api/students", requireAuth, async (req, res) => {
       "SELECT * FROM students WHERE school_id = ?",
       [req.user.school_id],
     );
+    // never send password hashes to the browser
+    for (const r of rows) delete r.security_password;
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: "Database query failed" });
+  }
+});
+
+// School admin roster: one student's details + the guardian(s) linked to
+// them (same student_guardians link the Registrar and the student's own
+// "My Guardian" page use). Scoped to the admin's school; passwords are
+// never included.
+app.get("/api/students/:student_id/detail", requireAuth, async (req, res) => {
+  if (req.user.role !== "school_admins") {
+    return res.status(403).json({ error: "You don't have permission to do this." });
+  }
+  try {
+    await ensureGuardianParentCodeSupport();
+    const [rows] = await pool.query(
+      "SELECT * FROM students WHERE student_id = ? AND school_id = ?",
+      [req.params.student_id, req.user.school_id],
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Student not found." });
+    }
+    const r = rows[0];
+    const student = {
+      student_id: r.student_id,
+      first_name: r.first_name,
+      middle_name: r.middle_name,
+      last_name: r.last_name,
+      sex: r.sex,
+      class_level: r.class_level,
+      section: r.section ?? null,
+      stream: r.stream ?? null,
+      status: r.status,
+      fayda_number: r.fayda_number ?? null,
+      emis_id: r.emis_id ?? null,
+      phone_number: r.phone_number ?? null,
+      // KG children have no portal account: no e-mail/login to show.
+      email_address: isKgGrade(r.class_level) ? null : (r.email_address ?? null),
+      id_photo_url: r.id_photo_url ?? null,
+      grade_label: gradeLabel(r.class_level),
+      has_account: !isKgGrade(r.class_level),
+    };
+    const [guardians] = await pool.query(
+      `SELECT g.id, g.parent_code, g.full_name, g.phone_number, g.fayda_number
+         FROM guardians g
+         JOIN student_guardians sg ON sg.guardian_id = g.id
+        WHERE sg.student_id = ?
+        ORDER BY g.full_name`,
+      [req.params.student_id],
+    );
+    res.json({ student, guardians });
+  } catch (err) {
+    console.error("GET /api/students/:student_id/detail error:", err);
+    res.status(500).json({ error: "Could not load the student's details." });
   }
 });
 
@@ -18502,10 +20084,35 @@ async function schoolHasGrade(school_id, grade) {
   return grades.has(Number(grade));
 }
 
+// Grades a brand-new entrant (New Entrant Registration) can be enrolled
+// into: only the first grade of each unbroken run of grades the school
+// offers, i.e. a grade whose previous grade the school does NOT have. A
+// school that runs Grades 9-12 (no Grade 8) therefore takes new entrants
+// into Grade 9 only; every higher grade is reached by promotion. Students
+// arriving mid-way (transfers) are NOT limited by this - they can be
+// placed in any grade the school offers.
+async function getEntryGradeSet(school_id) {
+  const grades = await getSchoolGradeSet(school_id);
+  // New entrants may join ANY KG class (KG1/KG2/KG3), not just the first of
+  // the run — a child can start kindergarten at any stage.
+  return new Set(
+    [...grades].filter((g) => isKgGrade(g) || !grades.has(g - 1)),
+  );
+}
+
 app.get("/api/school/grade-levels", requireAuth, async (req, res) => {
   try {
     const grades = await getSchoolGradeSet(req.user.school_id);
-    res.json({ grades: [...grades].sort((a, b) => a - b) });
+    const entry = await getEntryGradeSet(req.user.school_id);
+    res.json({
+      grades: [...grades].sort((a, b) => a - b),
+      entry_grades: [...entry].sort((a, b) => a - b),
+      // "-3" -> "KG1" etc., plus "Grade n" for the rest — use this for
+      // every dropdown/label instead of printing the raw class_level.
+      labels: Object.fromEntries(
+        [...grades].map((g) => [g, gradeLabel(g)]),
+      ),
+    });
   } catch (err) {
     console.error("/api/school/grade-levels error:", err);
     res
@@ -19385,7 +20992,16 @@ app.post(
 app.post("/api/teacher/update-password", requireAuth, async (req, res) => {
   const { currentPass, newPass } = req.body;
 
+  if (!currentPass || !newPass) {
+    return res
+      .status(400)
+      .json({ error: "Current password and new PIN are both required" });
+  }
+  const pinErr = validateNewPin(newPass);
+  if (pinErr) return res.status(400).json({ error: pinErr });
+
   try {
+    await ensureMustChangePasswordColumns();
     const [rows] = await pool.query(
       "SELECT security_password FROM teachers WHERE teacher_id = ? AND school_id = ?",
       [req.user.user_id, req.user.school_id],
@@ -19406,11 +21022,15 @@ app.post("/api/teacher/update-password", requireAuth, async (req, res) => {
     const hashed = await bcrypt.hash(newPass, 10);
 
     await pool.query(
-      "UPDATE teachers SET security_password = ? WHERE teacher_id = ? AND school_id = ?",
+      "UPDATE teachers SET security_password = ?, must_change_password = FALSE WHERE teacher_id = ? AND school_id = ?",
       [hashed, req.user.user_id, req.user.school_id],
     );
+    issueAuthToken(res, { ...req.user, must_change_password: false });
 
-    res.json({ message: "Password updated successfully" });
+    res.json({
+      message: "Password updated successfully",
+      must_change_password: false,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Password update failed" });
@@ -19582,7 +21202,7 @@ app.get("/api/teacher/id-card", requireAuth, async (req, res) => {
     const [rows] = await pool.query(
       `SELECT t.first_name, t.middle_name, t.last_name, t.teacher_id, t.contact_number, t.email, t.avatar_url, t.id_photo_url, t.additional_role,
                     ta.stream, s.subject_name,
-                    sc.school_name, sc.school_level, z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region, sc.moe_school_code
+                    sc.school_name, sc.school_level, z.zone_name AS zone, z.logo_url AS zone_logo_url, w.woreda_name AS woreda, r.region_name AS region, sc.moe_school_code
              FROM teachers t
              LEFT JOIN teacher_assignments ta ON t.teacher_id = ta.teacher_id AND t.school_id = ta.school_id
              LEFT JOIN subjects s ON ta.subject_id = s.subject_id AND ta.school_id = s.school_id
@@ -19631,6 +21251,8 @@ app.get("/api/teacher/id-card", requireAuth, async (req, res) => {
       school_level: row0.school_level,
       school_address: schoolAddress,
       zone: row0.zone || null,
+      // The zone's logo, shown on the card in place of the flag.
+      zone_logo_url: row0.zone_logo_url || null,
       woreda: row0.woreda || null,
       moe_school_code: row0.moe_school_code,
       valid_until: validUntil,
@@ -19653,7 +21275,7 @@ app.get(
     try {
       const [rows] = await pool.query(
         `SELECT a.first_name, a.middle_name, a.last_name, a.admin_id, a.title, a.contact_number, a.email, a.avatar_url, a.id_photo_url,
-                    sc.school_name, sc.school_level, z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region, sc.moe_school_code
+                    sc.school_name, sc.school_level, z.zone_name AS zone, z.logo_url AS zone_logo_url, w.woreda_name AS woreda, r.region_name AS region, sc.moe_school_code
              FROM school_admins a
              LEFT JOIN schools sc ON sc.id = a.school_id
              LEFT JOIN zone z ON z.zone_id = sc.zone_id
@@ -19692,6 +21314,8 @@ app.get(
         school_level: row0.school_level,
         school_address: schoolAddress,
         zone: row0.zone || null,
+        // The zone's logo, shown on the school admin/Principal ID card.
+        zone_logo_url: row0.zone_logo_url || null,
         woreda: row0.woreda || null,
         moe_school_code: row0.moe_school_code,
         valid_until: validUntil,
@@ -21394,7 +23018,7 @@ async function getHomeroomSectionOrNull(teacher_id, school_id) {
 // reset student is blocked from every other student route (see
 // blockIfMustChangePassword) until they set their own 6-digit PIN via
 // /api/student/update-password on next login.
-const DEFAULT_STUDENT_PASSWORD = "1234";
+const DEFAULT_STUDENT_PASSWORD = SYSTEM_DEFAULT_PASSWORD;
 app.post(
   "/api/homeroom/reset-student-password",
   requireAuth,
@@ -21431,6 +23055,12 @@ app.post(
           .json({ error: "This student is not in your homeroom section." });
       }
 
+      if (isKgGrade(homeroom.class_level)) {
+        return res.status(400).json({
+          error:
+            "Kindergarten students have no portal account, so there is no password to reset.",
+        });
+      }
       const hashed = await bcrypt.hash(DEFAULT_STUDENT_PASSWORD, 10);
       await pool.query(
         "UPDATE students SET security_password = ?, must_change_password = TRUE WHERE student_id = ? AND school_id = ?",
@@ -21719,6 +23349,223 @@ app.post("/api/homeroom/undo-present", requireAuth, async (req, res) => {
     res.status(500).json({ error: "Could not undo attendance mark" });
   }
 });
+
+// =====================================================================
+// REGISTRAR / RECORDER ACTION CENTER
+// A student forgot their password, or needs an ID photo fixed: the Registrar
+// or Recorder looks the student up by ID, reviews everything on file
+// (including the guardian), then either resets the password (confirmed with
+// the staff member's OWN password; the student goes back to the system
+// default and must pick a new 6-digit PIN at next login) or uploads the ID
+// photo. School-scoped: staff can only see students of their own school.
+// Kindergarten children have no portal account and no ID card, so neither
+// action applies to them.
+// =====================================================================
+async function acLoadStudentView(school_id, student_id) {
+  await ensureGuardianParentCodeSupport();
+  const [rows] = await pool.query(
+    "SELECT * FROM students WHERE student_id = ? AND school_id = ?",
+    [student_id, school_id],
+  );
+  if (rows.length === 0) return null;
+  const r = rows[0];
+  const [guardians] = await pool.query(
+    `SELECT g.id, g.parent_code, g.full_name, g.phone_number, g.fayda_number
+       FROM guardians g
+       JOIN student_guardians sg ON sg.guardian_id = g.id
+      WHERE sg.student_id = ?
+      ORDER BY g.full_name`,
+    [student_id],
+  );
+  const kg = isKgGrade(r.class_level);
+  const status = String(r.status || "");
+  const RESET_OK = new Set(["Active", "Inactive", "Pending Promotion"]);
+  let reset_blocked_reason = null;
+  if (kg) {
+    reset_blocked_reason =
+      "Kindergarten students have no portal account, so there is no password to reset.";
+  } else if (!RESET_OK.has(status)) {
+    reset_blocked_reason = `This student's status is "${status}", so their account is not in use. Their password can't be reset until that is resolved.`;
+  }
+  let photo_blocked_reason = null;
+  if (kg) {
+    photo_blocked_reason =
+      "Kindergarten students don't have ID cards, so no ID photo is needed.";
+  } else if (isTerminalStudentStatus(status)) {
+    photo_blocked_reason = `This student's status is "${status}" — their record is locked.`;
+  }
+  return {
+    student: {
+      student_id: r.student_id,
+      first_name: r.first_name,
+      middle_name: r.middle_name,
+      last_name: r.last_name,
+      sex: r.sex,
+      class_level: r.class_level,
+      grade_label: gradeLabel(r.class_level),
+      section: r.section ?? null,
+      stream: r.stream ?? null,
+      status: r.status,
+      fayda_number: r.fayda_number ?? null,
+      emis_id: r.emis_id ?? null,
+      phone_number: r.phone_number ?? null,
+      email_address: kg ? null : (r.email_address ?? null),
+      id_photo_url: r.id_photo_url ?? null,
+    },
+    guardians,
+    has_account: !kg,
+    can_reset: reset_blocked_reason === null,
+    reset_blocked_reason,
+    can_upload_photo: photo_blocked_reason === null,
+    photo_blocked_reason,
+  };
+}
+
+app.get(
+  "/api/registrar/action-center/student/:id",
+  requireAuth,
+  requireRegistrarOrRecorder,
+  async (req, res) => {
+    try {
+      const view = await acLoadStudentView(req.user.school_id, req.params.id);
+      if (!view) {
+        return res
+          .status(404)
+          .json({ error: "No student with that ID in your school." });
+      }
+      res.json(view);
+    } catch (err) {
+      console.error("/api/registrar/action-center/student error:", err);
+      res.status(500).json({ error: "Could not load the student." });
+    }
+  },
+);
+
+app.post(
+  "/api/registrar/action-center/reset-password",
+  requireAuth,
+  requireRegistrarOrRecorder,
+  async (req, res) => {
+    const { student_id, password } = req.body || {};
+    if (!student_id) {
+      return res.status(400).json({ error: "student_id is required." });
+    }
+    if (!password) {
+      return res
+        .status(400)
+        .json({ error: "Enter your password to confirm the reset." });
+    }
+    try {
+      // 403 (not 401): the frontend treats any 401 as "session expired", which
+      // a mistyped password must not trigger.
+      const okPw = await verifyCurrentUserPassword(req, password);
+      if (!okPw) return res.status(403).json({ error: "Incorrect password." });
+
+      const view = await acLoadStudentView(req.user.school_id, student_id);
+      if (!view) {
+        return res
+          .status(404)
+          .json({ error: "No student with that ID in your school." });
+      }
+      if (!view.can_reset) {
+        return res.status(409).json({ error: view.reset_blocked_reason });
+      }
+      await ensureMustChangePasswordColumns();
+      const hashed = await bcrypt.hash(DEFAULT_STUDENT_PASSWORD, 10);
+      await pool.query(
+        "UPDATE students SET security_password = ?, must_change_password = TRUE WHERE student_id = ? AND school_id = ?",
+        [hashed, student_id, req.user.school_id],
+      );
+      await logAudit(
+        req,
+        "student.password_reset",
+        "student",
+        student_id,
+        `Reset by ${req.user.user_id} via Registrar Action Center`,
+      );
+      res.json({
+        message: `Password reset for ${view.student.first_name} ${view.student.last_name}. They must set their own 6-digit PIN the next time they sign in.`,
+        student_id,
+        default_password: DEFAULT_STUDENT_PASSWORD,
+      });
+    } catch (err) {
+      console.error("/api/registrar/action-center/reset-password error:", err);
+      res.status(500).json({ error: "Could not reset the password." });
+    }
+  },
+);
+
+app.post(
+  "/api/registrar/action-center/student/:id/photo",
+  requireAuth,
+  requireRegistrarOrRecorder,
+  handleUploadError(upload.single("photo")),
+  async (req, res) => {
+    const discard = () => {
+      if (req.file) fs.unlink(req.file.path, () => {});
+    };
+    try {
+      if (!req.file) return res.status(400).json({ error: "No photo uploaded" });
+      if (!req.file.mimetype.startsWith("image/")) {
+        discard();
+        return res.status(400).json({
+          error: "Photo must be an image file (JPEG, PNG, GIF, or WEBP).",
+        });
+      }
+      const view = await acLoadStudentView(req.user.school_id, req.params.id);
+      if (!view) {
+        discard();
+        return res
+          .status(404)
+          .json({ error: "No student with that ID in your school." });
+      }
+      if (!view.can_upload_photo) {
+        discard();
+        return res.status(409).json({ error: view.photo_blocked_reason });
+      }
+      const converted = await convertHeicIfNeeded(req.file);
+      if (converted) req.file = converted;
+      const dimensions = tryReadImageDimensions(req.file.path);
+      if (dimensions) {
+        const { width, height } = dimensions;
+        const shortSide = Math.min(width, height);
+        const longSide = Math.max(width, height);
+        if (shortSide < ID_PHOTO_MIN_WIDTH || longSide < ID_PHOTO_MIN_HEIGHT) {
+          discard();
+          return res.status(400).json({
+            error: `Photo is too small (was ${width}×${height}px). Please use a clearer, higher-resolution photo.`,
+          });
+        }
+      }
+      const filePath = `/uploads/${req.file.filename}`;
+      await pool.query(
+        "UPDATE students SET id_photo_url = ? WHERE student_id = ? AND school_id = ?",
+        [filePath, req.params.id, req.user.school_id],
+      );
+      if (view.student.id_photo_url) {
+        fs.unlink(
+          path.join(__dirname, "uploads", path.basename(view.student.id_photo_url)),
+          () => {},
+        );
+      }
+      await logAudit(
+        req,
+        "student.id_photo_upload",
+        "student",
+        req.params.id,
+        `Uploaded by ${req.user.user_id} via Registrar Action Center`,
+      );
+      res.json({
+        message: "ID photo updated.",
+        id_photo_url: filePath,
+      });
+    } catch (err) {
+      discard();
+      console.error("/api/registrar/action-center photo error:", err);
+      res.status(500).json({ error: "Could not save the photo." });
+    }
+  },
+);
 
 // --- Homeroom: upload a student's official photo directly ---
 // For when a student can't get a usable photo of their own (or asks their
@@ -24930,6 +26777,7 @@ const AUTH_SOURCES_BY_ROLE = {
   // student_guardians), we resolve it from req.user.user_id — see
   // resolveGuardianId() below.
   guardians: { table: "guardians", idCol: "parent_code" },
+  finance_users: { table: "finance_users", idCol: "finance_id" },
 };
 
 // Re-checks the CURRENTLY logged-in user's own password against their
@@ -24956,6 +26804,69 @@ async function verifyCurrentUserPassword(req, password) {
   }
 }
 
+// Universal first-login / change-password route — works for EVERY role in
+// AUTH_SOURCES_BY_ROLE (students, teachers, school admins, zonal admins,
+// super admins, registrars, guardians, finance). This is the way out of the
+// must_change_password state for roles that never had their own route
+// (teachers' old route didn't clear the flag; zonal, super and registrar
+// had no forced-change flow at all). Not behind any "must change first"
+// gate — see FIRST_LOGIN_ALLOWED_PATHS in requireAuth.
+app.post("/api/auth/change-password", requireAuth, async (req, res) => {
+  const { currentPass, newPass } = req.body || {};
+  if (!currentPass || !newPass) {
+    return res
+      .status(400)
+      .json({ error: "Current password and new PIN are both required." });
+  }
+  const pinErr = validateNewPin(newPass);
+  if (pinErr) return res.status(400).json({ error: pinErr });
+  const src = AUTH_SOURCES_BY_ROLE[req.user.role];
+  if (!src) {
+    return res
+      .status(403)
+      .json({ error: "This account type can't change its password here." });
+  }
+  try {
+    await ensureMustChangePasswordColumns();
+    if (req.user.role === "guardians") await ensureGuardianParentCodeSupport();
+    const [rows] = await pool.query(
+      `SELECT security_password FROM ${src.table} WHERE ${src.idCol} = ?`,
+      [req.user.user_id],
+    );
+    if (rows.length === 0 || !rows[0].security_password) {
+      return res.status(404).json({ error: "Account not found." });
+    }
+    const ok = await bcrypt.compare(
+      String(currentPass),
+      rows[0].security_password,
+    );
+    if (!ok) {
+      return res.status(401).json({ error: "Current password is incorrect." });
+    }
+    if (String(newPass) === String(currentPass)) {
+      return res.status(400).json({
+        error: "Your new PIN must be different from the current password.",
+      });
+    }
+    const hashed = await bcrypt.hash(String(newPass), 10);
+    await pool.query(
+      `UPDATE ${src.table} SET security_password = ?, must_change_password = FALSE WHERE ${src.idCol} = ?`,
+      [hashed, req.user.user_id],
+    );
+    // The token the person is holding still has must_change_password
+    // baked in; re-issue it cleared so they aren't blocked for the rest
+    // of its 30 minutes.
+    issueAuthToken(res, { ...req.user, must_change_password: false });
+    res.json({
+      message: "PIN updated successfully.",
+      must_change_password: false,
+    });
+  } catch (err) {
+    console.error("/api/auth/change-password error:", err);
+    res.status(500).json({ error: "Could not update your PIN." });
+  }
+});
+
 app.post("/api/login", loginLimiter, async (req, res) => {
   const { id, password } = req.body;
 
@@ -24970,6 +26881,13 @@ app.post("/api/login", loginLimiter, async (req, res) => {
     // has to be ready before that loop runs at all, or login breaks for
     // every role, not just guardians.
     await ensureGuardianParentCodeSupport();
+    // The first-login rule now covers every role, so every account table
+    // needs the must_change_password column before we read it below.
+    try {
+      await ensureMustChangePasswordColumns();
+    } catch (colErr) {
+      console.error("ensureMustChangePasswordColumns (non-fatal):", colErr);
+    }
 
     let user = null;
     let userRole = null;
@@ -25005,11 +26923,22 @@ app.post("/api/login", loginLimiter, async (req, res) => {
 
     if (!user) return res.status(401).json({ error: "ID not found" });
 
+    // Kindergarten children have no portal account at all (see POST
+    // /api/register). Refuse before any password check.
+    if (userRole === "students" && isKgGrade(user.class_level)) {
+      return res.status(401).json({
+        error:
+          "Kindergarten students don't have a portal account. Parents and guardians can sign in to the Guardian Portal with their PAR login ID.",
+      });
+    }
+
     // A deactivated teacher (transferred/replaced out) or school admin
     // (replaced out — see replace_admin_id on createSchoolAdminAccount)
     // keeps their row for history, but can no longer sign in.
     if (
-      (userRole === "teachers" || userRole === "school_admins") &&
+      (userRole === "teachers" ||
+        userRole === "school_admins" ||
+        userRole === "finance_users") &&
       user.is_active === 0
     ) {
       return res.status(401).json({
@@ -25026,6 +26955,27 @@ app.post("/api/login", loginLimiter, async (req, res) => {
       return res.status(401).json({
         error:
           "This account has not been re-registered for the new academic year yet. Contact your school's Registrar.",
+      });
+    }
+
+    // A student whose registration payment hasn't been verified by
+    // Finance yet has no login. This is deliberately not the same
+    // message as "not re-registered" below, so a parent calling in
+    // knows to ask about the payment, not the new academic year.
+    if (userRole === "students" && user.status === "Pending Payment") {
+      return res.status(401).json({
+        error:
+          "Registration is not complete yet — the registration fee hasn't been verified by Finance. Contact your school's Registrar or Finance office.",
+      });
+    }
+
+    // A student whose registration payment was rejected can't log in
+    // either — the Registrar needs to submit a corrected payment first
+    // (see POST /api/registrar/students/:student_id/payment).
+    if (userRole === "students" && user.status === "Registration Rejected") {
+      return res.status(401).json({
+        error:
+          "Your registration payment was rejected. Contact your school's Registrar to submit a corrected payment.",
       });
     }
 
@@ -25099,15 +27049,13 @@ app.post("/api/login", loginLimiter, async (req, res) => {
       if (zoneRows && zoneRows.length > 0) zone_name = zoneRows[0].zone_name;
     }
 
-    // Students AND guardians carry the default/reset-password flow —
-    // every other role sets its own password at creation time, so this
-    // is false for them regardless of what's on the row. See
-    // DEFAULT_GUARDIAN_PASSWORD and the two guardians INSERTs above for
-    // where a guardian's must_change_password starts out TRUE.
-    const mustChangePassword =
-      userRole === "students" || userRole === "guardians"
-        ? !!user.must_change_password
-        : false;
+    // Every role carries the default/reset-password flow now (students,
+    // teachers, school admins, zonal admins, super admins, registrars,
+    // guardians, finance). A new or reset account has must_change_password
+    // TRUE; existing accounts that already have a real password stay 0.
+    // While it's TRUE, requireAuth only lets the person reach the
+    // change-password routes (see FIRST_LOGIN_ALLOWED_PATHS).
+    const mustChangePassword = !!user.must_change_password;
 
     // Granular permissions for a Teacher Development Coordinator — see
     // requirePermission()/zonal_admin_permissions above. If explicit
@@ -25200,9 +27148,10 @@ app.get("/api/me", requireAuth, async (req, res) => {
     let moe_school_code = null;
     let logo_url = null;
     let school_zone_id = null;
+    let school_governance_model = null;
     if (req.user.school_id) {
       const [schoolRows] = await pool.query(
-        "SELECT school_name, school_level, moe_school_code, logo_url, zone_id FROM schools WHERE id = ?",
+        "SELECT school_name, school_level, moe_school_code, logo_url, zone_id, school_type FROM schools WHERE id = ?",
         [req.user.school_id],
       );
       if (schoolRows.length > 0) {
@@ -25211,6 +27160,7 @@ app.get("/api/me", requireAuth, async (req, res) => {
         moe_school_code = schoolRows[0].moe_school_code;
         logo_url = schoolRows[0].logo_url || null;
         school_zone_id = schoolRows[0].zone_id;
+        school_governance_model = governanceModelOf(schoolRows[0]);
       }
     }
 
@@ -25347,6 +27297,23 @@ app.get("/api/me", requireAuth, async (req, res) => {
         avatar_url = zaPhotoRows[0].avatar_url || null;
         id_photo_url = zaPhotoRows[0].id_photo_url || null;
       }
+    } else if (req.user.role === "finance_users") {
+      // Finance officers had no branch here, so admin_full_name stayed
+      // null and the Finance portal fell back to showing the account ID
+      // around the avatar. Same first/middle/last split as every other
+      // admin table.
+      const [finRows] = await pool
+        .query(
+          "SELECT first_name, middle_name, last_name FROM finance_users WHERE finance_id = ?",
+          [req.user.user_id],
+        )
+        .catch(() => [[]]);
+      if (finRows && finRows.length > 0) {
+        admin_full_name =
+          [finRows[0].first_name, finRows[0].middle_name, finRows[0].last_name]
+            .filter(Boolean)
+            .join(" ") || null;
+      }
     } else if (req.user.role === "guardians") {
       // Guardians aren't scoped to a school_id (that's the whole point —
       // one guardian can have children at several schools), so none of
@@ -25419,6 +27386,9 @@ app.get("/api/me", requireAuth, async (req, res) => {
       // zone-first). Frontends should prefer this over picking between
       // logo_url / zone_logo_url themselves.
       display_logo_url: logo_url || zone_logo_url || null,
+      // "public" | "private" (null for accounts with no school). Frontends
+      // use this to show or hide private-only features.
+      governance_model: school_governance_model,
       academic_year,
       additional_role,
       is_registrar,
@@ -25715,7 +27685,12 @@ app.get("/api/teacher/student-performance", requireAuth, async (req, res) => {
 app.get(
   "/api/principal/incoming-teachers",
   requireAuth,
-  requirePrincipal,
+  // Read-only: Managing Director can see the status of teachers they
+  // recruited via /api/md/teachers (same incoming_teachers pipeline),
+  // but accept/decline below stay requirePrincipal-only — reviewing
+  // and minting the Teacher ID is still the Principal's operational
+  // job, not the MD's.
+  requireAdminTitle("Principal", "Managing Director"),
   async (req, res) => {
     try {
       const [rows] = await pool.query(
@@ -25779,6 +27754,7 @@ app.post(
       const incoming = rows[0];
 
       let teacher_id;
+      let usedDefaultPassword = false;
       if (incoming.transferred_from_teacher_id) {
         // Transfer, not a hire: the teacher already has a working
         // account. Accepting just re-points their existing
@@ -25791,11 +27767,10 @@ app.post(
         });
         teacher_id = teacher.teacher_id;
       } else {
-        if (!password)
-          return res.status(400).json({
-            error:
-              "A login password is required to activate this teacher's account.",
-          });
+        // Password is optional now: leaving it blank gives the account the
+        // system default (1122). Either way the teacher must set their own
+        // 6-digit PIN at first login.
+        usedDefaultPassword = !password;
         teacher_id = await createTeacherAccount({
           school_id: req.user.school_id,
           first_name: incoming.first_name,
@@ -25814,8 +27789,11 @@ app.post(
       res.json({
         message: incoming.transferred_from_teacher_id
           ? "Transfer accepted. This teacher now belongs to your school with their existing ID and password — no new account needed."
-          : "Teacher accepted and activated. Academic VP can now assign their teaching load.",
+          : `Teacher accepted and activated. Academic VP can now assign their teaching load.${usedDefaultPassword ? ` Share ID ${teacher_id} and the default password (${SYSTEM_DEFAULT_PASSWORD}) with them — they'll be asked to set a 6-digit PIN at first login.` : ""}`,
         teacher_id,
+        default_password: usedDefaultPassword
+          ? SYSTEM_DEFAULT_PASSWORD
+          : undefined,
       });
     } catch (err) {
       console.error("/api/principal/incoming-teachers/:id/accept error:", err);
@@ -25864,7 +27842,12 @@ app.post(
 app.get(
   "/api/admin/teachers",
   requireAuth,
-  requireAdminTitle("Principal", "Academic VP", "Admin VP"),
+  // Managing Director gets read access to the same roster so their
+  // Dashboard/Teacher Onboarding page can show a real teacher
+  // headcount — the roster's own edit action stays restricted to
+  // these three titles by role, not by this route (the frontend hides
+  // it for MD; nothing here grants write access).
+  requireAdminTitle("Principal", "Academic VP", "Admin VP", "Managing Director"),
   async (req, res) => {
     try {
       const [rows] = await pool.query(
@@ -28006,7 +29989,7 @@ app.get(
         termLabel = yr ? yr.label : term;
       }
       const [[school]] = await pool.query(
-        `SELECT sc.school_name, sc.school_seal_url, z.zone_name AS zone, w.woreda_name AS woreda, r.region_name AS region
+        `SELECT sc.school_name, sc.school_seal_url, z.zone_name AS zone, z.logo_url AS zone_logo_url, w.woreda_name AS woreda, r.region_name AS region
              FROM schools sc LEFT JOIN zone z ON z.zone_id = sc.zone_id
              LEFT JOIN woreda w ON w.woreda_id = sc.woreda_id LEFT JOIN region r ON r.region_id = sc.region_id
              WHERE sc.id = ?`,
@@ -28191,6 +30174,9 @@ app.get(
 );
 
 scheduleAutoAbsentSweep();
+// KG support (schema widening) runs once at startup, outside any request
+// transaction, so an ALTER TABLE can never wait on a request's own locks.
+ensureKgSupport().catch((e) => console.error("ensureKgSupport (boot):", e));
 app.listen(3001, () =>
   console.log("SIS Server running on http://localhost:3001"),
 );
@@ -28572,7 +30558,7 @@ function currentEaseExamYear() {
 // DEFAULT_SUPERVISOR_PASSWORD above, just its own constant since HoE/TDC
 // are a different title and it's worth being able to change one without
 // touching the other.
-const DEFAULT_ZONAL_ADMIN_PASSWORD = "1123";
+const DEFAULT_ZONAL_ADMIN_PASSWORD = SYSTEM_DEFAULT_PASSWORD;
 
 // --- Super Admin: create a Head of Education or Teacher Development
 // Coordinator account, and assign them to a Region/Zone ---
@@ -28615,13 +30601,14 @@ app.post(
         return res.status(404).json({ error: "Zone not found." });
 
       const admin_id = await getNextZonalAdminId(zone_id, title);
+      await ensureMustChangePasswordColumns();
       const hashedPassword = await bcrypt.hash(
         DEFAULT_ZONAL_ADMIN_PASSWORD,
         10,
       );
       await pool.query(
-        `INSERT INTO zonal_admins (admin_id, zone_id, title, first_name, middle_name, last_name, contact_number, email, security_password, can_act_independently)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO zonal_admins (admin_id, zone_id, title, first_name, middle_name, last_name, contact_number, email, security_password, can_act_independently, must_change_password)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)`,
         [
           admin_id,
           zone_id,
@@ -28722,8 +30709,9 @@ app.post(
         DEFAULT_ZONAL_ADMIN_PASSWORD,
         10,
       );
+      await ensureMustChangePasswordColumns();
       const [result] = await pool.query(
-        "UPDATE zonal_admins SET security_password = ? WHERE admin_id = ?",
+        "UPDATE zonal_admins SET security_password = ?, must_change_password = TRUE WHERE admin_id = ?",
         [hashedPassword, req.params.admin_id],
       );
       if (result.affectedRows === 0)
@@ -28992,13 +30980,14 @@ app.get(
   async (req, res) => {
     try {
       await ensureSchoolEducationalLevelsTable();
+      await ensureKgSupport();
       const [schools] = await pool.query(
         `SELECT sc.id, sc.school_name, sc.school_level, sc.educational_level, sc.school_prefix, sc.moe_school_code,
                     sc.school_type, sc.logo_url,
                     sc.zone_id, z.zone_name, z.region_id, r.region_name,
                     w.woreda_name AS woreda,
-                    GROUP_CONCAT(DISTINCT gt.school_level ORDER BY gt.school_level) AS grade_tiers,
-                    GROUP_CONCAT(DISTINCT sel.educational_level ORDER BY FIELD(sel.educational_level, 'PRIMARY','MIDDLE','SECONDARY')) AS educational_levels
+                    GROUP_CONCAT(DISTINCT gt.school_level ORDER BY FIELD(gt.school_level, 'KG','BASIC','CORE','GENERAL','PREPARATORY')) AS grade_tiers,
+                    GROUP_CONCAT(DISTINCT sel.educational_level ORDER BY FIELD(sel.educational_level, 'KG','PRIMARY','MIDDLE','SECONDARY')) AS educational_levels
              FROM schools sc
              LEFT JOIN zone z ON z.zone_id = sc.zone_id
              LEFT JOIN region r ON r.region_id = z.region_id
@@ -29012,6 +31001,8 @@ app.get(
       res.json(
         schools.map((s) => ({
           ...s,
+          // "public" | "private", derived from school_type (see governance.js).
+          governance_model: governanceModelOf(s),
           grade_tiers: s.grade_tiers ? s.grade_tiers.split(",") : [],
           // Falls back to the single legacy educational_level column for
           // any school registered before school_educational_levels
@@ -29132,8 +31123,14 @@ app.post(
     // above) — both default to the LOWEST tier/level this school
     // actually offers, same "lower of the two" reasoning the old
     // SECONDARY-only path already used for school_level.
-    const primaryTier = gradeTiers[0];
-    const primaryEducationalLevel = levels[0];
+    // KG is an add-on wing: it must NOT become the school's legacy
+    // single-valued school_level/educational_level when the school also runs
+    // a real tier, because every single-tier consumer (subject dictionary,
+    // roster bounds, ...) reads those columns and has no KG concept. Only a
+    // KG-only school falls back to KG.
+    const primaryTier = gradeTiers.find((t) => t !== "KG") || gradeTiers[0];
+    const primaryEducationalLevel =
+      levels.find((l) => l !== "KG") || levels[0];
     const offersPreparatory = gradeTiers.includes("PREPARATORY");
     if (
       streams &&
@@ -29148,6 +31145,7 @@ app.post(
     try {
       await ensureSchoolEducationalLevelsTable();
       await ensureSuperAdminCoreTables();
+      await ensureKgSupport();
       await conn.beginTransaction();
       const cleanName = normalizeName(school_name);
       const basePrefix = buildSchoolPrefixBase(cleanName, primaryTier);
@@ -29278,6 +31276,7 @@ app.put(
           "Send add_educational_levels (non-empty array), school_name and/or school_type to update.",
       });
     }
+    await ensureKgSupport();
     const addLevels = EDUCATIONAL_LEVELS.filter((l) => addInput.includes(l));
     if (
       addInput.length > 0 &&
@@ -29434,6 +31433,2274 @@ app.put(
     }
   },
 );
+
+// --- Private schools: the Managing Director ---
+// A private school has no zonal recruitment workflow. Super Admin sets up
+// ONE Managing Director per private school (the owner's representative);
+// they stand in for the zonal office: they recruit teachers, appoint the
+// Principal / Admin VP / Academic VP, and (with the Finance role) recruit
+// the school's Finance officer. Public schools have no Managing Director.
+//
+// Every new Managing Director starts on this same fixed password — same
+// pattern as DEFAULT_SUPERVISOR_PASSWORD/DEFAULT_ZONAL_ADMIN_PASSWORD —
+// with must_change_password forcing a real one at first login (see
+// POST /api/school-admin/update-password, the one school-admin route
+// that isn't gated behind that state, mirroring
+// /api/finance/update-password). Super Admin no longer picks the MD's
+// starting password themselves, so it can't be shared insecurely or
+// forgotten before hand-off.
+const DEFAULT_MANAGING_DIRECTOR_PASSWORD = SYSTEM_DEFAULT_PASSWORD;
+
+app.post(
+  "/api/super/schools/:id/managing-director",
+  requireAuth,
+  requireSuperAdmin,
+  requireSuperAdminPermission("manage_schools"),
+  async (req, res) => {
+    const {
+      first_name,
+      middle_name,
+      last_name,
+      sex,
+      education_level,
+      contact_number,
+      email,
+      replace_admin_id,
+    } = req.body;
+    if (!first_name || !last_name) {
+      return res
+        .status(400)
+        .json({ error: "first_name and last_name are required" });
+    }
+    try {
+      const school = await getSchoolGovernance(req.params.id);
+      if (!school) return res.status(404).json({ error: "School not found." });
+      if (!userCan(req.user, "appoint_managing_director", school)) {
+        return res
+          .status(403)
+          .json({ error: "Only private schools have a Managing Director." });
+      }
+      const admin_id = await createSchoolAdminAccount({
+        school_id: school.id,
+        first_name,
+        middle_name,
+        last_name,
+        title: TITLES.MANAGING_DIRECTOR,
+        sex,
+        education_level,
+        contact_number,
+        email,
+        password: DEFAULT_MANAGING_DIRECTOR_PASSWORD,
+        replace_admin_id: replace_admin_id || null,
+        channel: "super_admin",
+        must_change_password: true,
+      });
+      await logAudit(
+        req,
+        "school.md_appoint",
+        "school",
+        school.id,
+        `Managing Director ${admin_id}${replace_admin_id ? ` replaced ${replace_admin_id}` : ""}`,
+      );
+      res.json({
+        message: replace_admin_id
+          ? `Managing Director account created and the previous one was deactivated. Share ID ${admin_id} and the default password (${DEFAULT_MANAGING_DIRECTOR_PASSWORD}) with them — they'll be asked to change it after first login.`
+          : `Managing Director account created. Share ID ${admin_id} and the default password (${DEFAULT_MANAGING_DIRECTOR_PASSWORD}) with them — they'll be asked to change it after first login.`,
+        admin_id,
+        default_password: DEFAULT_MANAGING_DIRECTOR_PASSWORD,
+      });
+    } catch (err) {
+      console.error("POST /api/super/schools/:id/managing-director error:", err);
+      res.status(err.status || 500).json({
+        error: err.status ? err.message : "Could not create Managing Director",
+      });
+    }
+  },
+);
+
+app.get(
+  "/api/super/schools/:id/managing-director",
+  requireAuth,
+  requireSuperAdmin,
+  requireSuperAdminPermission("manage_schools"),
+  async (req, res) => {
+    try {
+      const [rows] = await pool.query(
+        `SELECT admin_id, first_name, middle_name, last_name, contact_number, email, must_change_password, created_at
+           FROM school_admins
+          WHERE school_id = ? AND title = ? AND (is_active IS NULL OR is_active = TRUE)`,
+        [req.params.id, TITLES.MANAGING_DIRECTOR],
+      );
+      res.json(rows[0] || null);
+    } catch (err) {
+      console.error("GET /api/super/schools/:id/managing-director error:", err);
+      res.status(500).json({ error: "Could not load the Managing Director" });
+    }
+  },
+);
+
+// Managing Director: recruits a teacher. Same pipeline a zonal push feeds
+// (incoming_teachers -> the Principal reviews and accepts -> the Academic
+// VP assigns classes), so everything after the first step is identical
+// to a public school. The school comes from the JWT, never from the body.
+app.post(
+  "/api/md/teachers",
+  requireAuth,
+  requireCapability("recruit_staff"),
+  async (req, res) => {
+    const { first_name, middle_name, last_name, sex, education_level, contact_number, email } =
+      req.body;
+    if (!first_name || !last_name) {
+      return res
+        .status(400)
+        .json({ error: "first_name and last_name are required" });
+    }
+    try {
+      const incoming_id = await pushIncomingTeacher({
+        school_id: req.governedSchool.id,
+        pushed_by: req.user.user_id,
+        first_name,
+        middle_name,
+        last_name,
+        sex,
+        education_level,
+        contact_number,
+        email,
+        channel: "managing_director",
+      });
+      await logAudit(
+        req,
+        "md.recruit_teacher",
+        "incoming_teacher",
+        incoming_id,
+        `${first_name} ${last_name}`,
+      );
+      res.json({
+        message:
+          "Teacher sent to the Principal. They will review and accept before the account goes live.",
+        incoming_id,
+      });
+    } catch (err) {
+      console.error("POST /api/md/teachers error:", err);
+      res.status(err.status || 500).json({
+        error: err.status ? err.message : "Could not recruit teacher",
+      });
+    }
+  },
+);
+
+// Managing Director: appoints the Principal / Admin VP / Academic VP of
+// their own school (optionally replacing the current holder).
+app.post(
+  "/api/md/school-admins",
+  requireAuth,
+  requireCapability("appoint_leadership"),
+  async (req, res) => {
+    const {
+      title,
+      first_name,
+      middle_name,
+      last_name,
+      sex,
+      education_level,
+      contact_number,
+      email,
+      password,
+      replace_admin_id,
+    } = req.body;
+    if (!title || !first_name || !last_name) {
+      return res.status(400).json({
+        error: "title, first_name and last_name are required",
+      });
+    }
+    // Password is optional (blank = system default 1122); if given it must
+    // be a 6-digit PIN like every other password in the system.
+    if (password) {
+      const pinErr = validateNewPin(password);
+      if (pinErr) {
+        return res
+          .status(400)
+          .json({ error: "The password must be exactly 6 digits (numbers only)." });
+      }
+    }
+    try {
+      const admin_id = await createSchoolAdminAccount({
+        school_id: req.governedSchool.id,
+        first_name,
+        middle_name,
+        last_name,
+        title,
+        sex,
+        education_level,
+        contact_number,
+        email,
+        password,
+        replace_admin_id: replace_admin_id || null,
+        channel: "managing_director",
+      });
+      await logAudit(
+        req,
+        "md.appoint_admin",
+        "school_admin",
+        admin_id,
+        `${title}${replace_admin_id ? ` (replacing ${replace_admin_id})` : ""}`,
+      );
+      res.json({
+        message: replace_admin_id
+          ? "Account created and the outgoing admin was deactivated."
+          : "School admin account created.",
+        admin_id,
+      });
+    } catch (err) {
+      console.error("POST /api/md/school-admins error:", err);
+      res.status(err.status || 500).json({
+        error: err.status ? err.message : "Could not create school admin account",
+      });
+    }
+  },
+);
+
+app.get(
+  "/api/md/school-admins",
+  requireAuth,
+  requireCapability("appoint_leadership"),
+  async (req, res) => {
+    try {
+      const [rows] = await pool.query(
+        `SELECT admin_id, first_name, middle_name, last_name, title, contact_number, email
+           FROM school_admins
+          WHERE school_id = ? AND (is_active IS NULL OR is_active = TRUE)
+          ORDER BY title, first_name`,
+        [req.governedSchool.id],
+      );
+      res.json(rows);
+    } catch (err) {
+      console.error("GET /api/md/school-admins error:", err);
+      res.status(500).json({ error: "Could not load school admins" });
+    }
+  },
+);
+
+// --- Finance: account creation ---
+// Who may call this is entirely governance.js's call (recruit_finance):
+// the Principal at a public school, the Managing Director at a private
+// one. The school is always the caller's OWN school (from the JWT),
+// same as every other requireCapability route.
+app.post(
+  "/api/school/finance-account",
+  requireAuth,
+  requireCapability("recruit_finance"),
+  async (req, res) => {
+    const { first_name, middle_name, last_name, sex, contact_number, email } =
+      req.body;
+    if (!first_name || !last_name) {
+      return res
+        .status(400)
+        .json({ error: "first_name and last_name are required" });
+    }
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [existing] = await conn.query(
+        "SELECT finance_id FROM finance_users WHERE school_id = ? AND is_active = TRUE FOR UPDATE",
+        [req.governedSchool.id],
+      );
+      if (existing.length > 0) {
+        await conn.rollback();
+        return res.status(409).json({
+          error:
+            "This school already has an active Finance account. Deactivate it first (POST /api/school/finance-account/deactivate) before creating a new one.",
+        });
+      }
+      const finance_id = await getNextFinanceId();
+      const plain_password = generateTempPassword();
+      const hashed = await bcrypt.hash(plain_password, 10);
+      await conn.query(
+        `INSERT INTO finance_users
+           (finance_id, school_id, first_name, middle_name, last_name, sex, contact_number, email, security_password, must_change_password, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, ?)`,
+        [
+          finance_id,
+          req.governedSchool.id,
+          normalizeName(first_name),
+          normalizeName(middle_name),
+          normalizeName(last_name),
+          sex || null,
+          contact_number || null,
+          email || null,
+          hashed,
+          req.user.user_id,
+        ],
+      );
+      await conn.commit();
+      await logAudit(
+        req,
+        "finance.account_create",
+        "finance_user",
+        finance_id,
+        `${first_name} ${last_name}`,
+      );
+      res.json({
+        message:
+          "Finance account created. Share this ID and temporary password with them now — it will not be shown again.",
+        finance_id,
+        temporary_password: plain_password,
+      });
+    } catch (err) {
+      await conn.rollback();
+      console.error("POST /api/school/finance-account error:", err);
+      res.status(500).json({ error: "Could not create the Finance account" });
+    } finally {
+      conn.release();
+    }
+  },
+);
+
+app.get(
+  "/api/school/finance-account",
+  requireAuth,
+  requireCapability("view_finance_summary"),
+  async (req, res) => {
+    try {
+      const [rows] = await pool.query(
+        `SELECT finance_id, first_name, middle_name, last_name, contact_number, email, must_change_password, created_at
+           FROM finance_users WHERE school_id = ? AND is_active = TRUE`,
+        [req.governedSchool.id],
+      );
+      res.json(rows[0] || null);
+    } catch (err) {
+      console.error("GET /api/school/finance-account error:", err);
+      res.status(500).json({ error: "Could not load the Finance account" });
+    }
+  },
+);
+
+app.post(
+  "/api/school/finance-account/deactivate",
+  requireAuth,
+  requireCapability("recruit_finance"),
+  async (req, res) => {
+    try {
+      const [result] = await pool.query(
+        "UPDATE finance_users SET is_active = FALSE WHERE school_id = ? AND is_active = TRUE",
+        [req.governedSchool.id],
+      );
+      if (result.affectedRows === 0) {
+        return res
+          .status(404)
+          .json({ error: "There is no active Finance account to deactivate." });
+      }
+      await logAudit(
+        req,
+        "finance.account_deactivate",
+        "school",
+        req.governedSchool.id,
+        "Finance account deactivated",
+      );
+      res.json({ message: "Finance account deactivated." });
+    } catch (err) {
+      console.error("POST /api/school/finance-account/deactivate error:", err);
+      res.status(500).json({ error: "Could not deactivate the Finance account" });
+    }
+  },
+);
+
+// Finance's own forced password change (mirrors /api/student/update-password
+// and /api/guardian/update-password — the one route NOT gated behind
+// "must change password first", since it's the only way out of that state).
+app.post(
+  "/api/finance/update-password",
+  requireAuth,
+  requireFinanceIdentity,
+  async (req, res) => {
+    const { currentPass, newPass } = req.body;
+    if (!currentPass || !newPass) {
+      return res
+        .status(400)
+        .json({ error: "Current and new password are both required" });
+    }
+    {
+      const pinErr = validateNewPin(newPass);
+      if (pinErr) return res.status(400).json({ error: pinErr });
+    }
+    try {
+      const [rows] = await pool.query(
+        "SELECT security_password FROM finance_users WHERE finance_id = ?",
+        [req.user.user_id],
+      );
+      if (rows.length === 0)
+        return res.status(404).json({ error: "Finance account not found" });
+      const match = await bcrypt.compare(currentPass, rows[0].security_password);
+      if (!match)
+        return res.status(401).json({ error: "Current password incorrect" });
+      const hashed = await bcrypt.hash(newPass, 10);
+      await pool.query(
+        "UPDATE finance_users SET security_password = ?, must_change_password = FALSE WHERE finance_id = ?",
+        [hashed, req.user.user_id],
+      );
+      issueAuthToken(res, { ...req.user, must_change_password: false });
+      res.json({ message: "Password updated successfully" });
+    } catch (err) {
+      console.error("POST /api/finance/update-password error:", err);
+      res.status(500).json({ error: "Password update failed" });
+    }
+  },
+);
+
+// School admin's own forced password change — mirrors
+// /api/finance/update-password exactly. Every school_admins title can
+// call this (a Principal/VP changing a still-default 1121 is harmless),
+// but today it's only ever REQUIRED for a Managing Director, since
+// that's the one title created with must_change_password TRUE — see
+// DEFAULT_MANAGING_DIRECTOR_PASSWORD. Deliberately not gated behind
+// blockIfMustChangePassword, since it's the one way out of that state.
+app.post(
+  "/api/school-admin/update-password",
+  requireAuth,
+  async (req, res) => {
+    if (req.user.role !== "school_admins") {
+      return res.status(403).json({
+        error: "This action is restricted to a school admin account.",
+      });
+    }
+    const { currentPass, newPass } = req.body;
+    if (!currentPass || !newPass) {
+      return res
+        .status(400)
+        .json({ error: "Current and new password are both required" });
+    }
+    {
+      const pinErr = validateNewPin(newPass);
+      if (pinErr) return res.status(400).json({ error: pinErr });
+    }
+    try {
+      const [rows] = await pool.query(
+        "SELECT security_password FROM school_admins WHERE admin_id = ? AND school_id = ?",
+        [req.user.user_id, req.user.school_id],
+      );
+      if (rows.length === 0)
+        return res.status(404).json({ error: "Account not found" });
+      const match = await bcrypt.compare(currentPass, rows[0].security_password);
+      if (!match)
+        return res.status(401).json({ error: "Current password incorrect" });
+      const hashed = await bcrypt.hash(newPass, 10);
+      await pool.query(
+        "UPDATE school_admins SET security_password = ?, must_change_password = FALSE WHERE admin_id = ? AND school_id = ?",
+        [hashed, req.user.user_id, req.user.school_id],
+      );
+      issueAuthToken(res, { ...req.user, must_change_password: false });
+      res.json({ message: "Password updated successfully" });
+    } catch (err) {
+      console.error("POST /api/school-admin/update-password error:", err);
+      res.status(500).json({ error: "Password update failed" });
+    }
+  },
+);
+
+// --- Finance: fee setup ---
+// One row per school per academic year. registration_fee applies
+// everywhere; monthly_fee only means anything (and is only settable)
+// at a private school — see governance.js's financeModulesEnabled.
+app.get(
+  "/api/finance/fees",
+  requireAuth,
+  requireFinance,
+  async (req, res) => {
+    try {
+      const academic_year = (await getCurrentAcademicYear(req.user.school_id)).label;
+      const [rows] = await pool.query(
+        "SELECT registration_fee, monthly_fee, updated_at FROM fee_structures WHERE school_id = ? AND academic_year = ?",
+        [req.user.school_id, academic_year],
+      );
+      const school = await getSchoolGovernance(req.user.school_id);
+      res.json({
+        academic_year,
+        governance_model: school?.governance_model || null,
+        registration_fee: rows[0]?.registration_fee ?? null,
+        monthly_fee: rows[0]?.monthly_fee ?? null,
+        updated_at: rows[0]?.updated_at ?? null,
+      });
+    } catch (err) {
+      console.error("GET /api/finance/fees error:", err);
+      res.status(500).json({ error: "Could not load fee setup" });
+    }
+  },
+);
+
+app.put(
+  "/api/finance/fees",
+  requireAuth,
+  requireFinance,
+  async (req, res) => {
+    const { registration_fee, monthly_fee } = req.body;
+    const regFee = Number(registration_fee);
+    if (!Number.isFinite(regFee) || regFee < 0) {
+      return res
+        .status(400)
+        .json({ error: "registration_fee must be a non-negative number." });
+    }
+    try {
+      const school = await getSchoolGovernance(req.user.school_id);
+      if (!school) return res.status(404).json({ error: "School not found." });
+      let monthlyFeeToStore = null;
+      if (school.governance_model === "private") {
+        if (monthly_fee !== undefined && monthly_fee !== null) {
+          const mFee = Number(monthly_fee);
+          if (!Number.isFinite(mFee) || mFee < 0) {
+            return res
+              .status(400)
+              .json({ error: "monthly_fee must be a non-negative number." });
+          }
+          monthlyFeeToStore = mFee;
+        }
+      } else if (monthly_fee !== undefined && monthly_fee !== null) {
+        return res.status(400).json({
+          error:
+            "This is a government / public school — it cannot charge a monthly fee, only the registration fee.",
+        });
+      }
+      const academic_year = (await getCurrentAcademicYear(req.user.school_id)).label;
+      await pool.query(
+        `INSERT INTO fee_structures (school_id, academic_year, registration_fee, monthly_fee, set_by)
+           VALUES (?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           registration_fee = VALUES(registration_fee),
+           monthly_fee = VALUES(monthly_fee),
+           set_by = VALUES(set_by)`,
+        [req.user.school_id, academic_year, regFee, monthlyFeeToStore, req.user.user_id],
+      );
+      await logAudit(
+        req,
+        "finance.fees_set",
+        "school",
+        req.user.school_id,
+        `Registration fee ${regFee}${monthlyFeeToStore != null ? `, monthly fee ${monthlyFeeToStore}` : ""} for ${academic_year}`,
+      );
+      res.json({
+        message: "Fees updated.",
+        academic_year,
+        registration_fee: regFee,
+        monthly_fee: monthlyFeeToStore,
+      });
+    } catch (err) {
+      console.error("PUT /api/finance/fees error:", err);
+      res.status(500).json({ error: "Could not update fees" });
+    }
+  },
+);
+
+// --- Finance: verifying registration payments ---
+// A registrar's submission (see POST /api/register and POST
+// /api/registrar/students/:student_id/payment) lands here as one
+// fee_payments row with status PENDING. Nothing in this table ever
+// gets deleted — a mistake is corrected with a new row or a rejection,
+// never by erasing what happened.
+app.get(
+  "/api/finance/payments/pending",
+  requireAuth,
+  requireFinance,
+  async (req, res) => {
+    try {
+      const [rows] = await pool.query(
+        `SELECT fp.id, fp.student_id, s.first_name, s.last_name, s.class_level, s.stream,
+                fp.fee_type, fp.amount, fp.method, fp.reference_number, fp.receipt_photo_url,
+                fp.submitted_by, fp.submitted_at
+           FROM fee_payments fp
+           JOIN students s ON s.student_id = fp.student_id AND s.school_id = fp.school_id
+          WHERE fp.school_id = ? AND fp.status = 'PENDING'
+          ORDER BY fp.submitted_at`,
+        [req.user.school_id],
+      );
+      res.json(rows);
+    } catch (err) {
+      console.error("GET /api/finance/payments/pending error:", err);
+      res.status(500).json({ error: "Could not load pending payments" });
+    }
+  },
+);
+
+app.post(
+  "/api/finance/payments/:id/approve",
+  requireAuth,
+  requireFinance,
+  async (req, res) => {
+    await ensureSubscriptionTables().catch(() => {});
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [rows] = await conn.query(
+        "SELECT * FROM fee_payments WHERE id = ? AND school_id = ? AND status = 'PENDING' FOR UPDATE",
+        [req.params.id, req.user.school_id],
+      );
+      if (rows.length === 0) {
+        await conn.rollback();
+        return res
+          .status(404)
+          .json({ error: "Pending payment not found for this school." });
+      }
+      const payment = rows[0];
+      // Sequential per-school receipt numbers — printed on the system
+      // receipt Finance hands back to the parent/student.
+      const [[{ maxReceipt }]] = await conn.query(
+        "SELECT COALESCE(MAX(receipt_no), 0) AS maxReceipt FROM fee_payments WHERE school_id = ?",
+        [req.user.school_id],
+      );
+      const receipt_no = maxReceipt + 1;
+      await conn.query(
+        "UPDATE fee_payments SET status = 'VERIFIED', receipt_no = ?, verified_by = ?, verified_at = NOW() WHERE id = ?",
+        [receipt_no, req.user.user_id, payment.id],
+      );
+      if (payment.fee_type === "REGISTRATION") {
+        // Registration is now complete. The student does NOT go
+        // straight to Active — they enter the same unassigned queue
+        // every new registration already goes through; the Registrar
+        // places them into a section from there (see
+        // getUnassignedBuckets / /api/registrar/trigger-placement).
+        await conn.query(
+          "UPDATE students SET status = 'Inactive' WHERE student_id = ? AND school_id = ? AND status = 'Pending Payment'",
+          [payment.student_id, req.user.school_id],
+        );
+        // The subscription part of this payment is now real money: record
+        // the student as paid (the current month, or the rest of the year
+        // for a yearly school).
+        const [[charge]] = await conn.query(
+          "SELECT * FROM subscription_registration_charges WHERE payment_id = ? AND status = 'PENDING' FOR UPDATE",
+          [payment.id],
+        );
+        if (charge) {
+          await recordStudentSubscription(conn, {
+            schoolId: req.user.school_id,
+            studentId: payment.student_id,
+            cycle: charge.billing_cycle,
+            fee: Number(charge.amount),
+            ecYear: charge.ec_year,
+            startMonth: charge.ec_month,
+            markedBy: req.user.user_id,
+          });
+          await conn.query(
+            "UPDATE subscription_registration_charges SET status = 'APPLIED' WHERE payment_id = ?",
+            [payment.id],
+          );
+        }
+      }
+      await conn.commit();
+      await logAudit(
+        req,
+        "finance.payment_approve",
+        "student",
+        payment.student_id,
+        `Receipt #${receipt_no}, ${payment.amount} via ${payment.method}`,
+      );
+      res.json({
+        message: "Payment approved. Registration is complete.",
+        receipt_no,
+      });
+    } catch (err) {
+      await conn.rollback();
+      console.error("POST /api/finance/payments/:id/approve error:", err);
+      res.status(500).json({ error: "Could not approve payment" });
+    } finally {
+      conn.release();
+    }
+  },
+);
+
+app.post(
+  "/api/finance/payments/:id/reject",
+  requireAuth,
+  requireFinance,
+  async (req, res) => {
+    const { reason } = req.body;
+    if (!reason || !reason.trim()) {
+      return res
+        .status(400)
+        .json({ error: "A rejection reason is required." });
+    }
+    await ensureSubscriptionTables().catch(() => {});
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [rows] = await conn.query(
+        "SELECT * FROM fee_payments WHERE id = ? AND school_id = ? AND status = 'PENDING' FOR UPDATE",
+        [req.params.id, req.user.school_id],
+      );
+      if (rows.length === 0) {
+        await conn.rollback();
+        return res
+          .status(404)
+          .json({ error: "Pending payment not found for this school." });
+      }
+      const payment = rows[0];
+      await conn.query(
+        "UPDATE fee_payments SET status = 'REJECTED', verified_by = ?, verified_at = NOW(), rejection_reason = ? WHERE id = ?",
+        [req.user.user_id, reason.trim(), payment.id],
+      );
+      if (payment.fee_type === "REGISTRATION") {
+        await conn.query(
+          "UPDATE students SET status = 'Registration Rejected' WHERE student_id = ? AND school_id = ? AND status = 'Pending Payment'",
+          [payment.student_id, req.user.school_id],
+        );
+        // The subscription part never became real money.
+        await conn.query(
+          "UPDATE subscription_registration_charges SET status = 'VOID' WHERE payment_id = ? AND status = 'PENDING'",
+          [payment.id],
+        );
+      }
+      await conn.commit();
+      await logAudit(
+        req,
+        "finance.payment_reject",
+        "student",
+        payment.student_id,
+        reason.trim(),
+      );
+      res.json({ message: "Payment rejected." });
+    } catch (err) {
+      await conn.rollback();
+      console.error("POST /api/finance/payments/:id/reject error:", err);
+      res.status(500).json({ error: "Could not reject payment" });
+    } finally {
+      conn.release();
+    }
+  },
+);
+
+// --- Finance: filtered/paged payments list, dashboard, invoicing ---
+// script.js (the Finance portal) was built against an assumed API
+// contract — see its "ASSUMPTION FLAG" comment — that never matched
+// what this file actually exposed above (GET /api/finance/payments
+// with no /pending suffix and status/search filters; /fee-structure
+// instead of /fees; /change-password instead of /update-password;
+// and a whole Invoices/Overdue/Reports section with no backend at
+// all). The routes below close that gap. The old /api/finance/fees,
+// /api/finance/payments/pending and /api/finance/update-password
+// routes above are left in place in case anything else still calls
+// them, but the Finance portal itself now hits only what's below.
+//
+// Monthly tuition was never wired up anywhere in this file either —
+// grep for fee_type = 'TUITION' and there's nothing: every existing
+// fee_payments row is a one-time REGISTRATION payment. Tuition
+// invoicing is a separate, simpler flow (Finance marks an invoice
+// paid directly; it doesn't go through the submit/verify/reject cycle
+// registration payments use), tracked in its own fee_invoices table
+// rather than overloading fee_payments with a shape it wasn't built
+// for.
+//
+//   ALTER TABLE fee_structures ADD COLUMN due_day TINYINT NULL;
+//     -- Day of the month (1-28, keep it <=28 so it exists in every
+//     -- month) tuition invoices are generated with as their due date.
+//     -- NULL until Fee Setup's "Due Day of Month" field is saved once.
+//
+//   CREATE TABLE IF NOT EXISTS fee_invoices (
+//     id INT AUTO_INCREMENT PRIMARY KEY,
+//     school_id INT NOT NULL,
+//     student_id VARCHAR(50) NOT NULL,
+//     period_month TINYINT NOT NULL,   -- calendar month, 1-12
+//     period_year SMALLINT NOT NULL,
+//     amount DECIMAL(10,2) NOT NULL,
+//     due_date DATE NOT NULL,
+//     status ENUM('pending','paid') NOT NULL DEFAULT 'pending',
+//     paid_at DATETIME NULL,
+//     marked_paid_by VARCHAR(30) NULL,
+//     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     UNIQUE KEY uq_student_period (school_id, student_id, period_year, period_month),
+//     KEY idx_school_period (school_id, period_year, period_month),
+//     KEY idx_school_status (school_id, status),
+//     FOREIGN KEY (school_id) REFERENCES schools(id)
+//   );
+//   -- "Overdue" is derived (status='pending' AND due_date < CURDATE()),
+//   -- not stored — see fin_overdue_sub's copy: "computed on load,
+//   -- there is no automatic daily job yet." Keep that comment true: if
+//   -- a scheduled job is later added to flip status to an 'overdue'
+//   -- value, this table and the /overdue route below both need it.
+//
+//   CREATE TABLE IF NOT EXISTS fee_reminders (
+//     id INT AUTO_INCREMENT PRIMARY KEY,
+//     invoice_id INT NOT NULL,
+//     school_id INT NOT NULL,
+//     sent_by VARCHAR(30) NOT NULL,
+//     sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+//     KEY idx_invoice (invoice_id),
+//     FOREIGN KEY (invoice_id) REFERENCES fee_invoices(id),
+//     FOREIGN KEY (school_id) REFERENCES schools(id)
+//   );
+// fee_payments.status is stored uppercase (PENDING/VERIFIED/REJECTED),
+// calling the approved state VERIFIED — but script.js's status filter
+// dropdown, its `r.status === 'pending'` checks, and badgeClass() all
+// work in lowercase and call that state "approved". These two convert
+// between the two vocabularies at the API boundary.
+function mapPaymentStatus(dbStatus) {
+  return { PENDING: "pending", VERIFIED: "approved", REJECTED: "rejected" }[dbStatus] || String(dbStatus || "").toLowerCase();
+}
+function mapPaymentStatusToDb(uiStatus) {
+  return { pending: "PENDING", approved: "VERIFIED", rejected: "REJECTED" }[String(uiStatus || "").toLowerCase()] || "PENDING";
+}
+let financeInvoicingTablesReady = false;
+async function ensureFinanceInvoicingTables() {
+  if (financeInvoicingTablesReady) return;
+  try {
+    await pool.query("ALTER TABLE fee_structures ADD COLUMN due_day TINYINT NULL");
+  } catch (err) {
+    if (err.code !== "ER_DUP_FIELDNAME") throw err;
+  }
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fee_invoices (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      school_id INT NOT NULL,
+      student_id VARCHAR(50) NOT NULL,
+      period_month TINYINT NOT NULL,
+      period_year SMALLINT NOT NULL,
+      amount DECIMAL(10,2) NOT NULL,
+      due_date DATE NOT NULL,
+      status ENUM('pending','paid') NOT NULL DEFAULT 'pending',
+      paid_at DATETIME NULL,
+      marked_paid_by VARCHAR(30) NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_student_period (school_id, student_id, period_year, period_month),
+      KEY idx_school_period (school_id, period_year, period_month),
+      KEY idx_school_status (school_id, status),
+      FOREIGN KEY (school_id) REFERENCES schools(id)
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fee_reminders (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      invoice_id INT NOT NULL,
+      school_id INT NOT NULL,
+      sent_by VARCHAR(30) NOT NULL,
+      sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_invoice (invoice_id),
+      FOREIGN KEY (invoice_id) REFERENCES fee_invoices(id),
+      FOREIGN KEY (school_id) REFERENCES schools(id)
+    )
+  `);
+  financeInvoicingTablesReady = true;
+}
+
+// GET /api/finance/dashboard — the five stat cards + recent-submissions
+// table on the Finance landing page.
+app.get(
+  "/api/finance/dashboard",
+  requireAuth,
+  requireFinance,
+  async (req, res) => {
+    try {
+      await ensureFinanceInvoicingTables();
+      await ensureSubscriptionTables();
+      const school_id = req.user.school_id;
+      const academic_year = (await getCurrentAcademicYear(school_id)).label;
+      const [[pending]] = await pool.query(
+        "SELECT COUNT(*) AS n FROM fee_payments WHERE school_id = ? AND status = 'PENDING'",
+        [school_id],
+      );
+      const [[verifiedToday]] = await pool.query(
+        `SELECT COUNT(*) AS n FROM fee_payments
+          WHERE school_id = ? AND status = 'VERIFIED' AND DATE(verified_at) = CURDATE()`,
+        [school_id],
+      );
+      const [[regCollected]] = await pool.query(
+        `SELECT COALESCE(SUM(fp.amount - COALESCE(sc.amount, 0)), 0) AS total
+           FROM fee_payments fp
+           LEFT JOIN subscription_registration_charges sc
+             ON sc.payment_id = fp.id AND sc.status <> 'VOID'
+          WHERE fp.school_id = ? AND fp.status = 'VERIFIED' AND fp.fee_type = 'REGISTRATION'`,
+        [school_id],
+      );
+      const [[tuitionCollected]] = await pool.query(
+        `SELECT COALESCE(SUM(amount), 0) AS total FROM fee_invoices
+          WHERE school_id = ? AND status = 'paid'
+            AND period_month = MONTH(CURDATE()) AND period_year = YEAR(CURDATE())`,
+        [school_id],
+      );
+      const [[overdue]] = await pool.query(
+        "SELECT COUNT(*) AS n FROM fee_invoices WHERE school_id = ? AND status = 'pending' AND due_date < CURDATE()",
+        [school_id],
+      );
+      const [recentRaw] = await pool.query(
+        `SELECT fp.id, CONCAT(s.first_name, ' ', s.last_name) AS student_name,
+                fp.fee_type, fp.amount, fp.method, fp.status, fp.submitted_at
+           FROM fee_payments fp
+           JOIN students s ON s.student_id = fp.student_id AND s.school_id = fp.school_id
+          WHERE fp.school_id = ?
+          ORDER BY fp.submitted_at DESC
+          LIMIT 10`,
+        [school_id],
+      );
+      const recent = recentRaw.map((r) => ({ ...r, status: mapPaymentStatus(r.status) }));
+      res.json({
+        academic_year,
+        pending_count: pending.n,
+        verified_today_count: verifiedToday.n,
+        registration_collected_term: regCollected.total,
+        tuition_collected_month: tuitionCollected.total,
+        overdue_count: overdue.n,
+        recent,
+      });
+    } catch (err) {
+      console.error("GET /api/finance/dashboard error:", err);
+      res.status(500).json({ error: "Could not load dashboard" });
+    }
+  },
+);
+
+// GET /api/finance/payments?status=&search= — the Verify Payments
+// table. Supersedes /api/finance/payments/pending with filtering; when
+// status is omitted or 'pending' it behaves the same as that route did.
+// The UI's filter/comparison values are lowercase ('pending','approved',
+// 'rejected') while the DB enum is uppercase and calls the "approved"
+// state VERIFIED — mapPaymentStatus()/its reverse handle that both ways.
+app.get(
+  "/api/finance/payments",
+  requireAuth,
+  requireFinance,
+  async (req, res) => {
+    try {
+      await ensureSubscriptionTables();
+      const status = mapPaymentStatusToDb(String(req.query.status || "pending"));
+      const search = req.query.search ? String(req.query.search).trim() : "";
+      const params = [req.user.school_id, status];
+      let sql = `
+        SELECT fp.id AS payment_id, fp.student_id, CONCAT(s.first_name, ' ', s.last_name) AS student_name,
+               s.class_level, s.stream, fp.fee_type, fp.amount, fp.method,
+               fp.reference_number AS reference, fp.receipt_photo_url AS receipt_url,
+               fp.status, fp.submitted_by, fp.submitted_at,
+               NULLIF(CONCAT_WS(' ', st.first_name, st.last_name), '') AS submitted_by_name,
+               COALESCE(sc.amount, 0) AS subscription_amount,
+               sc.billing_cycle AS subscription_cycle
+          FROM fee_payments fp
+          JOIN students s ON s.student_id = fp.student_id AND s.school_id = fp.school_id
+          LEFT JOIN teachers st ON st.teacher_id = fp.submitted_by AND st.school_id = fp.school_id
+          LEFT JOIN subscription_registration_charges sc
+            ON sc.payment_id = fp.id AND sc.status <> 'VOID'
+         WHERE fp.school_id = ? AND fp.status = ?`;
+      if (search) {
+        sql += " AND (s.first_name LIKE ? OR s.last_name LIKE ? OR fp.student_id LIKE ?)";
+        params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+      }
+      sql += " ORDER BY fp.submitted_at DESC";
+      const [rowsRaw] = await pool.query(sql, params);
+      const rows = rowsRaw.map((r) => ({ ...r, status: mapPaymentStatus(r.status) }));
+      res.json(rows);
+    } catch (err) {
+      console.error("GET /api/finance/payments error:", err);
+      res.status(500).json({ error: "Could not load payments" });
+    }
+  },
+);
+
+// --- Finance: password step-up for fee changes ---
+// Saving fee amounts or publishing invoices changes what every parent
+// is charged, so — same step-up pattern as the zonal/school-admin
+// sensitive actions — the Finance officer re-enters their OWN password.
+// The frontend modal pre-checks it through POST /api/finance/verify-password
+// (so a typo shows inline), but the real enforcement is here: every
+// fee-changing route also re-checks req.body.password server-side, so the
+// modal can't simply be skipped by calling the route directly.
+async function confirmFinancePassword(req, res) {
+  const password = req.body?.password;
+  if (!password) {
+    res.status(401).json({
+      error: "Enter your password to confirm this change.",
+      password_required: true,
+    });
+    return false;
+  }
+  try {
+    if (!(await verifyCurrentUserPassword(req, password))) {
+      res.status(401).json({ error: "Incorrect password." });
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error("confirmFinancePassword error:", err);
+    res.status(500).json({ error: "Could not verify your password." });
+    return false;
+  }
+}
+
+app.post(
+  "/api/finance/verify-password",
+  requireAuth,
+  requireFinance,
+  async (req, res) => {
+    if (!(await confirmFinancePassword(req, res))) return;
+    res.json({ ok: true });
+  },
+);
+
+// --- Finance: fee-structure (renamed/extended /api/finance/fees) ---
+app.get(
+  "/api/finance/fee-structure",
+  requireAuth,
+  requireFinance,
+  async (req, res) => {
+    try {
+      await ensureFinanceInvoicingTables();
+      const academic_year = (await getCurrentAcademicYear(req.user.school_id)).label;
+      const [rows] = await pool.query(
+        "SELECT registration_fee, monthly_fee, due_day, updated_at FROM fee_structures WHERE school_id = ? AND academic_year = ?",
+        [req.user.school_id, academic_year],
+      );
+      const school = await getSchoolGovernance(req.user.school_id);
+      await ensureSubscriptionTables();
+      const subSettings = await getSubscriptionSettings(req.user.school_id);
+      res.json({
+        academic_year,
+        governance_model: school?.governance_model || null,
+        // Read-only here: Super Admin sets the subscription fee and cycle.
+        subscription: {
+          enabled: subSettings.is_enabled && subSettings.student_fee > 0,
+          billing_cycle: subSettings.billing_cycle,
+          student_fee: subSettings.student_fee,
+        },
+        registration_amount: rows[0]?.registration_fee ?? null,
+        tuition_amount: rows[0]?.monthly_fee ?? null,
+        tuition_due_day: rows[0]?.due_day ?? null,
+        updated_at: rows[0]?.updated_at ?? null,
+      });
+    } catch (err) {
+      console.error("GET /api/finance/fee-structure error:", err);
+      res.status(500).json({ error: "Could not load fee setup" });
+    }
+  },
+);
+
+app.put(
+  "/api/finance/fee-structure/registration",
+  requireAuth,
+  requireFinance,
+  async (req, res) => {
+    if (!(await confirmFinancePassword(req, res))) return;
+    const regFee = Number(req.body.amount);
+    if (!Number.isFinite(regFee) || regFee < 0) {
+      return res.status(400).json({ error: "amount must be a non-negative number." });
+    }
+    try {
+      const academic_year = (await getCurrentAcademicYear(req.user.school_id)).label;
+      await pool.query(
+        `INSERT INTO fee_structures (school_id, academic_year, registration_fee, set_by)
+           VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE registration_fee = VALUES(registration_fee), set_by = VALUES(set_by)`,
+        [req.user.school_id, academic_year, regFee, req.user.user_id],
+      );
+      await logAudit(req, "finance.registration_fee_set", "school", req.user.school_id, `Registration fee ${regFee} for ${academic_year}`);
+      res.json({ message: "Registration fee saved.", registration_amount: regFee });
+    } catch (err) {
+      console.error("PUT /api/finance/fee-structure/registration error:", err);
+      res.status(500).json({ error: "Could not update registration fee" });
+    }
+  },
+);
+
+app.put(
+  "/api/finance/fee-structure/tuition",
+  requireAuth,
+  requireFinance,
+  async (req, res) => {
+    if (!(await confirmFinancePassword(req, res))) return;
+    const monthlyFee = Number(req.body.amount);
+    const dueDay = Number(req.body.due_day);
+    if (!Number.isFinite(monthlyFee) || monthlyFee < 0) {
+      return res.status(400).json({ error: "amount must be a non-negative number." });
+    }
+    if (!Number.isInteger(dueDay) || dueDay < 1 || dueDay > 28) {
+      return res.status(400).json({ error: "due_day must be an integer between 1 and 28." });
+    }
+    try {
+      await ensureFinanceInvoicingTables();
+      const school = await getSchoolGovernance(req.user.school_id);
+      if (school?.governance_model !== "private") {
+        return res.status(400).json({
+          error: "This is a government / public school — it cannot charge monthly tuition.",
+        });
+      }
+      const academic_year = (await getCurrentAcademicYear(req.user.school_id)).label;
+      await pool.query(
+        `INSERT INTO fee_structures (school_id, academic_year, registration_fee, monthly_fee, due_day, set_by)
+           VALUES (?, ?, 0, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE monthly_fee = VALUES(monthly_fee), due_day = VALUES(due_day), set_by = VALUES(set_by)`,
+        [req.user.school_id, academic_year, monthlyFee, dueDay, req.user.user_id],
+      );
+      await logAudit(req, "finance.tuition_fee_set", "school", req.user.school_id, `Monthly fee ${monthlyFee}, due day ${dueDay} for ${academic_year}`);
+      res.json({ message: "Tuition fee saved.", tuition_amount: monthlyFee, tuition_due_day: dueDay });
+    } catch (err) {
+      console.error("PUT /api/finance/fee-structure/tuition error:", err);
+      res.status(500).json({ error: "Could not update monthly tuition" });
+    }
+  },
+);
+
+// POST /api/finance/change-password — alias of /api/finance/update-password
+// under the name script.js actually calls.
+app.post(
+  "/api/finance/change-password",
+  requireAuth,
+  requireFinanceIdentity,
+  async (req, res) => {
+    const { current_password, new_password } = req.body;
+    if (!current_password || !new_password) {
+      return res.status(400).json({ error: "Both current and new password are required." });
+    }
+    {
+      const pinErr = validateNewPin(new_password);
+      if (pinErr) return res.status(400).json({ error: pinErr });
+    }
+    if (String(new_password) === String(current_password)) {
+      return res.status(400).json({ error: "Your new password must be different from the current one." });
+    }
+    try {
+      const [rows] = await pool.query(
+        "SELECT security_password FROM finance_users WHERE finance_id = ?",
+        [req.user.user_id],
+      );
+      if (rows.length === 0) return res.status(404).json({ error: "Account not found." });
+      const ok = await bcrypt.compare(current_password, rows[0].security_password);
+      if (!ok) return res.status(401).json({ error: "Current password is incorrect." });
+      const hashed = await bcrypt.hash(new_password, 10);
+      await pool.query(
+        "UPDATE finance_users SET security_password = ?, must_change_password = FALSE WHERE finance_id = ?",
+        [hashed, req.user.user_id],
+      );
+      issueAuthToken(res, { ...req.user, must_change_password: false });
+      res.json({ message: "Password updated successfully" });
+    } catch (err) {
+      console.error("POST /api/finance/change-password error:", err);
+      res.status(500).json({ error: "Password update failed" });
+    }
+  },
+);
+
+// --- Finance: monthly tuition invoicing ---
+// Fee = the student's CLASS LEVEL rate (fee_class_rates), falling back to
+// the Fee Setup default amount for levels with no rate. Students covered
+// by a scholarship / sponsor / family waiver get a 'waived' (100%) or
+// reduced invoice instead of the full one. ?month=YYYY-MM in the body
+// (default: this month); future months are refused.
+app.post(
+  "/api/finance/invoices/generate",
+  requireAuth,
+  requireFinance,
+  async (req, res) => {
+    if (!(await confirmFinancePassword(req, res))) return;
+    try {
+      await ensureFeeAdvancedTables();
+      if (!(await requirePrivateForFees(req, res))) return;
+      const school_id = req.user.school_id;
+      const academic_year = (await getCurrentAcademicYear(school_id)).label;
+      const cfg = await loadTuitionConfig(school_id, academic_year);
+      if (!cfg.dueDay) {
+        return res.status(409).json({ error: "Set the tuition due day in Fee Setup first." });
+      }
+      const now = new Date();
+      let period_year = now.getFullYear();
+      let period_month = now.getMonth() + 1;
+      if (req.body?.month) {
+        const m = /^(\d{4})-(\d{2})$/.exec(String(req.body.month));
+        if (!m || Number(m[2]) < 1 || Number(m[2]) > 12) {
+          return res.status(400).json({ error: "month must look like 2026-09." });
+        }
+        period_year = Number(m[1]);
+        period_month = Number(m[2]);
+        if (period_year * 12 + period_month > now.getFullYear() * 12 + now.getMonth() + 1) {
+          return res.status(400).json({ error: "You can't generate invoices for a future month." });
+        }
+      }
+      const semester = await getCurrentTerm(school_id);
+      const [students] = await pool.query(
+        "SELECT student_id, class_level FROM students WHERE school_id = ? AND status = 'Active'",
+        [school_id],
+      );
+      const [waivers] = await pool.query(
+        `SELECT id, student_id, coverage_percent,
+                DATE_FORMAT(valid_from, '%Y-%m-%d') AS valid_from, DATE_FORMAT(valid_to, '%Y-%m-%d') AS valid_to
+           FROM fee_scholarships WHERE school_id = ? AND status = 'ACTIVE'`,
+        [school_id],
+      );
+      const due_date = `${period_year}-${feePad2(period_month)}-${feePad2(cfg.dueDay)}`;
+      let created = 0, waived = 0, already = 0;
+      const noRate = [];
+      for (const s of students) {
+        const rate = tuitionRateFor(cfg, s.class_level);
+        if (rate === null) { noRate.push(s.student_id); continue; }
+        const w = bestWaiverForMonth(waivers, s.student_id, period_year, period_month);
+        let amount = rate, status = "pending", original = null, waiver_id = null;
+        if (w) {
+          original = rate;
+          waiver_id = w.id;
+          amount = feeRound2((rate * (100 - w.coverage_percent)) / 100);
+          if (w.coverage_percent >= 100) { amount = 0; status = "waived"; }
+        }
+        const [result] = await pool.query(
+          `INSERT IGNORE INTO fee_invoices
+             (school_id, student_id, period_month, period_year, amount, due_date, status, original_amount, waiver_id, semester)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [school_id, s.student_id, period_month, period_year, amount, due_date, status, original, waiver_id, semester],
+        );
+        if (result.affectedRows > 0) { created++; if (status === "waived") waived++; } else already++;
+      }
+      await logAudit(req, "finance.invoices_generate", "school", school_id, `${created} invoice(s) for ${period_month}/${period_year}`);
+      let message = `Generated ${created} invoice(s) for ${feePad2(period_month)}/${period_year}.`;
+      if (waived) message += ` ${waived} fully covered by a scholarship/sponsor/family waiver.`;
+      if (already) message += ` ${already} already existed.`;
+      if (noRate.length) message += ` ${noRate.length} student(s) skipped — no fee set for their class level.`;
+      res.json({ message, created, waived, already_existing: already, skipped_no_rate: noRate.length });
+    } catch (err) {
+      console.error("POST /api/finance/invoices/generate error:", err);
+      res.status(500).json({ error: "Could not generate invoices" });
+    }
+  },
+);
+
+app.get(
+  "/api/finance/invoices",
+  requireAuth,
+  requireFinance,
+  async (req, res) => {
+    try {
+      await ensureFinanceInvoicingTables();
+      const params = [req.user.school_id];
+      let sql = `
+        SELECT fi.id AS invoice_id, fi.student_id, CONCAT(s.first_name, ' ', s.last_name) AS student_name,
+               s.class_level, s.stream, fi.amount, fi.due_date, fi.original_amount, fi.semester,
+               DATE_FORMAT(STR_TO_DATE(CONCAT(fi.period_year, '-', fi.period_month, '-01'), '%Y-%m-%d'), '%M %Y') AS month,
+               IF(fi.status = 'pending' AND fi.due_date < CURDATE(), 'overdue', fi.status) AS status
+          FROM fee_invoices fi
+          JOIN students s ON s.student_id = fi.student_id AND s.school_id = fi.school_id
+         WHERE fi.school_id = ?`;
+      if (req.query.month) {
+        const [y, m] = String(req.query.month).split("-");
+        sql += " AND fi.period_year = ? AND fi.period_month = ?";
+        params.push(Number(y), Number(m));
+      }
+      if (req.query.status) {
+        sql += " AND IF(fi.status = 'pending' AND fi.due_date < CURDATE(), 'overdue', fi.status) = ?";
+        params.push(String(req.query.status));
+      }
+      sql += " ORDER BY fi.due_date DESC";
+      const [rows] = await pool.query(sql, params);
+      res.json(rows);
+    } catch (err) {
+      console.error("GET /api/finance/invoices error:", err);
+      res.status(500).json({ error: "Could not load invoices" });
+    }
+  },
+);
+
+app.post(
+  "/api/finance/invoices/:id/mark-paid",
+  requireAuth,
+  requireFinance,
+  async (req, res) => {
+    try {
+      const paidMethod = ["CASH", "BANK", "MOBILE"].includes(String(req.body?.method || "").toUpperCase())
+        ? String(req.body.method).toUpperCase() : null;
+      const paidReference = String(req.body?.reference || "").trim().slice(0, 100) || null;
+      await ensureFeeAdvancedTables();
+      const [result] = await pool.query(
+        "UPDATE fee_invoices SET status = 'paid', paid_at = NOW(), marked_paid_by = ?, paid_method = ?, paid_reference = ? WHERE id = ? AND school_id = ? AND status = 'pending'",
+        [req.user.user_id, paidMethod, paidReference, req.params.id, req.user.school_id],
+      );
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: "Pending invoice not found for this school." });
+      }
+      await logAudit(req, "finance.invoice_mark_paid", "invoice", req.params.id, null);
+      res.json({ message: "Invoice marked as paid." });
+    } catch (err) {
+      console.error("POST /api/finance/invoices/:id/mark-paid error:", err);
+      res.status(500).json({ error: "Could not mark invoice as paid" });
+    }
+  },
+);
+
+// GET /api/finance/overdue — invoices past due_date. Computed on
+// load, same as GET /api/finance/invoices?status=overdue, but joins
+// each invoice's most recent reminder for the "Last Reminder" column.
+app.get(
+  "/api/finance/overdue",
+  requireAuth,
+  requireFinance,
+  async (req, res) => {
+    try {
+      await ensureFinanceInvoicingTables();
+      const [rows] = await pool.query(
+        `SELECT fi.id AS invoice_id, fi.student_id, CONCAT(s.first_name, ' ', s.last_name) AS student_name,
+                s.class_level, s.stream,
+                (SELECT g.full_name FROM student_guardians sg JOIN guardians g ON g.id = sg.guardian_id WHERE sg.student_id = s.student_id ORDER BY sg.id LIMIT 1) AS guardian_name,
+                (SELECT g.phone_number FROM student_guardians sg JOIN guardians g ON g.id = sg.guardian_id WHERE sg.student_id = s.student_id ORDER BY sg.id LIMIT 1) AS guardian_phone,
+                fi.amount AS amount_due, fi.due_date, DATEDIFF(CURDATE(), fi.due_date) AS days_overdue,
+                (SELECT MAX(sent_at) FROM fee_reminders WHERE invoice_id = fi.id) AS last_reminder_at
+           FROM fee_invoices fi
+           JOIN students s ON s.student_id = fi.student_id AND s.school_id = fi.school_id
+          WHERE fi.school_id = ? AND fi.status = 'pending' AND fi.due_date < CURDATE()
+          ORDER BY fi.due_date ASC`,
+        [req.user.school_id],
+      );
+      res.json(rows);
+    } catch (err) {
+      console.error("GET /api/finance/overdue error:", err);
+      res.status(500).json({ error: "Could not load overdue invoices" });
+    }
+  },
+);
+
+// POST /api/finance/reminders/send — body { invoice_id } sends one
+// reminder; an empty/omitted body sends to every overdue invoice
+// ("Send Reminders to All"). Only logs the reminder was sent — no
+// actual notification channel (SMS/email/push) exists in this
+// codebase yet, so this is a record-keeping stub Finance can build on.
+app.post(
+  "/api/finance/reminders/send",
+  requireAuth,
+  requireFinance,
+  async (req, res) => {
+    try {
+      await ensureFinanceInvoicingTables();
+      let invoiceIds;
+      if (req.body.invoice_id) {
+        invoiceIds = [req.body.invoice_id];
+      } else {
+        const [rows] = await pool.query(
+          "SELECT id FROM fee_invoices WHERE school_id = ? AND status = 'pending' AND due_date < CURDATE()",
+          [req.user.school_id],
+        );
+        invoiceIds = rows.map((r) => r.id);
+      }
+      for (const id of invoiceIds) {
+        await pool.query(
+          "INSERT INTO fee_reminders (invoice_id, school_id, sent_by) VALUES (?, ?, ?)",
+          [id, req.user.school_id, req.user.user_id],
+        );
+      }
+      res.json({ message: `Reminder(s) sent for ${invoiceIds.length} invoice(s).`, sent: invoiceIds.length });
+    } catch (err) {
+      console.error("POST /api/finance/reminders/send error:", err);
+      res.status(500).json({ error: "Could not send reminders" });
+    }
+  },
+);
+
+// GET /api/finance/reports?from=&to= — collection summary for the
+// Reports tab. Registration-payment totals only (fee_payments rows) —
+// tuition invoices don't have a rejected/pending-verification concept
+// the way registration payments do, so they aren't folded in here.
+app.get(
+  "/api/finance/reports",
+  requireAuth,
+  requireFinance,
+  async (req, res) => {
+    const { from, to } = req.query;
+    if (!from || !to) {
+      return res.status(400).json({ error: "from and to dates are required." });
+    }
+    try {
+      // School fees only: the subscription fee that rides along with a
+      // registration payment belongs to the platform, not the school.
+      await ensureSubscriptionTables();
+      const [[totals]] = await pool.query(
+        `SELECT
+           COALESCE(SUM(CASE WHEN fp.status = 'VERIFIED' THEN fp.amount - COALESCE(sc.amount, 0) END), 0) AS total_collected,
+           COALESCE(SUM(CASE WHEN fp.status = 'PENDING' THEN fp.amount - COALESCE(sc.amount, 0) END), 0) AS total_pending,
+           COALESCE(SUM(CASE WHEN fp.status = 'REJECTED' THEN fp.amount - COALESCE(sc.amount, 0) END), 0) AS total_rejected
+         FROM fee_payments fp
+         LEFT JOIN subscription_registration_charges sc
+           ON sc.payment_id = fp.id AND sc.status <> 'VOID'
+        WHERE fp.school_id = ? AND DATE(fp.submitted_at) BETWEEN ? AND ?`,
+        [req.user.school_id, from, to],
+      );
+      const [rowsRaw] = await pool.query(
+        `SELECT fp.submitted_at AS date, CONCAT(s.first_name, ' ', s.last_name) AS student_name,
+                fp.student_id, s.class_level, s.stream, fp.method, fp.reference_number AS reference,
+                NULLIF(CONCAT_WS(' ', st.first_name, st.last_name), '') AS submitted_by_name,
+                fp.fee_type, fp.amount - COALESCE(sc.amount, 0) AS amount, fp.status
+           FROM fee_payments fp
+           JOIN students s ON s.student_id = fp.student_id AND s.school_id = fp.school_id
+           LEFT JOIN teachers st ON st.teacher_id = fp.submitted_by AND st.school_id = fp.school_id
+           LEFT JOIN subscription_registration_charges sc
+             ON sc.payment_id = fp.id AND sc.status <> 'VOID'
+          WHERE fp.school_id = ? AND DATE(fp.submitted_at) BETWEEN ? AND ?
+          ORDER BY fp.submitted_at DESC`,
+        [req.user.school_id, from, to],
+      );
+      const rows = rowsRaw.map((r) => ({ ...r, status: mapPaymentStatus(r.status) }));
+      res.json({ ...totals, rows });
+    } catch (err) {
+      console.error("GET /api/finance/reports error:", err);
+      res.status(500).json({ error: "Could not load report" });
+    }
+  },
+);
+
+// ==========================================================
+// Finance: class-level tuition, scholarships / sponsors, family
+// rule, and the students-with-dues list (private schools).
+//
+// Self-healing schema (same lazy CREATE/ALTER pattern as
+// ensureFinanceInvoicingTables above) — no manual migration:
+//   fee_class_rates   one monthly fee per class level per academic year
+//   fee_scholarships  a student's fee waiver for a date range. kind is
+//                     SCHOLARSHIP / SPONSOR (Finance grants directly) or
+//                     FAMILY (granted through the family rule below).
+//                     coverage_percent 100 = pays nothing; less = partial.
+//   fee_family_policy per-school "N children => M free" setting
+//   fee_invoices      gains status 'waived' plus original_amount,
+//                     waiver_id, semester, paid_method, paid_reference
+// A month counts as covered by a waiver when the waiver's date range
+// overlaps that calendar month.
+// ==========================================================
+let feeAdvancedTablesReady = false;
+async function ensureFeeAdvancedTables() {
+  if (feeAdvancedTablesReady) return;
+  await ensureFinanceInvoicingTables();
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fee_class_rates (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      school_id INT NOT NULL,
+      academic_year VARCHAR(40) NOT NULL,
+      class_level TINYINT NOT NULL,
+      monthly_fee DECIMAL(10,2) NOT NULL,
+      set_by VARCHAR(30) NULL,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_class_rate (school_id, academic_year, class_level)
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fee_scholarships (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      school_id INT NOT NULL,
+      student_id VARCHAR(50) NOT NULL,
+      kind ENUM('SCHOLARSHIP','SPONSOR','FAMILY') NOT NULL,
+      sponsor_name VARCHAR(120) NULL,
+      guardian_id INT NULL,
+      coverage_percent TINYINT NOT NULL DEFAULT 100,
+      valid_from DATE NOT NULL,
+      valid_to DATE NOT NULL,
+      note VARCHAR(255) NULL,
+      status ENUM('ACTIVE','REVOKED') NOT NULL DEFAULT 'ACTIVE',
+      created_by VARCHAR(30) NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      revoked_by VARCHAR(30) NULL,
+      revoked_at DATETIME NULL,
+      KEY idx_school_student (school_id, student_id),
+      KEY idx_school_status (school_id, status)
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fee_family_policy (
+      school_id INT PRIMARY KEY,
+      enabled TINYINT(1) NOT NULL DEFAULT 0,
+      children_threshold TINYINT NOT NULL DEFAULT 5,
+      free_count TINYINT NOT NULL DEFAULT 1,
+      free_child_rule ENUM('HIGHEST_FEE','LOWEST_FEE') NOT NULL DEFAULT 'HIGHEST_FEE',
+      updated_by VARCHAR(30) NULL,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )`);
+  await pool.query(
+    "ALTER TABLE fee_invoices MODIFY COLUMN status ENUM('pending','paid','waived') NOT NULL DEFAULT 'pending'",
+  );
+  for (const col of [
+    "original_amount DECIMAL(10,2) NULL",
+    "waiver_id INT NULL",
+    "semester VARCHAR(20) NULL",
+    "paid_method VARCHAR(20) NULL",
+    "paid_reference VARCHAR(100) NULL",
+  ]) {
+    try {
+      await pool.query(`ALTER TABLE fee_invoices ADD COLUMN ${col}`);
+    } catch (err) {
+      if (err.code !== "ER_DUP_FIELDNAME") throw err;
+    }
+  }
+  feeAdvancedTablesReady = true;
+}
+
+async function requirePrivateForFees(req, res) {
+  const school = await getSchoolGovernance(req.user.school_id);
+  if (school?.governance_model !== "private") {
+    res.status(400).json({ error: "Only private schools charge monthly tuition." });
+    return false;
+  }
+  return true;
+}
+const feePad2 = (n) => String(n).padStart(2, "0");
+const feeRound2 = (n) => Math.round(n * 100) / 100;
+function isIsoDate(s) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(s))) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !isNaN(d) && d.toISOString().slice(0, 10) === String(s);
+}
+async function loadTuitionConfig(school_id, academic_year) {
+  const [rows] = await pool.query(
+    "SELECT class_level, monthly_fee FROM fee_class_rates WHERE school_id = ? AND academic_year = ?",
+    [school_id, academic_year],
+  );
+  const [fsRows] = await pool.query(
+    "SELECT monthly_fee, due_day FROM fee_structures WHERE school_id = ? AND academic_year = ?",
+    [school_id, academic_year],
+  );
+  return {
+    rates: new Map(rows.map((r) => [Number(r.class_level), Number(r.monthly_fee)])),
+    defaultFee: Number(fsRows[0]?.monthly_fee) || 0,
+    dueDay: fsRows[0]?.due_day ?? null,
+  };
+}
+// A class level's own rate wins; the Fee Setup "default" amount only
+// fills in levels with no rate; null = nothing to charge with.
+function tuitionRateFor(cfg, classLevel) {
+  if (cfg.rates.has(Number(classLevel))) return cfg.rates.get(Number(classLevel));
+  return cfg.defaultFee > 0 ? cfg.defaultFee : null;
+}
+function bestWaiverForMonth(waivers, student_id, year, month) {
+  const start = `${year}-${feePad2(month)}-01`;
+  const end = `${year}-${feePad2(month)}-${feePad2(new Date(Date.UTC(year, month, 0)).getUTCDate())}`;
+  let best = null;
+  for (const w of waivers) {
+    if (w.student_id !== student_id || w.valid_from > end || w.valid_to < start) continue;
+    if (!best || w.coverage_percent > best.coverage_percent) best = w;
+  }
+  return best;
+}
+// Re-prices this student's UNPAID invoices that fall inside the waiver.
+async function applyWaiverToExistingInvoices(school_id, w) {
+  const full = Number(w.coverage_percent) >= 100;
+  await pool.query(
+    `UPDATE fee_invoices
+        SET original_amount = COALESCE(original_amount, amount),
+            amount = ROUND(COALESCE(original_amount, amount) * (100 - ?) / 100, 2),
+            status = ?, waiver_id = ?
+      WHERE school_id = ? AND student_id = ? AND status = 'pending'
+        AND STR_TO_DATE(CONCAT(period_year, '-', period_month, '-01'), '%Y-%m-%d') <= ?
+        AND LAST_DAY(STR_TO_DATE(CONCAT(period_year, '-', period_month, '-01'), '%Y-%m-%d')) >= ?`,
+    [w.coverage_percent, full ? "waived" : "pending", w.id, school_id, w.student_id, w.valid_to, w.valid_from],
+  );
+}
+async function restoreInvoicesFromWaiver(school_id, waiver_id) {
+  await pool.query(
+    `UPDATE fee_invoices
+        SET amount = original_amount, original_amount = NULL, waiver_id = NULL, status = 'pending'
+      WHERE school_id = ? AND waiver_id = ? AND status IN ('pending','waived') AND original_amount IS NOT NULL`,
+    [school_id, waiver_id],
+  );
+}
+
+// GET/PUT per-class-level monthly rates.
+app.get("/api/finance/class-rates", requireAuth, requireFinance, async (req, res) => {
+  try {
+    await ensureFeeAdvancedTables();
+    const academic_year = (await getCurrentAcademicYear(req.user.school_id)).label;
+    const cfg = await loadTuitionConfig(req.user.school_id, academic_year);
+    const grades = [...(await getSchoolGradeSet(req.user.school_id))].sort((a, b) => a - b);
+    res.json({
+      academic_year,
+      grades,
+      labels: Object.fromEntries(grades.map((g) => [g, gradeLabel(g)])),
+      default_fee: cfg.defaultFee || null,
+      rates: Object.fromEntries(cfg.rates),
+    });
+  } catch (err) {
+    console.error("GET /api/finance/class-rates error:", err);
+    res.status(500).json({ error: "Could not load class-level fees" });
+  }
+});
+app.put("/api/finance/class-rates", requireAuth, requireFinance, async (req, res) => {
+  if (!(await confirmFinancePassword(req, res))) return;
+  const list = Array.isArray(req.body?.rates) ? req.body.rates : null;
+  if (!list) return res.status(400).json({ error: "rates must be an array of { class_level, monthly_fee }." });
+  try {
+    await ensureFeeAdvancedTables();
+    if (!(await requirePrivateForFees(req, res))) return;
+    const academic_year = (await getCurrentAcademicYear(req.user.school_id)).label;
+    const grades = await getSchoolGradeSet(req.user.school_id);
+    for (const r of list) {
+      const level = Number(r.class_level);
+      if (!Number.isInteger(level) || !grades.has(level)) {
+        return res.status(400).json({ error: `Grade ${r.class_level} is not offered by this school.` });
+      }
+      if (r.monthly_fee === "" || r.monthly_fee === null || r.monthly_fee === undefined) {
+        await pool.query(
+          "DELETE FROM fee_class_rates WHERE school_id = ? AND academic_year = ? AND class_level = ?",
+          [req.user.school_id, academic_year, level],
+        );
+        continue;
+      }
+      const fee = Number(r.monthly_fee);
+      if (!Number.isFinite(fee) || fee < 0) {
+        return res.status(400).json({ error: `Grade ${level}: fee must be a non-negative number.` });
+      }
+      await pool.query(
+        `INSERT INTO fee_class_rates (school_id, academic_year, class_level, monthly_fee, set_by)
+           VALUES (?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE monthly_fee = VALUES(monthly_fee), set_by = VALUES(set_by)`,
+        [req.user.school_id, academic_year, level, fee, req.user.user_id],
+      );
+    }
+    await logAudit(req, "finance.class_rates_set", "school", req.user.school_id, `Class-level tuition updated for ${academic_year}`);
+    res.json({ message: "Class-level fees saved." });
+  } catch (err) {
+    console.error("PUT /api/finance/class-rates error:", err);
+    res.status(500).json({ error: "Could not save class-level fees" });
+  }
+});
+
+// ==========================================================
+// Finance: DOCUMENT FEES
+// What the Registrar charges when a student asks for an official
+// document, split by why they need it: transferring to another
+// school or graduating. Finance owns the amounts; the Registrar
+// reads them (read-only) to know what to collect.
+// A school-wide price list - it does not change with the academic
+// year. A blank amount means "not set" (no fee configured yet);
+// 0 means "free".
+// ==========================================================
+const DOCUMENT_FEE_TYPES = [
+  { key: "transcript", label: "Official Transcript" },
+  { key: "report_card", label: "Report Card / Certificate" },
+  { key: "recommendation", label: "Recommendation Letter" },
+];
+const DOCUMENT_FEE_PURPOSES = [
+  { key: "transfer", label: "Transfer student" },
+  { key: "graduate", label: "Graduating student" },
+];
+let documentFeeTablesReady = false;
+async function ensureDocumentFeeTables() {
+  if (documentFeeTablesReady) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fee_document_rates (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      school_id INT NOT NULL,
+      doc_type VARCHAR(30) NOT NULL,
+      purpose VARCHAR(20) NOT NULL,
+      amount DECIMAL(10,2) NOT NULL,
+      set_by VARCHAR(30) NULL,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_document_rate (school_id, doc_type, purpose)
+    )`);
+  documentFeeTablesReady = true;
+}
+async function loadDocumentFeeRates(school_id) {
+  await ensureDocumentFeeTables();
+  const [rows] = await pool.query(
+    "SELECT doc_type, purpose, amount FROM fee_document_rates WHERE school_id = ?",
+    [school_id],
+  );
+  const rates = {};
+  for (const d of DOCUMENT_FEE_TYPES) {
+    rates[d.key] = {};
+    for (const p of DOCUMENT_FEE_PURPOSES) rates[d.key][p.key] = null;
+  }
+  for (const r of rows) {
+    if (rates[r.doc_type] && r.purpose in rates[r.doc_type]) {
+      rates[r.doc_type][r.purpose] = Number(r.amount);
+    }
+  }
+  return {
+    documents: DOCUMENT_FEE_TYPES,
+    purposes: DOCUMENT_FEE_PURPOSES,
+    rates,
+  };
+}
+
+app.get("/api/finance/document-fees", requireAuth, requireFinance, async (req, res) => {
+  try {
+    res.json(await loadDocumentFeeRates(req.user.school_id));
+  } catch (err) {
+    console.error("GET /api/finance/document-fees error:", err);
+    res.status(500).json({ error: "Could not load document fees" });
+  }
+});
+
+// body: { rates: [{ doc_type, purpose, amount }], password }
+// amount "" / null removes the fee (back to "not set").
+app.put("/api/finance/document-fees", requireAuth, requireFinance, async (req, res) => {
+  if (!(await confirmFinancePassword(req, res))) return;
+  const list = Array.isArray(req.body?.rates) ? req.body.rates : null;
+  if (!list) {
+    return res.status(400).json({ error: "rates must be an array of { doc_type, purpose, amount }." });
+  }
+  const validDocs = new Set(DOCUMENT_FEE_TYPES.map((d) => d.key));
+  const validPurposes = new Set(DOCUMENT_FEE_PURPOSES.map((p) => p.key));
+  const clean = [];
+  for (const r of list) {
+    if (!validDocs.has(r?.doc_type) || !validPurposes.has(r?.purpose)) {
+      return res.status(400).json({ error: "Unknown document or purpose." });
+    }
+    if (r.amount === "" || r.amount === null || r.amount === undefined) {
+      clean.push({ doc_type: r.doc_type, purpose: r.purpose, amount: null });
+      continue;
+    }
+    const amount = Number(r.amount);
+    if (!Number.isFinite(amount) || amount < 0 || amount > 99999999) {
+      return res.status(400).json({ error: "Each document fee must be a non-negative number." });
+    }
+    clean.push({ doc_type: r.doc_type, purpose: r.purpose, amount: Math.round(amount * 100) / 100 });
+  }
+  try {
+    await ensureDocumentFeeTables();
+    for (const r of clean) {
+      if (r.amount === null) {
+        await pool.query(
+          "DELETE FROM fee_document_rates WHERE school_id = ? AND doc_type = ? AND purpose = ?",
+          [req.user.school_id, r.doc_type, r.purpose],
+        );
+      } else {
+        await pool.query(
+          `INSERT INTO fee_document_rates (school_id, doc_type, purpose, amount, set_by)
+             VALUES (?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE amount = VALUES(amount), set_by = VALUES(set_by)`,
+          [req.user.school_id, r.doc_type, r.purpose, r.amount, req.user.user_id],
+        );
+      }
+    }
+    await logAudit(req, "finance.document_fees_set", "school", req.user.school_id, "Document fees updated");
+    res.json({ message: "Document fees saved.", ...(await loadDocumentFeeRates(req.user.school_id)) });
+  } catch (err) {
+    console.error("PUT /api/finance/document-fees error:", err);
+    res.status(500).json({ error: "Could not save document fees" });
+  }
+});
+
+// Read-only copy for the Registrar: the price list Finance has set.
+app.get("/api/registrar/document-fees", requireAuth, requireRegistrarOnly, async (req, res) => {
+  try {
+    res.json(await loadDocumentFeeRates(req.user.school_id));
+  } catch (err) {
+    console.error("GET /api/registrar/document-fees error:", err);
+    res.status(500).json({ error: "Could not load document fees" });
+  }
+});
+
+// ==========================================================
+// DOCUMENT FEE COLLECTIONS
+// The Registrar collects the document fee (set by Finance above) when a
+// student takes a document for a transfer or graduation, then records
+// it here. Every record is reported to Finance straight away: status
+// "reported" until the Finance officer confirms they received the money
+// ("received"). The amount is always taken from Finance's price list on
+// the server - the Registrar cannot type a different amount.
+// ==========================================================
+let documentCollectionTablesReady = false;
+async function ensureDocumentCollectionTables() {
+  if (documentCollectionTablesReady) return;
+  await ensureDocumentFeeTables();
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS document_fee_collections (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      school_id INT NOT NULL,
+      student_id VARCHAR(50) NOT NULL,
+      student_name VARCHAR(150) NULL,
+      doc_type VARCHAR(30) NOT NULL,
+      purpose VARCHAR(20) NOT NULL,
+      amount DECIMAL(10,2) NOT NULL,
+      receipt_ref VARCHAR(100) NULL,
+      collected_by VARCHAR(30) NOT NULL,
+      collected_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      status VARCHAR(12) NOT NULL DEFAULT 'pending',
+      received_by VARCHAR(30) NULL,
+      received_at DATETIME NULL,
+      reject_reason VARCHAR(255) NULL,
+      INDEX idx_dfc_school_date (school_id, collected_at),
+      INDEX idx_dfc_student (school_id, student_id)
+    )`);
+  // status: pending -> approved | rejected. received_by / received_at hold
+  // whoever decided and when. Older installs created the table with
+  // 'reported' / 'received' and no reject_reason: bring them up to date.
+  const [cols] = await pool.query(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'document_fee_collections' AND COLUMN_NAME = 'reject_reason'`,
+  );
+  if (cols.length === 0) {
+    await pool.query("ALTER TABLE document_fee_collections ADD COLUMN reject_reason VARCHAR(255) NULL");
+  }
+  await pool.query("ALTER TABLE document_fee_collections ALTER COLUMN status SET DEFAULT 'pending'");
+  await pool.query("UPDATE document_fee_collections SET status = 'pending' WHERE status = 'reported'");
+  await pool.query("UPDATE document_fee_collections SET status = 'approved' WHERE status = 'received'");
+  documentCollectionTablesReady = true;
+}
+
+// Registrar records a collected document fee.
+// body: { student_id, doc_type, purpose, receipt_ref? }
+app.post("/api/registrar/document-fees/collect", requireAuth, requireRegistrarOnly, async (req, res) => {
+  const { student_id, doc_type, purpose } = req.body || {};
+  const receipt_ref = String(req.body?.receipt_ref || "").trim().slice(0, 100) || null;
+  if (!student_id || !doc_type || !purpose) {
+    return res.status(400).json({ error: "student_id, doc_type and purpose are required." });
+  }
+  if (!DOCUMENT_FEE_TYPES.some((d) => d.key === doc_type) || !DOCUMENT_FEE_PURPOSES.some((p) => p.key === purpose)) {
+    return res.status(400).json({ error: "Unknown document or purpose." });
+  }
+  try {
+    await ensureDocumentCollectionTables();
+    const [stu] = await pool.query(
+      "SELECT first_name, middle_name, last_name FROM students WHERE student_id = ? AND school_id = ?",
+      [student_id, req.user.school_id],
+    );
+    if (stu.length === 0) return res.status(404).json({ error: "Student not found in this school." });
+    const fees = await loadDocumentFeeRates(req.user.school_id);
+    const amount = fees.rates[doc_type]?.[purpose];
+    if (amount === null || amount === undefined) {
+      return res.status(409).json({ error: "Finance has not set a fee for this document yet." });
+    }
+    if (amount === 0) {
+      return res.json({ message: "This document is free - nothing to collect.", amount: 0, id: null });
+    }
+    const name = [stu[0].first_name, stu[0].middle_name, stu[0].last_name].filter(Boolean).join(" ");
+    const [result] = await pool.query(
+      `INSERT INTO document_fee_collections (school_id, student_id, student_name, doc_type, purpose, amount, receipt_ref, collected_by, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+      [req.user.school_id, student_id, name, doc_type, purpose, amount, receipt_ref, req.user.user_id],
+    );
+    await logAudit(req, "registrar.document_fee_collected", "student", student_id, `${doc_type} (${purpose}) ETB ${amount}`);
+    res.json({ message: "Payment recorded and reported to Finance.", id: result.insertId, amount });
+  } catch (err) {
+    console.error("POST /api/registrar/document-fees/collect error:", err);
+    res.status(500).json({ error: "Could not record the document fee" });
+  }
+});
+
+// Registrar: their school's recent collections + whether Finance has
+// confirmed each one.
+app.get("/api/registrar/document-fees/collections", requireAuth, requireRegistrarOnly, async (req, res) => {
+  try {
+    await ensureDocumentCollectionTables();
+    const [rows] = await pool.query(
+      `SELECT id, student_id, student_name, doc_type, purpose, amount, receipt_ref, collected_at, status, received_at, reject_reason
+         FROM document_fee_collections WHERE school_id = ? ORDER BY collected_at DESC LIMIT 100`,
+      [req.user.school_id],
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("GET /api/registrar/document-fees/collections error:", err);
+    res.status(500).json({ error: "Could not load document fee collections" });
+  }
+});
+
+// Adds who recorded each collection (the registrar's name instead of an
+// account id) and the student's class, so Finance never has to guess who
+// the money came from or who took it.
+async function attachDocCollectionWho(school_id, rows) {
+  if (rows.length === 0) return rows;
+  const staffIds = [...new Set(rows.map((r) => r.collected_by).filter(Boolean))];
+  const studentIds = [...new Set(rows.map((r) => r.student_id).filter(Boolean))];
+  const staffName = {};
+  const classOf = {};
+  if (staffIds.length) {
+    const [t] = await pool.query(
+      "SELECT teacher_id, first_name, last_name FROM teachers WHERE school_id = ? AND teacher_id IN (?)",
+      [school_id, staffIds],
+    );
+    for (const r of t) staffName[r.teacher_id] = [r.first_name, r.last_name].filter(Boolean).join(" ");
+  }
+  if (studentIds.length) {
+    const [st] = await pool.query(
+      "SELECT student_id, class_level, stream FROM students WHERE school_id = ? AND student_id IN (?)",
+      [school_id, studentIds],
+    );
+    for (const r of st) classOf[r.student_id] = { class_level: r.class_level, stream: r.stream };
+  }
+  for (const r of rows) {
+    r.collected_by_name = staffName[r.collected_by] || null;
+    r.class_level = classOf[r.student_id]?.class_level ?? null;
+    r.stream = classOf[r.student_id]?.stream ?? null;
+  }
+  return rows;
+}
+
+// Finance: the document fees the Registrar reported.
+// ?status=pending (default) | approved | rejected | all
+// ?from=YYYY-MM-DD&to=YYYY-MM-DD (optional)  ?q= student name / id
+// pending_count / pending_total always cover EVERY pending collection
+// (not just the filtered rows) so the menu badge is right.
+app.get("/api/finance/document-collections", requireAuth, requireFinance, async (req, res) => {
+  const status = String(req.query.status || "pending");
+  if (!["pending", "approved", "rejected", "all"].includes(status)) {
+    return res.status(400).json({ error: "Unknown status filter." });
+  }
+  const from = String(req.query.from || "");
+  const to = String(req.query.to || "");
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  if ((from && !dateRe.test(from)) || (to && !dateRe.test(to))) {
+    return res.status(400).json({ error: "Dates must look like YYYY-MM-DD." });
+  }
+  const q = String(req.query.q || "").trim();
+  try {
+    await ensureDocumentCollectionTables();
+    const where = ["school_id = ?"];
+    const params = [req.user.school_id];
+    if (status !== "all") { where.push("status = ?"); params.push(status); }
+    if (from) { where.push("DATE(collected_at) >= ?"); params.push(from); }
+    if (to) { where.push("DATE(collected_at) <= ?"); params.push(to); }
+    if (q) {
+      where.push("(student_id LIKE ? OR student_name LIKE ?)");
+      params.push(`%${q}%`, `%${q}%`);
+    }
+    const [rows] = await pool.query(
+      `SELECT id, student_id, student_name, doc_type, purpose, amount, receipt_ref,
+              collected_at, collected_by, status, received_at, reject_reason
+         FROM document_fee_collections
+        WHERE ${where.join(" AND ")}
+        ORDER BY collected_at DESC LIMIT 500`,
+      params,
+    );
+    const [[pend]] = await pool.query(
+      `SELECT COUNT(*) AS n, COALESCE(SUM(amount), 0) AS total
+         FROM document_fee_collections WHERE school_id = ? AND status = 'pending'`,
+      [req.user.school_id],
+    );
+    await attachDocCollectionWho(req.user.school_id, rows);
+    const totals = { pending: 0, approved: 0, rejected: 0 };
+    for (const r of rows) {
+      r.amount = Number(r.amount);
+      totals[r.status] = (totals[r.status] || 0) + r.amount;
+    }
+    res.json({
+      rows,
+      total_pending: totals.pending,
+      total_approved: totals.approved,
+      total_rejected: totals.rejected,
+      pending_count: Number(pend.n),
+      pending_total: Number(pend.total),
+    });
+  } catch (err) {
+    console.error("GET /api/finance/document-collections error:", err);
+    res.status(500).json({ error: "Could not load document collections" });
+  }
+});
+
+// Finance approves one collection: the money reached them.
+async function approveDocumentCollection(req, res) {
+  try {
+    await ensureDocumentCollectionTables();
+    const [result] = await pool.query(
+      `UPDATE document_fee_collections SET status = 'approved', received_by = ?, received_at = NOW(), reject_reason = NULL
+        WHERE id = ? AND school_id = ? AND status = 'pending'`,
+      [req.user.user_id, req.params.id, req.user.school_id],
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Collection not found or already decided." });
+    }
+    await logAudit(req, "finance.document_fee_approved", "school", req.user.school_id, `Document fee collection #${req.params.id} approved`);
+    res.json({ message: "Document fee approved." });
+  } catch (err) {
+    console.error("POST /api/finance/document-collections/:id/approve error:", err);
+    res.status(500).json({ error: "Could not approve the payment" });
+  }
+}
+app.post("/api/finance/document-collections/:id/approve", requireAuth, requireFinance, approveDocumentCollection);
+// older name for the same action
+app.post("/api/finance/document-collections/:id/receive", requireAuth, requireFinance, approveDocumentCollection);
+
+// Finance rejects one collection (money not received / amount wrong).
+app.post("/api/finance/document-collections/:id/reject", requireAuth, requireFinance, async (req, res) => {
+  const reason = String(req.body?.reason || "").trim().slice(0, 255);
+  if (!reason) return res.status(400).json({ error: "Please give a reason for rejecting." });
+  try {
+    await ensureDocumentCollectionTables();
+    const [result] = await pool.query(
+      `UPDATE document_fee_collections SET status = 'rejected', received_by = ?, received_at = NOW(), reject_reason = ?
+        WHERE id = ? AND school_id = ? AND status = 'pending'`,
+      [req.user.user_id, reason, req.params.id, req.user.school_id],
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Collection not found or already decided." });
+    }
+    await logAudit(req, "finance.document_fee_rejected", "school", req.user.school_id, `Document fee collection #${req.params.id} rejected: ${reason}`);
+    res.json({ message: "Document fee rejected." });
+  } catch (err) {
+    console.error("POST /api/finance/document-collections/:id/reject error:", err);
+    res.status(500).json({ error: "Could not reject the payment" });
+  }
+});
+
+// GET /api/finance/students — every active student with what they owe.
+// ?status=all|due|overdue|clear|covered  ?class_level=  ?search=
+app.get("/api/finance/students", requireAuth, requireFinance, async (req, res) => {
+  try {
+    await ensureFeeAdvancedTables();
+    if (!(await requirePrivateForFees(req, res))) return;
+    const sid = req.user.school_id;
+    const [rows] = await pool.query(
+      `SELECT * FROM (
+         SELECT s.student_id,
+                CONCAT_WS(' ', s.first_name, s.middle_name, s.last_name) AS student_name,
+                s.class_level, s.section, s.stream,
+                (SELECT g.full_name FROM student_guardians sg JOIN guardians g ON g.id = sg.guardian_id
+                  WHERE sg.student_id = s.student_id ORDER BY sg.id LIMIT 1) AS guardian_name,
+                (SELECT g.phone_number FROM student_guardians sg JOIN guardians g ON g.id = sg.guardian_id
+                  WHERE sg.student_id = s.student_id ORDER BY sg.id LIMIT 1) AS guardian_phone,
+                COALESCE(a.unpaid_months, 0) AS unpaid_months,
+                COALESCE(a.overdue_months, 0) AS overdue_months,
+                COALESCE(a.amount_due, 0) AS amount_due,
+                a.oldest_due,
+                COALESCE(a.paid_months, 0) AS paid_months,
+                (SELECT sc.kind FROM fee_scholarships sc
+                  WHERE sc.school_id = s.school_id AND sc.student_id = s.student_id AND sc.status = 'ACTIVE'
+                    AND CURDATE() BETWEEN sc.valid_from AND sc.valid_to
+                  ORDER BY sc.coverage_percent DESC LIMIT 1) AS covered_kind,
+                (SELECT sc.coverage_percent FROM fee_scholarships sc
+                  WHERE sc.school_id = s.school_id AND sc.student_id = s.student_id AND sc.status = 'ACTIVE'
+                    AND CURDATE() BETWEEN sc.valid_from AND sc.valid_to
+                  ORDER BY sc.coverage_percent DESC LIMIT 1) AS covered_percent
+           FROM students s
+           LEFT JOIN (
+             SELECT student_id,
+                    SUM(status = 'pending') AS unpaid_months,
+                    SUM(status = 'pending' AND due_date < CURDATE()) AS overdue_months,
+                    SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END) AS amount_due,
+                    MIN(CASE WHEN status = 'pending' THEN due_date END) AS oldest_due,
+                    SUM(status = 'paid') AS paid_months
+               FROM fee_invoices WHERE school_id = ? GROUP BY student_id
+           ) a ON a.student_id = s.student_id
+          WHERE s.school_id = ? AND s.status = 'Active'
+       ) t ORDER BY t.amount_due DESC, CAST(t.class_level AS UNSIGNED), t.student_name`,
+      [sid, sid],
+    );
+    const search = String(req.query.search || "").trim().toLowerCase();
+    const status = String(req.query.status || "all");
+    const level = req.query.class_level ? String(req.query.class_level) : "";
+    const out = rows.filter((r) => {
+      if (level && String(r.class_level) !== level) return false;
+      if (search && !`${r.student_name} ${r.student_id}`.toLowerCase().includes(search)) return false;
+      if (status === "due") return Number(r.amount_due) > 0;
+      if (status === "overdue") return Number(r.overdue_months) > 0;
+      if (status === "clear") return Number(r.unpaid_months) === 0;
+      if (status === "covered") return !!r.covered_kind;
+      return true;
+    });
+    res.json({
+      summary: {
+        students: out.length,
+        with_dues: out.filter((r) => Number(r.amount_due) > 0).length,
+        overdue: out.filter((r) => Number(r.overdue_months) > 0).length,
+        covered: out.filter((r) => !!r.covered_kind).length,
+        total_due: feeRound2(out.reduce((n, r) => n + Number(r.amount_due), 0)),
+      },
+      students: out,
+    });
+  } catch (err) {
+    console.error("GET /api/finance/students error:", err);
+    res.status(500).json({ error: "Could not load students" });
+  }
+});
+app.get("/api/finance/students/:student_id/invoices", requireAuth, requireFinance, async (req, res) => {
+  try {
+    await ensureFeeAdvancedTables();
+    const [rows] = await pool.query(
+      `SELECT fi.id AS invoice_id, fi.period_year, fi.period_month, fi.semester, fi.amount, fi.original_amount,
+              fi.due_date, fi.paid_at, fi.paid_method, fi.paid_reference,
+              DATE_FORMAT(STR_TO_DATE(CONCAT(fi.period_year, '-', fi.period_month, '-01'), '%Y-%m-%d'), '%M %Y') AS month,
+              IF(fi.status = 'pending' AND fi.due_date < CURDATE(), 'overdue', fi.status) AS status
+         FROM fee_invoices fi
+        WHERE fi.school_id = ? AND fi.student_id = ?
+        ORDER BY fi.period_year DESC, fi.period_month DESC`,
+      [req.user.school_id, req.params.student_id],
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("GET /api/finance/students/:id/invoices error:", err);
+    res.status(500).json({ error: "Could not load this student's statement" });
+  }
+});
+
+// --- Scholarships / sponsors ---
+app.get("/api/finance/scholarships", requireAuth, requireFinance, async (req, res) => {
+  try {
+    await ensureFeeAdvancedTables();
+    const [rows] = await pool.query(
+      `SELECT sc.id, sc.student_id, CONCAT_WS(' ', s.first_name, s.middle_name, s.last_name) AS student_name,
+              s.class_level, sc.kind, sc.sponsor_name, sc.coverage_percent, sc.note,
+              DATE_FORMAT(sc.valid_from, '%Y-%m-%d') AS valid_from, DATE_FORMAT(sc.valid_to, '%Y-%m-%d') AS valid_to,
+              IF(sc.status = 'ACTIVE' AND sc.valid_to < CURDATE(), 'EXPIRED', sc.status) AS status
+         FROM fee_scholarships sc
+         JOIN students s ON s.student_id = sc.student_id AND s.school_id = sc.school_id
+        WHERE sc.school_id = ?
+        ORDER BY sc.created_at DESC`,
+      [req.user.school_id],
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("GET /api/finance/scholarships error:", err);
+    res.status(500).json({ error: "Could not load scholarships" });
+  }
+});
+async function createWaiver(req, { student_id, kind, sponsor_name, coverage_percent, valid_from, valid_to, note, guardian_id }) {
+  const [result] = await pool.query(
+    `INSERT INTO fee_scholarships
+       (school_id, student_id, kind, sponsor_name, guardian_id, coverage_percent, valid_from, valid_to, note, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [req.user.school_id, student_id, kind, sponsor_name || null, guardian_id || null, coverage_percent, valid_from, valid_to, note || null, req.user.user_id],
+  );
+  await applyWaiverToExistingInvoices(req.user.school_id, {
+    id: result.insertId, student_id, coverage_percent, valid_from, valid_to,
+  });
+  return result.insertId;
+}
+function validateWaiverDates(body) {
+  if (!isIsoDate(body.valid_from) || !isIsoDate(body.valid_to)) return "valid_from and valid_to must be dates (YYYY-MM-DD).";
+  if (body.valid_to < body.valid_from) return "The end date can't be before the start date.";
+  return null;
+}
+app.post("/api/finance/scholarships", requireAuth, requireFinance, async (req, res) => {
+  const b = req.body || {};
+  const kind = String(b.kind || "").toUpperCase();
+  const percent = b.coverage_percent === undefined || b.coverage_percent === "" ? 100 : Number(b.coverage_percent);
+  const student_id = String(b.student_id || "").trim();
+  if (!student_id) return res.status(400).json({ error: "student_id is required." });
+  if (!["SCHOLARSHIP", "SPONSOR"].includes(kind)) return res.status(400).json({ error: "kind must be SCHOLARSHIP or SPONSOR." });
+  if (kind === "SPONSOR" && !String(b.sponsor_name || "").trim()) return res.status(400).json({ error: "Enter the sponsor's name." });
+  if (!Number.isInteger(percent) || percent < 1 || percent > 100) return res.status(400).json({ error: "coverage_percent must be a whole number from 1 to 100." });
+  const dateErr = validateWaiverDates(b);
+  if (dateErr) return res.status(400).json({ error: dateErr });
+  try {
+    await ensureFeeAdvancedTables();
+    if (!(await requirePrivateForFees(req, res))) return;
+    const [stu] = await pool.query(
+      "SELECT student_id FROM students WHERE student_id = ? AND school_id = ? AND status = 'Active'",
+      [student_id, req.user.school_id],
+    );
+    if (stu.length === 0) return res.status(404).json({ error: "No active student with that ID in this school." });
+    const [overlap] = await pool.query(
+      `SELECT id FROM fee_scholarships WHERE school_id = ? AND student_id = ? AND status = 'ACTIVE'
+          AND valid_from <= ? AND valid_to >= ?`,
+      [req.user.school_id, student_id, b.valid_to, b.valid_from],
+    );
+    if (overlap.length > 0) {
+      return res.status(409).json({ error: "This student already has an active scholarship/sponsorship overlapping those dates. Revoke it first." });
+    }
+    const id = await createWaiver(req, {
+      student_id, kind, sponsor_name: String(b.sponsor_name || "").trim(), coverage_percent: percent,
+      valid_from: b.valid_from, valid_to: b.valid_to, note: String(b.note || "").trim().slice(0, 255),
+    });
+    await logAudit(req, "finance.scholarship_grant", "student", student_id, `${kind} ${percent}% ${b.valid_from}..${b.valid_to}`);
+    res.json({ message: "Saved. Unpaid invoices in that period were adjusted.", id });
+  } catch (err) {
+    console.error("POST /api/finance/scholarships error:", err);
+    res.status(500).json({ error: "Could not save scholarship" });
+  }
+});
+app.post("/api/finance/scholarships/:id/revoke", requireAuth, requireFinance, async (req, res) => {
+  try {
+    await ensureFeeAdvancedTables();
+    const [result] = await pool.query(
+      "UPDATE fee_scholarships SET status = 'REVOKED', revoked_by = ?, revoked_at = NOW() WHERE id = ? AND school_id = ? AND status = 'ACTIVE'",
+      [req.user.user_id, req.params.id, req.user.school_id],
+    );
+    if (result.affectedRows === 0) return res.status(404).json({ error: "Active scholarship not found." });
+    await restoreInvoicesFromWaiver(req.user.school_id, req.params.id);
+    await logAudit(req, "finance.scholarship_revoke", "scholarship", req.params.id, null);
+    res.json({ message: "Revoked. Unpaid invoices were restored to the normal fee." });
+  } catch (err) {
+    console.error("POST /api/finance/scholarships/:id/revoke error:", err);
+    res.status(500).json({ error: "Could not revoke scholarship" });
+  }
+});
+
+// --- Family rule: "a parent with N children enrolled -> M of them free" ---
+async function loadFamilyPolicy(school_id) {
+  const [rows] = await pool.query("SELECT * FROM fee_family_policy WHERE school_id = ?", [school_id]);
+  const p = rows[0];
+  return {
+    enabled: !!p?.enabled,
+    children_threshold: p?.children_threshold ?? 5,
+    free_count: p?.free_count ?? 1,
+    free_child_rule: p?.free_child_rule ?? "HIGHEST_FEE",
+  };
+}
+async function loadFamilies(school_id, policy, cfg) {
+  const [rows] = await pool.query(
+    `SELECT g.id AS guardian_id, g.full_name AS guardian_name, g.phone_number,
+            s.student_id, CONCAT_WS(' ', s.first_name, s.middle_name, s.last_name) AS student_name, s.class_level
+       FROM student_guardians sg
+       JOIN guardians g ON g.id = sg.guardian_id
+       JOIN students s ON s.student_id = sg.student_id AND s.school_id = ? AND s.status = 'Active'`,
+    [school_id],
+  );
+  const [granted] = await pool.query(
+    `SELECT id, guardian_id, student_id FROM fee_scholarships
+      WHERE school_id = ? AND kind = 'FAMILY' AND status = 'ACTIVE' AND valid_to >= CURDATE()`,
+    [school_id],
+  );
+  const byGuardian = new Map();
+  for (const r of rows) {
+    if (!byGuardian.has(r.guardian_id)) {
+      byGuardian.set(r.guardian_id, { guardian_id: r.guardian_id, guardian_name: r.guardian_name, phone: r.phone_number, children: [] });
+    }
+    byGuardian.get(r.guardian_id).children.push({
+      student_id: r.student_id, name: r.student_name, class_level: r.class_level,
+      monthly_fee: tuitionRateFor(cfg, r.class_level),
+      family_waiver_active: granted.some((w) => w.student_id === r.student_id),
+    });
+  }
+  const families = [];
+  for (const f of byGuardian.values()) {
+    if (f.children.length < policy.children_threshold) continue;
+    f.entitled = Math.floor(f.children.length / policy.children_threshold) * policy.free_count;
+    f.granted = granted.filter((w) => w.guardian_id === f.guardian_id).length;
+    const dir = policy.free_child_rule === "LOWEST_FEE" ? 1 : -1;
+    const sorted = [...f.children].sort((a, b) => dir * ((a.monthly_fee ?? 0) - (b.monthly_fee ?? 0)));
+    f.suggested_student_id = sorted.find((c) => !c.family_waiver_active)?.student_id || null;
+    families.push(f);
+  }
+  return families;
+}
+app.get("/api/finance/family-rule", requireAuth, requireFinance, async (req, res) => {
+  try {
+    await ensureFeeAdvancedTables();
+    const academic_year = (await getCurrentAcademicYear(req.user.school_id)).label;
+    const cfg = await loadTuitionConfig(req.user.school_id, academic_year);
+    const policy = await loadFamilyPolicy(req.user.school_id);
+    res.json({ policy, families: policy.enabled ? await loadFamilies(req.user.school_id, policy, cfg) : [] });
+  } catch (err) {
+    console.error("GET /api/finance/family-rule error:", err);
+    res.status(500).json({ error: "Could not load the family rule" });
+  }
+});
+app.put("/api/finance/family-rule", requireAuth, requireFinance, async (req, res) => {
+  const enabled = !!req.body?.enabled;
+  const threshold = Number(req.body?.children_threshold);
+  const freeCount = Number(req.body?.free_count);
+  const rule = req.body?.free_child_rule === "LOWEST_FEE" ? "LOWEST_FEE" : "HIGHEST_FEE";
+  if (!Number.isInteger(threshold) || threshold < 2 || threshold > 20) return res.status(400).json({ error: "children_threshold must be a whole number from 2 to 20." });
+  if (!Number.isInteger(freeCount) || freeCount < 1 || freeCount > 5) return res.status(400).json({ error: "free_count must be a whole number from 1 to 5." });
+  try {
+    await ensureFeeAdvancedTables();
+    if (!(await requirePrivateForFees(req, res))) return;
+    await pool.query(
+      `INSERT INTO fee_family_policy (school_id, enabled, children_threshold, free_count, free_child_rule, updated_by)
+         VALUES (?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE enabled = VALUES(enabled), children_threshold = VALUES(children_threshold),
+         free_count = VALUES(free_count), free_child_rule = VALUES(free_child_rule), updated_by = VALUES(updated_by)`,
+      [req.user.school_id, enabled ? 1 : 0, threshold, freeCount, rule, req.user.user_id],
+    );
+    await logAudit(req, "finance.family_rule_set", "school", req.user.school_id, `enabled=${enabled} ${threshold} children -> ${freeCount} free (${rule})`);
+    res.json({ message: "Family rule saved." });
+  } catch (err) {
+    console.error("PUT /api/finance/family-rule error:", err);
+    res.status(500).json({ error: "Could not save the family rule" });
+  }
+});
+app.post("/api/finance/family-rule/grant", requireAuth, requireFinance, async (req, res) => {
+  const { guardian_id, student_id, valid_from, valid_to } = req.body || {};
+  const dateErr = validateWaiverDates({ valid_from, valid_to });
+  if (dateErr) return res.status(400).json({ error: dateErr });
+  try {
+    await ensureFeeAdvancedTables();
+    if (!(await requirePrivateForFees(req, res))) return;
+    const policy = await loadFamilyPolicy(req.user.school_id);
+    if (!policy.enabled) return res.status(409).json({ error: "The family rule is switched off." });
+    const academic_year = (await getCurrentAcademicYear(req.user.school_id)).label;
+    const cfg = await loadTuitionConfig(req.user.school_id, academic_year);
+    const family = (await loadFamilies(req.user.school_id, policy, cfg)).find((f) => String(f.guardian_id) === String(guardian_id));
+    if (!family) return res.status(404).json({ error: "That parent doesn't have enough enrolled children for the rule." });
+    if (!family.children.some((c) => c.student_id === student_id)) return res.status(400).json({ error: "That student isn't one of this parent's enrolled children." });
+    if (family.granted >= family.entitled) return res.status(409).json({ error: `This family is entitled to ${family.entitled} free child(ren) and already has ${family.granted}.` });
+    const id = await createWaiver(req, {
+      student_id, kind: "FAMILY", coverage_percent: 100, valid_from, valid_to,
+      guardian_id: family.guardian_id, note: `Family rule: ${policy.children_threshold}+ children enrolled`,
+    });
+    await logAudit(req, "finance.family_rule_grant", "student", student_id, `Guardian ${family.guardian_id} ${valid_from}..${valid_to}`);
+    res.json({ message: "Free place granted. Unpaid invoices in that period were adjusted.", id });
+  } catch (err) {
+    console.error("POST /api/finance/family-rule/grant error:", err);
+    res.status(500).json({ error: "Could not grant the free place" });
+  }
+});
 
 // --- Super Admin: a school's own logo ---
 // Every school carries its own logo (schools.logo_url). Super Admin
@@ -30085,81 +34352,6 @@ app.post(
     }
   },
 );
-app.put(
-  "/api/super/subject-dictionary/:subject_dict_id",
-  requireAuth,
-  requireSuperAdmin,
-  async (req, res) => {
-    const { subject_name } = req.body;
-    if (!subject_name || !subject_name.trim())
-      return res.status(400).json({ error: "subject_name is required" });
-    try {
-      const [rows] = await pool.query(
-        "SELECT school_level, stream FROM subject_dictionary WHERE subject_dict_id = ?",
-        [req.params.subject_dict_id],
-      );
-      if (rows.length === 0)
-        return res.status(404).json({ error: "Subject not found." });
-      const { school_level, stream } = rows[0];
-      const cleanName = normalizeName(subject_name);
-      const [dupe] = await pool.query(
-        `SELECT subject_dict_id FROM subject_dictionary WHERE subject_name = ? AND school_level = ? AND ${stream ? "stream = ?" : "stream IS NULL"} AND subject_dict_id != ?`,
-        stream
-          ? [cleanName, school_level, stream, req.params.subject_dict_id]
-          : [cleanName, school_level, req.params.subject_dict_id],
-      );
-      if (dupe.length > 0)
-        return res.status(409).json({
-          error:
-            "This subject is already in the dictionary for this level/stream.",
-        });
-
-      await pool.query(
-        `UPDATE subject_dictionary SET subject_name = ?, status = 'approved', approved_by = ?, approved_at = ?
-             WHERE subject_dict_id = ?`,
-        [cleanName, req.user.user_id, new Date(), req.params.subject_dict_id],
-      );
-      await logAudit(
-        req,
-        "subject.edit",
-        "subject",
-        req.params.subject_dict_id,
-        cleanName,
-      );
-      res.json({ message: "Subject updated." });
-    } catch (err) {
-      console.error("/api/super/subject-dictionary PUT error:", err);
-      res.status(500).json({ error: "Could not update subject" });
-    }
-  },
-);
-app.delete(
-  "/api/super/subject-dictionary/:subject_dict_id",
-  requireAuth,
-  requireSuperAdmin,
-  async (req, res) => {
-    try {
-      const [result] = await pool.query(
-        "DELETE FROM subject_dictionary WHERE subject_dict_id = ?",
-        [req.params.subject_dict_id],
-      );
-      if (result.affectedRows === 0)
-        return res.status(404).json({ error: "Subject not found." });
-      await logAudit(
-        req,
-        "subject.delete",
-        "subject",
-        req.params.subject_dict_id,
-        null,
-      );
-      res.json({ message: "Subject removed from dictionary." });
-    } catch (err) {
-      console.error("/api/super/subject-dictionary DELETE error:", err);
-      res.status(500).json({ error: "Could not remove subject" });
-    }
-  },
-);
-
 // --- Super Admin: Subject Setup Matrix ---
 // A table view over the exact same subject_dictionary rows as the
 // level-filtered CRUD routes above (GET/POST/PUT/DELETE
@@ -30339,6 +34531,82 @@ app.delete(
     }
   },
 );
+
+app.put(
+  "/api/super/subject-dictionary/:subject_dict_id",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    const { subject_name } = req.body;
+    if (!subject_name || !subject_name.trim())
+      return res.status(400).json({ error: "subject_name is required" });
+    try {
+      const [rows] = await pool.query(
+        "SELECT school_level, stream FROM subject_dictionary WHERE subject_dict_id = ?",
+        [req.params.subject_dict_id],
+      );
+      if (rows.length === 0)
+        return res.status(404).json({ error: "Subject not found." });
+      const { school_level, stream } = rows[0];
+      const cleanName = normalizeName(subject_name);
+      const [dupe] = await pool.query(
+        `SELECT subject_dict_id FROM subject_dictionary WHERE subject_name = ? AND school_level = ? AND ${stream ? "stream = ?" : "stream IS NULL"} AND subject_dict_id != ?`,
+        stream
+          ? [cleanName, school_level, stream, req.params.subject_dict_id]
+          : [cleanName, school_level, req.params.subject_dict_id],
+      );
+      if (dupe.length > 0)
+        return res.status(409).json({
+          error:
+            "This subject is already in the dictionary for this level/stream.",
+        });
+
+      await pool.query(
+        `UPDATE subject_dictionary SET subject_name = ?, status = 'approved', approved_by = ?, approved_at = ?
+             WHERE subject_dict_id = ?`,
+        [cleanName, req.user.user_id, new Date(), req.params.subject_dict_id],
+      );
+      await logAudit(
+        req,
+        "subject.edit",
+        "subject",
+        req.params.subject_dict_id,
+        cleanName,
+      );
+      res.json({ message: "Subject updated." });
+    } catch (err) {
+      console.error("/api/super/subject-dictionary PUT error:", err);
+      res.status(500).json({ error: "Could not update subject" });
+    }
+  },
+);
+app.delete(
+  "/api/super/subject-dictionary/:subject_dict_id",
+  requireAuth,
+  requireSuperAdmin,
+  async (req, res) => {
+    try {
+      const [result] = await pool.query(
+        "DELETE FROM subject_dictionary WHERE subject_dict_id = ?",
+        [req.params.subject_dict_id],
+      );
+      if (result.affectedRows === 0)
+        return res.status(404).json({ error: "Subject not found." });
+      await logAudit(
+        req,
+        "subject.delete",
+        "subject",
+        req.params.subject_dict_id,
+        null,
+      );
+      res.json({ message: "Subject removed from dictionary." });
+    } catch (err) {
+      console.error("/api/super/subject-dictionary DELETE error:", err);
+      res.status(500).json({ error: "Could not remove subject" });
+    }
+  },
+);
+
 
 // --- Super Admin: Stream Setup (system-wide) ---
 // The streams a school can draw from, managed as its own catalog
@@ -30639,13 +34907,14 @@ app.post(
     }
     try {
       const admin_id = await getNextSuperAdminId(title);
+      await ensureMustChangePasswordColumns();
       const hashedPassword = await bcrypt.hash(
         DEFAULT_SUPER_ADMIN_PASSWORD,
         10,
       );
       await pool.query(
-        `INSERT INTO super_admins (admin_id, title, first_name, middle_name, last_name, contact_number, email, security_password, created_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO super_admins (admin_id, title, first_name, middle_name, last_name, contact_number, email, security_password, created_by, must_change_password)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)`,
         [
           admin_id,
           title,
@@ -30680,8 +34949,9 @@ app.post(
         DEFAULT_SUPER_ADMIN_PASSWORD,
         10,
       );
+      await ensureMustChangePasswordColumns();
       const [result] = await pool.query(
-        "UPDATE super_admins SET security_password = ? WHERE admin_id = ?",
+        "UPDATE super_admins SET security_password = ?, must_change_password = TRUE WHERE admin_id = ?",
         [hashedPassword, req.params.admin_id],
       );
       if (result.affectedRows === 0)
@@ -30983,6 +35253,239 @@ app.post(
   },
 );
 
+// ---------------------------------------------------------------------
+// Action Center — Super Admin resets ANY account's password.
+//
+// Two steps, so nobody is reset by a typo'd ID:
+//   1. GET  /api/super/action-center/lookup/:id  -> who does this ID belong
+//      to? (name, role, school/zone, class, status, photo...). Nothing changes.
+//   2. POST /api/super/action-center/reset-password -> after the Super Admin
+//      has looked at that preview and re-typed their OWN password, sets the
+//      account back to the system default (SYSTEM_DEFAULT_PASSWORD) with
+//      must_change_password = TRUE, so the person has to pick a new 6-digit
+//      PIN the next time they sign in.
+//
+// Works across every login table in AUTH_SOURCES_BY_ROLE. Rules:
+//   - A restricted ("IT Specialist") super admin has no access at all.
+//   - Resetting a super admin account is Owner-only (same rule as the
+//     Manage Super Admins screen).
+//   - You can't reset your own account here (use Profile Settings).
+// Every reset is written to audit_log.
+// ---------------------------------------------------------------------
+function actionCenterSafePhoto(v) {
+  const s = typeof v === "string" ? v.trim() : "";
+  return /^(\/|https?:\/\/)/.test(s) ? s : null;
+}
+function actionCenterFullName(row) {
+  const parts = [row.first_name, row.middle_name, row.last_name].filter(
+    Boolean,
+  );
+  return parts.length ? parts.join(" ") : row.full_name || null;
+}
+async function actionCenterFindAccount(rawId) {
+  const id = String(rawId ?? "").trim();
+  if (!id || id.length > 40) return null;
+  await ensureGuardianParentCodeSupport();
+  for (const source of Object.values(AUTH_SOURCES_BY_ROLE)) {
+    let rows;
+    try {
+      [rows] = await pool.query(
+        `SELECT * FROM ${source.table} WHERE ${source.idCol} = ? LIMIT 1`,
+        [id],
+      );
+    } catch (err) {
+      if (err.code === "ER_NO_SUCH_TABLE") continue;
+      throw err;
+    }
+    if (rows.length > 0) {
+      return {
+        role: source.table,
+        source,
+        row: rows[0],
+        id: rows[0][source.idCol],
+      };
+    }
+  }
+  return null;
+}
+// Returns an error message if this super admin may not reset this account.
+function actionCenterReasonBlocked(req, found) {
+  if (String(found.id).toLowerCase() === String(req.user.user_id).toLowerCase()) {
+    return "You can't reset your own password here — use Profile Settings.";
+  }
+  if (found.role === "super_admins" && req.user.title !== "Owner") {
+    return "Only the Owner can reset a super admin account.";
+  }
+  if (found.role === "students" && isKgGrade(found.row && found.row.class_level)) {
+    return "Kindergarten students have no portal account, so there is no password to reset.";
+  }
+  return null;
+}
+function actionCenterGuard(req, res, next) {
+  if (req.user && req.user.is_restricted) {
+    return res.status(403).json({
+      error: "Your account doesn't have access to the Action Center.",
+    });
+  }
+  next();
+}
+const ACTION_CENTER_BLOCKED_STUDENT_STATUSES = new Set([
+  "Unregistered",
+  "Pending Payment",
+  "Registration Rejected",
+  "Graduated",
+]);
+
+app.get(
+  "/api/super/action-center/lookup/:id",
+  requireAuth,
+  requireSuperAdmin,
+  actionCenterGuard,
+  async (req, res) => {
+    try {
+      const found = await actionCenterFindAccount(req.params.id);
+      if (!found) {
+        return res
+          .status(404)
+          .json({ error: "No account found with that ID." });
+      }
+      const blocked = actionCenterReasonBlocked(req, found);
+      if (blocked) return res.status(403).json({ error: blocked });
+
+      const { role, row } = found;
+      let school_name = null;
+      let zone_name = null;
+      if (row.school_id) {
+        const [s] = await pool
+          .query("SELECT school_name FROM schools WHERE id = ?", [
+            row.school_id,
+          ])
+          .catch(() => [[]]);
+        if (s && s.length) school_name = s[0].school_name;
+      }
+      if (row.zone_id) {
+        const [z] = await pool
+          .query("SELECT zone_name FROM zone WHERE zone_id = ?", [row.zone_id])
+          .catch(() => [[]]);
+        if (z && z.length) zone_name = z[0].zone_name;
+      }
+      let children = [];
+      if (role === "guardians") {
+        const [kids] = await pool
+          .query(
+            `SELECT s.student_id, s.first_name, s.middle_name, s.last_name
+               FROM student_guardians sg
+               JOIN students s ON s.student_id = sg.student_id
+              WHERE sg.guardian_id = ?
+              ORDER BY s.student_id LIMIT 8`,
+            [row.id],
+          )
+          .catch(() => [[]]);
+        children = (kids || []).map((k) => ({
+          student_id: k.student_id,
+          full_name: actionCenterFullName(k),
+        }));
+      }
+
+      const deactivated =
+        (role === "teachers" ||
+          role === "school_admins" ||
+          role === "finance_users") &&
+        row.is_active === 0;
+      const studentBlocked =
+        role === "students" &&
+        (ACTION_CENTER_BLOCKED_STUDENT_STATUSES.has(row.status) ||
+          String(row.status || "").startsWith("Transferred"));
+
+      res.json({
+        id: found.id,
+        role,
+        full_name: actionCenterFullName(row),
+        photo_url: actionCenterSafePhoto(
+          row.id_photo_url || row.avatar_url || row.photo_url,
+        ),
+        title: row.title || row.additional_role || null,
+        school_name,
+        zone_name,
+        class_level: role === "students" ? row.class_level || null : null,
+        section: role === "students" ? row.section || null : null,
+        stream: role === "students" ? row.stream || null : null,
+        status: role === "students" ? row.status || null : null,
+        is_active: !deactivated,
+        login_blocked: !!(deactivated || studentBlocked),
+        phone: row.phone_number || row.contact_number || null,
+        email: role === "students" ? null : row.email || null,
+        children,
+        default_password: SYSTEM_DEFAULT_PASSWORD,
+      });
+    } catch (err) {
+      console.error("/api/super/action-center/lookup error:", err);
+      res.status(500).json({ error: "Could not look up that account." });
+    }
+  },
+);
+
+app.post(
+  "/api/super/action-center/reset-password",
+  requireAuth,
+  requireSuperAdmin,
+  actionCenterGuard,
+  async (req, res) => {
+    const { id, password, expected_role } = req.body || {};
+    if (!id) return res.status(400).json({ error: "Account ID is required." });
+    if (!password) {
+      return res
+        .status(400)
+        .json({ error: "Enter your password to confirm the reset." });
+    }
+    try {
+      // 403, not 401: the frontend treats any 401 as "session expired" and
+      // bounces to the login page, which a mistyped password must not do.
+      const okPw = await verifyCurrentUserPassword(req, password);
+      if (!okPw) return res.status(403).json({ error: "Incorrect password." });
+
+      const found = await actionCenterFindAccount(id);
+      if (!found) {
+        return res
+          .status(404)
+          .json({ error: "No account found with that ID." });
+      }
+      if (expected_role && expected_role !== found.role) {
+        return res.status(409).json({
+          error: "That ID no longer matches the account you looked up.",
+        });
+      }
+      const blocked = actionCenterReasonBlocked(req, found);
+      if (blocked) return res.status(403).json({ error: blocked });
+
+      await ensureMustChangePasswordColumns();
+      const hashed = await bcrypt.hash(SYSTEM_DEFAULT_PASSWORD, 10);
+      await pool.query(
+        `UPDATE ${found.source.table} SET security_password = ?, must_change_password = TRUE WHERE ${found.source.idCol} = ?`,
+        [hashed, found.id],
+      );
+      const full_name = actionCenterFullName(found.row);
+      await logAudit(
+        req,
+        "account.reset_password",
+        found.role,
+        found.id,
+        `Password reset to the system default via Action Center${full_name ? ` (${full_name})` : ""}`,
+      );
+      res.json({
+        message: "Password reset.",
+        id: found.id,
+        role: found.role,
+        full_name,
+        default_password: SYSTEM_DEFAULT_PASSWORD,
+      });
+    } catch (err) {
+      console.error("/api/super/action-center/reset-password error:", err);
+      res.status(500).json({ error: "Could not reset that password." });
+    }
+  },
+);
+
 // Profile Settings — avatar upload, same self-serve pattern as
 // /api/zonal/upload-avatar (see that route's comment for why this is a
 // separate column from any future ID-card-only photo). Any super
@@ -31076,15 +35579,17 @@ app.post(
           return res
             .status(401)
             .json({ error: "Current password is incorrect." });
-        if (new_password.length < 6)
-          return res
-            .status(400)
-            .json({ error: "New password must be at least 6 characters." });
+        {
+          const pinErr = validateNewPin(new_password);
+          if (pinErr) return res.status(400).json({ error: pinErr });
+        }
+        await ensureMustChangePasswordColumns();
         const hashed = await bcrypt.hash(new_password, 10);
         await pool.query(
-          "UPDATE super_admins SET security_password = ? WHERE admin_id = ?",
+          "UPDATE super_admins SET security_password = ?, must_change_password = FALSE WHERE admin_id = ?",
           [hashed, req.user.user_id],
         );
+        issueAuthToken(res, { ...req.user, must_change_password: false });
       }
       await logAudit(
         req,
@@ -32236,7 +36741,7 @@ app.post(
 
       const lms_username = student_id;
       const email_address = `${student_id}@${school_prefix.toLowerCase()}.edu`;
-      const plain_password = "1234";
+      const plain_password = SYSTEM_DEFAULT_PASSWORD;
       const security_password = await bcrypt.hash(plain_password, 10);
       const assigned_pc = `PC-${Math.floor(Math.random() * 39) + 1}`;
 
@@ -32381,11 +36886,16 @@ app.get(
 //   - Super Admin turns Subscription on per school and sets a student
 //     fee, a staff fee and the bank account the school deposits into
 //     (school_subscription_settings).
-//   - Class Monitors / Homeroom Teachers mark students paid and the
-//     Admin VP marks staff paid (subscription_payments — one row per
+//   - Students pay their subscription together with the registration
+//     fee (one payment, one reference). Finance verifies it and the
+//     subscription part is then recorded (subscription_registration_charges
+//     -> subscription_payments). Super Admin picks the billing cycle per
+//     school: 'monthly' (registration covers the first month; Finance marks
+//     later months) or 'yearly' (registration covers the rest of the year).
+//     Homeroom Teachers / Class Monitors no longer collect anything.
+//   - The Admin VP marks STAFF paid (subscription_payments — one row per
 //     person per EC month, so a new EC month starts with an empty list
-//     without any scheduled job). The school-side routes live further
-//     down this block and are added in the school-portal pass.
+//     without any scheduled job).
 //   - The Principal sends the month's report to Super Admin
 //     (subscription_reports).
 //   - Super Admin reviews it and freezes/unfreezes unpaid students and
@@ -32476,6 +36986,31 @@ function ensureSubscriptionTables() {
           FOREIGN KEY (school_id) REFERENCES schools(id)
         )
       `);
+      // Subscription part of a registration payment. One row per
+      // fee_payments row; stays PENDING until Finance verifies the payment
+      // (-> APPLIED, subscription_payments rows written) or rejects it (-> VOID).
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS subscription_registration_charges (
+          payment_id INT NOT NULL PRIMARY KEY,
+          school_id INT NOT NULL,
+          student_id VARCHAR(30) NOT NULL,
+          amount DECIMAL(10,2) NOT NULL,
+          billing_cycle VARCHAR(10) NOT NULL DEFAULT 'monthly',
+          ec_year INT NOT NULL,
+          ec_month TINYINT NOT NULL,
+          status VARCHAR(10) NOT NULL DEFAULT 'PENDING',
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          KEY idx_school_student (school_id, student_id)
+        )
+      `);
+      // Super Admin's choice of how the student fee is charged.
+      try {
+        await pool.query(
+          "ALTER TABLE school_subscription_settings ADD COLUMN billing_cycle VARCHAR(10) NOT NULL DEFAULT 'monthly'",
+        );
+      } catch (alterErr) {
+        if (alterErr.code !== "ER_DUP_FIELDNAME") throw alterErr;
+      }
     })().catch((err) => {
       // Let the next request retry instead of caching a failure forever.
       subscriptionTablesPromise = null;
@@ -32536,6 +37071,32 @@ function subscriptionFullName(r) {
   return [r.first_name, r.middle_name, r.last_name].filter(Boolean).join(" ");
 }
 
+// What period a school's report (Finance -> Principal -> Super Admin) covers.
+// A MONTHLY school reports each EC month. A YEARLY school (the student fee is
+// paid once a year) reports the whole EC year: ec_month is stored as 0 and
+// is_year is true, so one report row per school per year.
+function subscriptionReportPeriod(settings) {
+  if (settings && settings.billing_cycle === "yearly") {
+    const cur = currentBillingPeriod();
+    return {
+      ec_year: cur.ec_year,
+      ec_month: 0,
+      month_name: "Full year",
+      is_year: true,
+    };
+  }
+  return { ...parseBillingPeriod({}), is_year: false };
+}
+
+// How many billing months of the period's EC year have come due so far
+// (all 12 for a past year; Pagume counts as the full 12).
+function subscriptionYearMonthsElapsed(period) {
+  const cur = currentBillingPeriod();
+  if (period.ec_year < cur.ec_year) return 12;
+  if (period.ec_year > cur.ec_year) return 0;
+  return cur.billable ? cur.ec_month : 12;
+}
+
 async function getSubscriptionSettings(schoolId) {
   const [rows] = await pool.query(
     "SELECT * FROM school_subscription_settings WHERE school_id = ?",
@@ -32547,6 +37108,8 @@ async function getSubscriptionSettings(schoolId) {
     is_enabled: !!r.is_enabled,
     student_fee: Number(r.student_fee || 0),
     staff_fee: Number(r.staff_fee || 0),
+    // How the STUDENT fee is charged: per month, or once per year.
+    billing_cycle: r.billing_cycle === "yearly" ? "yearly" : "monthly",
     bank_name: r.bank_name || "",
     bank_account_name: r.bank_account_name || "",
     bank_account_number: r.bank_account_number || "",
@@ -32558,6 +37121,110 @@ function subscriptionSetupComplete(s) {
   return (
     (s.student_fee > 0 || s.staff_fee > 0) &&
     !!String(s.bank_account_number || "").trim()
+  );
+}
+
+// --- Student fee: cycle maths -------------------------------------------
+const SUBSCRIPTION_CYCLES = ["monthly", "yearly"];
+
+// The student fee expressed per EC month, so roster totals ("expected")
+// stay comparable month to month whichever cycle the school uses.
+function subscriptionMonthlyEquivalent(settings) {
+  return settings.billing_cycle === "yearly"
+    ? subscriptionRound2(settings.student_fee / 12)
+    : settings.student_fee;
+}
+
+// The first EC month a payment made today pays for. Pagume isn't billed,
+// so a registration during Pagume pays for the coming Meskerem.
+function subscriptionStartPeriod() {
+  const cur = currentBillingPeriod();
+  return cur.billable
+    ? { ec_year: cur.ec_year, ec_month: cur.ec_month }
+    : { ec_year: cur.ec_year + 1, ec_month: 1 };
+}
+
+// The subscription_payments rows one student payment turns into.
+//   monthly -> a single row for startMonth, the full fee.
+//   yearly  -> one row per month from startMonth to Nehase (month 12); the
+//              yearly fee is spread over those months (any leftover cent
+//              goes on the first row), so the school's per-month totals
+//              add up to exactly what the student paid.
+function subscriptionPaymentRows(cycle, fee, startMonth) {
+  if (cycle !== "yearly")
+    return [{ ec_month: startMonth, amount: subscriptionRound2(fee) }];
+  const months = [];
+  for (let m = startMonth; m <= 12; m++) months.push(m);
+  const each = Math.floor((fee / months.length) * 100) / 100;
+  const remainder = subscriptionRound2(fee - each * months.length);
+  return months.map((m, i) => ({
+    ec_month: m,
+    amount: subscriptionRound2(each + (i === 0 ? remainder : 0)),
+  }));
+}
+
+// Writes the paid rows for one student. `db` is a pool or a connection
+// (so it can run inside the payment-approval transaction). Already-paid
+// months are left alone, so running it twice is harmless.
+async function recordStudentSubscription(
+  db,
+  { schoolId, studentId, cycle, fee, ecYear, startMonth, markedBy },
+) {
+  const rows = subscriptionPaymentRows(cycle, fee, startMonth);
+  await db.query(
+    `INSERT INTO subscription_payments (school_id, person_type, person_id, ec_year, ec_month, amount, marked_by)
+     VALUES ?
+     ON DUPLICATE KEY UPDATE person_id = person_id`,
+    [
+      rows.map((r) => [
+        schoolId,
+        "student",
+        studentId,
+        ecYear,
+        r.ec_month,
+        r.amount,
+        markedBy,
+      ]),
+    ],
+  );
+  return rows;
+}
+
+// What a new registration owes on top of the registration fee, or null
+// when Subscription is off / has no student fee. Used by the Registrar's
+// registration + corrected-payment routes.
+async function getRegistrationSubscriptionCharge(schoolId) {
+  await ensureSubscriptionTables();
+  const settings = await getSubscriptionSettings(schoolId);
+  if (!settings.is_enabled || !(settings.student_fee > 0)) return null;
+  const start = subscriptionStartPeriod();
+  return {
+    amount: settings.student_fee,
+    billing_cycle: settings.billing_cycle,
+    ec_year: start.ec_year,
+    ec_month: start.ec_month,
+  };
+}
+
+// Stores the subscription part of a registration payment, tied to the
+// fee_payments row that carries it.
+async function saveRegistrationSubscriptionCharge(
+  conn,
+  { paymentId, schoolId, studentId, charge },
+) {
+  await conn.query(
+    `INSERT INTO subscription_registration_charges
+       (payment_id, school_id, student_id, amount, billing_cycle, ec_year, ec_month, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING')`,
+    [
+      paymentId,
+      schoolId,
+      studentId,
+      charge.amount,
+      charge.billing_cycle,
+      charge.ec_year,
+      charge.ec_month,
+    ],
   );
 }
 
@@ -32626,12 +37293,25 @@ async function loadSubscriptionRoster(schoolId, period, settings) {
     if (err.code !== "ER_NO_SUCH_TABLE" && err.code !== "ER_BAD_FIELD_ERROR")
       throw err;
   }
-  const [payRows] = await pool.query(
-    `SELECT person_id, amount, marked_by, marked_at
-       FROM subscription_payments
-      WHERE school_id = ? AND ec_year = ? AND ec_month = ?`,
-    [schoolId, period.ec_year, period.ec_month],
-  );
+  // Year report (yearly schools): add up each person's payments across the
+  // whole EC year instead of looking at a single month.
+  const yearMode = !!period.is_year;
+  const monthsElapsed = yearMode ? subscriptionYearMonthsElapsed(period) : 1;
+  const [payRows] = yearMode
+    ? await pool.query(
+        `SELECT person_id, COUNT(*) AS months_paid, SUM(amount) AS amount,
+                MAX(marked_by) AS marked_by, MAX(marked_at) AS marked_at
+           FROM subscription_payments
+          WHERE school_id = ? AND ec_year = ?
+          GROUP BY person_id`,
+        [schoolId, period.ec_year],
+      )
+    : await pool.query(
+        `SELECT person_id, amount, marked_by, marked_at
+           FROM subscription_payments
+          WHERE school_id = ? AND ec_year = ? AND ec_month = ?`,
+        [schoolId, period.ec_year, period.ec_month],
+      );
   const [frozenRows] = await pool.query(
     "SELECT person_id FROM subscription_freezes WHERE school_id = ?",
     [schoolId],
@@ -32641,9 +37321,19 @@ async function loadSubscriptionRoster(schoolId, period, settings) {
 
   const make = (base, fee) => {
     const pay = paidById.get(base.person_id);
+    // Year report: a student has paid once any payment exists (a yearly
+    // payment covers the rest of the year); a staff member counts as paid
+    // only when every month due so far is paid, since staff pay monthly.
+    const paid = !pay
+      ? false
+      : yearMode && base.person_type === "staff"
+        ? Number(pay.months_paid) >= monthsElapsed
+        : true;
     return {
       ...base,
-      paid: !!pay,
+      paid,
+      // Money actually received, even from someone not fully paid up.
+      collected_amount: pay ? Number(pay.amount) : 0,
       amount: pay ? Number(pay.amount) : fee,
       paid_at: pay ? pay.marked_at : null,
       marked_by: pay ? pay.marked_by : null,
@@ -32663,9 +37353,11 @@ async function loadSubscriptionRoster(schoolId, period, settings) {
         section: s.section,
         stream: s.stream || null,
         class_label: `${s.class_level}${s.section ? "-" + s.section : ""}`,
-        is_collector: !!s.is_class_monitor,
+        // Students no longer collect anything — payment is taken at
+        // registration (see the SUBSCRIPTION FEE notes above).
+        is_collector: false,
       },
-      settings.student_fee,
+      subscriptionMonthlyEquivalent(settings),
     ),
   );
 
@@ -32691,7 +37383,8 @@ async function loadSubscriptionRoster(schoolId, period, settings) {
         class_label: isHomeroom
           ? `${t.homeroom_class_level}${t.homeroom_section ? "-" + t.homeroom_section : ""}`
           : null,
-        is_collector: isHomeroom,
+        // Homeroom Teachers no longer collect the student fee.
+        is_collector: false,
       };
     }),
     ...adminRows.map((a) => ({
@@ -32724,19 +37417,35 @@ async function loadSubscriptionRoster(schoolId, period, settings) {
   return { students, staff };
 }
 
-function summarizeSubscriptionRoster(students, staff, settings) {
+function summarizeSubscriptionRoster(students, staff, settings, period) {
   const sumOf = (list, fee) => {
     const paid = list.filter((p) => p.paid);
     return {
       total: list.length,
       paid: paid.length,
       unpaid: list.length - paid.length,
-      collected: subscriptionRound2(paid.reduce((a, p) => a + p.amount, 0)),
+      collected: subscriptionRound2(
+        list.reduce(
+          (a, p) => a + (p.collected_amount ?? (p.paid ? p.amount : 0)),
+          0,
+        ),
+      ),
       expected: subscriptionRound2(list.length * fee),
     };
   };
-  const st = sumOf(students, settings.student_fee);
-  const sf = sumOf(staff, settings.staff_fee);
+  // Year report: students owe the full yearly fee; staff owe their monthly
+  // fee for every month due so far.
+  const yearMode = !!(period && period.is_year);
+  const st = sumOf(
+    students,
+    yearMode ? settings.student_fee : subscriptionMonthlyEquivalent(settings),
+  );
+  const sf = sumOf(
+    staff,
+    yearMode
+      ? settings.staff_fee * subscriptionYearMonthsElapsed(period)
+      : settings.staff_fee,
+  );
   const byClass = new Map();
   students.forEach((s) => {
     const key = `${s.class_level}|${s.section || ""}`;
@@ -32786,6 +37495,7 @@ async function buildSubscriptionReport(schoolId, period) {
     students,
     staff,
     settings,
+    period,
   );
   return { period, settings, summary, by_class, students, staff };
 }
@@ -32846,6 +37556,7 @@ app.get(
               COALESCE(ss.is_enabled, 0) AS is_enabled,
               COALESCE(ss.student_fee, 0) AS student_fee,
               COALESCE(ss.staff_fee, 0) AS staff_fee,
+              COALESCE(ss.billing_cycle, 'monthly') AS billing_cycle,
               ss.bank_name, ss.bank_account_name, ss.bank_account_number
          FROM schools sc
          LEFT JOIN zone z ON z.zone_id = sc.zone_id
@@ -32871,9 +37582,28 @@ app.get(
         GROUP BY school_id`,
         [period.ec_year, period.ec_month],
       );
+      // A yearly school reports for the whole EC year (stored with
+      // ec_month = 0), so its row shows the year's money and the year report
+      // instead of the selected month's.
+      const [yearPaidRows] = await pool.query(
+        `SELECT school_id, COUNT(DISTINCT person_id) AS paid_count, SUM(amount) AS collected
+           FROM subscription_payments
+          WHERE ec_year = ?
+          GROUP BY school_id`,
+        [period.ec_year],
+      );
+      const [yearReportRows] = await pool.query(
+        `SELECT school_id, MAX(report_id) AS report_id, MAX(sent_at) AS sent_at
+           FROM subscription_reports
+          WHERE ec_year = ? AND ec_month = 0
+          GROUP BY school_id`,
+        [period.ec_year],
+      );
       const paidBy = new Map(paidRows.map((r) => [r.school_id, r]));
+      const yearPaidBy = new Map(yearPaidRows.map((r) => [r.school_id, r]));
       const frozenBy = new Map(frozenRows.map((r) => [r.school_id, r]));
       const reportBy = new Map(reportRows.map((r) => [r.school_id, r]));
+      const yearReportBy = new Map(yearReportRows.map((r) => [r.school_id, r]));
       res.json({
         period,
         current_period: currentBillingPeriod(),
@@ -32883,7 +37613,9 @@ app.get(
             staff_fee: Number(s.staff_fee),
             bank_account_number: s.bank_account_number,
           };
-          const paid = paidBy.get(s.id);
+          const isYearly = s.billing_cycle === "yearly";
+          const paid = (isYearly ? yearPaidBy : paidBy).get(s.id);
+          const rep = (isYearly ? yearReportBy : reportBy).get(s.id);
           return {
             id: s.id,
             school_name: s.school_name,
@@ -32894,6 +37626,7 @@ app.get(
             is_setup_complete: subscriptionSetupComplete(settings),
             student_fee: settings.student_fee,
             staff_fee: settings.staff_fee,
+            billing_cycle: s.billing_cycle === "yearly" ? "yearly" : "monthly",
             bank_name: s.bank_name || "",
             bank_account_name: s.bank_account_name || "",
             bank_account_number: s.bank_account_number || "",
@@ -32902,10 +37635,11 @@ app.get(
             frozen_count: frozenBy.has(s.id)
               ? Number(frozenBy.get(s.id).frozen_count)
               : 0,
-            report_id: reportBy.has(s.id) ? reportBy.get(s.id).report_id : null,
-            report_sent_at: reportBy.has(s.id)
-              ? reportBy.get(s.id).sent_at
-              : null,
+            // true -> paid_count / collected / the report below are for the
+            // whole EC year, not the selected month.
+            is_year: isYearly,
+            report_id: rep ? rep.report_id : null,
+            report_sent_at: rep ? rep.sent_at : null,
           };
         }),
       });
@@ -32980,6 +37714,13 @@ app.put(
           });
         next[key] = v;
       }
+      if (body.billing_cycle !== undefined) {
+        if (!SUBSCRIPTION_CYCLES.includes(body.billing_cycle))
+          return res
+            .status(400)
+            .json({ error: "billing_cycle must be 'monthly' or 'yearly'." });
+        next.billing_cycle = body.billing_cycle;
+      }
       if (body.is_enabled !== undefined) {
         if (typeof body.is_enabled !== "boolean")
           return res
@@ -32996,10 +37737,11 @@ app.put(
 
       await pool.query(
         `INSERT INTO school_subscription_settings
-           (school_id, is_enabled, student_fee, staff_fee, bank_name, bank_account_name, bank_account_number, updated_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           (school_id, is_enabled, student_fee, staff_fee, billing_cycle, bank_name, bank_account_name, bank_account_number, updated_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
            is_enabled = VALUES(is_enabled), student_fee = VALUES(student_fee), staff_fee = VALUES(staff_fee),
+           billing_cycle = VALUES(billing_cycle),
            bank_name = VALUES(bank_name), bank_account_name = VALUES(bank_account_name),
            bank_account_number = VALUES(bank_account_number), updated_by = VALUES(updated_by)`,
         [
@@ -33007,6 +37749,7 @@ app.put(
           next.is_enabled ? 1 : 0,
           next.student_fee,
           next.staff_fee,
+          next.billing_cycle,
           next.bank_name || null,
           next.bank_account_name || null,
           next.bank_account_number || null,
@@ -33031,7 +37774,7 @@ app.put(
         "subscription.settings",
         "school",
         schoolId,
-        `${schoolRows[0].school_name}: ${next.is_enabled ? "on" : "off"}, student fee ${next.student_fee}, staff fee ${next.staff_fee}` +
+        `${schoolRows[0].school_name}: ${next.is_enabled ? "on" : "off"}, student fee ${next.student_fee} (${next.billing_cycle}), staff fee ${next.staff_fee}` +
           (released ? `, released ${released} frozen account(s)` : ""),
       );
       res.json({
@@ -33062,7 +37805,7 @@ app.get(
     const schoolId = parseInt(req.params.schoolId, 10);
     if (!Number.isInteger(schoolId))
       return res.status(400).json({ error: "Invalid school." });
-    const period = parseBillingPeriod(req.query);
+    let period = parseBillingPeriod(req.query);
     if (!period)
       return res
         .status(400)
@@ -33075,6 +37818,16 @@ app.get(
       );
       if (schoolRows.length === 0)
         return res.status(404).json({ error: "School not found." });
+      // Yearly school: the screen (and its report list) covers the whole EC
+      // year of the chosen year, not a single month.
+      const schoolSettings = await getSubscriptionSettings(schoolId);
+      if (schoolSettings.billing_cycle === "yearly")
+        period = {
+          ec_year: period.ec_year,
+          ec_month: 0,
+          month_name: "Full year",
+          is_year: true,
+        };
       const report = await buildSubscriptionReport(schoolId, period);
       const [sent] = await pool.query(
         `SELECT report_id, sent_by, sent_at, total_collected, reviewed_at
@@ -33231,7 +37984,11 @@ app.get(
       res.json(
         rows.map((r) => ({
           ...r,
-          month_name: ETHIOPIAN_MONTHS[r.ec_month - 1] || "",
+          month_name:
+            r.ec_month === 0
+              ? "Full year"
+              : ETHIOPIAN_MONTHS[r.ec_month - 1] || "",
+          is_year: r.ec_month === 0,
           total_collected: Number(r.total_collected),
         })),
       );
@@ -33274,7 +38031,11 @@ app.get(
         school_name: r.school_name,
         ec_year: r.ec_year,
         ec_month: r.ec_month,
-        month_name: ETHIOPIAN_MONTHS[r.ec_month - 1] || "",
+        month_name:
+          r.ec_month === 0
+            ? "Full year"
+            : ETHIOPIAN_MONTHS[r.ec_month - 1] || "",
+        is_year: r.ec_month === 0,
         total_collected: Number(r.total_collected),
         sent_by: r.sent_by,
         sent_by_name: r.sent_by_name,
@@ -33370,6 +38131,7 @@ function subscriptionPublicSettings(s) {
   return {
     student_fee: s.student_fee,
     staff_fee: s.staff_fee,
+    billing_cycle: s.billing_cycle,
     bank_name: s.bank_name,
     bank_account_name: s.bank_account_name,
     bank_account_number: s.bank_account_number,
@@ -33436,28 +38198,14 @@ app.get("/api/subscription/status", requireAuth, async (req, res) => {
     if (req.user.role === "school_admins") {
       capabilities.staff_collection = req.user.title === "Admin VP";
       capabilities.report = req.user.title === "Principal";
-    } else if (req.user.role === "teachers") {
-      const homeroom = await getHomeroomSectionOrNull(
-        req.user.user_id,
-        req.user.school_id,
-      );
-      if (homeroom) {
-        capabilities.student_collection = true;
-        capabilities.student_class = homeroom;
-      }
-    } else if (req.user.role === "students") {
-      const monitor = await getMonitorSectionOrNull(
-        req.user.user_id,
-        req.user.school_id,
-      );
-      if (monitor) {
-        capabilities.student_collection = true;
-        capabilities.student_class = monitor;
-      }
     }
+    // Homeroom Teachers and Class Monitors no longer collect the student
+    // fee (it is paid at registration), so student_collection stays false
+    // for them and the portals should hide the Subscription Fee page.
     res.json({
       enabled: true,
       period: currentBillingPeriod(),
+      billing_cycle: settings.billing_cycle,
       student_fee: settings.student_fee,
       staff_fee: settings.staff_fee,
       capabilities,
@@ -33483,11 +38231,14 @@ app.get(
       if (!ctx) return;
       const period = parseBillingPeriod({});
       const report = await buildSubscriptionReport(ctx.schoolId, period);
+      // The report status follows the school's report period (month, or the
+      // whole year for a yearly school); the staff list above stays monthly.
+      const reportPeriod = subscriptionReportPeriod(ctx.settings);
       const [[sent]] = await pool.query(
         `SELECT COUNT(*) AS n, MAX(sent_at) AS last_sent_at
            FROM subscription_reports
           WHERE school_id = ? AND ec_year = ? AND ec_month = ?`,
-        [ctx.schoolId, period.ec_year, period.ec_month],
+        [ctx.schoolId, reportPeriod.ec_year, reportPeriod.ec_month],
       );
       res.json({
         period,
@@ -33595,7 +38346,9 @@ app.get(
     try {
       const ctx = await requireSchoolSubscription(req, res);
       if (!ctx) return;
-      const period = parseBillingPeriod({});
+      // Monthly school: this EC month. Yearly school: the whole EC year.
+      const period = subscriptionReportPeriod(ctx.settings);
+      const reportable = period.is_year || ctx.current.billable;
       const report = await buildSubscriptionReport(ctx.schoolId, period);
       const [sent] = await pool.query(
         `SELECT r.report_id, r.sent_at, r.total_collected,
@@ -33606,12 +38359,25 @@ app.get(
           ORDER BY r.sent_at DESC`,
         [ctx.schoolId, period.ec_year, period.ec_month],
       );
+      const financeReports = await listSubscriptionFinanceReports(
+        ctx.schoolId,
+        period,
+      );
       res.json({
         period,
-        billable: ctx.current.billable,
+        // A yearly report can be sent any time of the year, Pagume included.
+        billable: reportable,
         settings: subscriptionPublicSettings(report.settings),
         summary: report.summary,
         by_class: report.by_class,
+        // What the Finance officer has reported to the Principal this period
+        // (newest first). Send Report is gated on this: the Principal can
+        // only report to the Super Admin after Finance has reported, and
+        // only once per EC month.
+        finance_reports: financeReports,
+        finance_reported: financeReports.length > 0,
+        already_reported: sent.length > 0,
+        can_send: reportable && financeReports.length > 0 && sent.length === 0,
         reports_sent: sent.map((r) => ({
           ...r,
           total_collected: Number(r.total_collected),
@@ -33628,8 +38394,9 @@ app.get(
 // password is checked HERE, in the same request — not in a separate
 // call the client could skip. What gets stored is a snapshot of the
 // totals at this moment plus who was still unpaid; the Super Admin can
-// always read the live paid list separately. Sending again later in the
-// month (more people paid) simply adds a newer report.
+// always read the live paid list separately. One report per period (an EC
+// month, or the whole EC year for a yearly school), and only after the
+// Finance officer has reported to the Principal.
 app.post(
   "/api/subscription/principal/send-report",
   requireAuth,
@@ -33639,31 +38406,56 @@ app.post(
     if (!password)
       return res.status(400).json({ error: "Password is required." });
     try {
-      const ctx = await requireSchoolSubscription(req, res, {
-        needBillable: true,
-      });
+      const ctx = await requireSchoolSubscription(req, res);
       if (!ctx) return;
+      const period = subscriptionReportPeriod(ctx.settings);
+      // Pagume only blocks monthly schools; a yearly report may go any time.
+      if (!period.is_year && !ctx.current.billable)
+        return res.status(409).json({
+          error:
+            "Pagume isn't a billing month. Payments open again on Meskerem 1.",
+          code: "SUBSCRIPTION_PAGUME",
+        });
       if (!(await verifySchoolAdminPassword(req.user.user_id, password)))
         return res.status(401).json({ error: "Incorrect password." });
-      const period = parseBillingPeriod({});
-      // Guards against a double-click / double-tap sending twice.
-      const [recent] = await pool.query(
+      const unit = period.is_year ? "year" : "month";
+      const alreadyReported = {
+        error: `You have already sent this ${unit}'s report to the Super Admin.`,
+        code: "ALREADY_REPORTED",
+      };
+      // One report per EC month (also stops a double-click / double-tap).
+      const [existing] = await pool.query(
         `SELECT report_id FROM subscription_reports
-          WHERE school_id = ? AND ec_year = ? AND ec_month = ? AND sent_at > (NOW() - INTERVAL 30 SECOND)
+          WHERE school_id = ? AND ec_year = ? AND ec_month = ?
           LIMIT 1`,
         [ctx.schoolId, period.ec_year, period.ec_month],
       );
-      if (recent.length > 0)
+      if (existing.length > 0) return res.status(409).json(alreadyReported);
+      // The Finance officer must have reported to the Principal first.
+      await ensureSubscriptionFinanceReportsTable();
+      const [finRows] = await pool.query(
+        `SELECT report_id FROM subscription_finance_reports
+          WHERE school_id = ? AND ec_year = ? AND ec_month = ?
+          LIMIT 1`,
+        [ctx.schoolId, period.ec_year, period.ec_month],
+      );
+      if (finRows.length === 0)
         return res.status(409).json({
-          error:
-            "A report was just sent. Please wait a moment before sending another.",
+          error: `The Finance officer has not reported this ${unit}'s subscription to you yet. You can send your report after Finance reports.`,
+          code: "FINANCE_NOT_REPORTED",
         });
       const report = await buildSubscriptionReport(ctx.schoolId, period);
       const sm = report.summary;
+      // INSERT ... WHERE NOT EXISTS keeps the once-per-month rule true even
+      // when two requests arrive at the same moment.
       const [ins] = await pool.query(
         `INSERT INTO subscription_reports
            (school_id, ec_year, ec_month, total_collected, students_paid, students_unpaid, staff_paid, staff_unpaid, snapshot, sent_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM DUAL
+          WHERE NOT EXISTS (
+            SELECT 1 FROM subscription_reports
+             WHERE school_id = ? AND ec_year = ? AND ec_month = ?
+          )`,
         [
           ctx.schoolId,
           period.ec_year,
@@ -33675,14 +38467,18 @@ app.post(
           sm.staff.unpaid,
           JSON.stringify(subscriptionSnapshot(report)),
           req.user.user_id,
+          ctx.schoolId,
+          period.ec_year,
+          period.ec_month,
         ],
       );
+      if (ins.affectedRows === 0) return res.status(409).json(alreadyReported);
       await logAudit(
         req,
         "subscription.report_sent",
         "subscription_report",
         ins.insertId,
-        `${period.month_name} ${period.ec_year} E.C.: collected ${sm.total_collected}`,
+        `${period.is_year ? "Full year" : period.month_name} ${period.ec_year} E.C.: collected ${sm.total_collected}`,
       );
       res.json({
         message: "Report sent to the Super Admin.",
@@ -33696,40 +38492,188 @@ app.post(
   },
 );
 
-// --- School-side routes: students paying through their collector ----------
-// Class Monitors and Homeroom Teachers collect the student fee, each for
-// ONE class: class_level + section + stream, the same way
-// getHomeroomSectionOrNull / getMonitorSectionOrNull define it. A student is
-// marked paid when they hand the money over. The Class Monitor is a student,
-// so he/she pays the student fee and may mark themselves; the Homeroom
-// Teacher is staff, so the Admin VP marks them (see the staff route above).
-// Everything is enforced here on the server; hiding the page in the portal
-// is only a convenience.
-
-// Who is asking, and which class they collect for. Reads the CURRENT database
-// state (not the token's is_class_monitor flag), so a monitor who has just
-// been removed loses access at once. Returns null for anyone who isn't a
-// collector, including an ordinary student.
-async function getStudentCollectorContext(req) {
-  let kind = null;
-  let cls = null;
-  if (req.user.role === "teachers") {
-    cls = await getHomeroomSectionOrNull(req.user.user_id, req.user.school_id);
-    kind = "homeroom_teacher";
-  } else if (req.user.role === "students") {
-    // Same lookup as getMonitorSectionOrNull, plus status = 'Active': a student
-    // who is not registered this year is not a collector, whatever flag is left.
-    const [rows] = await pool.query(
-      "SELECT class_level, section, stream FROM students WHERE student_id = ? AND school_id = ? AND is_class_monitor = 1 AND status = 'Active'",
-      [req.user.user_id, req.user.school_id],
-    );
-    cls = rows.length ? rows[0] : null;
-    kind = "class_monitor";
+// --- Finance reports the student subscription to the Principal --------------
+// Finance collects/verifies the student subscription fee; the Principal
+// deposits the money into the Super Admin's account and then reports to the
+// Super Admin (send-report above). This is the first link in that chain:
+// Finance presses "Report to Principal" and the Principal sees what Finance
+// collected this EC month on their Send Report page, so they know how much
+// to deposit. Finance may report again later in the month (each press adds
+// a newer row, and the Principal sees the latest). Table is self-healing.
+let subscriptionFinanceReportsPromise = null;
+function ensureSubscriptionFinanceReportsTable() {
+  if (!subscriptionFinanceReportsPromise) {
+    subscriptionFinanceReportsPromise = (async () => {
+      await ensureSubscriptionTables();
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS subscription_finance_reports (
+          report_id INT AUTO_INCREMENT PRIMARY KEY,
+          school_id INT NOT NULL,
+          ec_year INT NOT NULL,
+          ec_month TINYINT NOT NULL,
+          students_total INT NOT NULL DEFAULT 0,
+          students_paid INT NOT NULL DEFAULT 0,
+          students_unpaid INT NOT NULL DEFAULT 0,
+          amount_collected DECIMAL(12,2) NOT NULL DEFAULT 0,
+          note VARCHAR(500) NULL,
+          sent_by VARCHAR(30) NOT NULL,
+          sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          KEY idx_school_period (school_id, ec_year, ec_month),
+          FOREIGN KEY (school_id) REFERENCES schools(id)
+        )
+      `);
+    })().catch((err) => {
+      subscriptionFinanceReportsPromise = null;
+      throw err;
+    });
   }
-  // A class needs a level and a section to collect for.
-  if (!cls || !cls.class_level || !cls.section) return null;
-  return { kind, cls };
+  return subscriptionFinanceReportsPromise;
 }
+
+// Finance's reports for one school + EC month, newest first. Never throws:
+// the Principal's page must still load if this side table is unavailable.
+async function listSubscriptionFinanceReports(schoolId, period) {
+  try {
+    await ensureSubscriptionFinanceReportsTable();
+    const [rows] = await pool.query(
+      `SELECT r.report_id, r.sent_at, r.students_total, r.students_paid,
+              r.students_unpaid, r.amount_collected, r.note,
+              CONCAT_WS(' ', f.first_name, f.last_name) AS sent_by_name
+         FROM subscription_finance_reports r
+         LEFT JOIN finance_users f ON f.finance_id = r.sent_by
+        WHERE r.school_id = ? AND r.ec_year = ? AND r.ec_month = ?
+        ORDER BY r.sent_at DESC, r.report_id DESC`,
+      [schoolId, period.ec_year, period.ec_month],
+    );
+    return rows.map((r) => ({
+      ...r,
+      amount_collected: Number(r.amount_collected),
+    }));
+  } catch (err) {
+    console.error("listSubscriptionFinanceReports error:", err);
+    return [];
+  }
+}
+
+// Finance: what has already been reported to the Principal this month.
+app.get(
+  "/api/finance/subscription/report",
+  requireAuth,
+  requireFinance,
+  async (req, res) => {
+    try {
+      const ctx = await requireSchoolSubscription(req, res);
+      if (!ctx) return;
+      const period = subscriptionReportPeriod(ctx.settings);
+      res.set("Cache-Control", "no-store");
+      res.json({
+        period,
+        billable: period.is_year || ctx.current.billable,
+        reports: await listSubscriptionFinanceReports(ctx.schoolId, period),
+      });
+    } catch (err) {
+      console.error("GET /api/finance/subscription/report error:", err);
+      res.status(500).json({ error: "Could not load your reports" });
+    }
+  },
+);
+
+// Finance presses Report to Principal and confirms their own password (same
+// step-up as the fee routes; checked HERE, in the same request). The numbers
+// are computed server-side from the live student roster — the same figures
+// the Principal's own report uses — never taken from the client.
+app.post(
+  "/api/finance/subscription/report",
+  requireAuth,
+  requireFinance,
+  async (req, res) => {
+    try {
+      const ctx = await requireSchoolSubscription(req, res);
+      if (!ctx) return;
+      const period = subscriptionReportPeriod(ctx.settings);
+      if (!period.is_year && !ctx.current.billable)
+        return res.status(409).json({
+          error:
+            "Pagume isn't a billing month. Payments open again on Meskerem 1.",
+          code: "SUBSCRIPTION_PAGUME",
+        });
+      if (!(await confirmFinancePassword(req, res))) return;
+      await ensureSubscriptionFinanceReportsTable();
+      // Guards against a double-click / double-tap sending twice.
+      const [recent] = await pool.query(
+        `SELECT report_id FROM subscription_finance_reports
+          WHERE school_id = ? AND ec_year = ? AND ec_month = ? AND sent_at > (NOW() - INTERVAL 30 SECOND)
+          LIMIT 1`,
+        [ctx.schoolId, period.ec_year, period.ec_month],
+      );
+      if (recent.length > 0)
+        return res.status(409).json({
+          error:
+            "A report was just sent. Please wait a moment before sending another.",
+        });
+      const note =
+        typeof req.body?.note === "string"
+          ? req.body.note.trim().slice(0, 500)
+          : "";
+      const report = await buildSubscriptionReport(ctx.schoolId, period);
+      const st = report.summary.students;
+      const [ins] = await pool.query(
+        `INSERT INTO subscription_finance_reports
+           (school_id, ec_year, ec_month, students_total, students_paid, students_unpaid, amount_collected, note, sent_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          ctx.schoolId,
+          period.ec_year,
+          period.ec_month,
+          st.total,
+          st.paid,
+          st.unpaid,
+          st.collected,
+          note || null,
+          req.user.user_id,
+        ],
+      );
+      await logAudit(
+        req,
+        "subscription.finance_report_sent",
+        "subscription_finance_report",
+        ins.insertId,
+        `${period.is_year ? "Full year" : period.month_name} ${period.ec_year} E.C.: students collected ${st.collected}`,
+      );
+      res.json({
+        message: "Report sent to the Principal.",
+        report_id: ins.insertId,
+        amount_collected: st.collected,
+        students_paid: st.paid,
+        students_unpaid: st.unpaid,
+      });
+    } catch (err) {
+      console.error("POST /api/finance/subscription/report error:", err);
+      res.status(500).json({ error: "Could not send the report" });
+    }
+  },
+);
+
+// --- Student fee: no longer collected by Class Monitors / Homeroom Teachers --
+// The student fee is paid at registration together with the registration
+// fee (and, for monthly schools, marked paid by Finance afterwards — see
+// /api/finance/subscription). The routes the Class Monitor / Homeroom
+// Teacher pages used are kept only to answer old clients clearly.
+const SUBSCRIPTION_COLLECTION_MOVED = {
+  error:
+    "Students now pay the subscription fee at registration. Class Monitors and Homeroom Teachers no longer collect it.",
+  code: "SUBSCRIPTION_COLLECTION_MOVED",
+};
+app.get(
+  "/api/subscription/student/class-roster",
+  requireAuth,
+  (req, res) => res.status(410).json(SUBSCRIPTION_COLLECTION_MOVED),
+);
+app.post(
+  "/api/subscription/student/:studentId/paid",
+  requireAuth,
+  (req, res) => res.status(410).json(SUBSCRIPTION_COLLECTION_MOVED),
+);
 
 // SQL for "this student is in that class". Same idea as the existing homeroom
 // routes (level + section + stream, stream matched as a prefix so a homeroom
@@ -33755,177 +38699,156 @@ function subscriptionClassFilter(cls) {
   };
 }
 
-// The Active students of one class with their paid state for one EC month.
-async function loadSubscriptionClassRoster(
-  schoolId,
-  cls,
-  period,
-  settings,
-  caller,
-) {
-  const f = subscriptionClassFilter(cls);
-  const [studentRows] = await pool.query(
-    `SELECT student_id, first_name, middle_name, last_name, is_class_monitor
-       FROM students
-      WHERE school_id = ? AND status = 'Active' AND ${f.sql}
-      ORDER BY first_name, middle_name, last_name, student_id`,
-    [schoolId, ...f.params],
-  );
-  let payRows = [];
-  if (studentRows.length > 0) {
-    [payRows] = await pool.query(
-      `SELECT person_id, amount, marked_by, marked_at
-         FROM subscription_payments
-        WHERE school_id = ? AND person_type = 'student' AND ec_year = ? AND ec_month = ?
-          AND person_id IN (?)`,
-      [
-        schoolId,
-        period.ec_year,
-        period.ec_month,
-        studentRows.map((s) => s.student_id),
-      ],
-    );
-  }
-  const paidById = new Map(payRows.map((p) => [p.person_id, p]));
-  const same = (a, b) =>
-    a != null &&
-    b != null &&
-    String(a).toLowerCase() === String(b).toLowerCase();
-  const fee = settings.student_fee;
-  const students = studentRows.map((s) => {
-    const pay = paidById.get(s.student_id);
-    return {
-      student_id: s.student_id,
-      name: subscriptionFullName(s),
-      is_class_monitor: !!s.is_class_monitor,
-      is_me: caller.role === "students" && same(s.student_id, caller.user_id),
-      paid: !!pay,
-      amount: pay ? Number(pay.amount) : fee,
-      paid_at: pay ? pay.marked_at : null,
-      marked_by_me: pay ? same(pay.marked_by, caller.user_id) : false,
-    };
-  });
-  const paid = students.filter((s) => s.paid);
-  return {
-    class: {
-      class_level: cls.class_level,
-      section: cls.section,
-      stream: cls.stream || null,
-      class_label: `${cls.class_level}${cls.section ? "-" + cls.section : ""}`,
-    },
-    summary: {
-      total: students.length,
-      paid: paid.length,
-      unpaid: students.length - paid.length,
-      collected: subscriptionRound2(paid.reduce((a, s) => a + s.amount, 0)),
-      expected: subscriptionRound2(students.length * fee),
-    },
-    students,
-  };
-}
-
-// The live list for the caller's OWN class. The portal polls this every few
-// seconds, so it is never cached. Only a Class Monitor (own class) or a
-// Homeroom Teacher (own class) may read it.
+// --- Registrar: what a registration costs ---------------------------------
+// Registration fee + (when Subscription is on) the subscription fee, so the
+// Registrar's form can show the one amount to collect.
 app.get(
-  "/api/subscription/student/class-roster",
+  "/api/registrar/registration-charges",
   requireAuth,
-  blockIfMustChangePassword,
-  requireRole("students", "teachers"),
+  requireRegistrarOrRecorder,
   async (req, res) => {
     try {
-      const collector = await getStudentCollectorContext(req);
-      if (!collector)
-        return res.status(403).json({
-          error: "Only a Class Monitor or a Homeroom Teacher can view this.",
-        });
-      const ctx = await requireSchoolSubscription(req, res);
-      if (!ctx) return;
-      const period = parseBillingPeriod({});
-      const roster = await loadSubscriptionClassRoster(
-        ctx.schoolId,
-        collector.cls,
-        period,
-        ctx.settings,
-        req.user,
+      const [feeRows] = await pool.query(
+        "SELECT registration_fee FROM fee_structures WHERE school_id = ? AND academic_year = ?",
+        [req.user.school_id, (await getCurrentAcademicYear(req.user.school_id)).label],
       );
-      res.set("Cache-Control", "no-store");
+      const registrationFee =
+        feeRows.length > 0 ? Number(feeRows[0].registration_fee) : null;
+      const sub = await getRegistrationSubscriptionCharge(req.user.school_id);
       res.json({
-        period,
-        billable: ctx.current.billable,
-        role: collector.kind,
-        fee: ctx.settings.student_fee,
-        ...roster,
-        server_time: new Date().toISOString(),
+        registration_fee: registrationFee,
+        subscription: sub
+          ? {
+              amount: sub.amount,
+              billing_cycle: sub.billing_cycle,
+              covers:
+                sub.billing_cycle === "yearly"
+                  ? "the rest of the academic year"
+                  : "the first month",
+            }
+          : null,
+        total:
+          registrationFee === null
+            ? null
+            : subscriptionRound2(registrationFee + (sub ? sub.amount : 0)),
       });
     } catch (err) {
-      console.error("/api/subscription/student/class-roster error:", err);
-      res.status(500).json({ error: "Could not load your class's fees" });
+      console.error("GET /api/registrar/registration-charges error:", err);
+      res.status(500).json({ error: "Could not load the registration charges" });
     }
   },
 );
 
-// Mark one student of the caller's own class paid (they handed over the money)
-// or unpaid (undoing a mistake). Always the CURRENT billing month; the client
-// never picks it. The amount is the student fee at this moment, kept as a
-// snapshot. The first person to mark keeps the credit (marked_by), and a
-// repeat "paid" is a harmless no-op.
-app.post(
-  "/api/subscription/student/:studentId/paid",
+// --- Finance: student subscription ----------------------------------------
+// Registration pays the first period (see approve above). For a MONTHLY
+// school the student owes again each EC month; Finance marks those here.
+// For a YEARLY school the registration payment already covers the rest of the
+// year, so this page is mainly a status list (and a way to correct a mistake).
+app.get(
+  "/api/finance/subscription",
   requireAuth,
-  blockIfMustChangePassword,
-  requireRole("students", "teachers"),
+  requireFinance,
+  async (req, res) => {
+    try {
+      await ensureSubscriptionTables();
+      const schoolId = req.user.school_id;
+      const settings = await getSubscriptionSettings(schoolId);
+      if (!settings.is_enabled)
+        return res.json({ enabled: false });
+      const period = parseBillingPeriod({});
+      const [studentRows] = await pool.query(
+        `SELECT student_id, first_name, middle_name, last_name, class_level, section
+           FROM students
+          WHERE school_id = ? AND status = 'Active'
+          ORDER BY class_level, section, first_name, last_name`,
+        [schoolId],
+      );
+      const [payRows] = await pool.query(
+        `SELECT person_id, amount, marked_at FROM subscription_payments
+          WHERE school_id = ? AND person_type = 'student' AND ec_year = ? AND ec_month = ?`,
+        [schoolId, period.ec_year, period.ec_month],
+      );
+      const paidById = new Map(payRows.map((r) => [r.person_id, r]));
+      const students = studentRows.map((s) => {
+        const pay = paidById.get(s.student_id);
+        return {
+          student_id: s.student_id,
+          name: subscriptionFullName(s),
+          class_label: `${s.class_level}${s.section ? "-" + s.section : ""}`,
+          paid: !!pay,
+          paid_at: pay ? pay.marked_at : null,
+        };
+      });
+      const paidCount = students.filter((s) => s.paid).length;
+      res.set("Cache-Control", "no-store");
+      res.json({
+        enabled: true,
+        billing_cycle: settings.billing_cycle,
+        student_fee: settings.student_fee,
+        period,
+        billable: currentBillingPeriod().billable,
+        summary: {
+          total: students.length,
+          paid: paidCount,
+          unpaid: students.length - paidCount,
+        },
+        students,
+      });
+    } catch (err) {
+      console.error("GET /api/finance/subscription error:", err);
+      res.status(500).json({ error: "Could not load student subscriptions" });
+    }
+  },
+);
+
+// Mark one active student paid (money received) or unpaid (undo a mistake).
+// Paid on a yearly school covers the rest of the year; unpaid there removes
+// the whole year's rows, because that payment was one payment.
+app.post(
+  "/api/finance/subscription/students/:studentId/paid",
+  requireAuth,
+  requireFinance,
   async (req, res) => {
     const { paid } = req.body || {};
     if (typeof paid !== "boolean")
       return res.status(400).json({ error: "paid must be true or false." });
     try {
-      // Who may do this comes first: an ordinary student, a teacher with no
-      // homeroom, or a monitor who was just removed is refused outright.
-      const collector = await getStudentCollectorContext(req);
-      if (!collector)
+      await ensureSubscriptionTables();
+      const schoolId = req.user.school_id;
+      const settings = await getSubscriptionSettings(schoolId);
+      if (!settings.is_enabled)
         return res.status(403).json({
-          error: "Only a Class Monitor or a Homeroom Teacher can do this.",
+          error: "Subscription Fee isn't turned on for your school.",
+          code: "SUBSCRIPTION_OFF",
         });
-      const ctx = await requireSchoolSubscription(req, res, {
-        needBillable: true,
-      });
-      if (!ctx) return;
-
-      // The student must be in the caller's own class. Looking them up by
-      // school + class in one query means someone from another class or
-      // school is indistinguishable from an ID that doesn't exist.
-      const f = subscriptionClassFilter(collector.cls);
+      const current = currentBillingPeriod();
+      if (!current.billable)
+        return res.status(409).json({
+          error:
+            "Pagume isn't a billing month. Payments open again on Meskerem 1.",
+          code: "SUBSCRIPTION_PAGUME",
+        });
       const [rows] = await pool.query(
-        `SELECT student_id, status FROM students
-          WHERE student_id = ? AND school_id = ? AND ${f.sql} LIMIT 1`,
-        [String(req.params.studentId || ""), ctx.schoolId, ...f.params],
+        "SELECT student_id, status FROM students WHERE student_id = ? AND school_id = ? LIMIT 1",
+        [String(req.params.studentId || ""), schoolId],
       );
       if (rows.length === 0)
-        return res
-          .status(403)
-          .json({ error: "That student isn't in your class." });
+        return res.status(404).json({ error: "Student not found." });
       if (rows[0].status !== "Active")
         return res.status(409).json({
           error: "That student isn't an active student, so no fee is due.",
         });
-      // The canonical ID from the row (the URL may differ in case), so this
-      // payment always lines up with the totals the Admin VP and Super Admin see.
       const studentId = rows[0].student_id;
-      const period = ctx.current;
 
       if (paid) {
-        if (!(ctx.settings.student_fee > 0))
+        if (!(settings.student_fee > 0))
           return res
             .status(409)
             .json({ error: "No student fee has been set for your school." });
-        // Checked explicitly rather than read from affectedRows: mysql2 counts
-        // matched rows as "affected", so an untouched duplicate would look
-        // like a fresh insert.
         const [existing] = await pool.query(
-          `SELECT amount FROM subscription_payments
-            WHERE school_id = ? AND person_type = 'student' AND person_id = ? AND ec_year = ? AND ec_month = ?`,
-          [ctx.schoolId, studentId, period.ec_year, period.ec_month],
+          `SELECT 1 FROM subscription_payments
+            WHERE school_id = ? AND person_type = 'student' AND person_id = ? AND ec_year = ? AND ec_month = ? LIMIT 1`,
+          [schoolId, studentId, current.ec_year, current.ec_month],
         );
         if (existing.length > 0)
           return res.json({
@@ -33933,41 +38856,50 @@ app.post(
             paid: true,
             already: true,
             student_id: studentId,
-            amount: Number(existing[0].amount),
           });
-        // The unique key still makes two simultaneous taps safe.
-        await pool.query(
-          `INSERT INTO subscription_payments (school_id, person_type, person_id, ec_year, ec_month, amount, marked_by)
-           VALUES (?, 'student', ?, ?, ?, ?, ?)
-           ON DUPLICATE KEY UPDATE person_id = person_id`,
-          [
-            ctx.schoolId,
-            studentId,
-            period.ec_year,
-            period.ec_month,
-            ctx.settings.student_fee,
-            req.user.user_id,
-          ],
+        await recordStudentSubscription(pool, {
+          schoolId,
+          studentId,
+          cycle: settings.billing_cycle,
+          fee: settings.student_fee,
+          ecYear: current.ec_year,
+          startMonth: current.ec_month,
+          markedBy: req.user.user_id,
+        });
+        await logAudit(
+          req,
+          "subscription.student_paid",
+          "student",
+          studentId,
+          `${settings.billing_cycle} ${settings.student_fee}`,
         );
         return res.json({
-          message: "Marked as paid.",
+          message:
+            settings.billing_cycle === "yearly"
+              ? "Marked as paid for the rest of the year."
+              : "Marked as paid.",
           paid: true,
           student_id: studentId,
-          amount: ctx.settings.student_fee,
         });
       }
-      await pool.query(
-        `DELETE FROM subscription_payments
-          WHERE school_id = ? AND person_type = 'student' AND person_id = ? AND ec_year = ? AND ec_month = ?`,
-        [ctx.schoolId, studentId, period.ec_year, period.ec_month],
-      );
-      res.json({
-        message: "Marked as unpaid.",
-        paid: false,
-        student_id: studentId,
-      });
+
+      if (settings.billing_cycle === "yearly") {
+        await pool.query(
+          `DELETE FROM subscription_payments
+            WHERE school_id = ? AND person_type = 'student' AND person_id = ? AND ec_year = ?`,
+          [schoolId, studentId, current.ec_year],
+        );
+      } else {
+        await pool.query(
+          `DELETE FROM subscription_payments
+            WHERE school_id = ? AND person_type = 'student' AND person_id = ? AND ec_year = ? AND ec_month = ?`,
+          [schoolId, studentId, current.ec_year, current.ec_month],
+        );
+      }
+      await logAudit(req, "subscription.student_unpaid", "student", studentId, null);
+      res.json({ message: "Marked as unpaid.", paid: false, student_id: studentId });
     } catch (err) {
-      console.error("/api/subscription/student/:studentId/paid error:", err);
+      console.error("POST /api/finance/subscription/students/:id/paid error:", err);
       res.status(500).json({ error: "Could not update the payment" });
     }
   },

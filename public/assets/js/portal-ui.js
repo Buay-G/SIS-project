@@ -35,6 +35,7 @@
     dot: svg('<circle cx="12" cy="12" r="4"/>'),
     gear: svg('<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1"/>'),
     help: svg('<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>'),
+    logout: svg('<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>'),
   };
 
   /* ---------- 2. API failure logging ---------- */
@@ -125,11 +126,22 @@
     students: { pages: ['dashboard', 'marks', 'notifications', 'absence'] },
     guardians: { pages: ['dashboard', 'profile'] },
     'school-admin': { pages: ['dashboard', 'students', 'absence', 'messages'] },
+    finance: { pages: ['dashboard', 'verify-payments', 'fee-setup', 'reports'] },
     registrar: { pick: '#sidebar .sidebar-nav button', count: 4 },
     'zonal-admin': { pick: '#navScroll .nav-item', count: 4 },
     'super-admin': { pick: '#navScroll .nav-item', count: 4 },
   };
   const TOGGLE_SEL = '#sidebar-toggle, #navOpenBtn, .nav-open-btn, .sidebar-hamburger, .sidebar-toggle-btn, .menu-toggle, [aria-controls="sidebar"]';
+  const LOGOUT_SEL = {
+    teachers: 'a.sidebar-logout-btn',
+    students: '#sidebar-signout-btn',
+    guardians: '#sidebar-signout-btn',
+    'school-admin': '#sa-logout-btn',
+    finance: '#fin-logout-btn',
+    registrar: '#sidebar-logout-link',
+    'zonal-admin': '#logoutBtn',
+    'super-admin': '#logoutBtn',
+  };
   const labelOf = (link) => {
     const s = link.querySelector('span[data-i18n], .nav-item-label') || Array.from(link.querySelectorAll('span')).pop();
     return ((s || link).textContent || '').trim();
@@ -157,6 +169,24 @@
     more.innerHTML = ICON.menu + '<span></span>';
     more.addEventListener('click', () => toggle.click());
     nav.appendChild(more);
+
+    // Sign out: a button that's always last, right before "More". Found live on every click
+    // and every sync, since on zonal/super admin the real logout control is only drawn after
+    // login. Clicking it just clicks that real control, so any confirm dialog it already shows
+    // still happens - nothing about sign-out itself changes.
+    const logoutSel = LOGOUT_SEL[portal];
+    let logoutBtn = null;
+    if (logoutSel) {
+      logoutBtn = document.createElement('button');
+      logoutBtn.type = 'button';
+      logoutBtn.className = 'pu-tab pu-tab-danger';
+      logoutBtn.innerHTML = ICON.logout + '<span></span>';
+      logoutBtn.hidden = true;
+      logoutBtn.addEventListener('click', () => { const el = document.querySelector(logoutSel); if (el) el.click(); });
+      nav.insertBefore(logoutBtn, more);
+    }
+    const endMarker = logoutBtn || more; // new page-tab buttons always land just before this
+
     let items = [];
     const rebuild = (fresh) => {
       items.forEach(({ b }) => b.remove());
@@ -171,11 +201,12 @@
         // the menu item may be drawn again later, so always click the live element
         b.addEventListener('click', () => { const el = b._link; if (el && el.isConnected) el.click(); });
         b._link = link;
-        nav.insertBefore(b, more);
+        nav.insertBefore(b, endMarker);
         return { b, link };
       });
     };
     rebuild(links);
+
     document.body.appendChild(nav);
     document.body.classList.add('has-tabbar');
     return () => {
@@ -193,6 +224,11 @@
         if (link.classList.contains('active')) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
         b.lastElementChild.textContent = labelOf(link);
       });
+      if (logoutBtn) {
+        const el = document.querySelector(logoutSel);
+        logoutBtn.hidden = !el;
+        if (el) logoutBtn.lastElementChild.textContent = labelOf(el);
+      }
       more.lastElementChild.textContent = tx('more');
     };
   }

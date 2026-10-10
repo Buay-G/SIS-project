@@ -35,13 +35,6 @@
               class="nav-school-logo"
               style="display: none"
             />
-            <img
-              src=""
-              alt=""
-              id="nav-zone-logo"
-              class="nav-zone-logo"
-              style="display: none"
-            />
           </div>
           <span data-i18n="teacher_portal_title">Teachers Portal</span>
           <span id="nav-school-name">—</span>
@@ -186,30 +179,6 @@
                 />
               </svg>
               <span data-i18n="nav_textbooks">Textbooks</span>
-            </a>
-          </li>
-          <li>
-            <a
-              href="#"
-              class="nav-link"
-              data-page="subscription"
-              id="nav-subscription"
-              style="display: none"
-            >
-              <svg
-                width="16"
-                height="16"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <rect x="2" y="5" width="20" height="14" rx="2" />
-                <line x1="2" y1="10" x2="22" y2="10" />
-                <line x1="6" y1="15" x2="10" y2="15" />
-              </svg>
-              <span data-i18n="sub_nav_fee">Subscription Fee</span>
             </a>
           </li>
 
@@ -1232,109 +1201,6 @@
           </div>
         </section>
 
-        <section
-          id="page-subscription"
-          class="page-content sub-page"
-          style="display: none"
-        >
-          <div class="widget">
-            <h2 data-i18n="sub_nav_fee">Subscription Fee</h2>
-            <p class="sub-page-sub" data-i18n="sub_class_page_sub">
-              Mark students as paid when they hand you their fee. Your class
-              list updates live.
-            </p>
-
-            <p id="sub-no-access" class="sub-empty" style="display: none"></p>
-
-            <div id="sub-body">
-              <div
-                id="sub-notice"
-                class="sub-notice"
-                role="status"
-                aria-live="polite"
-                style="display: none"
-              ></div>
-              <div id="sub-banner" class="sub-banner" style="display: none"></div>
-
-              <div class="sub-meta">
-                <div>
-                  <span class="sub-meta-label" data-i18n="sub_billing_month"
-                    >Billing month</span
-                  >
-                  <strong id="sub-month">—</strong>
-                </div>
-                <div>
-                  <span class="sub-meta-label" data-i18n="sub_fee_student"
-                    >Student fee</span
-                  >
-                  <strong id="sub-fee">—</strong>
-                </div>
-                <div>
-                  <span class="sub-meta-label" data-i18n="sub_th_class"
-                    >Class</span
-                  >
-                  <strong id="sub-class">—</strong>
-                </div>
-              </div>
-
-              <div class="metrics-grid sub-metrics">
-                <div class="metric-card">
-                  <h4 data-i18n="sub_tile_collected">Collected</h4>
-                  <p class="count" id="sub-tile-collected">0</p>
-                  <p class="sub-tile-note" id="sub-tile-expected"></p>
-                </div>
-                <div class="metric-card">
-                  <h4 data-i18n="sub_tile_students">Students paid</h4>
-                  <p class="count" id="sub-tile-paid">0</p>
-                </div>
-                <div class="metric-card">
-                  <h4 data-i18n="sub_status_unpaid">Unpaid</h4>
-                  <p class="count" id="sub-tile-unpaid">0</p>
-                </div>
-              </div>
-
-              <h3 class="sub-list-title" data-i18n="sub_class_students_title">
-                Students in your class
-              </h3>
-              <div class="sub-toolbar">
-                <label for="sub-search" class="sr-only" data-i18n="sub_search"
-                  >Search name or ID</label
-                >
-                <input
-                  type="text"
-                  id="sub-search"
-                  class="form-input"
-                  data-i18n-placeholder="sub_search"
-                  placeholder="Search name or ID"
-                  autocomplete="off"
-                />
-                <select
-                  id="sub-filter"
-                  class="form-input"
-                  data-i18n-aria="sub_th_status"
-                  aria-label="Status"
-                >
-                  <option value="all" data-i18n="sub_f_all">All</option>
-                  <option value="unpaid" data-i18n="sub_f_unpaid">Unpaid</option>
-                  <option value="paid" data-i18n="sub_f_paid">Paid</option>
-                </select>
-                <button
-                  type="button"
-                  id="sub-refresh-btn"
-                  class="btn-primary sub-refresh-btn"
-                  data-i18n="sub_refresh"
-                >
-                  Refresh
-                </button>
-              </div>
-              <p id="sub-updated" class="sub-updated"></p>
-              <div id="sub-list">
-                <p class="sub-empty" data-i18n="loading_text">Loading…</p>
-              </div>
-            </div>
-          </div>
-        </section>
-
         <div
           id="qr-scan-modal"
           class="modal"
@@ -1393,7 +1259,7 @@
                   <div class="idcard-front-top">
                     <div class="idcard-front-top-content">
                       <div class="idcard-logo-badge">
-                        <img src="/assets/images/gflag.jpg" alt="" />
+                        <img src="/assets/images/gflag.jpg" alt="" class="idcard-zone-logo-img" />
                       </div>
                       <div class="idcard-brand-text">
                         <div class="idcard-zone-line" id="idcard-zone-front">
@@ -1469,7 +1335,7 @@
                   <div class="idcard-back-header">
                     <div class="idcard-back-header-content">
                       <div class="idcard-logo-badge">
-                        <img src="/assets/images/gflag.jpg" alt="" />
+                        <img src="/assets/images/gflag.jpg" alt="" class="idcard-zone-logo-img" />
                       </div>
                       <div class="idcard-brand-text idcard-brand-text-dark">
                         <div class="idcard-zone-line" id="idcard-zone-back">
@@ -1699,9 +1565,8 @@
                 style="font-size: 0.85rem; color: #66786d; margin-bottom: 12px"
                 data-i18n="cm_desc"
               >
-                Class Monitors help you run your class: they check in classmates
-                for attendance and collect the monthly Subscription Fee. Having
-                two is recommended.
+                Class Monitors help you run your class by checking in classmates
+                for attendance. Having two is recommended.
               </p>
               <div
                 id="cm-status"

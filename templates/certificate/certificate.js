@@ -41,6 +41,11 @@ const subjLabel = s => s.amh
   ? `<span class="en">${s.en}</span> <span class="amh">/ ${s.amh}</span>`
   : `<span class="en">${s.en}</span>`;
 
+// Only the subjects that belong to this student's class/stream are shown
+// on the sheet. A subject flagged applicable === false (outside the
+// stream) is left out entirely instead of being listed and struck through.
+const SHOWN_SUBJECTS = SUBJECTS.filter(s => s.applicable !== false);
+
 const taken = SUBJECTS.filter(s => s.applicable !== false && s.s1 != null && s.s2 != null);
 const sum = (arr, fn) => arr.reduce((t,s)=>t + fn(s), 0);
 const s1Total = sum(taken, s => s.s1);
@@ -66,7 +71,7 @@ const s2Avg = taken.length ? s2Total / taken.length : null;
 const yearAvg = (s1Avg != null && s2Avg != null) ? (s1Avg + s2Avg) / 2 : null;
 const naDash = v => v == null ? '—' : v;
 
-let rows = SUBJECTS.map(s => {
+let rows = SHOWN_SUBJECTS.map(s => {
   // A subject flagged not-applicable (outside the student's stream) is
   // shown for context but never carries a score, even if a stray mark
   // exists for it in the data — that mark shouldn't have been entered
@@ -125,7 +130,7 @@ document.getElementById("marks-body").innerHTML = rows;
 // The threshold is set below the realistic max (14) with headroom, not
 // at it, since summary rows (Total/Average/Conduct/Days Absent/Rank)
 // add to the printed row count too, on top of the subject rows.
-document.body.classList.toggle("many-subjects", SUBJECTS.length > 9);
+document.body.classList.toggle("many-subjects", SHOWN_SUBJECTS.length > 9);
 
 /* ===================== QR Code generator ===================== */
 /* Self-contained QR encoder (byte mode, algorithmic — no external library).

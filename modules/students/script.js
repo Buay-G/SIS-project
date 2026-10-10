@@ -1,3 +1,15 @@
+// Live updates: loads /assets/js/live.js, which keeps a server-sent-events
+// connection open so new notifications and changes appear without a browser
+// refresh. onLiveChange() calls made before live.js has loaded are queued.
+(function () {
+    if (window.onLiveChange) return;
+    window.__liveQueue = [];
+    window.onLiveChange = (fn) => window.__liveQueue.push(fn);
+    const el = document.createElement('script');
+    el.src = '/assets/js/live.js';
+    document.head.appendChild(el);
+})();
+
 const API_BASE = '';
 let CURRENT_STUDENT_ID = null;
 
@@ -38,7 +50,6 @@ async function checkAuth() {
         const titleEl = document.getElementById('page-title-text');
         const logoEl  = document.getElementById('nav-school-name');
         const logoImgEl = document.getElementById('nav-school-logo');
-        const zoneLogoImgEl = document.getElementById('nav-zone-logo');
         const schoolLabel = data.school_name ? buildSchoolDisplayName(data.school_name, data.school_level) : null;
         const displayName = schoolLabel
             ? (data.moe_school_code ? `${schoolLabel} · MOE ${data.moe_school_code}` : schoolLabel)
@@ -59,6 +70,8 @@ async function checkAuth() {
                 moeBadgeEl.style.display = 'none';
             }
         }
+        // Sidebar shows the school's own logo only (logo_url) — never the
+        // zone logo. The zone logo still appears on the ID card as a fallback.
         if (logoImgEl) {
             logoImgEl.addEventListener('error', () => { logoImgEl.style.display = 'none'; });
             if (data.logo_url) {
@@ -66,19 +79,6 @@ async function checkAuth() {
                 logoImgEl.style.display = 'block';
             } else {
                 logoImgEl.style.display = 'none';
-            }
-        }
-        // Zone logo — uploaded by a super admin (not this school), scoped
-        // to the school's zone. Optional: most zones won't have one set,
-        // so it stays hidden until zone_logo_url is actually present.
-        if (zoneLogoImgEl) {
-            zoneLogoImgEl.addEventListener('error', () => { zoneLogoImgEl.style.display = 'none'; });
-            if (data.zone_logo_url) {
-                zoneLogoImgEl.src = data.zone_logo_url;
-                zoneLogoImgEl.alt = data.zone_name || '';
-                zoneLogoImgEl.style.display = 'block';
-            } else {
-                zoneLogoImgEl.style.display = 'none';
             }
         }
         return data.must_change_password ? 'must_change_password' : true;
@@ -144,13 +144,6 @@ function wireStaticEventListeners() {
         btn.addEventListener('click', () => setLang(btn.dataset.lang));
     });
 
-    on('sub-fee-search', 'input', () => renderSubFeeRosterList());
-    document.querySelectorAll('.sub-fee-filter-chip').forEach(btn => {
-        btn.addEventListener('click', () => setSubFeeStatusFilter(btn));
-    });
-    on('sub-fee-undo-modal-cancel-btn', 'click', () => closeSubFeeUndoModal());
-    on('sub-fee-undo-modal-confirm-btn', 'click', () => confirmSubFeeUndo());
-
     on('appeal-submit-btn', 'click', () => submitMarkAppeal());
     on('appeal-cancel-btn', 'click', () => closeMarkAppealForm());
     on('monitor-scan-toggle-btn', 'click', () => toggleMonitorScanner());
@@ -208,16 +201,6 @@ function wireStaticEventListeners() {
         });
     }
 
-    const subFeeOutput = document.getElementById('sub-fee-output');
-    if (subFeeOutput) {
-        subFeeOutput.addEventListener('click', (e) => {
-            const markBtn = e.target.closest('.sub-fee-mark-btn');
-            if (markBtn) { subFeeMarkPaid(markBtn.dataset.studentId, markBtn); return; }
-            const undoBtn = e.target.closest('.sub-fee-undo-btn');
-            if (undoBtn) { openSubFeeUndoModal(undoBtn.dataset.studentId, undoBtn.dataset.name); return; }
-        });
-    }
-
     const dashAttendance = document.getElementById('dashboard-attendance');
     if (dashAttendance) {
         dashAttendance.addEventListener('click', (e) => {
@@ -260,7 +243,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     setupNavigation();
-    await Promise.all([loadProfile(), loadNotifications(), loadSubscriptionFeeAccess()]);
+    await Promise.all([loadProfile(), loadNotifications()]);
     loadDashboard();
     loadSemesterBadge();
     document.querySelector('a[data-page="notifications"]').addEventListener('click', loadNotifications);
@@ -307,8 +290,6 @@ window.onSisLangChange = () => {
     loadRecognitionAward();
     const monitorNav = document.getElementById('nav-class-monitor');
     if (monitorNav && monitorNav.style.display !== 'none') { loadMonitorRoster(); loadMonitorPeriods(); }
-    const subFeeNav = document.getElementById('nav-sub-fee');
-    if (subFeeNav && subFeeNav.style.display !== 'none') loadSubFeeRoster();
 };
 
 // ---- ACCOUNT DROPDOWN (Profile Settings / Sign Out) ----
@@ -380,17 +361,6 @@ window.navigateTo = (target) => {
         const panel = document.getElementById('monitor-scanner-panel');
         if (panel) panel.style.display = 'none';
     }
-    // Subscription Fee: leaving the page (by ANY navigation path — this
-    // function or the sidebar click handler in setupNavigation below) must
-    // stop the 15s refresh timer. Entering it (re)loads the roster and
-    // (re)starts the timer; startSubFeePolling() always clears any existing
-    // one first, so this is safe even if already polling.
-    if (target === 'subscription-fee') {
-        loadSubFeeRoster();
-        startSubFeePolling();
-    } else if (typeof stopSubFeePolling === 'function') {
-        stopSubFeePolling();
-    }
 };
 
 function setupNavigation() {
@@ -407,16 +377,6 @@ function setupNavigation() {
             const page = document.getElementById(`page-${target}`);
             if (page) page.style.display = 'block';
             closeSidebar();
-            // Subscription Fee: a normal sidebar click lands here, not in
-            // navigateTo() above — so the same polling teardown/start has to
-            // happen here too, or the 15s timer would survive a plain click
-            // away from the page (an orphaned timer).
-            if (target === 'subscription-fee') {
-                loadSubFeeRoster();
-                startSubFeePolling();
-            } else if (typeof stopSubFeePolling === 'function') {
-                stopSubFeePolling();
-            }
         });
     });
 }
@@ -818,7 +778,7 @@ function renderIDCard(data, container) {
         <div class="id-card-flip-wrap">
             <div class="id-card id-card-front">
                 <div class="id-card-header">
-                    <img src="${data.zone_logo_url || data.logo_url || '/assets/images/Logo.png'}" alt="${data.zone_logo_url ? 'Zone logo' : 'School logo'}" class="id-card-logo id-card-school-logo-img" data-fallback-src="/assets/images/Logo.png">
+                    <img src="${data.logo_url || '/assets/images/Logo.png'}" alt="School logo" class="id-card-logo id-card-school-logo-img" data-fallback-src="/assets/images/Logo.png">
                     <div class="id-card-header-text">
                         <div class="id-card-school-name">${data.school_display_name || data.school_name || 'School'}</div>
                         <div class="id-card-subtitle">የተማሪ መታወቂያ ካርድ | Student Identity Card</div>
@@ -1478,279 +1438,6 @@ window.filterMonitorRoster = () => {
     if (!currentMonitorRosterData) return;
     const input = document.getElementById('monitor-manual-id');
     renderMonitorRoster(currentMonitorRosterData, input ? input.value : '');
-};
-
-// ---- SUBSCRIPTION FEE (Class Monitor) ----
-// Mirrors the Teacher portal's Homeroom Teacher Subscription Fee page
-// against the exact same server routes (GET /api/subscription/student/
-// class-roster, POST /api/subscription/student/:studentId/paid) — a
-// Class Monitor and a Homeroom Teacher are both "collectors" for one
-// class as far as the server is concerned (see getStudentCollectorContext
-// in server.js). Nothing here is a security boundary: every rule (own
-// class only, current EC month only, Active students only, Pagume
-// refused) is enforced server-side: hiding/disabling here is only ever a
-// convenience, never the actual check.
-let subFeeStatusCache = null;   // last GET /api/subscription/status response
-let subFeeRosterCache = null;   // last GET /api/subscription/student/class-roster response
-let subFeeFilterStatus = 'all'; // 'all' | 'paid' | 'unpaid' — client-side only
-let subFeePollTimer = null;
-let subFeeUndoTarget = null;    // { studentId, name } awaiting confirm in the Undo modal
-
-// Whether to show the sidebar item at all. Reads the LIVE server
-// capability (capabilities.student_collection), never the login token's
-// is_class_monitor flag — a monitor who was just removed by their
-// homeroom teacher must lose the nav item the next time this is checked,
-// not only after signing back in.
-async function loadSubscriptionFeeAccess() {
-    const navLi = document.getElementById('nav-sub-fee');
-    if (!navLi) return;
-    try {
-        const res = await apiFetch('/api/subscription/status');
-        if (!res.ok) throw new Error();
-        const data = await res.json();
-        subFeeStatusCache = data;
-        const show = !!(data.enabled && data.capabilities && data.capabilities.student_collection);
-        navLi.style.display = show ? '' : 'none';
-        if (!show) stopSubFeePolling();
-    } catch (err) {
-        console.error('Subscription status load error:', err);
-        // Fail closed for the nav item, same as the server does for /api/subscription/status itself.
-        navLi.style.display = 'none';
-    }
-}
-
-// Stops the 15s auto-refresh. Safe to call any number of times (e.g. once
-// from navigateTo() and again from setupNavigation()'s own click handler
-// on the same click) — clearInterval on an already-cleared/absent timer
-// is a harmless no-op, and subFeePollTimer is always reset to null so a
-// second call never double-clears a *different*, newer timer.
-function stopSubFeePolling() {
-    if (subFeePollTimer) {
-        clearInterval(subFeePollTimer);
-        subFeePollTimer = null;
-    }
-}
-
-// Starts the 15s auto-refresh. Always clears any existing timer first, so
-// this is also safe to call repeatedly (e.g. a fresh click on the same
-// nav item) without ever stacking up a second interval.
-function startSubFeePolling() {
-    stopSubFeePolling();
-    subFeePollTimer = setInterval(() => {
-        // Belt-and-braces alongside the visibilitychange listener below:
-        // a background tab can still fire timers on some platforms, so
-        // this skips the network call outright while hidden rather than
-        // relying only on the listener to have already cleared it.
-        if (document.hidden) return;
-        loadSubFeeRoster({ silent: true });
-    }, 15000);
-}
-
-function isSubFeePageOpen() {
-    const page = document.getElementById('page-subscription-fee');
-    return !!page && page.style.display !== 'none';
-}
-
-// Pausing/resuming on visibility change covers every way the page can be
-// hidden without an in-app navigation: switching browser tabs, backgrounding
-// the app on a phone, locking the screen, minimizing the window. pagehide
-// is a second safety net for the tab/window actually closing or a bfcache
-// navigation, so the timer is never left running with nothing to receive it.
-document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-        stopSubFeePolling();
-    } else if (isSubFeePageOpen()) {
-        startSubFeePolling();
-    }
-});
-window.addEventListener('pagehide', () => stopSubFeePolling());
-
-// Loads (or silently refreshes) the caller's own class roster for the
-// current EC month. silent=true (used by the 15s poll) never blanks the
-// list to a "Loading…" placeholder and never overwrites what's on screen
-// if the request fails — the next tick just tries again.
-async function loadSubFeeRoster({ silent = false } = {}) {
-    const el = document.getElementById('sub-fee-output');
-    if (!el) return;
-    if (!silent) el.innerHTML = `<p class="muted">${t('loading')}</p>`;
-    try {
-        const res = await apiFetch('/api/subscription/student/class-roster');
-        if (res.status === 403) {
-            // Access was revoked since the nav item was last shown (monitor
-            // just removed, or Subscription turned off) — stop polling and
-            // hide the nav item too, matching what a fresh status check
-            // would now show. A frozen account (SUBSCRIPTION_FROZEN, also a
-            // 403) is handled globally by guard.js, which shows its own
-            // full-screen notice — nothing extra is done for that case here,
-            // and this page must NOT redirect to login itself.
-            stopSubFeePolling();
-            const navLi = document.getElementById('nav-sub-fee');
-            if (navLi) navLi.style.display = 'none';
-            el.innerHTML = `<p class="muted">${t('sub_class_no_access')}</p>`;
-            return;
-        }
-        if (!res.ok) throw new Error();
-        subFeeRosterCache = await res.json();
-        renderSubFeePage(subFeeRosterCache);
-    } catch (err) {
-        console.error('Subscription class-roster load error:', err);
-        if (!silent) el.innerHTML = `<p class="muted">${t('sub_class_load_error')}</p>`;
-    }
-}
-
-function renderSubFeePage(data) {
-    const notice = document.getElementById('sub-fee-notice');
-    const body = document.getElementById('sub-fee-body');
-    if (!data.billable) {
-        // Pagume — the server itself refuses payment changes for it, so the
-        // list is shown as read-only info rather than hidden outright.
-        if (notice) {
-            notice.textContent = t('sub_pagume_closed');
-            notice.style.display = 'block';
-        }
-    } else if (notice) {
-        notice.style.display = 'none';
-    }
-    if (body) body.style.display = 'block';
-
-    setText('sub-fee-class-label', t('sub_class_label', { class: escapeHtml(data.class.class_label) }));
-    setText('sub-fee-period', `${t('sub_month_' + data.period.ec_month)} ${data.period.ec_year} ${t('sub_ec')}`);
-    setText('sub-fee-updated', t('sub_live_updated', { time: new Date(data.server_time).toLocaleTimeString() }));
-
-    const s = data.summary;
-    setText('sub-fee-tile-paid', t('sub_tile_count', { paid: s.paid, total: s.total }));
-    setText('sub-fee-tile-collected', `${s.collected} ${t('sub_birr')}`);
-    setText('sub-fee-tile-expected', t('sub_tile_of_expected', { expected: s.expected }));
-
-    const warn = document.getElementById('sub-fee-no-fee-warning');
-    if (warn) warn.style.display = data.fee > 0 ? 'none' : 'block';
-
-    renderSubFeeRosterList();
-}
-
-// Client-side search/filter only — re-applied against the already-fetched
-// subFeeRosterCache, no extra network round trip. The server's own list is
-// always the full, unfiltered class (own class, Active students, this EC
-// month); filtering here never hides anything the server itself enforces.
-function renderSubFeeRosterList() {
-    const el = document.getElementById('sub-fee-output');
-    if (!el || !subFeeRosterCache) return;
-    const { students } = subFeeRosterCache;
-    if (!students.length) {
-        el.innerHTML = `<p class="muted">${t('sub_no_students')}</p>`;
-        return;
-    }
-
-    const searchInput = document.getElementById('sub-fee-search');
-    const query = (searchInput ? searchInput.value : '').trim().toLowerCase();
-    const filtered = students.filter(st => {
-        if (subFeeFilterStatus === 'paid' && !st.paid) return false;
-        if (subFeeFilterStatus === 'unpaid' && st.paid) return false;
-        if (query && !(st.name.toLowerCase().includes(query) || st.student_id.toLowerCase().includes(query))) return false;
-        return true;
-    });
-
-    if (!filtered.length) {
-        el.innerHTML = `<p class="muted">${t('sub_no_people')}</p>`;
-        return;
-    }
-
-    const feeIsSet = subFeeRosterCache.fee > 0;
-    const billable = subFeeRosterCache.billable;
-
-    el.innerHTML = filtered.map(st => `
-        <div class="widget sub-fee-row">
-            <div>
-                <strong>${escapeHtml(st.name)}</strong>
-                ${st.is_me ? `<span class="badge badge-returned" style="margin-left:6px;">${t('sub_you')}</span>` : ''}
-                ${st.is_class_monitor ? `<span class="badge badge-escalated" style="margin-left:6px;">${t('sub_role_class_monitor')}</span>` : ''}
-                <div class="muted" style="font-size:0.8rem; margin-top:2px;">
-                    ${escapeHtml(st.student_id)} · ${Number(st.amount).toFixed(2)} ${t('sub_birr')}
-                </div>
-            </div>
-            <div class="sub-fee-row-action">
-                ${st.paid
-                    ? `<span class="badge badge-returned">${t('sub_status_paid')}</span>
-                       <button type="button" class="btn-cancel sub-fee-undo-btn" data-student-id="${escapeHtml(st.student_id)}" data-name="${escapeHtml(st.name)}" ${billable ? '' : 'disabled'}>${t('sub_undo')}</button>`
-                    : `<span class="badge badge-lost">${t('sub_status_unpaid')}</span>
-                       <button type="button" class="btn-primary sub-fee-mark-btn" style="width:auto;" data-student-id="${escapeHtml(st.student_id)}" data-name="${escapeHtml(st.name)}" ${(billable && feeIsSet) ? '' : 'disabled'}>${t('sub_mark_paid')}</button>`}
-            </div>
-        </div>`).join('');
-}
-
-window.setSubFeeStatusFilter = (btn) => {
-    document.querySelectorAll('.sub-fee-filter-chip').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    subFeeFilterStatus = btn.dataset.status;
-    renderSubFeeRosterList();
-};
-
-// Marks one student paid. The Class Monitor may mark himself/herself —
-// the server allows it (loadSubscriptionClassRoster/the :studentId route
-// apply no self-exclusion), so no special case is needed here either.
-async function subFeeMarkPaid(studentId, btn) {
-    const originalLabel = btn ? btn.textContent : '';
-    if (btn) { btn.disabled = true; btn.textContent = t('sub_saving'); }
-    try {
-        const res = await apiFetch(`/api/subscription/student/${encodeURIComponent(studentId)}/paid`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ paid: true })
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-            showToast(data.error || t('sub_action_error'), 'error');
-            if (btn) { btn.disabled = false; btn.textContent = originalLabel; }
-            await loadSubFeeRoster({ silent: true });
-            return;
-        }
-        const name = btn ? (btn.dataset.name || '') : '';
-        showToast(data.already ? t('sub_already_paid_toast', { name }) : t('sub_marked_paid_toast', { name }));
-        await loadSubFeeRoster({ silent: true });
-    } catch (err) {
-        console.error('Mark paid error:', err);
-        showToast(t('sub_action_error'), 'error');
-        if (btn) { btn.disabled = false; btn.textContent = originalLabel; }
-    }
-}
-
-// ---- SUBSCRIPTION FEE: UNDO CONFIRMATION MODAL ----
-window.openSubFeeUndoModal = (studentId, name) => {
-    subFeeUndoTarget = { studentId, name };
-    const msg = document.getElementById('sub-fee-undo-modal-msg');
-    if (msg) msg.textContent = t('sub_undo_confirm', { name });
-    const modal = document.getElementById('sub-fee-undo-modal');
-    if (modal) modal.style.display = 'flex';
-};
-
-window.closeSubFeeUndoModal = () => {
-    subFeeUndoTarget = null;
-    const modal = document.getElementById('sub-fee-undo-modal');
-    if (modal) modal.style.display = 'none';
-};
-
-window.confirmSubFeeUndo = async () => {
-    if (!subFeeUndoTarget) return;
-    const { studentId, name } = subFeeUndoTarget;
-    closeSubFeeUndoModal();
-    try {
-        const res = await apiFetch(`/api/subscription/student/${encodeURIComponent(studentId)}/paid`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ paid: false })
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-            showToast(data.error || t('sub_action_error'), 'error');
-            await loadSubFeeRoster({ silent: true });
-            return;
-        }
-        showToast(t('sub_marked_unpaid_toast', { name }));
-        await loadSubFeeRoster({ silent: true });
-    } catch (err) {
-        console.error('Undo payment error:', err);
-        showToast(t('sub_action_error'), 'error');
-    }
 };
 
 // ---- CLASS MONITOR: QR SCANNER ----
@@ -2501,3 +2188,25 @@ function updateDashboardTextbooks() {
         el.innerHTML = output.innerHTML;
     }
 }
+
+// Live refresh: when the server says something changed (a teacher sent a
+// notification, marks were pushed, an absence request was decided, ...),
+// update the bell at once and silently reload whichever page is open — but
+// never while the student is typing or a dialog is up.
+function liveRefreshStudentPortal() {
+    if (!CURRENT_STUDENT_ID) return;
+    loadNotifications();
+    const a = document.activeElement;
+    if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+    const link = document.querySelector('.nav-link.active[data-page]');
+    const page = link && link.dataset.page;
+    const run = (...fns) => fns.forEach(fn => typeof fn === 'function' && fn());
+    if (page === 'dashboard') run(loadDashboard);
+    else if (page === 'marks') run(loadMarks);
+    else if (page === 'absence') run(loadAbsenceHistory);
+    else if (page === 'guardian') run(loadGuardian);
+    else if (page === 'textbooks') run(loadTextbooks);
+    else if (page === 'class-monitor') run(loadMonitorRoster, loadMonitorPeriods);
+    else if (page === 'documents') run(loadIDPhotoRequestStatus);
+}
+window.onLiveChange(liveRefreshStudentPortal);

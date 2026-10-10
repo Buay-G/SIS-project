@@ -1,3 +1,15 @@
+// Live updates: loads /assets/js/live.js, which keeps a server-sent-events
+// connection open so new requests/notifications appear without a browser
+// refresh. onLiveChange() calls made before live.js has loaded are queued.
+(function () {
+    if (window.onLiveChange) return;
+    window.__liveQueue = [];
+    window.onLiveChange = (fn) => window.__liveQueue.push(fn);
+    const el = document.createElement('script');
+    el.src = '/assets/js/live.js';
+    document.head.appendChild(el);
+})();
+
 // ==========================================================
 // SCHOOL ADMIN PORTAL — shared by Principal / Admin VP / Academic VP
 // (all school_admins, distinguished by title). Nav sections show/hide
@@ -35,6 +47,93 @@ async function handleJsonResponse(res, successMsg) {
 }
 
 // ---------- Auth / init ----------
+// Public schools are staffed through the zonal workflow; private schools by
+// their own Managing Director. Wording written for the zonal workflow would
+// confuse a private school's staff, so swap those elements to private-school
+// strings. Only data-i18n is changed, so language switching keeps working.
+function applyGovernanceWording(model) {
+    if (model !== 'private') return;
+    const swaps = {
+        sa_teacher_setup_sub: 'sa_teacher_setup_sub_private',
+        sa_incoming_teachers_sub: 'sa_incoming_teachers_sub_private'
+    };
+    Object.entries(swaps).forEach(([from, to]) => {
+        document.querySelectorAll(`[data-i18n="${from}"]`).forEach(el => {
+            el.setAttribute('data-i18n', to);
+            el.textContent = t(to);
+        });
+    });
+}
+
+// Forced first-login PIN change. Not dismissable: no backdrop/Esc close and
+// no cancel button — the only ways out are setting a PIN or logging out.
+function promptForcedPinChange() {
+    return new Promise(resolve => {
+        openModal(`
+            <div class="password-prompt">
+                <div class="password-prompt-icon">${lucideIcon('lock', 20)}</div>
+                <h3>${escapeHtml(t('sa_forced_title'))}</h3>
+                <p style="margin:8px 0 16px;">${escapeHtml(t('sa_forced_intro'))}</p>
+                <label class="form-label" for="sa-forced-current">${escapeHtml(t('sa_forced_current'))}</label>
+                <input id="sa-forced-current" class="form-control" type="password" autocomplete="current-password" inputmode="numeric" placeholder="${escapeHtml(t('sa_password_placeholder'))}">
+                <label class="form-label" for="sa-forced-new" style="margin-top:12px;">${escapeHtml(t('sa_forced_new'))}</label>
+                <input id="sa-forced-new" class="form-control" type="password" autocomplete="new-password" inputmode="numeric" maxlength="6" placeholder="••••••">
+                <label class="form-label" for="sa-forced-confirm" style="margin-top:12px;">${escapeHtml(t('sa_forced_confirm'))}</label>
+                <input id="sa-forced-confirm" class="form-control" type="password" autocomplete="new-password" inputmode="numeric" maxlength="6" placeholder="••••••">
+                <p id="sa-forced-error" style="color:#b42318; margin-top:10px; min-height:1.2em;"></p>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-ghost" id="sa-forced-logout-btn">${escapeHtml(t('sa_forced_logout'))}</button>
+                <button class="btn btn-primary" id="sa-forced-submit-btn">${escapeHtml(t('sa_forced_submit'))}</button>
+            </div>`);
+
+        // openModal's overlay closes on backdrop click; replace it with a
+        // listener-free clone so this one can't be dismissed.
+        const old = document.getElementById('sa-generic-modal');
+        const overlay = old.cloneNode(true);
+        old.replaceWith(overlay);
+
+        const cur = overlay.querySelector('#sa-forced-current');
+        const nw = overlay.querySelector('#sa-forced-new');
+        const cf = overlay.querySelector('#sa-forced-confirm');
+        const err = overlay.querySelector('#sa-forced-error');
+        const btn = overlay.querySelector('#sa-forced-submit-btn');
+        cur.focus();
+
+        const submit = async () => {
+            err.textContent = '';
+            if (!cur.value) { err.textContent = t('sa_forced_current_required'); return; }
+            if (!/^\d{6}$/.test(nw.value)) { err.textContent = t('sa_forced_invalid'); return; }
+            if (nw.value !== cf.value) { err.textContent = t('sa_forced_mismatch'); return; }
+            btn.disabled = true;
+            try {
+                const res = await apiFetch(`${API_BASE}/api/auth/change-password`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ currentPass: cur.value, newPass: nw.value })
+                });
+                const body = await res.json().catch(() => ({}));
+                if (res.ok) {
+                    closeModal();
+                    showToast(t('sa_forced_success'), 'success');
+                    resolve();
+                    return;
+                }
+                err.textContent = body.error || t('sa_save_error');
+            } catch (e) {
+                err.textContent = t('sa_save_error');
+            }
+            btn.disabled = false;
+        };
+        btn.onclick = submit;
+        overlay.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+        overlay.querySelector('#sa-forced-logout-btn').onclick = async () => {
+            try { await apiFetch(`${API_BASE}/api/logout`, { method: 'POST' }); } catch {}
+            window.location.href = '/login.html';
+        };
+    });
+}
+
 async function checkAuthAndInit() {
     try {
         const res = await apiFetch(`${API_BASE}/api/me`);
@@ -51,7 +150,17 @@ async function checkAuthAndInit() {
         const data = await res.json();
         if (data.role !== 'school_admins') { window.location.href = '/login.html'; return; }
 
+        // First login with an admin-issued password (e.g. the default 1122):
+        // the server blocks every route except /api/me and change-password
+        // until a 6-digit PIN is set, so make that the first thing they see
+        // instead of a dashboard full of 403s.
+        if (data.must_change_password) {
+            await promptForcedPinChange();
+            return checkAuthAndInit();
+        }
+
         CURRENT_ADMIN = data;
+        applyGovernanceWording(data.governance_model);
         CURRENT_TITLE = data.title || 'Admin VP';
         const displayName = data.admin_full_name || data.user_id || 'Admin';
         // e.g. school_name "Newland Secondary School" -> "NEWLAND
@@ -81,11 +190,10 @@ async function checkAuthAndInit() {
         // The sidebar badge starts as plain "SA" text (see index.html) —
         // once this school has its own logo on file (uploaded by a super
         // admin via /api/super/schools/:id/logo) that image replaces it
-        // here. A school with no logo of its own falls back to its
-        // zone's logo (/api/super/zones/:zone_id/logo). /api/me resolves
-        // that priority server-side as display_logo_url.
+        // here. School logo only — a school with no logo of its own keeps
+        // the plain "SA" badge rather than showing its zone's logo.
         const logoBadge = document.getElementById('sa-logo-badge');
-        const badgeLogoUrl = data.display_logo_url || data.logo_url || data.zone_logo_url;
+        const badgeLogoUrl = data.logo_url;
         if (logoBadge && badgeLogoUrl) {
             logoBadge.innerHTML = `<img src="${API_BASE}${badgeLogoUrl}" alt="" />`;
         }
@@ -189,6 +297,41 @@ document.addEventListener('click', (e) => {
     }
 });
 
+// Page -> loader map. Hoisted out of the nav click handler so the live
+// refresh below can re-run the loader of whichever page is open.
+function saPageLoaders() {
+    return {
+                dashboard: loadDashboard,
+                'teacher-setup': loadTeacherSetup,
+                teachers: () => { loadTeacherLeaderboard(); loadTeacherAttendanceToday(); },
+                textbooks: loadTextbooks,
+                absence: loadAbsenceTabs,
+                'student-absence-escalations': loadStudentAbsenceEscalations,
+                timetable: initTimetablePage,
+                'teacher-assignments': loadTeacherAssignments,
+                'marks-review': loadMarksReview,
+                'mark-cutoff': loadMarkCutoffPage,
+                semester: loadSemesterStatus,
+                conduct: () => {},
+                'escalated-absence': loadEscalatedAbsence,
+                disciplinary: loadDisciplinaryCases,
+                'teacher-audit': loadTeacherAudit,
+                'subject-entry-requests': loadSubjectEntryRequests,
+                'dropout-requests': loadDropoutRequests,
+                'analysis-report': loadAnalysisReport,
+                'document-approvals': loadDocumentApprovals,
+                recognition: loadRecognition,
+                'class-leaderboard': loadClassLeaderboard,
+                students: loadStudents,
+                messages: () => switchMessageBox('inbox'),
+                profile: loadDocumentStatus,
+                finance: loadFinancePage,
+                'id-card': loadAdminIdCard,
+                'subscription-fee': loadSubscriptionFee,
+                'send-report': loadSendReportPage
+    };
+}
+
 function alertItemHtml({ title, meta, actionsHtml }) {
     return `<div class="alert-item">
         <div class="alert-item-title">${title}</div>
@@ -229,7 +372,7 @@ async function loadAlertsDropdown() {
 
             items = rows.map(r => alertItemHtml({
                 title: `${lucideIcon('user', 15)} ${escapeHtml(r.first_name)} ${escapeHtml(r.last_name)} (${r.student_id})`,
-                meta: `${r.class_level}-${r.section} · ${formatEthDateRange(r.date_from, r.date_to)}`,
+                meta: `${gradeDisp(r.class_level)}-${r.section} · ${formatEthDateRange(r.date_from, r.date_to)}`,
                 actionsHtml: `
                     <button class="btn btn-success" ${actionAttrs('decideStudentAbsence', [r.request_id, 'approve'])}>${t('sa_approve')}</button>
                     <button class="btn btn-danger" ${actionAttrs('decideStudentAbsence', [r.request_id, 'reject'])}>${t('sa_reject')}</button>
@@ -237,7 +380,7 @@ async function loadAlertsDropdown() {
             }));
             items = items.concat(dropouts.map(r => alertItemHtml({
                 title: `${lucideIcon('user-x', 15)} ${escapeHtml(r.full_name)} (${r.student_id})`,
-                meta: `${r.class_level}-${r.section} · ${escapeHtml(r.reason_category || r.reason || '')}`,
+                meta: `${gradeDisp(r.class_level)}-${r.section} · ${escapeHtml(r.reason_category || r.reason || '')}`,
                 actionsHtml: `<button class="btn btn-ghost" ${actionAttrs('navigateToPage', ['dropout-requests'])}>${t('sa_view')}</button>`
             })));
         } else if (CURRENT_TITLE === 'Principal') {
@@ -272,7 +415,7 @@ async function loadAlertsDropdown() {
             })));
             items = items.concat(transfers.map(r => alertItemHtml({
                 title: `${lucideIcon('arrow-right-left', 15)} ${escapeHtml(r.full_name)} (${r.student_id})`,
-                meta: `${r.class_level}-${r.section}${r.reason ? ' · ' + escapeHtml(r.reason) : ''}`,
+                meta: `${gradeDisp(r.class_level)}-${r.section}${r.reason ? ' · ' + escapeHtml(r.reason) : ''}`,
                 actionsHtml: `
                     <button class="btn btn-success" ${actionAttrs('approveTransferRequest', [r.request_id])}>${t('sa_approve')}</button>
                     <button class="btn btn-danger" ${actionAttrs('rejectTransferRequest', [r.request_id])}>${t('sa_reject')}</button>
@@ -356,35 +499,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // The Admin VP's live page stops refreshing once they leave it.
             if (page !== 'subscription-fee') stopSubscriptionPolling();
 
-            const loaders = {
-                dashboard: loadDashboard,
-                'teacher-setup': loadTeacherSetup,
-                teachers: () => { loadTeacherLeaderboard(); loadTeacherAttendanceToday(); },
-                textbooks: loadTextbooks,
-                absence: loadAbsenceTabs,
-                'student-absence-escalations': loadStudentAbsenceEscalations,
-                timetable: initTimetablePage,
-                'teacher-assignments': loadTeacherAssignments,
-                'marks-review': loadMarksReview,
-                'mark-cutoff': loadMarkCutoffPage,
-                semester: loadSemesterStatus,
-                conduct: () => {},
-                'escalated-absence': loadEscalatedAbsence,
-                disciplinary: loadDisciplinaryCases,
-                'teacher-audit': loadTeacherAudit,
-                'subject-entry-requests': loadSubjectEntryRequests,
-                'dropout-requests': loadDropoutRequests,
-                'analysis-report': loadAnalysisReport,
-                'document-approvals': loadDocumentApprovals,
-                recognition: loadRecognition,
-                'class-leaderboard': loadClassLeaderboard,
-                students: loadStudents,
-                messages: () => switchMessageBox('inbox'),
-                profile: loadDocumentStatus,
-                'id-card': loadAdminIdCard,
-                'subscription-fee': loadSubscriptionFee,
-                'send-report': loadSendReportPage
-            };
+            const loaders = saPageLoaders();
             if (loaders[page]) loaders[page]();
 
             if (window.innerWidth <= 900) {
@@ -589,6 +704,31 @@ async function loadDashboard() {
             stats.push(statCard(lucideIcon('calendar'), t('sa_stat_current_term'), term.current_term || '—', ''));
             stats.push(statCard(lucideIcon('send'), t('sa_stat_homerooms_not_pushed'), notPushed, notPushed > 0 ? 'warning' : 'success'));
             loadAlertsDropdown();
+        }
+
+        if (CURRENT_TITLE === 'Principal' || CURRENT_TITLE === 'Managing Director') {
+            // Read-only status check for the card; the actual create/
+            // view/deactivate controls live on the Finance page itself.
+            const financeRes = await apiFetch(`${API_BASE}/api/school/finance-account`);
+            const financeAccount = financeRes.ok ? await financeRes.json() : null;
+            stats.push(statCard(
+                lucideIcon('wallet'),
+                t('sa_finance_account_heading'),
+                financeAccount ? t('sa_finance_status_active') : t('sa_finance_status_not_set_up'),
+                financeAccount ? 'success' : 'warning',
+                'goToFinancePage'
+            ));
+        }
+
+        if (CURRENT_TITLE === 'Managing Director') {
+            // Total Students already comes from the unconditional
+            // /api/student-stats call above. This adds the matching
+            // teacher headcount, read from the same roster the Teacher
+            // Onboarding page's table uses (now readable by MD too —
+            // see GET /api/admin/teachers).
+            const teachersRes = await apiFetch(`${API_BASE}/api/admin/teachers`);
+            const teachers = teachersRes.ok ? await teachersRes.json() : [];
+            stats.push(statCard(lucideIcon('users'), t('sa_stat_total_teachers'), teachers.length, ''));
         }
 
         if (CURRENT_TITLE === 'Principal') {
@@ -952,7 +1092,7 @@ function openStudentsOnLeaveModal() {
             <tbody>${rows.map(r => `
                 <tr>
                     <td>${escapeHtml([r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' '))} (${r.student_id})</td>
-                    <td>${escapeHtml(r.class_level)}-${escapeHtml(r.section)}${r.stream ? ' (' + escapeHtml(r.stream) + ')' : ''}</td>
+                    <td>${escapeHtml(gradeDisp(r.class_level))}-${escapeHtml(r.section)}${r.stream ? ' (' + escapeHtml(r.stream) + ')' : ''}</td>
                     <td>${formatEthDateRange(r.date_from, r.date_to)}</td>
                     <td><span class="badge ${r.currently_on_leave ? 'badge-pending' : 'badge-none'}">${r.currently_on_leave ? t('sa_currently_on_leave') : t('sa_leave_completed')}</span></td>
                 </tr>`).join('')}</tbody>
@@ -1138,7 +1278,7 @@ async function loadTextbooks() {
     tbody.innerHTML = data.log.map(r => `
         <tr>
             <td>${escapeHtml(r.full_name)} (${r.student_id})</td>
-            <td>${r.class_level}-${r.section}</td>
+            <td>${gradeDisp(r.class_level)}-${r.section}</td>
             <td>${escapeHtml(r.subject_name)}</td>
             <td><span class="badge badge-${r.status}">${r.status}</span></td>
             <td>${r.status === 'lost' ? `<span class="badge badge-${r.penalty_status || 'pending'}">${r.penalty_status || 'pending'}</span>` : '—'}</td>
@@ -1210,7 +1350,7 @@ async function loadStudentAbsenceEscalations() {
     tbody.innerHTML = rows.map(r => `
         <tr>
             <td>${escapeHtml(r.first_name)} ${escapeHtml(r.last_name)} (${r.student_id})</td>
-            <td>${r.class_level}-${r.section}</td>
+            <td>${gradeDisp(r.class_level)}-${r.section}</td>
             <td>${formatEthDateRange(r.date_from, r.date_to)}</td>
             <td>${escapeHtml(r.reason || '—')}</td>
             <td>
@@ -1281,7 +1421,7 @@ async function initTimetablePage() {
             .sort((a, b) => Number(a) - Number(b));
         const current = levelSelect.value;
         levelSelect.innerHTML = `<option value="">${t('sa_select_class_level')}</option>`
-            + levels.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('');
+            + levels.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(gradeDisp(l))}</option>`).join('');
         if (levels.includes(current)) levelSelect.value = current;
     }
     updateStreamOptionsForLevel(document.getElementById('tt-stream'), levelSelect?.value || '');
@@ -1690,7 +1830,7 @@ async function loadMarksReview() {
     tbody.innerHTML = rows.map(r => `
         <tr>
             <td>${escapeHtml(r.full_name)} (${escapeHtml(r.teacher_id)})</td>
-            <td>${r.class_level}-${r.section} (${escapeHtml(r.stream || '')})</td>
+            <td>${gradeDisp(r.class_level)}-${r.section} (${escapeHtml(r.stream || '')})</td>
             <td><span class="badge badge-${r.pushed ? 'approved' : 'pending'}">${r.pushed ? t('sa_pushed') : t('sa_not_pushed')}</span></td>
             <td>${r.pushed_at ? formatEthDateTime(r.pushed_at) : '—'}</td>
             <td>${r.pushed
@@ -1847,7 +1987,7 @@ async function loadDisciplinaryCases() {
     tbody.innerHTML = rows.map(r => `
         <tr>
             <td>${escapeHtml(r.first_name)} ${escapeHtml(r.last_name)} (${r.student_id})</td>
-            <td>${r.class_level}-${r.section}</td>
+            <td>${gradeDisp(r.class_level)}-${r.section}</td>
             <td>${escapeHtml(r.description)}</td>
             <td>
                 <button class="btn btn-sm btn-ghost" ${actionAttrs('decideCase', [r.case_id, 'dismissed'])}>${t('sa_dismiss')}</button>
@@ -1934,7 +2074,7 @@ async function loadRecognition() {
         <tr>
             <td>#${r.rank}</td>
             <td>${escapeHtml(r.full_name || r.student_id)}</td>
-            <td>${r.class_level}-${r.section}</td>
+            <td>${gradeDisp(r.class_level)}-${r.section}</td>
             <td>${r.year_average}</td>
             <td>${r.rank === 1
                 ? (r.already_awarded
@@ -1981,7 +2121,7 @@ async function loadSubjectEntryRequests() {
         <tr>
             <td><a href="#" ${actionAttrs('openTeacherAuditModal', [r.teacher_id])}>${escapeHtml([r.first_name, r.middle_name, r.last_name].filter(Boolean).join(' '))}</a></td>
             <td>${escapeHtml(r.subject_name)}</td>
-            <td>${escapeHtml(r.class_level)}-${escapeHtml(r.section)}${r.stream ? ` (${escapeHtml(r.stream)})` : ''}</td>
+            <td>${escapeHtml(gradeDisp(r.class_level))}-${escapeHtml(r.section)}${r.stream ? ` (${escapeHtml(r.stream)})` : ''}</td>
             <td>${escapeHtml(r.reason || '—')}</td>
             <td>${formatEthDate(r.requested_at)}</td>
             <td>
@@ -2019,7 +2159,7 @@ async function loadDropoutRequests() {
     tbody.innerHTML = rows.map(r => `
         <tr>
             <td>${escapeHtml(r.full_name || r.student_id)}</td>
-            <td>${escapeHtml(r.class_level)}-${escapeHtml(r.section)}${r.stream ? ` (${escapeHtml(r.stream)})` : ''}</td>
+            <td>${escapeHtml(gradeDisp(r.class_level))}-${escapeHtml(r.section)}${r.stream ? ` (${escapeHtml(r.stream)})` : ''}</td>
             <td>${escapeHtml(r.reason || '—')}</td>
             <td>${formatEthDate(r.flagged_at)}</td>
             <td>
@@ -2101,7 +2241,7 @@ async function loadAnalysisReport() {
     const cell = (v) => (v === null || v === undefined) ? t('sa_not_applicable') : v;
     const rowHtml = (r, isTotal) => `
         <tr ${isTotal ? 'style="font-weight:bold;background:var(--bg-subtle,#f7f7f7);"' : ''}>
-            <td>${escapeHtml(String(r.class_level))}</td>
+            <td>${escapeHtml(String(gradeDisp(r.class_level)))}</td>
             ${AR_CATS.map(k => `<td>${cell(r[k].male)}</td><td>${cell(r[k].female)}</td><td>${cell(r[k].total)}</td>`).join('')}
             <td>${cell(r.highest_rank_male)}</td>
             <td>${cell(r.highest_rank_female)}</td>
@@ -2304,7 +2444,7 @@ function populateStudentFilterOptions() {
         .sort((a, b) => (isNaN(a) || isNaN(b)) ? String(a).localeCompare(String(b)) : a - b);
     const buildOptions = (sel, values, allLabelKey) => {
         const current = sel.value;
-        sel.innerHTML = `<option value="">${t(allLabelKey)}</option>` + values.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+        sel.innerHTML = `<option value="">${t(allLabelKey)}</option>` + values.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(gradeDisp(v))}</option>`).join('');
         sel.value = current;
     };
     buildOptions(classSel, uniq('class_level'), 'sa_all_classes');
@@ -2342,13 +2482,82 @@ function renderStudentsTable(list) {
     tbody.innerHTML = visible.map(s => `
         <tr>
             <td class="table-id-cell">${tableAvatarHtml([s.first_name, s.last_name].filter(Boolean).join(' '), s.id_photo_url, { previewable: true })}<span>${escapeHtml(s.student_id)}</span></td>
-            <td>${escapeHtml([s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' '))}</td>
-            <td>${escapeHtml(s.class_level ?? '—')}</td>
+            <td><button type="button" class="student-name-link" title="${escapeHtml(t('sa_sd_view'))}" ${actionAttrs('openStudentDetail', [s.student_id])}>${escapeHtml([s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' '))}</button></td>
+            <td>${escapeHtml(s.class_level != null ? gradeDisp(s.class_level) : '—')}</td>
             <td>${escapeHtml(s.section ?? '—')}</td>
             <td>${escapeHtml(s.stream ?? '—')}</td>
             <td>${escapeHtml(s.fayda_number || '—')}</td>
             <td>${escapeHtml(s.status || '—')}</td>
         </tr>`).join('');
+}
+
+// ---------- Student detail + guardian (opened from the roster) ----------
+// Kindergarten grades are stored as class_level -3/-2/-1 (see server.js
+// KG helpers). Never print the raw number: map to KG1/KG2/KG3. Any other
+// value (a normal grade, a section name, ...) passes through unchanged.
+const KG_GRADE_KEYS = { '-3': 'kg_grade_1', '-2': 'kg_grade_2', '-1': 'kg_grade_3' };
+function gradeDisp(level) {
+    const key = KG_GRADE_KEYS[String(level)];
+    return key ? t(key) : level;
+}
+
+function sdField(label, value) {
+    const has = value !== null && value !== undefined && String(value).trim() !== '';
+    return `<div class="sd-field"><div class="sd-label">${escapeHtml(label)}</div><div class="sd-value${has ? '' : ' sd-empty'}">${has ? escapeHtml(value) : '—'}</div></div>`;
+}
+async function openStudentDetail(student_id) {
+    openModal(`<p>${escapeHtml(t('sa_loading'))}</p>`, 'student-detail-box');
+    let data = null;
+    try {
+        const res = await apiFetch(`${API_BASE}/api/students/${encodeURIComponent(student_id)}/detail`);
+        if (res.ok) data = await res.json();
+    } catch (e) { console.error(e); }
+    if (!document.getElementById('sa-generic-modal')) return; // closed while loading
+    if (!data) {
+        openModal(`
+            <p>${escapeHtml(t('sa_sd_err'))}</p>
+            <div class="form-actions"><button class="btn btn-ghost" ${actionAttrs('closeModal', [])}>${t('sa_close')}</button></div>`, 'student-detail-box');
+        return;
+    }
+    const st = data.student;
+    const fullName = [st.first_name, st.middle_name, st.last_name].filter(Boolean).join(' ');
+    const guardians = data.guardians || [];
+    const guardianHtml = guardians.length ? guardians.map(g => `
+        <div class="sd-guardian">
+            <div class="sd-guardian-name">${escapeHtml(g.full_name || '—')}</div>
+            <div class="sd-grid">
+                <div class="sd-field"><div class="sd-label">${escapeHtml(t('sa_sd_phone'))}</div><div class="sd-value">${g.phone_number ? `<a href="tel:${escapeHtml(g.phone_number)}">${escapeHtml(g.phone_number)}</a>` : '—'}</div></div>
+                ${sdField(t('sa_col_fayda_number'), g.fayda_number)}
+                ${sdField(t('sa_sd_login_id'), g.parent_code)}
+            </div>
+        </div>`).join('') : `<p class="sd-none">${escapeHtml(t('sa_sd_no_guardian'))}</p>`;
+    openModal(`
+        <div class="sd-topbar">
+            <button type="button" class="sd-back-btn" aria-label="${escapeHtml(t('sa_sd_back'))}" ${actionAttrs('closeModal', [])}>← ${escapeHtml(t('sa_sd_back'))}</button>
+        </div>
+        <div class="sd-head">
+            ${tableAvatarHtml(fullName, st.id_photo_url, { previewable: false })}
+            <div>
+                <h3 class="sd-name">${escapeHtml(fullName)}</h3>
+                <div class="sd-sub">${escapeHtml(st.student_id)}${st.status ? ` · ${escapeHtml(st.status)}` : ''}</div>
+            </div>
+        </div>
+        <h4 class="sd-section-title">${escapeHtml(t('sa_sd_student_info'))}</h4>
+        <div class="sd-grid">
+            ${sdField(t('sa_f_sex'), st.sex)}
+            ${sdField(t('sa_col_class'), gradeDisp(st.class_level))}
+            ${sdField(t('sa_col_section'), st.section)}
+            ${sdField(t('sa_col_stream'), st.stream)}
+            ${sdField(t('sa_col_fayda_number'), st.fayda_number)}
+            ${sdField(t('sa_sd_emis'), st.emis_id)}
+            ${sdField(t('sa_sd_phone'), st.phone_number)}
+            ${st.has_account === false ? '' : sdField(t('sa_f_email'), st.email_address)}
+        </div>
+        <h4 class="sd-section-title">${escapeHtml(t('sa_sd_guardians'))}</h4>
+        ${guardianHtml}
+        <div class="form-actions" style="margin-top: 16px;">
+            <button class="btn btn-ghost" ${actionAttrs('closeModal', [])}>${t('sa_close')}</button>
+        </div>`, 'student-detail-box');
 }
 
 // ---------- Roster downloads (CSV / PDF) ----------
@@ -2443,7 +2652,7 @@ function downloadStudentRosterCsv() {
     const rows = list.map(s => [
         csvField(s.student_id),
         csvField([s.first_name, s.middle_name, s.last_name].filter(Boolean).join(' ')),
-        csvField(s.class_level ?? ''),
+        csvField(s.class_level != null ? gradeDisp(s.class_level) : ''),
         csvField(s.section ?? ''),
         csvField(s.stream ?? ''),
         csvExcelSafeField(s.fayda_number || ''),
@@ -2527,7 +2736,7 @@ function populateLeaderboardFilterOptions() {
         .sort((a, b) => (isNaN(a) || isNaN(b)) ? String(a).localeCompare(String(b)) : a - b);
     const buildOptions = (sel, values, allLabelKey) => {
         const current = sel.value;
-        sel.innerHTML = `<option value="">${t(allLabelKey)}</option>` + values.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+        sel.innerHTML = `<option value="">${t(allLabelKey)}</option>` + values.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(gradeDisp(v))}</option>`).join('');
         sel.value = current;
     };
     buildOptions(classSel, uniq('class_level'), 'sa_all_classes');
@@ -2608,7 +2817,7 @@ function renderClassLeaderboard() {
         <tr>
             <td>#${r.rank}</td>
             <td>${escapeHtml(r.full_name || r.student_id)}</td>
-            <td>${r.class_level}-${r.section}</td>
+            <td>${gradeDisp(r.class_level)}-${r.section}</td>
             <td>${r.year_average}</td>
         </tr>`).join('');
 }
@@ -2625,7 +2834,7 @@ async function loadTransferRequests() {
     tbody.innerHTML = rows.map(r => `
         <tr>
             <td>${escapeHtml(r.full_name)}</td>
-            <td>${r.class_level}-${r.section}</td>
+            <td>${gradeDisp(r.class_level)}-${r.section}</td>
             <td>${escapeHtml(r.reason || '—')}</td>
             <td>${transferRequestStatusBadge(r)}</td>
             <td>${formatEthDate(r.requested_at)}</td>
@@ -2735,7 +2944,7 @@ async function loadTransferredStudents() {
     tbody.innerHTML = rows.map(r => `
         <tr>
             <td>${escapeHtml(r.full_name)}</td>
-            <td>${r.class_level}-${r.section}</td>
+            <td>${gradeDisp(r.class_level)}-${r.section}</td>
             <td>${escapeHtml(r.transfer_code || '—')}</td>
             <td>${transferStatusBadge(r.transfer_status)}</td>
             <td>${formatEthDate(r.completed_at || r.initiated_at)}</td>
@@ -2754,7 +2963,7 @@ function downloadTransferredCsv() {
     const headers = [t('sa_col_name'), t('sa_col_class'), t('sa_col_transfer_code'), t('sa_col_status'), t('sa_col_date')];
     const rows = TRANSFERRED_CACHE.map(r => [
         csvField(r.full_name),
-        csvField(`${r.class_level}-${r.section}`),
+        csvField(`${gradeDisp(r.class_level)}-${r.section}`),
         csvField(r.transfer_code || ''),
         csvField(r.transfer_status || ''),
         csvField(formatEthDate(r.completed_at || r.initiated_at))
@@ -2849,7 +3058,16 @@ function downloadGraduationPdf() {
 // moment the class level is picked; switching to Social is one click away.
 function updateStreamOptionsForLevel(streamSelect, level) {
     if (!streamSelect) return;
-    if (level === '9' || level === '10') {
+    // Kindergarten (-3/-2/-1), Basic (1-6) and Core (7-8) are not streamed:
+    // their sections carry the literal tier name as the stream, locked.
+    const tierStream = ['-3', '-2', '-1'].includes(level) ? ['KG', 'sa_stream_kg']
+        : ['1', '2', '3', '4', '5', '6'].includes(level) ? ['Basic', 'sa_stream_basic']
+        : (level === '7' || level === '8') ? ['Core', 'sa_stream_core'] : null;
+    if (tierStream) {
+        streamSelect.innerHTML = `<option value="${tierStream[0]}">${t(tierStream[1])}</option>`;
+        streamSelect.value = tierStream[0];
+        streamSelect.disabled = true;
+    } else if (level === '9' || level === '10') {
         streamSelect.innerHTML = `<option value="General">${t('sa_stream_general')}</option>`;
         streamSelect.value = 'General';
         streamSelect.disabled = true;
@@ -2993,6 +3211,19 @@ function actionAttrs(action, args = []) {
 async function loadTeacherSetup() {
     loadIncomingTeachers();
 
+    // Managing Director-only widgets (private schools) — recruit_staff /
+    // appoint_leadership. Hidden by default in index.html; only a Public
+    // school's Principal ever has this nav item too, and MD is the only
+    // title these two capabilities are ever granted to, so gating on
+    // CURRENT_TITLE alone (same pattern as isPrincipal/isMD elsewhere in
+    // this file) is enough — no separate school_type check needed here.
+    const isMD = CURRENT_TITLE === 'Managing Director';
+    const recruitWidget = document.getElementById('sa-md-recruit-widget');
+    const leadershipWidget = document.getElementById('sa-md-leadership-widget');
+    if (recruitWidget) recruitWidget.style.display = isMD ? '' : 'none';
+    if (leadershipWidget) leadershipWidget.style.display = isMD ? '' : 'none';
+    if (isMD) loadMdLeadershipRoster();
+
     const tbody = document.getElementById('sa-teacher-setup-tbody');
     tbody.innerHTML = `<tr><td colspan="7">${t('sa_loading')}</td></tr>`;
     const res = await apiFetch(`${API_BASE}/api/admin/teachers`);
@@ -3076,6 +3307,274 @@ async function saveTeacherRosterEdit(teacher_id) {
     loadTeacherSetup();
 }
 
+// ==========================================================
+// MANAGING DIRECTOR — Recruit a Teacher (/api/md/teachers) and
+// School Leadership (/api/md/school-admins). Both capabilities are
+// private-school-only; the widgets themselves are hidden for every
+// other title (see loadTeacherSetup above), so nothing here needs its
+// own title check beyond that.
+// ==========================================================
+const MD_EDUCATION_LEVELS = ['TVET / College Diploma', "Bachelor's Degree", "Master's Degree", 'PhD / Doctoral Degree'];
+const MD_SCHOOL_ADMIN_TITLES = ['Principal', 'Admin VP', 'Academic VP'];
+let MD_LEADERSHIP_CACHE = [];
+
+function openRecruitTeacherModal() {
+    openModal(`
+        <h3>${t('sa_md_recruit_heading')}</h3>
+        <div class="form-group"><label>${t('sa_f_first_name')}</label><input type="text" id="md-rt-first" /></div>
+        <div class="form-group"><label>${t('sa_f_middle_name')}</label><input type="text" id="md-rt-middle" placeholder="${t('sa_optional')}" /></div>
+        <div class="form-group"><label>${t('sa_f_last_name')}</label><input type="text" id="md-rt-last" /></div>
+        <div class="form-group"><label>${t('sa_f_sex')}</label>
+            <select id="md-rt-sex"><option value="">—</option><option value="Male">${t('sa_col_male')}</option><option value="Female">${t('sa_col_female')}</option></select>
+        </div>
+        <div class="form-group"><label>${t('sa_col_education_level')}</label>
+            <select id="md-rt-education-level"><option value="">—</option>${MD_EDUCATION_LEVELS.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('')}</select>
+        </div>
+        <div class="form-group"><label>${t('sa_f_contact')}</label><input type="text" id="md-rt-contact" placeholder="${t('sa_optional')}" /></div>
+        <div class="form-group"><label>${t('sa_f_email')}</label><input type="email" id="md-rt-email" placeholder="${t('sa_optional')}" /></div>
+        <div class="form-actions">
+            <button class="btn btn-accent" data-action="submitRecruitTeacher">${t('sa_md_recruit_submit')}</button>
+            <button class="btn btn-ghost" data-action="closeModal">${t('sa_close')}</button>
+        </div>
+    `);
+}
+
+async function submitRecruitTeacher() {
+    const first_name = document.getElementById('md-rt-first').value.trim();
+    const last_name = document.getElementById('md-rt-last').value.trim();
+    if (!first_name || !last_name) return showToast(t('sa_err_md_recruit_required'), 'error');
+    const res = await apiFetch(`${API_BASE}/api/md/teachers`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            first_name, last_name,
+            middle_name: document.getElementById('md-rt-middle').value.trim() || null,
+            sex: document.getElementById('md-rt-sex').value || null,
+            education_level: document.getElementById('md-rt-education-level').value || null,
+            contact_number: document.getElementById('md-rt-contact').value.trim() || null,
+            email: document.getElementById('md-rt-email').value.trim() || null
+        })
+    });
+    const data = await handleJsonResponse(res, t('sa_md_recruit_success'));
+    if (!data) return;
+    closeModal();
+    loadIncomingTeachers();
+}
+
+async function loadMdLeadershipRoster() {
+    const tbody = document.getElementById('sa-md-leadership-tbody');
+    if (!tbody) return;
+    tbody.innerHTML = `<tr><td colspan="4">${t('sa_loading')}</td></tr>`;
+    const res = await apiFetch(`${API_BASE}/api/md/school-admins`);
+    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="4">${t('sa_load_error')}</td></tr>`; return; }
+    const rows = await res.json();
+    MD_LEADERSHIP_CACHE = rows;
+    if (rows.length === 0) { tbody.innerHTML = `<tr><td colspan="4">${t('sa_no_data')}</td></tr>`; return; }
+    tbody.innerHTML = rows.map(a => `
+        <tr>
+            <td>${escapeHtml(a.title)}</td>
+            <td>${escapeHtml([a.first_name, a.middle_name, a.last_name].filter(Boolean).join(' '))}</td>
+            <td>${escapeHtml(a.contact_number || '—')}</td>
+            <td>${escapeHtml(a.email || '—')}</td>
+        </tr>`).join('');
+}
+// Same "who currently holds this seat, want to replace them?" pattern
+// as the Zonal portal's currentAdminFor/updateReplaceAdminBox — but
+// sourced from MD_LEADERSHIP_CACHE (this school only) instead of a
+// zone-wide admins list.
+function currentLeadershipHolder(title) {
+    return (MD_LEADERSHIP_CACHE || []).find(a => a.title === title) || null;
+}
+
+function updateAppointReplaceBox() {
+    const title = document.getElementById('md-al-title').value;
+    const box = document.getElementById('md-al-replace-box');
+    const label = document.getElementById('md-al-replace-label');
+    const check = document.getElementById('md-al-replace-check');
+    const existing = currentLeadershipHolder(title);
+    if (existing) {
+        box.style.display = '';
+        label.textContent = t('sa_md_replace_question', {
+            name: [existing.first_name, existing.middle_name, existing.last_name].filter(Boolean).join(' '),
+            title
+        });
+        box.dataset.replaceId = existing.admin_id;
+    } else {
+        box.style.display = 'none';
+        check.checked = false;
+        box.dataset.replaceId = '';
+    }
+}
+
+function openAppointLeadershipModal() {
+    openModal(`
+        <h3>${t('sa_md_appoint_heading')}</h3>
+        <div class="form-group"><label>${t('sa_col_title')}</label>
+            <select id="md-al-title">${MD_SCHOOL_ADMIN_TITLES.map(x => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('')}</select>
+        </div>
+        <div class="form-group"><label>${t('sa_f_first_name')}</label><input type="text" id="md-al-first" /></div>
+        <div class="form-group"><label>${t('sa_f_middle_name')}</label><input type="text" id="md-al-middle" placeholder="${t('sa_optional')}" /></div>
+        <div class="form-group"><label>${t('sa_f_last_name')}</label><input type="text" id="md-al-last" /></div>
+        <div class="form-group"><label>${t('sa_f_sex')}</label>
+            <select id="md-al-sex"><option value="">—</option><option value="Male">${t('sa_col_male')}</option><option value="Female">${t('sa_col_female')}</option></select>
+        </div>
+        <div class="form-group"><label>${t('sa_col_education_level')}</label>
+            <select id="md-al-education-level"><option value="">—</option>${MD_EDUCATION_LEVELS.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('')}</select>
+        </div>
+        <div class="form-group"><label>${t('sa_f_contact')}</label><input type="text" id="md-al-contact" placeholder="${t('sa_optional')}" /></div>
+        <div class="form-group"><label>${t('sa_f_email')}</label><input type="email" id="md-al-email" placeholder="${t('sa_optional')}" /></div>
+        <div class="form-group"><label>${t('sa_f_password')}</label><input type="password" id="md-al-password" minlength="8" placeholder="${t('sa_f_password_hint')}" /></div>
+        <div id="md-al-replace-box" style="display:none;margin-top:10px;padding:10px;border:1px solid var(--border,#333);border-radius:8px;">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                <input type="checkbox" id="md-al-replace-check">
+                <span id="md-al-replace-label"></span>
+            </label>
+        </div>
+        <div class="form-actions">
+            <button class="btn btn-accent" data-action="submitAppointLeadership">${t('sa_md_appoint_submit')}</button>
+            <button class="btn btn-ghost" data-action="closeModal">${t('sa_close')}</button>
+        </div>
+    `);
+    updateAppointReplaceBox();
+    document.getElementById('md-al-title').addEventListener('change', updateAppointReplaceBox);
+}
+
+async function submitAppointLeadership() {
+    const first_name = document.getElementById('md-al-first').value.trim();
+    const last_name = document.getElementById('md-al-last').value.trim();
+    const password = document.getElementById('md-al-password').value;
+    if (!first_name || !last_name) return showToast(t('sa_err_md_appoint_required'), 'error');
+    if (!password || password.length < 8) return showToast(t('sa_err_password_min'), 'error');
+    if (!(await verifyAdminPassword(t('sa_md_appoint_password_prompt')))) return;
+    const replaceBox = document.getElementById('md-al-replace-box');
+    const wantsReplace = document.getElementById('md-al-replace-check').checked;
+    const res = await apiFetch(`${API_BASE}/api/md/school-admins`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            title: document.getElementById('md-al-title').value,
+            first_name, last_name,
+            middle_name: document.getElementById('md-al-middle').value.trim() || null,
+            sex: document.getElementById('md-al-sex').value || null,
+            education_level: document.getElementById('md-al-education-level').value || null,
+            contact_number: document.getElementById('md-al-contact').value.trim() || null,
+            email: document.getElementById('md-al-email').value.trim() || null,
+            password,
+            replace_admin_id: (wantsReplace && replaceBox.dataset.replaceId) ? replaceBox.dataset.replaceId : null
+        })
+    });
+    const data = await handleJsonResponse(res, t('sa_md_appoint_success'));
+    if (!data) return;
+    closeModal();
+    loadMdLeadershipRoster();
+}
+
+// ==========================================================
+// FINANCE ACCOUNT — one per school, created by whoever holds
+// recruit_finance (Principal at a public school, Managing Director at
+// a private one). Lives on the Profile page.
+// ==========================================================
+// Dashboard stat-card click target — statCard's action slot only calls
+// zero-arg functions (see openStudentsOnLeaveModal above for the same
+// pattern), so this just forwards to navigateToPage with the page name.
+function goToFinancePage() {
+    navigateToPage('finance');
+}
+
+async function loadFinancePage() {
+    const statsRow = document.getElementById('sa-finance-stats');
+    const body = document.getElementById('sa-finance-account-body');
+    if (!body) return;
+
+    body.innerHTML = `<p class="form-hint">${t('sa_loading')}</p>`;
+    if (statsRow) statsRow.innerHTML = '';
+    const res = await apiFetch(`${API_BASE}/api/school/finance-account`);
+    if (!res.ok) { body.innerHTML = `<p class="form-hint">${t('sa_load_error')}</p>`; return; }
+    const account = await res.json();
+    FINANCE_ACCOUNT_CACHE = account;
+
+    if (statsRow) {
+        statsRow.innerHTML = account
+            ? statCard(lucideIcon('wallet'), t('sa_finance_account_heading'), t('sa_finance_status_active'), 'success', null, escapeHtml(account.finance_id))
+            : statCard(lucideIcon('wallet'), t('sa_finance_account_heading'), t('sa_finance_status_not_set_up'), 'warning');
+    }
+
+    if (!account) {
+        body.innerHTML = `
+            <p class="form-hint">${t('sa_finance_no_account_hint')}</p>
+            <button class="btn btn-accent" data-action="openCreateFinanceModal">${t('sa_finance_create_btn')}</button>`;
+        return;
+    }
+
+    body.innerHTML = `
+        <p><strong>${t('sa_col_name')}:</strong> ${escapeHtml([account.first_name, account.middle_name, account.last_name].filter(Boolean).join(' '))}</p>
+        <p><strong>${t('sa_finance_id_label')}:</strong> ${escapeHtml(account.finance_id)}</p>
+        <p><strong>${t('sa_f_contact')}:</strong> ${escapeHtml(account.contact_number || '—')}</p>
+        <p><strong>${t('sa_f_email')}:</strong> ${escapeHtml(account.email || '—')}</p>
+        <button class="btn btn-danger" data-action="deactivateFinanceAccount">${t('sa_finance_deactivate_btn')}</button>`;
+}
+let FINANCE_ACCOUNT_CACHE = null;
+
+function openCreateFinanceModal() {
+    openModal(`
+        <h3>${t('sa_finance_create_btn')}</h3>
+        <div class="form-group"><label>${t('sa_f_first_name')}</label><input type="text" id="fin-first" /></div>
+        <div class="form-group"><label>${t('sa_f_middle_name')}</label><input type="text" id="fin-middle" placeholder="${t('sa_optional')}" /></div>
+        <div class="form-group"><label>${t('sa_f_last_name')}</label><input type="text" id="fin-last" /></div>
+        <div class="form-group"><label>${t('sa_f_sex')}</label>
+            <select id="fin-sex"><option value="">—</option><option value="Male">${t('sa_col_male')}</option><option value="Female">${t('sa_col_female')}</option></select>
+        </div>
+        <div class="form-group"><label>${t('sa_f_contact')}</label><input type="text" id="fin-contact" placeholder="${t('sa_optional')}" /></div>
+        <div class="form-group"><label>${t('sa_f_email')}</label><input type="email" id="fin-email" placeholder="${t('sa_optional')}" /></div>
+        <div class="form-actions">
+            <button class="btn btn-accent" data-action="submitCreateFinanceAccount">${t('sa_finance_create_btn')}</button>
+            <button class="btn btn-ghost" data-action="closeModal">${t('sa_close')}</button>
+        </div>
+    `);
+}
+
+async function submitCreateFinanceAccount() {
+    const first_name = document.getElementById('fin-first').value.trim();
+    const last_name = document.getElementById('fin-last').value.trim();
+    if (!first_name || !last_name) return showToast(t('sa_err_finance_required'), 'error');
+    const res = await apiFetch(`${API_BASE}/api/school/finance-account`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            first_name, last_name,
+            middle_name: document.getElementById('fin-middle').value.trim() || null,
+            sex: document.getElementById('fin-sex').value || null,
+            contact_number: document.getElementById('fin-contact').value.trim() || null,
+            email: document.getElementById('fin-email').value.trim() || null
+        })
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) { showToast(data?.error || t('sa_load_error'), 'error'); return; }
+
+    // finance_id + temporary_password are only ever returned this once —
+    // shown in the modal itself (not a toast) so it's readable and
+    // stays on screen until the admin closes it deliberately.
+    openModal(`
+        <h3>${t('sa_finance_account_heading')}</h3>
+        <p class="form-hint">${t('sa_finance_created_hint')}</p>
+        <p><strong>${t('sa_finance_id_label')}:</strong> ${escapeHtml(data.finance_id)}</p>
+        <p><strong>${t('sa_finance_temp_password_label')}:</strong>
+            <code style="font-size:1.1em">${escapeHtml(data.temporary_password)}</code></p>
+        <div class="form-actions">
+            <button class="btn btn-accent" data-action="closeModal">${t('sa_close')}</button>
+        </div>
+    `);
+    loadFinancePage();
+}
+
+async function deactivateFinanceAccount() {
+    const name = FINANCE_ACCOUNT_CACHE
+        ? [FINANCE_ACCOUNT_CACHE.first_name, FINANCE_ACCOUNT_CACHE.middle_name, FINANCE_ACCOUNT_CACHE.last_name].filter(Boolean).join(' ')
+        : '';
+    if (!(await showConfirmModal(t('sa_finance_deactivate_confirm', { name }), { danger: true }))) return;
+    const res = await apiFetch(`${API_BASE}/api/school/finance-account/deactivate`, { method: 'POST' });
+    const data = await handleJsonResponse(res, t('sa_finance_deactivated_success'));
+    if (!data) return;
+    loadFinancePage();
+}
+
 // CSV counterpart to the PDF below — built client-side from
 // TEACHER_ROSTER_CACHE (already loaded for the table), same columns as
 // the PDF (Teacher ID, Name, Contact, Level of Education, Fayda Number,
@@ -3117,10 +3616,15 @@ async function loadIncomingTeachers() {
             <td>${escapeHtml(r.full_name)}</td>
             <td>${escapeHtml(r.contact_number || '—')}</td>
             <td>${incomingStatusBadge(r)}</td>
-            <td>${r.status === 'pending'
-                ? `<button class="btn btn-sm btn-success" ${actionAttrs('openAcceptIncomingModal', [r.incoming_id])}>${t('sa_accept')}</button>
-                   <button class="btn btn-sm btn-danger" ${actionAttrs('declineIncomingTeacher', [r.incoming_id])}>${t('sa_decline')}</button>`
-                : '—'}</td>
+            <td>${r.status !== 'pending' ? '—'
+                : CURRENT_TITLE === 'Principal'
+                    ? `<button class="btn btn-sm btn-success" ${actionAttrs('openAcceptIncomingModal', [r.incoming_id])}>${t('sa_accept')}</button>
+                       <button class="btn btn-sm btn-danger" ${actionAttrs('declineIncomingTeacher', [r.incoming_id])}>${t('sa_decline')}</button>`
+                    // Managing Director sees the queue (they may have recruited
+                    // this candidate via /api/md/teachers) but review/accept is
+                    // still the Principal's job — read-only status text instead
+                    // of dead buttons that would 403 if clicked.
+                    : `<span class="form-hint">${t('sa_md_awaiting_principal')}</span>`}</td>
         </tr>`).join('');
 }
 
@@ -3277,7 +3781,7 @@ async function loadTeacherAssignments(filterTeacherId) {
         <tr>
             <td>${escapeHtml(g.teacher_name)} (${escapeHtml(g.teacher_id)})</td>
             <td>${escapeHtml(g.subject_name)}</td>
-            <td>${escapeHtml(g.class_level)}</td>
+            <td>${escapeHtml(gradeDisp(g.class_level))}</td>
             <td>${escapeHtml(g.stream || '—')}</td>
             <td><div class="ta-section-ticks">${boxes}</div></td>
         </tr>`;
@@ -3303,7 +3807,7 @@ function renderTeacherRoles(teachers, canAssign) {
         <tr>
             <td>${escapeHtml(tr.full_name)} (${escapeHtml(tr.teacher_id)})</td>
             <td>${tr.homeroom
-                ? `${tr.homeroom.class_level}-${tr.homeroom.section}${tr.homeroom.stream ? ' (' + escapeHtml(tr.homeroom.stream) + ')' : ''}`
+                ? `${gradeDisp(tr.homeroom.class_level)}-${tr.homeroom.section}${tr.homeroom.stream ? ' (' + escapeHtml(tr.homeroom.stream) + ')' : ''}`
                 : `<span class="badge badge-none">${t('sa_none')}</span>`}</td>
             <td>${tr.is_registrar
                 ? `<span class="badge badge-approved">${t('sa_registrar_active')}</span>`
@@ -3402,7 +3906,7 @@ async function loadClassSectionsForAssignment() {
         if (!levelSelect) return;
         const current = levelSelect.value;
         levelSelect.innerHTML = `<option value="">${t('sa_select_class_level')}</option>`
-            + levels.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('');
+            + levels.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(gradeDisp(l))}</option>`).join('');
         if (levels.includes(current)) levelSelect.value = current;
     });
     renderTaSectionCheckboxes();
@@ -3738,7 +4242,7 @@ async function loadMarkCutoffPage() {
     tbody.innerHTML = belowData.students.map(s => `
         <tr>
             <td>${escapeHtml(s.full_name || s.student_id)}</td>
-            <td>${s.class_level}-${s.section}${s.stream ? ' (' + escapeHtml(s.stream) + ')' : ''}</td>
+            <td>${gradeDisp(s.class_level)}-${s.section}${s.stream ? ' (' + escapeHtml(s.stream) + ')' : ''}</td>
             <td>${s.year_average}</td>
         </tr>`).join('');
 }
@@ -4458,6 +4962,18 @@ function renderAdminIdCard(data) {
         if (placeholder) placeholder.style.display = 'flex';
     }
 
+    // Zone logo replaces the regional flag in the card's logo badge (front
+    // and back). A zone with no logo uploaded yet — or a logo file that fails
+    // to load — keeps the flag already in index.html, so the badge is never
+    // left empty. Set via JS (not inline onerror) because of this portal's CSP.
+    ['idcard-logo-front', 'idcard-logo-back'].forEach(id => {
+        const img = document.getElementById(id);
+        if (!img) return;
+        const flagSrc = '/assets/images/gflag.jpg';
+        img.onerror = () => { img.onerror = null; img.src = flagSrc; };
+        img.src = data.zone_logo_url ? API_BASE + data.zone_logo_url : flagSrc;
+    });
+
     renderIdCardQrCode(data.qr_payload || data.admin_id || '');
 }
 
@@ -4509,6 +5025,8 @@ function subMoney(n) {
     return `${Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${t('sub_birr')}`;
 }
 function subPeriodLabel(p) {
+    // A yearly school's report covers the whole EC year, not one month.
+    if (p.is_year) return `${p.ec_year} ${t('sub_ec')} \u00b7 ${t('sub_full_year')}`;
     return `${t('sub_month_' + p.ec_month)} ${p.ec_year} ${t('sub_ec')}`;
 }
 function subRoleLabel(p) {
@@ -4780,29 +5298,59 @@ async function loadSendReportPage() {
     renderSendReportPage();
 }
 
+// What the Finance officer has reported to the Principal this month — tells
+// the Principal how much to deposit before sending the report on to the
+// Super Admin. Informational only; Send Report is not blocked without it.
+function financeReportWidgetHtml(list, isYear) {
+    const latest = (list || [])[0];
+    if (!latest) {
+        return `<div class="widget">
+            <h3>${lucideIcon('wallet', 18)} ${t('sub_fin_title')}</h3>
+            <p><span class="badge badge-pending">${t(isYear ? 'sub_fin_none_year' : 'sub_fin_none')}</span></p>
+        </div>`;
+    }
+    return `<div class="widget">
+        <h3>${lucideIcon('wallet', 18)} ${t('sub_fin_title')}</h3>
+        <p><span class="badge badge-approved">${t('sub_fin_reported_on', { date: formatEthDateTime(latest.sent_at) })}</span></p>
+        <div class="sub-kv"><span>${t('sub_fin_collected')}</span><span>${subMoney(latest.amount_collected)}</span></div>
+        <div class="sub-kv"><span>${t('sub_th_paid')}</span><span>${latest.students_paid}</span></div>
+        <div class="sub-kv"><span>${t('sub_fin_not_paid')}</span><span>${latest.students_unpaid}</span></div>
+        ${latest.sent_by_name ? `<div class="sub-kv"><span>${t('sub_fin_by')}</span><span>${escapeHtml(latest.sent_by_name)}</span></div>` : ''}
+        ${latest.note ? `<p class="form-hint">${escapeHtml(latest.note)}</p>` : ''}
+    </div>`;
+}
+
 function renderSendReportPage() {
     const d = SUB_REPORT;
     const root = document.getElementById('sub-report-root');
     if (!d || !root) return;
     const sent = d.reports_sent;
+    // One report per month, and only after Finance has reported (the server
+    // enforces both; can_send/already_reported/finance_reported come from it).
+    const isYear = !!(d.period && d.period.is_year);
+    const blockMsg = !d.billable ? ''
+        : d.already_reported ? t(isYear ? 'sub_report_blocked_done_year' : 'sub_report_blocked_done')
+        : !d.finance_reported ? t(isYear ? 'sub_report_blocked_finance_year' : 'sub_report_blocked_finance') : '';
     const statusHtml = sent.length === 0
-        ? `<span class="badge badge-pending">${t('sub_report_status_none')}</span>`
+        ? `<span class="badge badge-pending">${t(isYear ? 'sub_report_status_none_year' : 'sub_report_status_none')}</span>`
         : `<span class="badge badge-approved">${t('sub_report_status_sent', { date: formatEthDateTime(sent[0].sent_at) })}</span>`;
     root.innerHTML = `
         <div class="sub-month-line">
             <span class="sub-month-chip">${subPeriodLabel(d.period)}</span>
-            <span class="sub-month-hint">${t('sub_month_due')}</span>
+            <span class="sub-month-hint">${t(isYear ? 'sub_year_hint' : 'sub_month_due')}</span>
         </div>
         ${d.billable ? '' : `<div class="sub-note">${t('sub_pagume_closed')}</div>`}
         <div class="stat-row">${subTilesHtml(d.summary)}</div>
+        ${financeReportWidgetHtml(d.finance_reports, isYear)}
         <div class="sub-grid">
             <div class="widget">${subBankWidgetHtml(d.settings)}</div>
             <div class="widget sub-send-box">
                 <h3>${lucideIcon('send', 18)} ${t('sa_nav_sub_report')}</h3>
                 <p>${statusHtml}</p>
                 <p class="form-hint">${t('sub_report_deposit_first')}</p>
-                <button class="btn btn-primary" id="sub-send-report-btn" ${d.billable ? '' : 'disabled'} ${actionAttrs('sendSubscriptionReport')}>
-                    ${lucideIcon('send', 16)} ${t(sent.length ? 'sub_send_updated' : 'sub_send_report')}
+                ${blockMsg ? `<p class="form-hint">${blockMsg}</p>` : ''}
+                <button class="btn btn-primary" id="sub-send-report-btn" ${d.can_send ? '' : 'disabled'} ${actionAttrs('sendSubscriptionReport')}>
+                    ${lucideIcon('send', 16)} ${t('sub_send_report')}
                 </button>
             </div>
         </div>
@@ -4818,7 +5366,8 @@ function renderSendReportPage() {
 // The password is sent WITH the report and checked by the server in the
 // same request, so it can't be skipped by calling the route directly.
 async function sendSubscriptionReport() {
-    const password = await showPasswordPromptModal(t('sub_send_password_prompt'));
+    const isYear = !!(SUB_REPORT && SUB_REPORT.period && SUB_REPORT.period.is_year);
+    const password = await showPasswordPromptModal(t(isYear ? 'sub_send_password_prompt_year' : 'sub_send_password_prompt'));
     if (!password) return;
     const btn = document.getElementById('sub-send-report-btn');
     if (btn) btn.disabled = true;
@@ -4827,11 +5376,17 @@ async function sendSubscriptionReport() {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password })
         });
         if (res.status === 401) { showToast(t('sa_incorrect_password'), 'error'); return; }
+        if (res.status === 409) {
+            const e = await res.json().catch(() => ({}));
+            showToast(e.error || t('sub_report_blocked_done'), 'error');
+            await loadSendReportPage();
+            return;
+        }
         const data = await handleJsonResponse(res, t('sub_report_sent_toast'));
         if (data) await loadSendReportPage();
     } finally {
         const again = document.getElementById('sub-send-report-btn');
-        if (again && SUB_REPORT && SUB_REPORT.billable) again.disabled = false;
+        if (again) again.disabled = !(SUB_REPORT && SUB_REPORT.can_send);
     }
 }
 
@@ -4855,8 +5410,11 @@ const ACTION_HANDLERS = {
     openTransferredDownloadFormatModal, openGraduationDownloadFormatModal,
     downloadStudentRosterCsv, downloadStudentRosterPdf, downloadTeacherRosterCsv, downloadTeacherRosterPdf,
     downloadTransferredCsv, downloadTransferredPdf, downloadGraduationCsv, downloadGraduationPdf,
-    previewIdPhoto,
-    setStaffPaid, copySubscriptionAccount, sendSubscriptionReport
+    previewIdPhoto, openStudentDetail,
+    setStaffPaid, copySubscriptionAccount, sendSubscriptionReport,
+    openRecruitTeacherModal, submitRecruitTeacher,
+    openAppointLeadershipModal, submitAppointLeadership,
+    openCreateFinanceModal, submitCreateFinanceAccount, deactivateFinanceAccount, goToFinancePage
 };
 
 document.addEventListener('click', (e) => {
@@ -5010,3 +5568,26 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.target.matches('.tt-grid-cell')) onTtCellChange(e.target.id);
     });
 });
+
+// Live refresh: the server tells every open portal when something changed.
+// Re-check the bell and unread-messages badge at once, and silently reload
+// the request-type page that is open (never while the person is typing or a
+// dialog is open, so nothing they're working on gets replaced).
+const SA_LIVE_PAGES = new Set([
+    'dashboard', 'absence', 'student-absence-escalations', 'escalated-absence',
+    'disciplinary', 'dropout-requests', 'document-approvals',
+    'subject-entry-requests', 'marks-review', 'transfer-requests'
+]);
+function refreshActivePageSilently() {
+    const a = document.activeElement;
+    if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+    if (document.querySelector('.modal-overlay, #sa-generic-modal')) return;
+    const link = document.querySelector('.nav-link.active[data-page]');
+    const page = link && link.dataset.page;
+    if (!page || !SA_LIVE_PAGES.has(page)) return;
+    const loader = saPageLoaders()[page];
+    if (loader) loader();
+}
+window.onLiveChange(() => loadAlertsDropdown());
+window.onLiveChange(() => refreshUnreadMessagesBadge());
+window.onLiveChange(refreshActivePageSilently);

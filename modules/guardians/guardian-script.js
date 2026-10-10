@@ -1,3 +1,15 @@
+// Live updates: loads /assets/js/live.js, which keeps a server-sent-events
+// connection open so changes appear without a browser refresh.
+// onLiveChange() calls made before live.js has loaded are queued.
+(function () {
+  if (window.onLiveChange) return;
+  window.__liveQueue = [];
+  window.onLiveChange = (fn) => window.__liveQueue.push(fn);
+  const el = document.createElement('script');
+  el.src = '/assets/js/live.js';
+  document.head.appendChild(el);
+})();
+
 const API_BASE = '';
 let CURRENT_GUARDIAN_ID = null;
 let CURRENT_CHILD = null; // the child object currently open on page-child
@@ -620,3 +632,23 @@ async function loadChildConduct(studentId) {
         el.innerHTML = `<p class="muted">${t('could_not_connect')}</p>`;
     }
 }
+
+// Live refresh: when the server says something changed (marks pushed,
+// attendance taken, a conduct note added, ...), reload the data on screen
+// without touching the layout — never while the guardian is typing.
+window.onLiveChange(() => {
+  if (!CURRENT_GUARDIAN_ID) return;
+  const a = document.activeElement;
+  if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+  const childPage = document.getElementById('page-child');
+  if (childPage && childPage.style.display === 'block' && CURRENT_CHILD) {
+    const id = CURRENT_CHILD.student_id;
+    loadChildOverview(id);
+    loadChildMarks(id);
+    loadChildAttendance(id);
+    loadChildConduct(id);
+  } else {
+    const dash = document.getElementById('page-dashboard');
+    if (dash && dash.style.display !== 'none') loadChildren();
+  }
+});

@@ -36,6 +36,34 @@ input[type="checkbox"]{
   border-radius:4px;vertical-align:middle;
 }
 input[type="checkbox"]:focus-visible{outline:2px solid var(--gold);outline-offset:2px;}
+/* Native <select> elements are otherwise pure browser chrome — a bland
+   OS-native arrow, no consistent border-radius, no hover/focus cue —
+   nothing here matched the input/button styling sitting right next to
+   it (see the "Assign Managing Director" / Zonal Admin forms, the
+   Schools filters bar, etc.). appearance:none strips that OS chrome so
+   the CLOSED control can be themed exactly like a .form-field input;
+   the arrow is a plain inline SVG chevron (text-dim colored) so it
+   needs no icon font or extra request. padding-right here reserves
+   room for that chevron — every more specific select rule below that
+   sets its own padding (.filters select, .form-field select, etc.)
+   re-declares padding-right too, since a shorthand padding: on a more
+   specific selector would otherwise collapse this back to 0.
+   NOTE — this only restyles the CLOSED control. Once a select's list
+   is open, its options are rendered by the OS/browser itself (e.g.
+   Windows Chrome's native blue-highlight picker) and can't be
+   recolored from plain CSS; that would need a fully custom JS
+   dropdown in place of a native <select>, which is a bigger rebuild
+   than a stylesheet fix. */
+select{
+  appearance:none;-webkit-appearance:none;-moz-appearance:none;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%235c6b64' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat:no-repeat;
+  background-position:right 12px center;
+  background-size:10px 6px;
+  padding-right:32px;
+  cursor:pointer;
+}
+select:disabled{cursor:not-allowed;background-image:none;}
 /* File inputs (Student Roster Upload, EMIS mapped-ID upload, etc.)
    otherwise render as the browser's own bare "Choose File" button with
    no border — ::file-selector-button is the standards-track hook
@@ -245,7 +273,7 @@ img{max-width:100%;}
 .account-avatar-preview{width:72px;height:72px;font-size:24px;flex-shrink:0;}
 
 .role-switch{padding:10px 28px 0;font-size:12px;color:var(--text-dim);display:flex;gap:8px;align-items:center;background:var(--gray-bg);}
-.role-switch select{padding:5px 10px;border-radius:6px;border:1px solid var(--border);font-size:12px;}
+.role-switch select{padding:5px 26px 5px 10px;border-radius:6px;border:1px solid var(--border);font-size:12px;background-position:right 8px center;background-size:9px 5px;}
 
 .content{padding:22px 28px 40px;}
 .welcome{
@@ -293,7 +321,7 @@ img{max-width:100%;}
 /* Filters & forms */
 .filters{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px;}
 .filters select{
-  padding:9px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;background:#fafcfb;min-width:150px;
+  padding:9px 32px 9px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;background-color:#fafcfb;min-width:150px;
   transition:border-color .12s ease;
 }
 .filters select:focus-visible{outline:none;border-color:var(--gold);}
@@ -310,6 +338,7 @@ img{max-width:100%;}
   width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;background:#fafcfb;
   transition:border-color .12s ease,box-shadow .12s ease;
 }
+.form-field select{padding-right:32px;background-color:#fafcfb;}
 .form-field input:focus, .form-field select:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px rgba(201,154,74,.15);}
 .form-field select:disabled{background:#f0f2f1;color:#9aa6a0;cursor:not-allowed;}
 .form-field input:disabled, .form-field input[readonly]{background:#f0f2f1;color:#5a6660;font-weight:600;cursor:not-allowed;}
@@ -1141,7 +1170,7 @@ tr:hover td{background:#fafcfb;}
 .sub-toolbar .sub-spacer{flex:1;}
 .sub-toolbar .search-box{flex:1;min-width:200px;}
 .sub-toolbar select{
-  padding:9px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;background:#fff;
+  padding:9px 32px 9px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;background-color:#fff;
 }
 .sub-num{font-variant-numeric:tabular-nums;white-space:nowrap;}
 .sub-modal{max-height:92vh;overflow-y:auto;}
@@ -1156,3 +1185,30 @@ tr:hover td{background:#fafcfb;}
 .sub-selection-bar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:0 0 10px;}
 .sub-selection-count{font-size:13px;font-weight:700;color:var(--text-dim);}
 .sub-section-title{font-size:14px;font-weight:700;margin:18px 0 10px;color:var(--green-900);}
+
+/* ---- Action Center (Overview) ------------------------------------- */
+.ac-card{border:1px solid var(--border);border-radius:14px;padding:18px;background:var(--card-bg);max-width:640px;}
+.ac-card-head{display:flex;gap:14px;align-items:flex-start;margin-bottom:16px;}
+.ac-card-head h4{font-size:15px;color:var(--green-900);margin-bottom:4px;}
+.ac-card-icon{width:42px;height:42px;border-radius:12px;background:var(--teal-bg);color:var(--teal-ic);display:flex;align-items:center;justify-content:center;flex:0 0 auto;}
+.ac-form{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;}
+.ac-form .form-field{flex:1 1 220px;margin:0;}
+.ac-form .btn{height:42px;display:inline-flex;align-items:center;gap:8px;}
+#acMsg{margin-top:14px;}
+.ac-modal{max-width:460px;text-align:left;}
+.ac-modal .confirm-modal-icon,.ac-modal .confirm-modal-title{margin-left:auto;margin-right:auto;text-align:center;}
+.ac-preview{display:flex;gap:16px;align-items:flex-start;margin:6px 0 14px;padding:14px;background:var(--gray-bg);border-radius:12px;}
+.ac-photo{width:96px;height:120px;object-fit:cover;border-radius:10px;border:1px solid var(--border);background:#fff;flex:0 0 auto;}
+.ac-photo-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:var(--text-dim);}
+.ac-photo-empty span{font-size:26px;font-weight:700;color:var(--green-700);}
+.ac-photo-empty small{font-size:10.5px;text-align:center;padding:0 4px;line-height:1.25;}
+.ac-details{margin:0;flex:1;min-width:0;display:grid;gap:7px;}
+.ac-details div{display:grid;grid-template-columns:92px 1fr;gap:8px;font-size:13px;}
+.ac-details dt{color:var(--text-dim);}
+.ac-details dd{margin:0;font-weight:600;color:var(--green-900);word-break:break-word;}
+.ac-warn{margin-bottom:12px;text-align:left;}
+@media (max-width:480px){
+  .ac-preview{flex-direction:column;align-items:center;}
+  .ac-details{width:100%;}
+  .ac-details div{grid-template-columns:84px 1fr;}
+}

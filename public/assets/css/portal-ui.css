@@ -125,7 +125,7 @@ body.dark-theme .pu-retry{color:#bcdcc8;border-color:#3f7a58}
   .pu-tab.is-active::before{content:"";position:absolute;top:0;left:28%;right:28%;height:3px;border-radius:0 0 3px 3px;background:var(--pu-gold)}
   body.has-tabbar :is(.page-content,.main-content){scroll-padding-bottom:calc(var(--pu-tab-h) + 16px)}
   body.has-tabbar[data-portal="teachers"] .page-content{padding-bottom:calc(var(--pu-tab-h) + env(safe-area-inset-bottom,0px) + 20px)}
-  body.has-tabbar:is([data-portal="students"],[data-portal="guardians"],[data-portal="school-admin"]) .main-content{padding-bottom:calc(var(--pu-tab-h) + env(safe-area-inset-bottom,0px) + 20px)}
+  body.has-tabbar:is([data-portal="students"],[data-portal="guardians"],[data-portal="school-admin"],[data-portal="finance"]) .main-content{padding-bottom:calc(var(--pu-tab-h) + env(safe-area-inset-bottom,0px) + 20px)}
 }
 @media print{.pu-tabbar{display:none!important}}
 .pu-tab[hidden]{display:none}
@@ -151,15 +151,15 @@ body.dark-theme .pu-retry{color:#bcdcc8;border-color:#3f7a58}
 
 @media (max-width:900px){
   /* ---- School admin: one-row header ---- */
-  [data-portal="school-admin"] .top-bar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"toggle title actions" "chips chips chips";align-items:center;gap:8px 10px;padding:8px 12px;min-height:56px}
-  [data-portal="school-admin"] :is(.top-bar-titlegroup,.top-bar-title-row){display:contents}
-  [data-portal="school-admin"] #sidebar-toggle{grid-area:toggle}
-  [data-portal="school-admin"] .page-title-text{grid-area:title;margin:0;font-size:1.05rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-  [data-portal="school-admin"] .top-bar-right{grid-area:actions;gap:6px;flex-wrap:nowrap;margin:0}
-  [data-portal="school-admin"] .topbar-profile-text{display:none}
-  [data-portal="school-admin"] .topbar-school-meta{grid-area:chips;display:flex;flex-wrap:nowrap;gap:6px;overflow-x:auto;scrollbar-width:none;margin:0}
-  [data-portal="school-admin"] .topbar-school-meta::-webkit-scrollbar{display:none}
-  [data-portal="school-admin"] .topbar-school-meta>*{flex:0 0 auto}
+  :is([data-portal="school-admin"],[data-portal="finance"]) .top-bar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"toggle title actions" "chips chips chips";align-items:center;gap:8px 10px;padding:8px 12px;min-height:56px}
+  :is([data-portal="school-admin"],[data-portal="finance"]) :is(.top-bar-titlegroup,.top-bar-title-row){display:contents}
+  :is([data-portal="school-admin"],[data-portal="finance"]) #sidebar-toggle{grid-area:toggle}
+  :is([data-portal="school-admin"],[data-portal="finance"]) .page-title-text{grid-area:title;margin:0;font-size:1.05rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  :is([data-portal="school-admin"],[data-portal="finance"]) .top-bar-right{grid-area:actions;gap:6px;flex-wrap:nowrap;margin:0}
+  :is([data-portal="school-admin"],[data-portal="finance"]) .topbar-profile-text{display:none}
+  :is([data-portal="school-admin"],[data-portal="finance"]) .topbar-school-meta{grid-area:chips;display:flex;flex-wrap:nowrap;gap:6px;overflow-x:auto;scrollbar-width:none;margin:0}
+  :is([data-portal="school-admin"],[data-portal="finance"]) .topbar-school-meta::-webkit-scrollbar{display:none}
+  :is([data-portal="school-admin"],[data-portal="finance"]) .topbar-school-meta>*{flex:0 0 auto}
 
   /* ---- Registrar: one-row header ---- */
   [data-portal="registrar"] .top-bar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"toggle title actions" "chips chips chips";align-items:center;gap:8px 10px;padding:8px 12px;height:auto;min-height:56px}
@@ -196,4 +196,19 @@ body.dark-theme .pu-retry{color:#bcdcc8;border-color:#3f7a58}
 }
 @media (max-width:480px){
   :is([data-portal="zonal-admin"],[data-portal="super-admin"]) .cards{grid-template-columns:minmax(0,1fr)}
+}
+
+/* ---------- Round 5: Sign out on the phone bottom bar ---------- */
+@media (max-width:900px){
+  .pu-tab-danger{color:#f3a6a6}
+  .pu-tab-danger:active{color:#ffdcdc}
+  /* six buttons (dashboard x4 + Sign out + More) on a narrow phone: trim the side padding
+     and let the icon shrink a touch before the labels start wrapping */
+  .pu-tabbar{padding-left:2px;padding-right:2px}
+  .pu-tab{padding-left:1px;padding-right:1px;font-size:.64rem}
+  .pu-tab svg{width:20px;height:20px;flex:0 0 20px}
+}
+@media (max-width:360px){
+  .pu-tab span{display:none} /* icons only on the narrowest phones so nothing gets cramped */
+  .pu-tab{padding:8px 2px}
 }

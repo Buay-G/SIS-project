@@ -1,3 +1,15 @@
+// Live updates: loads /assets/js/live.js, which keeps a server-sent-events
+// connection open so new notifications and requests appear without a browser
+// refresh. onLiveChange() calls made before live.js has loaded are queued.
+(function () {
+    if (window.onLiveChange) return;
+    window.__liveQueue = [];
+    window.onLiveChange = (fn) => window.__liveQueue.push(fn);
+    const el = document.createElement('script');
+    el.src = '/assets/js/live.js';
+    document.head.appendChild(el);
+})();
+
 // CONFIG
 const API_BASE = '';
 
@@ -58,7 +70,6 @@ window.onSisLangChange = () => {
     if (lastTodaysClasses) renderDashboardTodaysClasses(lastTodaysClasses);
     if (lastStudentPerformance) renderDashboardStudentPerformance(lastStudentPerformance);
     if (lastSemesterStatus) renderSemesterStatusBadge(lastSemesterStatus);
-    if (typeof subState !== 'undefined' && subState.data) renderSubscriptionPage();
     if (lastMyClassRoster) renderMyClassRoster(lastMyClassRoster);
     if (lastLeaderboardData) renderLeaderboard(lastLeaderboardData);
     if (conductData && conductData.length > 0) {
@@ -115,22 +126,6 @@ async function checkAuthAndInit() {
                 schoolLogoEl.style.display = 'block';
             } else {
                 schoolLogoEl.style.display = 'none';
-            }
-        }
-
-        // Same idea, alongside the school's own logo — the ZONE logo,
-        // set by a Super Admin via /api/super/zones/:zone_id/logo. This
-        // is a separate image, not a replacement for the school logo
-        // above: a school can have its own crest AND belong to a zone
-        // that has its own logo, and both should be visible.
-        const zoneLogoEl = document.getElementById('nav-zone-logo');
-        if (zoneLogoEl) {
-            if (data.zone_logo_url) {
-                zoneLogoEl.src = API_BASE + data.zone_logo_url;
-                zoneLogoEl.alt = data.zone_name ? `${data.zone_name} logo` : "Zone logo";
-                zoneLogoEl.style.display = 'block';
-            } else {
-                zoneLogoEl.style.display = 'none';
             }
         }
 
@@ -346,7 +341,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupMyClassScannerInput();
     setupStaticEventListeners();
     setupDynamicActionDelegation();
-    initSubscriptionFee();
 
     // Fetch notifications on load, then poll every 60 seconds
     loadNotifications();
@@ -3023,7 +3017,6 @@ function setupNavigation() {
                 if (target === 'actioncenter') loadActionCenterRequests();
                 if (target === 'upload') { loadGradeSheetSections(); loadSubjectEntryRequestUI(); loadLateMarksRequestUI(); }
                 if (target === 'profile') loadTeacherDocumentStatus();
-                if (target === 'subscription') startSubscriptionPolling(); else stopSubscriptionPolling();
             } else {
                 console.warn(`No page found for data-page="${target}". Did you forget to add <section id="page-${target}">?`);
             }
@@ -3391,6 +3384,21 @@ function renderTeacherIdCard(data) {
     // was last clicked.
     const zoneLabel = data.zone ? data.zone.toUpperCase() : '—';
     const woredaLabel = data.woreda || '—';
+    // Zone logo in place of the flag on both faces of the card. If the zone
+    // has no logo, or the image fails to load, the flag stays.
+    document.querySelectorAll('.idcard-zone-logo-img').forEach((img) => {
+        if (!img.dataset.flagSrc) img.dataset.flagSrc = img.getAttribute('src');
+        img.onerror = () => {
+            img.onerror = null;
+            img.src = img.dataset.flagSrc;
+        };
+        if (data.zone_logo_url) {
+            img.src = API_BASE + data.zone_logo_url;
+            img.alt = data.zone ? `${data.zone} logo` : 'Zone logo';
+        } else {
+            img.src = img.dataset.flagSrc;
+        }
+    });
     setText('idcard-zone-front', zoneLabel);
     setText('idcard-zone-back', zoneLabel);
     setText('idcard-woreda-front', woredaLabel);
@@ -3883,8 +3891,6 @@ function setupDynamicActionDelegation() {
         'submit-late-mark': (el) => window.submitLateMark(el.dataset.studentId, Number(el.dataset.subjectId), el),
         'mark-my-class-present': (el) => window.markMyClassPresent(el.dataset.studentId),
         'undo-my-class-present': (el) => window.undoMyClassPresent(el.dataset.studentId),
-        'sub-mark-paid': (el) => window.markSubscriptionPaid(el.dataset.studentId, el.dataset.studentName),
-        'sub-undo-paid': (el) => window.undoSubscriptionPaid(el.dataset.studentId, el.dataset.studentName),
         'push-report': (el) => window.pushReport({
             subject_id: Number(el.dataset.subjectId),
             class_level: el.dataset.classLevel,
@@ -4882,336 +4888,6 @@ window.saveGradeSheetRow = async (studentId, btn) => {
 };
 
 // ============================================================================
-// SUBSCRIPTION FEE (Homeroom Teacher only)
-// The monthly student fee for the teacher's OWN class: who has paid, and a
-// Mark paid / Undo button for each student. Which month it is, the fee, and
-// which class this teacher may touch are all decided by the server — this page
-// only shows what the server sends and asks the server to record a payment.
-// Hiding the sidebar item is a convenience, not the security: the routes
-// (/api/subscription/student/...) refuse anyone who isn't the class's
-// Homeroom Teacher or Class Monitor.
-// ============================================================================
-const SUB_REFRESH_MS = 15000;
-const SUB_FROZEN_CODE = 'SUBSCRIPTION_FROZEN';
-const subState = {
-    data: null,      // last roster from the server
-    sig: '',         // fingerprint of it, so an unchanged poll doesn't redraw
-    filter: 'all',
-    search: '',
-    busy: new Set(), // student IDs with a save in flight
-    seq: 0,          // request counter: stops a slow, older response overwriting a newer one
-    applied: 0,
-    updatedAt: null,
-    loadError: false
-};
-let subPollTimer = null;
-let subPollActive = false;
-let subPollGen = 0;
-
-function subMoney(n) {
-    return Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
-}
-
-async function subReadBody(res) {
-    try { return await res.clone().json(); } catch (e) { return {}; }
-}
-
-function subPageVisible() {
-    const page = document.getElementById('page-subscription');
-    return !!page && page.style.display !== 'none';
-}
-
-// The sidebar item appears only when Subscription is on for this school AND
-// this teacher is a homeroom teacher (the server's own answer, not a guess).
-async function loadSubscriptionNav() {
-    const nav = document.getElementById('nav-subscription');
-    if (!nav) return;
-    try {
-        const res = await apiFetch(`${API_BASE}/api/subscription/status`);
-        if (!res.ok) throw new Error('status ' + res.status);
-        const s = await res.json();
-        const show = !!(s && s.enabled && s.capabilities && s.capabilities.student_collection);
-        nav.style.display = show ? 'block' : 'none';
-    } catch (err) {
-        // Frozen (guard.js shows the notice), signed out, or the server is
-        // unreachable: leave the item hidden rather than guess.
-        nav.style.display = 'none';
-    }
-}
-
-// --- polling: one chain of timeouts, never two, never after leaving ---------
-function stopSubscriptionPolling() {
-    subPollActive = false;
-    subPollGen++;
-    if (subPollTimer !== null) clearTimeout(subPollTimer);
-    subPollTimer = null;
-}
-
-function startSubscriptionPolling() {
-    stopSubscriptionPolling(); // a second start restarts the chain instead of adding one
-    subPollActive = true;
-    const gen = ++subPollGen;
-    const loop = async () => {
-        if (!subPollActive || gen !== subPollGen) return;
-        // Left the page some way that bypassed the nav handler (e.g. the
-        // profile dropdown or a notification): stop instead of polling unseen.
-        if (!subPageVisible()) { stopSubscriptionPolling(); return; }
-        if (!document.hidden) await loadSubscriptionClass();
-        if (!subPollActive || gen !== subPollGen) return;
-        subPollTimer = setTimeout(loop, SUB_REFRESH_MS);
-    };
-    loop();
-}
-
-async function loadSubscriptionClass() {
-    const gen = subPollGen;
-    const seq = ++subState.seq;
-    try {
-        const res = await apiFetch(`${API_BASE}/api/subscription/student/class-roster`);
-        if (gen !== subPollGen || !subPollActive) return;
-        if (res.status === 401) {
-            stopSubscriptionPolling();
-            window.location.href = '/login.html';
-            return;
-        }
-        if (!res.ok) {
-            const body = await subReadBody(res);
-            if (gen !== subPollGen || !subPollActive) return;
-            if (res.status === 403) {
-                stopSubscriptionPolling();
-                // A frozen account: guard.js already shows the notice — don't
-                // paint anything over it or bounce to login.
-                if (body.code === SUB_FROZEN_CODE) return;
-                subShowNoAccess(body.code);
-                return;
-            }
-            throw new Error(body.error || ('Server responded with ' + res.status));
-        }
-        const data = await res.json();
-        if (gen !== subPollGen || !subPollActive) return;
-        if (seq < subState.applied) return; // an older response arriving late
-        subState.applied = seq;
-        subState.loadError = false;
-        subApplyData(data);
-    } catch (err) {
-        console.error('Subscription roster load error:', err);
-        if (gen !== subPollGen || !subPollActive) return;
-        subState.loadError = true;
-        subRenderStatusLine();
-        if (!subState.data) subRenderListMessage(subT('sub_class_load_error'));
-    }
-}
-
-function subT(key, params) {
-    return typeof t === 'function' ? t(key, params) : key;
-}
-
-function subApplyData(data) {
-    const sig = JSON.stringify([data.period, data.billable, data.fee, data.class, data.summary, data.students]);
-    const changed = sig !== subState.sig;
-    subState.data = data;
-    subState.sig = sig;
-    subState.updatedAt = data.server_time ? new Date(data.server_time) : new Date();
-    const body = document.getElementById('sub-body');
-    const none = document.getElementById('sub-no-access');
-    if (body) body.style.display = 'block';
-    if (none) none.style.display = 'none';
-    if (changed) renderSubscriptionPage(); else subRenderStatusLine();
-}
-
-function subShowNoAccess(code) {
-    const nav = document.getElementById('nav-subscription');
-    if (nav) nav.style.display = 'none';
-    subState.data = null;
-    subState.sig = '';
-    const body = document.getElementById('sub-body');
-    const none = document.getElementById('sub-no-access');
-    if (body) body.style.display = 'none';
-    if (none) {
-        none.textContent = subT(code === 'SUBSCRIPTION_OFF' ? 'sub_not_available' : 'sub_class_no_access');
-        none.style.display = 'block';
-    }
-}
-
-function subNotice(kind, text) {
-    const el = document.getElementById('sub-notice');
-    if (!el) return;
-    el.className = 'sub-notice' + (kind ? ' sub-notice-' + kind : '');
-    el.textContent = text || '';
-    el.style.display = text ? 'block' : 'none';
-}
-
-function subRenderStatusLine() {
-    const el = document.getElementById('sub-updated');
-    if (!el) return;
-    if (subState.loadError) { el.textContent = subT('sub_class_load_error'); return; }
-    if (!subState.updatedAt) { el.textContent = ''; return; }
-    el.textContent = subT('sub_live_updated', {
-        time: subState.updatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    });
-}
-
-function subRenderListMessage(text) {
-    const box = document.getElementById('sub-list');
-    if (box) box.innerHTML = `<p class="sub-empty">${escapeHtml(text)}</p>`;
-}
-
-function renderSubscriptionPage() {
-    const d = subState.data;
-    if (!d) return;
-    const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-    const birr = subT('sub_birr');
-
-    setText('sub-month', `${subT('sub_month_' + d.period.ec_month)} ${d.period.ec_year} ${subT('sub_ec')}`);
-    setText('sub-fee', `${subMoney(d.fee)} ${birr}`);
-    const c = d.class;
-    setText('sub-class', c.stream && typeof formatGradeSectionStream === 'function'
-        ? formatGradeSectionStream(c.class_level, c.section, c.stream)
-        : `${subT('sub_th_class')} ${c.class_label}`);
-
-    const banner = document.getElementById('sub-banner');
-    if (banner) {
-        // Pagume isn't billed; and without a student fee there is nothing to record.
-        const msg = !d.billable ? subT('sub_pagume_closed') : (!(d.fee > 0) ? subT('sub_no_fee_set') : '');
-        banner.textContent = msg;
-        banner.style.display = msg ? 'block' : 'none';
-    }
-
-    const s = d.summary;
-    setText('sub-tile-collected', `${subMoney(s.collected)} ${birr}`);
-    setText('sub-tile-expected', subT('sub_tile_of_expected', { expected: subMoney(s.expected) }));
-    setText('sub-tile-paid', subT('sub_tile_count', { paid: s.paid, total: s.total }));
-    setText('sub-tile-unpaid', String(s.unpaid));
-
-    subRenderList();
-    subRenderStatusLine();
-}
-
-function subRenderList() {
-    const d = subState.data;
-    const box = document.getElementById('sub-list');
-    if (!box || !d) return;
-
-    if (d.students.length === 0) { subRenderListMessage(subT('sub_no_students')); return; }
-
-    let rows = d.students;
-    if (subState.filter === 'paid') rows = rows.filter(s => s.paid);
-    else if (subState.filter === 'unpaid') rows = rows.filter(s => !s.paid);
-    const term = subState.search;
-    if (term) rows = rows.filter(s => s.name.toLowerCase().includes(term) || String(s.student_id).toLowerCase().includes(term));
-    if (rows.length === 0) { subRenderListMessage(subT('sub_no_people')); return; }
-
-    const birr = subT('sub_birr');
-    const canPay = d.billable && d.fee > 0;
-    box.innerHTML = `
-        <div class="list-table-scroll">
-            <table class="student-table sub-table">
-                <thead>
-                    <tr>
-                        <th>${escapeHtml(subT('sub_th_name'))}</th>
-                        <th>${escapeHtml(subT('sub_th_id'))}</th>
-                        <th>${escapeHtml(subT('sub_th_amount'))}</th>
-                        <th>${escapeHtml(subT('sub_th_status'))}</th>
-                        <th>${escapeHtml(subT('sub_th_action'))}</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${rows.map(s => {
-                        const id = escapeHtml(String(s.student_id));
-                        const name = escapeHtml(s.name);
-                        const busy = subState.busy.has(s.student_id);
-                        const tag = s.is_class_monitor ? `<span class="sub-tag">${escapeHtml(subT('sub_role_class_monitor'))}</span>` : '';
-                        const button = s.paid
-                            ? `<button type="button" class="sub-action-btn sub-undo" data-action="sub-undo-paid" data-student-id="${id}" data-student-name="${name}" ${busy || !d.billable ? 'disabled' : ''}>${escapeHtml(subT(busy ? 'sub_saving' : 'sub_undo'))}</button>`
-                            : `<button type="button" class="sub-action-btn sub-mark" data-action="sub-mark-paid" data-student-id="${id}" data-student-name="${name}" ${busy || !canPay ? 'disabled' : ''}>${escapeHtml(subT(busy ? 'sub_saving' : 'sub_mark_paid'))}</button>`;
-                        return `
-                    <tr class="${s.paid ? 'sub-row-paid' : ''}" data-student-id="${id}">
-                        <td>${name} ${tag}</td>
-                        <td>${id}</td>
-                        <td>${escapeHtml(subMoney(s.amount))} ${escapeHtml(birr)}</td>
-                        <td><span class="sub-badge ${s.paid ? 'sub-badge-paid' : 'sub-badge-unpaid'}">${escapeHtml(subT(s.paid ? 'sub_status_paid' : 'sub_status_unpaid'))}</span></td>
-                        <td>${button}</td>
-                    </tr>`;
-                    }).join('')}
-                </tbody>
-            </table>
-        </div>`;
-}
-
-async function subSetPaid(studentId, studentName, paid) {
-    if (subState.busy.has(studentId)) return;
-    if (!paid) {
-        const confirmed = await showConfirmModal(subT('sub_undo_confirm', { name: studentName }), subT('sub_undo_title'));
-        if (!confirmed) return;
-    }
-    subState.busy.add(studentId);
-    subRenderList();
-    try {
-        const res = await apiFetch(`${API_BASE}/api/subscription/student/${encodeURIComponent(studentId)}/paid`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ paid })
-        });
-        const body = await subReadBody(res);
-        if (res.ok) {
-            subNotice('ok', subT(body.already ? 'sub_already_paid_toast' : (paid ? 'sub_marked_paid_toast' : 'sub_marked_unpaid_toast'), { name: studentName }));
-        } else if (res.status === 403 && body.code === SUB_FROZEN_CODE) {
-            stopSubscriptionPolling(); // guard.js shows the frozen notice
-            return;
-        } else if (res.status === 403 && body.code === 'SUBSCRIPTION_OFF') {
-            stopSubscriptionPolling();
-            subShowNoAccess(body.code);
-            return;
-        } else if (res.status === 409 && body.code === 'SUBSCRIPTION_PAGUME') {
-            subNotice('error', subT('sub_pagume_closed'));
-        } else {
-            subNotice('error', subT('sub_action_error'));
-        }
-    } catch (err) {
-        console.error('Subscription mark error:', err);
-        subNotice('error', subT('sub_action_error'));
-    } finally {
-        subState.busy.delete(studentId);
-    }
-    // Whatever happened, show what the server now says (this also puts right a
-    // list that was stale, e.g. a student who has since left the class).
-    if (subPollActive) await loadSubscriptionClass(); else subRenderList();
-}
-
-window.markSubscriptionPaid = (studentId, studentName) => subSetPaid(studentId, studentName, true);
-window.undoSubscriptionPaid = (studentId, studentName) => subSetPaid(studentId, studentName, false);
-
-function initSubscriptionFee() {
-    const search = document.getElementById('sub-search');
-    if (search) search.addEventListener('input', () => {
-        subState.search = search.value.trim().toLowerCase();
-        subRenderList();
-    });
-    const filter = document.getElementById('sub-filter');
-    if (filter) filter.addEventListener('change', () => {
-        subState.filter = filter.value;
-        subRenderList();
-    });
-    const refresh = document.getElementById('sub-refresh-btn');
-    if (refresh) refresh.addEventListener('click', () => { if (subPollActive) startSubscriptionPolling(); });
-
-    // The page can be left without touching the sidebar (profile dropdown,
-    // notification links), so watch the page itself: hidden means stop.
-    const page = document.getElementById('page-subscription');
-    if (page && typeof MutationObserver === 'function') {
-        new MutationObserver(() => { if (subPollActive && !subPageVisible()) stopSubscriptionPolling(); })
-            .observe(page, { attributes: true, attributeFilter: ['style', 'class'] });
-    }
-    // Coming back to a background tab: refresh now instead of waiting up to 15 s.
-    document.addEventListener('visibilitychange', () => {
-        if (!document.hidden && subPollActive && subPageVisible()) startSubscriptionPolling();
-    });
-    window.addEventListener('pagehide', stopSubscriptionPolling);
-
-    loadSubscriptionNav();
-}
-
-// ============================================================================
 // CLASS MONITORS card (Action Center — Homeroom Teacher only)
 // Lets the homeroom teacher assign a Class Monitor from their own section, or
 // remove one, using two routes on the server:
@@ -5388,3 +5064,22 @@ function initClassMonitorCard() {
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initClassMonitorCard);
 else initClassMonitorCard();
+
+// Live refresh: when the server says something changed (a request was
+// approved, a message arrived, a student was added, ...), update the bell and
+// semester badge at once and silently reload the open page if it is a
+// request/list page. Never while the teacher is typing or a dialog is open,
+// and never the attendance or marks-entry screens (those hold unsaved work).
+function liveRefreshTeacherPortal() {
+    loadNotifications();
+    loadSemesterStatus();
+    const a = document.activeElement;
+    if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+    if (document.querySelector('.modal-overlay, [role="dialog"]')) return;
+    const link = document.querySelector('.nav-link.active[data-page]');
+    const page = link && link.dataset.page;
+    if (page === 'actioncenter') loadActionCenterRequests();
+    else if (page === 'contact') loadContactThreads();
+    else if (page === 'students') loadStudents();
+}
+window.onLiveChange(liveRefreshTeacherPortal);

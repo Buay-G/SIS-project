@@ -1,3 +1,15 @@
+// Live updates: loads /assets/js/live.js, which keeps a server-sent-events
+// connection open so changes appear without a browser refresh.
+// onLiveChange() calls made before live.js has loaded are queued.
+(function () {
+  if (window.onLiveChange) return;
+  window.__liveQueue = [];
+  window.onLiveChange = (fn) => window.__liveQueue.push(fn);
+  const el = document.createElement('script');
+  el.src = '/assets/js/live.js';
+  document.head.appendChild(el);
+})();
+
 /* This file relies on i18n.js being loaded first (t, applyTranslations,
    getCurrentLang, window.setLang) — see index.html script order.
 
@@ -2888,3 +2900,19 @@ async function boot(){
 // every setLang() call so dynamically-built content re-renders too.
 window.onSisLangChange = ()=>{ if(CURRENT_USER) render(); };
 document.addEventListener('DOMContentLoaded', boot);
+
+// Live refresh: when the server says something changed (a school sent a
+// proposal, a message arrived, ...), update the bell and nav badges at once
+// and silently reload the open page if it is a request page (Dashboard,
+// Approvals, Recruitment). Never while the person is typing or a dialog is
+// open, and never the forms (proposals, messages, setup).
+window.onLiveChange(() => {
+  if (typeof CURRENT_USER === 'undefined' || !CURRENT_USER) return;
+  loadNotifications();
+  const a = document.activeElement;
+  if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+  if (document.querySelector('.modal-overlay, .modal, [role="dialog"]')) return;
+  if (activePage === 'za_nav_dashboard') loadAndRenderDashboard();
+  else if (activePage === 'za_nav_approvals') loadAndRenderApprovals();
+  else if (activePage === 'za_nav_recruitment') loadAndRenderRecruitment();
+});

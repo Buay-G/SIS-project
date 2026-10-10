@@ -44,6 +44,16 @@
     <div class="dashboard-container">
       <nav id="sidebar" aria-label="Registrar navigation">
         <div class="sidebar-header">
+          <img
+            id="sidebar-school-logo"
+            class="sidebar-school-logo"
+            src=""
+            alt=""
+            width="48"
+            height="48"
+            decoding="async"
+            hidden
+          />
           <h3
             id="sidebar-school-name"
             style="text-align: center; color: white; margin: 5px 0"
@@ -520,10 +530,63 @@
               />
             </div>
             <div id="reg_guardian_status" class="emis-status"></div>
+            <h3 style="margin-top: 20px">Payment</h3>
+            <!-- Amount to collect: registration fee + subscription fee (when the
+                 school has Subscription on). Filled by loadRegistrationCharges(). -->
+            <div id="reg_payment_summary" class="payment-summary" style="display: none"></div>
+            <!--
+              Registration fee: gated server-side (POST /api/register
+              checks fee_structures before writing the student row, then
+              status starts as "Pending Payment" until Finance verifies
+              — see /api/finance/payments/:id/approve). CASH needs no
+              reference; BANK/MOBILE require the transaction/receipt
+              number, toggled the same way as reg_ease_admission_wrap
+              above.
+            -->
+            <div class="form-grid">
+              <select
+                id="reg_payment_method"
+                data-onchange="updatePaymentReferenceField"
+                required
+              >
+                <option value="">Select Payment Method</option>
+                <option value="CASH">Cash</option>
+                <option value="BANK">Bank Transfer</option>
+                <option value="MOBILE">Mobile Money</option>
+              </select>
+            </div>
+            <div
+              id="reg_payment_reference_wrap"
+              class="form-grid"
+              style="display: none"
+            >
+              <input
+                type="text"
+                id="reg_payment_reference"
+                placeholder="Transaction / Receipt Number"
+                autocomplete="off"
+              />
+            </div>
             <button type="button" data-action="submitRegistration">
               <span data-i18n="reg_register_button">Register Student</span>
             </button>
           </form>
+
+          <!-- Students whose registration payment Finance rejected (new
+               entrants and incoming transfers). Hidden when there are none.
+               Filled by loadRejectedRegistrations(). -->
+          <div
+            id="rejected-registrations-section"
+            class="rejected-section"
+            style="display: none"
+          >
+            <h3>Rejected Payments &mdash; Resubmit</h3>
+            <p class="muted">
+              Finance rejected the registration payment for these students.
+              Enter the corrected payment and send it back for review.
+            </p>
+            <div id="rejected-registrations-list"></div>
+          </div>
         </div>
 
         <div id="update-info" class="tab-content">
@@ -729,6 +792,31 @@
 
             <div id="promo-eligibility" style="margin: 15px 0"></div>
 
+            <!--
+              Grade 6 and Grade 8 students are EASE (national exam)
+              candidates, not cutoff decisions: type their registration
+              (admission) number, look up the result the Super Admin
+              uploaded, and a Pass promotes them to Grade 7 / 9 (a Fail
+              retains them). Shown instead of the usual decision controls
+              for those two grades — see setEasePromotionMode().
+            -->
+            <div id="promo-ease-box" class="ease-box" style="display: none">
+              <h4 id="promo-ease-title">EASE Candidate</h4>
+              <p class="muted" id="promo-ease-intro"></p>
+              <div class="search-box" id="promo-ease-search">
+                <input
+                  type="text"
+                  id="promo-ease-admission"
+                  placeholder="Student registration (admission) number"
+                  autocomplete="off"
+                />
+                <button type="button" data-action="lookupEaseResult">
+                  Look Up Result
+                </button>
+              </div>
+              <div id="promo-ease-result"></div>
+            </div>
+
             <div id="promo-decision-choice">
               <label>Decision:</label>
               <label
@@ -822,6 +910,7 @@
 
             <button
               type="button"
+              id="promo-submit-btn"
               data-action="submitPromotion"
               style="margin-top: 15px"
             >
@@ -891,11 +980,25 @@
             </select>
             <select
               id="student_registry_grade"
-              data-onchange="loadStudentRegistry"
+              data-onchange="onStudentRegistryGradeChange"
             >
               <option value="" data-i18n="reg_students_filter_all_grades">
                 All Grades
               </option>
+            </select>
+            <select
+              id="student_registry_stream"
+              data-onchange="loadStudentRegistry"
+            >
+              <option value="" data-i18n="reg_students_filter_all_streams">
+                All Streams
+              </option>
+              <option value="KG">KG</option>
+              <option value="Basic">Basic</option>
+              <option value="Core">Core</option>
+              <option value="General">General</option>
+              <option value="Natural Science">Natural Science</option>
+              <option value="Social Science">Social Science</option>
             </select>
             <button type="button" data-action="loadStudentRegistry">
               <span data-i18n="reg_search_button">Search</span>
@@ -1086,12 +1189,42 @@
                 />
                 <div id="ext_emis_status" class="emis-status"></div>
               </div>
+              <h4 style="margin: 4px 0 6px">Registration payment</h4>
+              <div
+                id="ext_payment_summary"
+                class="payment-summary"
+                style="display: none; max-width: 480px"
+              ></div>
+              <div class="form-grid">
+                <select
+                  id="ext_payment_method"
+                  data-onchange="updateExtPaymentReferenceField"
+                  required
+                >
+                  <option value="">Select Payment Method</option>
+                  <option value="CASH">Cash</option>
+                  <option value="BANK">Bank Transfer</option>
+                  <option value="MOBILE">Mobile Money</option>
+                </select>
+              </div>
+              <div
+                id="ext_payment_reference_wrap"
+                class="form-grid"
+                style="display: none"
+              >
+                <input
+                  type="text"
+                  id="ext_payment_reference"
+                  placeholder="Transaction / Receipt Number"
+                  autocomplete="off"
+                />
+              </div>
               <button
                 type="button"
                 data-action="submitExternalTransfer"
                 data-i18n="reg_add_student"
               >
-                Add Student
+                Add Student &amp; Submit Payment
               </button>
             </div>
 
@@ -1111,6 +1244,14 @@
             Transcript, or ID Card — or preview a blank sample template below.
           </p>
 
+          <div class="doc-subtabs" role="tablist" aria-label="Document sections">
+            <button type="button" class="doc-subtab active" id="doc-subtab-issue" role="tab" data-action="switchDocPane" data-arg="issue"><span data-i18n="reg_doc_tab_issue">Issue to a student</span></button>
+            <button type="button" class="doc-subtab" id="doc-subtab-fees" role="tab" data-action="switchDocPane" data-arg="fees"><span data-i18n="reg_doc_tab_fees">Fees collected</span> <span class="doc-subtab-badge" id="doc-fees-badge" style="display: none"></span></button>
+            <button type="button" class="doc-subtab" id="doc-subtab-log" role="tab" data-action="switchDocPane" data-arg="log"><span data-i18n="reg_doc_tab_log">Recent issuances</span></button>
+            <button type="button" class="doc-subtab" id="doc-subtab-bulk" role="tab" data-action="switchDocPane" data-arg="bulk"><span data-i18n="reg_doc_tab_bulk">Bulk by section</span></button>
+          </div>
+
+          <div class="doc-pane active" id="doc-pane-issue">
           <div class="search-box">
             <input
               type="text"
@@ -1152,8 +1293,10 @@
           </div>
           <div id="doc-report-card-preview"></div>
           <div id="doc-transcript-preview"></div>
+          </div>
 
-          <h3 style="margin-top: 30px">Bulk Documents (by Section)</h3>
+          <div class="doc-pane" id="doc-pane-bulk">
+          <h3>Bulk Documents (by Section)</h3>
           <p class="muted">
             ID cards download as one zip, report cards combine into one PDF for
             the whole section. Transcripts are issued one student at a time
@@ -1172,11 +1315,26 @@
             </button>
           </div>
 
-          <h3 data-i18n="reg_issuance_log_heading" style="margin-top: 30px">
+          </div>
+
+          <div class="doc-pane" id="doc-pane-log">
+          <h3 data-i18n="reg_issuance_log_heading">
             Recent Issuances
           </h3>
           <div id="issuance-log-list">
             <p class="muted">Loading...</p>
+          </div>
+          </div>
+
+          <div class="doc-pane" id="doc-pane-fees">
+          <h3 data-i18n="reg_docfee_heading">Document Fees Collected</h3>
+          <p class="muted" data-i18n="reg_docfee_intro">
+            Fees collected for transcripts and report cards. Every payment is
+            reported to Finance as soon as you record it.
+          </p>
+          <div id="doc-fee-collections-list">
+            <p class="muted">Loading...</p>
+          </div>
           </div>
         </div>
 
@@ -1227,9 +1385,10 @@
 
         <div id="graduation-wizard" class="tab-content">
           <h1 data-i18n="reg_graduation_heading">G12 Graduation Wizard</h1>
-          <p class="muted" data-i18n="reg_graduation_sub">
-            Select Grade 12 students to graduate into a named batch. Students
-            below the cut-off need an override reason.
+          <p class="muted">
+            Select Grade 12 students to graduate into a named batch. Only
+            students who passed the national exam (EASE) can be graduated; the
+            school's own exam results are for the transcript only.
           </p>
 
           <div
@@ -1253,13 +1412,6 @@
                 data-i18n-placeholder="reg_batch_tag_placeholder"
                 placeholder='Batch name (e.g. "Class of 2026")...'
                 style="flex-basis: 260px"
-              />
-              <input
-                type="text"
-                id="grad_override_reason"
-                data-i18n-placeholder="reg_override_reason_placeholder"
-                placeholder="Override reason (required for any student below the cut-off)..."
-                style="flex-grow: 1"
               />
               <button
                 type="button"

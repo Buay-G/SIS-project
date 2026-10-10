@@ -1,8 +1,8 @@
 /* Fills the Grade 9-12 transcript grid from DATA (injected by the server —
    see renderTranscriptHtml/buildYearSummaries in server.js). Unlike
    certificate.js (one grade/year per page), this template shows up to
-   four grade levels side by side, so the row layout is built entirely
-   here rather than templated per-token.
+   four grade levels as separate blocks (9th & 10th on the top row, 11th
+   & 12th below), built entirely here rather than templated per-token.
 
    Subject rows come entirely from DATA — the school's own Subject
    Configuration (same source the report card reads), not a fixed
@@ -64,10 +64,12 @@ fillSlot("farewell-note", DATA.farewell_message);
 fillSlot("f-school-name", DATA.school_display_name || DATA.school_name);
 fillSlot("f-school-name-amh", DATA.school_name_amh);
 
-GRADE_LEVELS.forEach(level => {
-  const y = yearByLevel[level];
-  fillSlot(`yr-header-${level}`, y && y.ec_year ? `${y.ec_year} E.C` : "20___ E.C");
-});
+// Zone logo watermark — the logo the Super/Zonal Admin uploaded for the
+// zone this school belongs to; stays hidden when the zone has none.
+if (DATA.zone_logo_data_uri) {
+  const wm = document.getElementById("zone-watermark");
+  if (wm) { wm.src = DATA.zone_logo_data_uri; wm.hidden = false; }
+}
 
 if (DATA.photo_data_uri) {
   const box = document.getElementById("photo-box");
@@ -102,183 +104,88 @@ if (DATA.verify_url && typeof qrcode !== "undefined") {
   }
 }
 
-// --- Subject rows ---
-// The row set is the union of subject names across every year present,
-// sorted alphabetically (matching Subject Configuration's own
-// ordering) — a subject configured for only one year's stream still
-// gets its own row spanning the whole table, blank/struck-through in
-// the years it doesn't apply to.
-const subjectNames = [...new Set(
-  (DATA.years || []).flatMap(y => (y.subjects || []).map(s => s.name))
-)].sort((a, b) => a.localeCompare(b));
+// --- Grade blocks ---
+// Each grade level gets its own block (9th & 10th on the top row, 11th &
+// 12th below), built from THAT year's own record: its stream
+// (DATA.years[].stream) and its own subject list. Grades 9/10 therefore
+// share one subject set, while 11/12 follow the student's Natural or
+// Social Science stream. Subjects flagged applicable === false for that
+// year's stream are simply left out of the block, so no strike-through
+// is needed any more.
+//
+// A grade with no record at all (never enrolled here that year) still
+// gets a block, with empty rows and one red diagonal drawn by CSS
+// (.not-attended). Its row labels are borrowed from its paired grade
+// (9<->10, 11<->12) when that one exists, so the empty block still
+// lines up with its neighbour.
+const SIBLING = { 9: 10, 10: 9, 11: 12, 12: 11 };
+const BLANK_ROWS = 12;
 
-// applicable === false -> struck through, blank cells (configured, but
-// not for this year's stream — e.g. a Natural Science-only subject in a
-// Social Science year, or vice versa, for a Grade 11/12 student).
-// applicable === true, or missing entirely for backward compatibility
-// with data that predates this flag -> a normal cell. Not found in that
-// year at all (the subject didn't exist in configuration then) -> a
-// plain blank cell, no strikethrough, since that's simply not
-// information we have.
-function subjectScoresForLevel(y, subjectName) {
-  if (!y) return { s1: "", s2: "", avg: "", applicable: null };
-  const found = (y.subjects || []).find(s => norm(s.name) === norm(subjectName));
-  if (!found) return { s1: "", s2: "", avg: "", applicable: null };
-  const applicable = found.applicable !== false;
-  const avg = (applicable && found.s1 != null && found.s2 != null) ? round1((found.s1 + found.s2) / 2) : "";
-  return {
-    s1: applicable ? fmt(found.s1) : "",
-    s2: applicable ? fmt(found.s2) : "",
-    avg,
-    applicable
-  };
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, ch => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]
+  ));
 }
 
-function buildDataRow(label, cellsForLevel, rowClass) {
-  const cells = GRADE_LEVELS.map(level => {
-    // No record at all for this grade — the student was never
-    // enrolled here that year (e.g. transferred out after Grade 9, so
-    // Grades 10/11/12 simply never happened for them at this school).
-    // This is a different situation from a subject that's merely not
-    // offered in their stream (the gray double-strike below), so it's
-    // marked "not-attended" instead — checked first, before
-    // cellsForLevel() even runs, so it applies uniformly to subject
-    // rows AND the Absent/Total/Average rows that share this builder.
-    // data-level/data-sub let drawNotAttendedLines() find exactly
-    // which cell is which column afterward — the class itself carries
-    // no visual style; the single diagonal line per column is drawn
-    // separately, on the SVG overlay.
-    if (!yearByLevel[level]) {
-      return [0, 1, 2].map(sub => `<td class="not-attended" data-level="${level}" data-sub="${sub}"></td>`).join("");
-    }
-    const c = cellsForLevel(level) || { s1: "", s2: "", avg: "", applicable: null };
-    const notApplicable = c.applicable === false;
-    const cls = notApplicable ? ' class="not-applicable"' : "";
-    // A plain empty <td> has no text for text-decoration:line-through to
-    // strike through, so a not-applicable cell and a not-yet-graded one
-    // were rendering identically (both just blank). A visible dash gives
-    // the double-line strikethrough something to draw through and makes
-    // the two states distinguishable at a glance.
-    return `<td${cls}>${notApplicable ? "—" : fmt(c.s1)}</td><td${cls}>${notApplicable ? "—" : fmt(c.s2)}</td><td${cls}>${notApplicable ? "—" : fmt(c.avg)}</td>`;
-  }).join("");
-  const trCls = rowClass ? ` class="${rowClass}"` : "";
-  return `<tr${trCls}><td class="subject-col">${label}</td>${cells}</tr>`;
-}
+function cell(v) { return `<td>${esc(fmt(v))}</td>`; }
 
-// Rank gets its own row builder: a single rank applies to the whole
-// year, not per-semester, so it's one merged cell spanning that year's
-// I/II/AV columns (colspan="3") rather than two blank cells plus a
-// value — matching how the school actually reads a year's rank.
-function buildRankRow(label, rowClass) {
-  const cells = GRADE_LEVELS.map(level => {
-    const y = yearByLevel[level];
-    if (!y) return `<td class="not-attended" data-level="${level}" data-sub="merged" colspan="3"></td>`;
-    const val = (y.rank != null) ? `${y.rank} / ${y.class_size}` : "";
-    return `<td colspan="3">${val}</td>`;
-  }).join("");
-  const trCls = rowClass ? ` class="${rowClass}"` : "";
-  return `<tr${trCls}><td class="subject-col">${label}</td>${cells}</tr>`;
-}
-
-const rows = [];
-
-subjectNames.forEach(name => {
-  rows.push(buildDataRow(name, level => subjectScoresForLevel(yearByLevel[level], name)));
-});
-
-// --- Meta rows: Absent / Total / Average / Rank ---
-// (Conduct dropped — it isn't tracked as data anywhere in the system,
-// so it only ever rendered as a permanently blank row; better to leave
-// it off than print an empty line on every transcript.)
-// All four get the "meta-row" class so CSS fills them with the same
-// green as the header band, setting them apart from ordinary subject
-// rows.
-rows.push(buildDataRow("Absent", level => {
+function subjectRowsFor(level) {
   const y = yearByLevel[level];
-  if (!y) return { s1: "", s2: "", avg: "" };
-  const total = (y.days_absent_s1 ?? 0) + (y.days_absent_s2 ?? 0);
-  return { s1: fmt(y.days_absent_s1), s2: fmt(y.days_absent_s2), avg: total || "" };
-}, "meta-row"));
-
-rows.push(buildDataRow("Total", level => {
-  const y = yearByLevel[level];
-  if (!y) return { s1: "", s2: "", avg: "" };
-  return { s1: fmt(y.total_s1), s2: fmt(y.total_s2), avg: "" };
-}, "meta-row"));
-
-rows.push(buildDataRow("Average", level => {
-  const y = yearByLevel[level];
-  if (!y) return { s1: "", s2: "", avg: "" };
-  return { s1: fmt(y.avg_s1), s2: fmt(y.avg_s2), avg: fmt(y.avg_year) };
-}, "meta-row"));
-
-rows.push(buildRankRow("Rank", "meta-row"));
-
-document.getElementById("transcript-body").innerHTML = rows.join("");
-
-// For each grade the student has no record for at all, draw ONE
-// continuous diagonal line per column (I/II/AV) spanning just the
-// subject rows — from the top of the first subject row down to the top
-// of the Absent row, stopping there rather than continuing through the
-// Absent/Total/Average/Rank summary band. Needs real pixel positions,
-// so it runs after the rows above are actually in the DOM and laid
-// out; getBoundingClientRect forces that layout pass.
-function drawNotAttendedLines() {
-  const svg = document.getElementById("not-attended-lines");
-  const wrap = document.querySelector(".table-wrap");
-  const tbody = document.getElementById("transcript-body");
-  if (!svg || !wrap || !tbody) return;
-
-  const bodyRows = tbody.querySelectorAll("tr");
-  if (bodyRows.length === 0) return;
-  const firstRow = bodyRows[0];
-  // The Absent row is the first ".meta-row" — its own top edge is the
-  // same for every column, so it's the one number every line needs,
-  // regardless of which grade/column it belongs to.
-  const firstMetaRow = tbody.querySelector("tr.meta-row");
-
-  const wrapRect = wrap.getBoundingClientRect();
-  svg.setAttribute("width", wrapRect.width);
-  svg.setAttribute("height", wrapRect.height);
-  svg.setAttribute("viewBox", `0 0 ${wrapRect.width} ${wrapRect.height}`);
-
-  const strokeColor = getComputedStyle(document.documentElement).getPropertyValue("--danger").trim() || "#c22";
-  const bottomY = firstMetaRow
-    ? firstMetaRow.getBoundingClientRect().top - wrapRect.top
-    : (bodyRows[bodyRows.length - 1].getBoundingClientRect().bottom - wrapRect.top);
-
-  GRADE_LEVELS.forEach(level => {
-    if (yearByLevel[level]) return; // this grade has a real record — nothing to draw
-
-    // The first subject row always has 3 separate not-attended cells
-    // for a missing grade (one per I/II/AV) — their edges give each
-    // line's exact horizontal band.
-    const topCells = firstRow.querySelectorAll(`td.not-attended[data-level="${level}"]`);
-    if (topCells.length === 0) return;
-
-    topCells.forEach(cell => {
-      const r = cell.getBoundingClientRect();
-      // Corner-to-corner within the cell's own width — top-left of the
-      // first row down to bottom-right just above the Absent row — so
-      // the line stays inside its own column's band instead of
-      // crossing into the next one, matching a single clean diagonal
-      // stroke rather than a strictly vertical line.
-      const x1 = (r.left - wrapRect.left) + r.width * 0.2;
-      const y1 = r.top - wrapRect.top;
-      const x2 = (r.left - wrapRect.left) + r.width * 0.8;
-      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-      line.setAttribute("x1", x1);
-      line.setAttribute("y1", y1);
-      line.setAttribute("x2", x2);
-      line.setAttribute("y2", bottomY);
-      line.setAttribute("stroke", strokeColor);
-      line.setAttribute("stroke-width", "1.3");
-      svg.appendChild(line);
+  const src = y || yearByLevel[SIBLING[level]];
+  if (!src) return Array.from({ length: BLANK_ROWS }, () => '<tr><td class="subject-col"></td><td></td><td></td><td></td></tr>');
+  return (src.subjects || [])
+    .filter(s => s.applicable !== false)
+    .map(s => s.name)
+    .sort((a, b) => a.localeCompare(b))
+    .map(name => {
+      const found = y && (y.subjects || []).find(s => norm(s.name) === norm(name));
+      const s1 = found ? found.s1 : "";
+      const s2 = found ? found.s2 : "";
+      const avg = (found && found.s1 != null && found.s2 != null) ? round1((found.s1 + found.s2) / 2) : "";
+      return `<tr><td class="subject-col">${esc(name)}</td>${cell(s1)}${cell(s2)}${cell(avg)}</tr>`;
     });
-  });
 }
 
-drawNotAttendedLines();
+// Absent / Total / Average / Rank — same green "meta-row" band as before.
+// (Conduct is still left off: it isn't tracked anywhere in the system, so
+// it would only print as a permanently blank row.)
+function summaryRowsFor(level) {
+  const y = yearByLevel[level];
+  const row = (label, a, b, c) =>
+    `<tr class="meta-row"><td class="subject-col">${label}</td>${cell(a)}${cell(b)}${cell(c)}</tr>`;
+  if (!y) {
+    return row("Absent", "", "", "") + row("Total", "", "", "") + row("Average", "", "", "") +
+      '<tr class="meta-row"><td class="subject-col">Rank</td><td colspan="3"></td></tr>';
+  }
+  const absentTotal = (y.days_absent_s1 ?? 0) + (y.days_absent_s2 ?? 0);
+  // One rank applies to the whole year, so it is a single merged cell.
+  const rank = (y.rank != null) ? `${y.rank} / ${y.class_size}` : "";
+  return row("Absent", y.days_absent_s1, y.days_absent_s2, absentTotal || "") +
+    row("Total", y.total_s1, y.total_s2, "") +
+    row("Average", y.avg_s1, y.avg_s2, y.avg_year) +
+    `<tr class="meta-row"><td class="subject-col">Rank</td><td colspan="3">${esc(rank)}</td></tr>`;
+}
+
+const COLGROUP = '<colgroup><col class="c-sub"><col><col><col></colgroup>';
+
+function buildGradeBlock(level) {
+  const y = yearByLevel[level];
+  const year = y && y.ec_year ? `${esc(y.ec_year)} E.C` : "20___ E.C";
+  const stream = y ? esc(y.stream || "") : "—";
+  return `<div class="grade-block${y ? "" : " not-attended"}">
+    <div class="gb-head"><span>${year}</span><span>Grade ${level}</span></div>
+    <div class="gb-stream"><span>Stream</span><span>${stream}</span></div>
+    <div class="gb-subjects">
+      <table class="gb-table">${COLGROUP}
+        <thead><tr><th class="subject-col">Subjects</th><th>I</th><th>II</th><th>AV</th></tr></thead>
+        <tbody>${subjectRowsFor(level).join("")}</tbody>
+      </table>
+    </div>
+    <table class="gb-table">${COLGROUP}<tbody>${summaryRowsFor(level)}</tbody></table>
+  </div>`;
+}
+
+document.getElementById("grade-grid").innerHTML = GRADE_LEVELS.map(buildGradeBlock).join("");
 
 // --- Fit the whole document onto exactly one printed page ---
 // The subject rows come from each school's own Subject Configuration
@@ -297,34 +204,44 @@ drawNotAttendedLines();
 function fitToOnePage() {
   const wrap = document.getElementById("page-scale-wrap");
   const page = document.querySelector(".page");
+  const grid = document.getElementById("grade-grid");
   if (!wrap || !page) return;
 
-  // Reset from any earlier pass (e.g. a browser's own beforeprint/
-  // afterprint cycle re-running this) before re-measuring.
+  // Reset from any earlier pass before re-measuring.
   page.style.transform = "";
   wrap.style.height = "";
+  if (grid) grid.style.removeProperty("--u");
 
-  // Convert the @page rule's printable content height (A4's 297mm
-  // minus its own 4mm top+bottom margin — see the @page rule in
-  // transcript.css) into real pixels via a throwaway probe element,
-  // rather than a hardcoded mm-to-px constant, so this keeps working
-  // correctly if @page's size/margin ever changes.
+  // A4's 297mm minus @page's 4mm top+bottom margin, converted to real
+  // pixels with a throwaway probe instead of a hardcoded constant.
   const probe = document.createElement("div");
   probe.style.cssText = "position:absolute; visibility:hidden; height:289mm; width:0;";
   document.body.appendChild(probe);
   const targetHeightPx = probe.getBoundingClientRect().height;
   document.body.removeChild(probe);
+  if (!targetHeightPx) return;
 
-  const actualHeightPx = page.getBoundingClientRect().height;
-  if (!targetHeightPx || actualHeightPx <= targetHeightPx) return; // already fits at natural size
+  const height = () => page.getBoundingClientRect().height;
+  if (height() <= targetHeightPx) return; // already fits at normal size
 
-  const scale = targetHeightPx / actualHeightPx;
-  page.style.transform = `scale(${scale})`;
-  // transform only shrinks how the box LOOKS, not the layout footprint
-  // it still occupies — without collapsing the wrapper to the scaled
-  // height, the print engine would keep reserving the original,
-  // unscaled height and add a blank second page under the shrunk one.
-  wrap.style.height = `${targetHeightPx}px`;
+  // 1) Shrink the font size and row height of the grade blocks, a little
+  //    at a time, until the page fits ONE sheet. A longer subject list
+  //    just gets smaller type instead of a second page.
+  const MIN_U = 0.45;
+  let u = 1;
+  while (grid && height() > targetHeightPx && u > MIN_U) {
+    u = Math.round((u - 0.02) * 100) / 100;
+    grid.style.setProperty("--u", u);
+  }
+
+  // 2) Last resort (an extreme subject count): scale the whole page the
+  //    rest of the way. Together with the print clip in transcript.css,
+  //    this means a second page can never be produced.
+  const actual = height();
+  if (actual > targetHeightPx) {
+    page.style.transform = `scale(${targetHeightPx / actual})`;
+    wrap.style.height = `${targetHeightPx}px`;
+  }
 }
 
 fitToOnePage();
@@ -335,6 +252,8 @@ window.addEventListener("beforeprint", fitToOnePage);
 window.addEventListener("afterprint", () => {
   const wrap = document.getElementById("page-scale-wrap");
   const page = document.querySelector(".page");
+  const grid = document.getElementById("grade-grid");
   if (page) page.style.transform = "";
   if (wrap) wrap.style.height = "";
+  if (grid) grid.style.removeProperty("--u");
 });

@@ -1114,6 +1114,30 @@ table.data-table th, table.data-table td {
 table.data-table tbody tr:last-child td { border-bottom: none; }
 table.data-table tbody tr:hover { background: #f7faf8; }
 
+/* ---------- Subject Configuration widget (Academic VP) ----------
+   Was an inline style="max-width:640px" on the widget itself, which
+   can't be overridden by a media query — moved here so the mobile
+   rules below can actually take effect. The table also used to
+   inherit the portal-wide `.data-table { min-width: 640px }` rule
+   (see the .uses-sticky-list block above) meant for wide data grids;
+   this is a plain 4-column checkbox grid, so that forced far more
+   horizontal scroll than the content needs and let the "Not in
+   dictionary" badge crowd the subject name in the narrow first
+   column. */
+.subject-config-widget { margin-top: 18px; max-width: 640px; }
+@media (max-width: 900px) {
+    .subject-config-widget { max-width: none; }
+    /* #subject-config-widget (ID) needed here, not the .subject-config-widget
+       class, to out-specificity the portal-wide
+       .page-content:not(.uses-sticky-list) table.data-table { min-width: 640px }
+       rule above — a class selector alone loses that fight. */
+    #subject-config-widget table.data-table { min-width: 0; width: 100%; table-layout: fixed; }
+    #subject-config-widget table.data-table th,
+    #subject-config-widget table.data-table td { padding: 8px 6px; font-size: 0.82rem; word-break: break-word; }
+    #subject-config-widget table.data-table td:first-child { white-space: normal; }
+    #subject-config-widget .badge-pending { display: inline-block; margin-top: 4px; white-space: normal; line-height: 1.25; }
+}
+
 /* ---------- Badges ---------- */
 .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.7rem; font-weight: 700; }
 .badge-pending { background: var(--warning-bg); color: var(--warning); }
@@ -1562,3 +1586,31 @@ table.data-table.tt-grid-table thead th { position: static; top: auto; z-index: 
 .sub-updated { color: var(--muted); font-size: 0.75rem; margin-top: 12px; }
 .sub-send-box p { margin: 8px 0; }
 .sub-send-box .btn { margin-top: 6px; }
+
+
+/* Student detail + guardian dialog (roster name click) */
+.student-name-link { background: none; border: 0; padding: 0; font: inherit; color: var(--accent, #14532d); font-weight: 600; text-align: left; cursor: pointer; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px; }
+.student-name-link:hover, .student-name-link:focus-visible { text-decoration-color: currentColor; }
+.modal-box.student-detail-box { max-width: 580px; width: 94%; max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); overflow-y: auto; box-sizing: border-box; }
+.sd-head { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
+.sd-head .table-avatar { width: 56px; height: 56px; font-size: 1.1rem; flex-shrink: 0; }
+.sd-name { margin: 0; font-size: 1.15rem; }
+.sd-sub { color: var(--text-muted, #667a70); font-size: 0.88rem; margin-top: 2px; }
+.sd-section-title { margin: 18px 0 8px; font-size: 0.8rem; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted, #667a70); border-bottom: 1px solid var(--border, #dde5e0); padding-bottom: 6px; }
+.sd-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 18px; }
+.sd-label { font-size: 0.74rem; color: var(--text-muted, #667a70); margin-bottom: 2px; }
+.sd-value { font-weight: 600; word-break: break-word; }
+.sd-empty { color: var(--text-muted, #667a70); font-weight: 400; }
+.sd-guardian { background: var(--bg-soft, #f3f8f5); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+.sd-guardian-name { font-weight: 800; margin-bottom: 8px; }
+.sd-none { color: var(--text-muted, #667a70); margin: 4px 0; }
+@media (max-width: 480px) { .sd-grid { grid-template-columns: 1fr; } }
+.sd-topbar { position: sticky; top: -24px; z-index: 5; margin: -24px -24px 12px; padding: 10px 16px; background: #fff; border-bottom: 1px solid var(--border, #dde5e0); }
+.sd-back-btn { background: none; border: 0; padding: 8px 4px; min-height: 40px; font: inherit; font-weight: 700; color: var(--accent, #14532d); cursor: pointer; }
+/* Phones: use the whole screen (above the bottom nav, with room to scroll past it)
+   instead of a cramped floating card. */
+@media (max-width: 600px) {
+    .modal-overlay:has(.student-detail-box) { z-index: 1000; align-items: stretch; justify-content: stretch; }
+    .modal-box.student-detail-box { width: 100%; max-width: none; height: 100%; max-height: none; border-radius: 0; padding: 18px 18px calc(24px + env(safe-area-inset-bottom, 0px)); }
+    .sd-topbar { top: -18px; margin: -18px -18px 12px; }
+}
